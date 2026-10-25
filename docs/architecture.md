@@ -48,8 +48,16 @@ so they do not obscure organisms or intercept painting. Painting exposes radius
 controls in the tool strip; inspection, pan and planting show their own short
 instruction. Playback and world files remain in the top bar.
 
-The interface uses the world's square cells and functional colors. Body previews
-fit their connected anatomy into the available space instead of reserving a fixed
+The interface adapts the Even Hub companion-app hierarchy: 12 px screen margins,
+16 px card insets, 6 px card and control radii, segmented tabs and tools, and
+separate cards for population, bodies, climate and settings. EvoLab retains its
+existing dark surfaces, lime accent, functional-cell colors and original pixel
+icons. Rounded UI containers do not round the habitat cells or anatomy editor.
+The type hierarchy uses a local Arial/Helvetica/system sans-serif fallback;
+FK Grotesk Neue is not bundled or implied. DM Mono remains on world IDs, tick
+readouts and slider values. No runtime font service is used.
+
+Body previews fit their connected anatomy into the available space instead of reserving a fixed
 nine-cell canvas. Common bodies can be copied directly into the designer. Clicking
 an organism opens its inspector; copying its anatomy folds the inspector away to
 make room for the connected-body editor. Placing a design brings the habitat back

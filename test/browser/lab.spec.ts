@@ -1,8 +1,50 @@
 import { test, expect } from '@playwright/test';
+test('Even Hub-style cards retain the dark palette and crisp cellular editor', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('#population')).not.toHaveText('—');
+  const appearance = await page.evaluate(() => {
+    const styles = (selector: string) => getComputedStyle(document.querySelector(selector)!);
+    return {
+      surface: styles('.population-section').backgroundColor,
+      accent: styles('#pause').backgroundColor,
+      habitat: styles('.habitat').backgroundColor,
+      cardRadius: styles('.population-section').borderRadius,
+      inset: styles('.population-section').padding,
+      screenMargin: styles('.workspace').paddingLeft,
+      sectionGap: styles('.panel').gap,
+      buttonRadius: styles('#pause').borderRadius,
+      typeface: styles('.topbar').fontFamily,
+      readoutTypeface: styles('.world-label').fontFamily,
+      activeTab: styles('#ecosystem-tab').backgroundColor,
+      inactiveTab: styles('#organism-tab').backgroundColor,
+    };
+  });
+  expect(appearance).toEqual({
+    surface: 'rgb(34, 39, 39)',
+    accent: 'rgb(216, 232, 121)',
+    habitat: 'rgb(9, 15, 22)',
+    cardRadius: '6px',
+    inset: '16px',
+    screenMargin: '12px',
+    sectionGap: '12px',
+    buttonRadius: '6px',
+    typeface: 'Arial, Helvetica, sans-serif',
+    readoutTypeface: '"DM Mono", monospace',
+    activeTab: 'rgb(48, 55, 55)',
+    inactiveTab: 'rgba(0, 0, 0, 0)',
+  });
+  await page.getByRole('tab', { name: 'Organism', exact: true }).click();
+  await expect(page.locator('#organism-panel')).toBeVisible();
+  await expect(page.locator('#editor button').first()).toHaveCSS('border-radius', '0px');
+  await expect(page.locator('#organism-tab')).toHaveCSS('background-color', 'rgb(48, 55, 55)');
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  await expect(page.locator('#ecosystem-panel')).toBeVisible();
+});
+
 test('panels keep tools outside the habitat at every layout width', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('link', { name: 'EvoLab / Drift' })).toContainText('drift');
-  for (const width of [360, 760, 780, 1280]) {
+  for (const width of [360, 390, 760, 780, 1024, 1280, 1600]) {
     await page.setViewportSize({ width, height: 800 });
     const layout = await page.evaluate(() => {
       const habitat = document.querySelector('#world')!.getBoundingClientRect();
