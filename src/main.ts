@@ -72,7 +72,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     }
     tool = next;
     root
-      .querySelectorAll<HTMLButtonElement>('[data-tool]')
+      .querySelectorAll<HTMLButtonElement>('button[data-tool]')
       .forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === tool)));
     canvas.dataset.tool = tool;
   }
@@ -178,7 +178,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   get('zoom-in').addEventListener('click', () => setZoom(camera.zoom * 1.4));
   get('zoom-out').addEventListener('click', () => setZoom(camera.zoom / 1.4));
   root
-    .querySelectorAll<HTMLButtonElement>('[data-tool]')
+    .querySelectorAll<HTMLButtonElement>('button[data-tool]')
     .forEach((b) => b.addEventListener('click', () => choose(b.dataset.tool as Tool)));
   root
     .querySelectorAll<HTMLButtonElement>('[data-tab]')

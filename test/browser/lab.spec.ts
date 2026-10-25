@@ -48,7 +48,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   await page.getByRole('button', { name: 'Cold snap' }).click();
   await expect(page.locator('#weather')).toContainText('Cold snap');
   const oldFood = Number(await page.locator('#food-count').textContent());
-  await page.getByRole('button', { name: 'Bloom', exact: false }).click();
+  await page.getByRole('button', { name: '✦ Bloom', exact: true }).click();
   await expect
     .poll(async () => Number(await page.locator('#food-count').textContent()))
     .toBeGreaterThan(oldFood);
@@ -73,7 +73,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   await page.getByRole('button', { name: 'Edit this organism' }).click();
   await expect(page.locator('#notice')).toContainText('Anatomy copied');
   await page.getByRole('button', { name: 'Place in world' }).click();
-  await expect(page.locator('[data-tool="plant"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('button[data-tool="plant"]')).toHaveAttribute('aria-pressed', 'true');
   const population = Number(await page.locator('#population').textContent());
   for (let y = 40; y < 100; y += 10) {
     const at = await coordinate(page, 120, y);
@@ -129,13 +129,11 @@ test('designer, world tools, camera, shortcuts and invalid saves behave in Chrom
   await page.locator('#seed').fill('123');
   await page.getByRole('button', { name: 'Reseed world' }).click();
   await expect(page.locator('#world-label')).toHaveText('WORLD 0123');
-  await page
-    .locator('#file')
-    .setInputFiles({
-      name: 'bad.json',
-      mimeType: 'application/json',
-      buffer: Buffer.from('{"version":1}'),
-    });
+  await page.locator('#file').setInputFiles({
+    name: 'bad.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from('{"version":1}'),
+  });
   await expect(page.locator('#notice')).toContainText('version 2');
   await page.getByTitle('How this world works').click();
   await expect(page.getByRole('dialog')).toBeVisible();
@@ -144,5 +142,5 @@ test('designer, world tools, camera, shortcuts and invalid saves behave in Chrom
   await page.keyboard.press('Space');
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
   await page.keyboard.press('f');
-  await expect(page.locator('[data-tool="food"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('button[data-tool="food"]')).toHaveAttribute('aria-pressed', 'true');
 });
