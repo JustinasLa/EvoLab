@@ -306,6 +306,8 @@ describe('ecosystem desk', () => {
     expect(get('world').dataset.tool).toBe('food');
     click('help');
     expect(get<HTMLDialogElement>('help-dialog').open).toBe(true);
+    expect(get('help-dialog').textContent).toContain('An original cellular simulation');
+    expect(get('help-dialog').querySelector('a')).toBeNull();
     key('w');
     click('close-help');
     key('w');

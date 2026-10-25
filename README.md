@@ -20,8 +20,8 @@ lineages spread by surviving and producing descendants.
 - **Explore at your pace** — pan, zoom, pause, single-step, and change simulation speed independently of rendering.
 - **Keep whole worlds** — save and restore terrain, every organism, counters, settings and random-generator state.
 
-Inspired by [The Life Engine](https://thelifeengine.net/). EvoLab's implementation
-and interface are original; no upstream code or assets are copied.
+EvoLab uses an original cellular simulation and interface. It is artificial life,
+not a calibrated biological model.
 
 ## Tests and coverage
 
