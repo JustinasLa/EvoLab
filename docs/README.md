@@ -1,13 +1,15 @@
-# EvoLab documentation
+# EvoLab / Drift documentation
 
-Evolve motor-driven creatures in a small 2D physics world.
+An open-ended cellular ecosystem with inherited climate adaptation.
 
 - [Source repository](https://github.com/JustinasLa/EvoLab)
+- [Live preview](https://89.116.28.65.sslip.io/evolab/)
 - [Setup and operation](setup.md)
-- [How evolution works](evolution.md)
+- [Life, evolution and climate](evolution.md)
 - [Architecture](architecture.md)
 - [Testing and verification](testing.md)
-- [Third-party credits](credits.md)
+- [Inspiration and third-party credits](credits.md)
 
-This is a standalone personal project. Its guides live alongside its source;
-it does not use Minecraft, Java, TF server infrastructure, or production data.
+This is a standalone personal project. Its guides live alongside the source. It
+uses no Minecraft infrastructure, production player data, hosted inference,
+accounts, or runtime external services.

@@ -2,13 +2,32 @@
 
 [Project index](README.md)
 
-## Requirements
+## Play
 
-- Node.js 24 or newer and npm. CI uses Node 24.
-- A current browser with ES modules, module workers, Canvas 2D, `roundRect`, and
-  `structuredClone`. No GPU compute or model downloads are required.
+Open the [live preview](https://89.116.28.65.sslip.io/evolab/) in a current browser.
+Evolution starts immediately. Every tab runs an independent world locally; it does
+not share organism state with other visitors.
+
+- Inspect an organism to see anatomy, energy, temperature preference and ancestry.
+- Copy an inspected organism or a dominant lineage into the designer, edit its
+  connected body, choose a preferred temperature, and select **Place in world**.
+- Paint food, walls or erasure with the toolbar. Brush radius is in World settings.
+  Erasing any part of an organism removes its whole body.
+- Pan with the Pan tool, scroll to zoom, and use Fit to restore the camera.
+- Pause, then single-step, to inspect state changes closely.
+- Toggle temperature view and introduce cold snaps, heatwaves or nutrient blooms.
+- Mutation, nutrient rain and climate pressure settings apply immediately.
+  Reseeding replaces the world with a fresh one using the selected seed/settings.
+- Save a world before leaving; reloading otherwise starts from seed 42 again.
+
+Keyboard shortcuts: Space pauses/resumes; I inspects; H pans; F paints food; W
+paints walls; E erases; P plants the current design. Shortcuts are inactive while
+typing in an input or while help is open. Camera and UI state are not saved.
 
 ## Local development
+
+Requires Node.js 24+, npm, and a current browser with module workers, typed arrays,
+Canvas 2D, dialogs and `structuredClone`.
 
 ```sh
 git clone https://github.com/JustinasLa/EvoLab.git
@@ -17,57 +36,36 @@ npm ci
 npm run dev
 ```
 
-Open the URL printed by Vite, normally `http://localhost:5173`. The development
-and preview commands bind to all network interfaces so other devices can reach
-them when the host's network permits it. For loopback only, append
-`-- --host 127.0.0.1`.
-
-## Build and serve
+Open the printed URL, normally `http://localhost:5173`. Development and preview
+scripts bind to all interfaces. Append `-- --host 127.0.0.1` for loopback only.
 
 ```sh
 npm run build
 npm run preview
 ```
 
-`dist/` is a complete static build including the simulation worker and fonts.
-Deploy its contents to a static web host. Vite uses relative asset paths, so
-subdirectory hosting works. Serve over HTTP or HTTPS; opening `index.html` with
-`file://` will not load the module worker reliably. The preview server is for
-local checks, not a managed production service.
+The complete static application is in `dist/`, including fonts and worker code.
+Serve it over HTTP/HTTPS. Relative asset paths support subdirectory hosting.
+Do not open the build with `file://`: module workers require a web origin.
+CI uploads the static build as `evolab-web`.
 
-No hosting deployment is configured. CI uploads the built application as an
-artifact; download and extract it, then serve the extracted directory over HTTP.
+## Host preview
 
-## Using the lab
+The server preview uses an isolated user service serving only a static build,
+with the existing HTTPS proxy routing `/evolab/` to its loopback listener. The
+shared root site is a separate route. Runtime deployment state is local to the
+preview host and is not committed. A feature branch can be previewed before its
+PR merges; check the PR for the proposed source.
 
-The first experiment starts automatically with seed 42, 24 creatures, Earth
-gravity, the meadow, and an 18% mutation probability per mutable parameter.
+## Limits and troubleshooting
 
-1. Watch the selected champion's eight-second trial. Its replay continues while
-   the next generation is evaluated in a background worker.
-2. Pause evolution to stop evaluating new candidates. Replay animation continues.
-   Replay speed changes playback only; it does not alter trial physics.
-3. Click a survivor to revisit a recent generation. **Follow latest** returns to
-   automatic champion selection, which changes at replay boundaries.
-4. Adjust habitat, gravity, mutation, population, or seed. These are pending
-   values until **Begin new experiment** is pressed. Restarting clears history.
-5. Save the selected champion to JSON. Loading a champion restores its experiment
-   settings and starts a new population containing that creature and mutated
-   descendants. It does not restore the old generation counter or full population.
-
-Reloading the page starts over. There is no automatic persistence; export a
-champion before closing a run you care about. At most eight champion recordings
-and 240 chart entries are retained. A manually selected older replay remains
-available until another replay is selected or the experiment restarts.
-
-## Troubleshooting
-
-- **Experiment stopped:** reload the page. A worker or physics failure is shown
-  beside the file controls. Ensure scripts and workers are allowed by your host's
-  content policy and serve the complete build from the same origin.
-- **Slow generations:** reduce population to 12. Evaluation is CPU work in one
-  worker; it can continue while the tab is in the background. Pause when finished.
-- **A creature barely moves:** try another seed or allow more generations.
-  Evolution is stochastic; no particular gait or target score is guaranteed.
-- **An import is rejected:** use an exported version-1 champion, at most 32 KB.
-  Arbitrary JSON, invalid topology, or unbounded motor values are not accepted.
+- World saves are version 2 and at most 2.5 MB. Older champion exports are not
+  cellular ecosystems and are rejected.
+- A paused world still accepts editing and inspection. Resume to see ecological
+  consequences play out. A single step is available only while paused.
+- Reduced population or extinction can be a real outcome. Introduce food, place
+  an organism, reduce climate pressure, or reseed to try another scenario.
+- Simulation is CPU work in a background worker. Pause before leaving a run in a
+  background tab. No fixed tick-throughput claim is made for every device.
+- A worker failure is shown in the sidebar. Reload if the worker cannot recover.
+- Use `npm run format` before committing and `npm run format:check` to verify.

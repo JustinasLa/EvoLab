@@ -6,53 +6,57 @@
 
 ```sh
 npm ci
+npm run format:check
 npm run test:coverage
 npm run build
 npx playwright install chromium
 npm run test:browser
 ```
 
-CI uses Ubuntu 24.04, Node 24, the committed npm lockfile, and Chromium installed
-by the pinned Playwright package. The build runs TypeScript checking before Vite.
+CI runs Ubuntu 24.04, Node 24 and the committed lockfile. TypeScript checking runs
+before the Vite production build. V8 coverage includes all production
+`src/**/*.ts` files and enforces 100% executable-line coverage without file
+exclusions. Statement and branch coverage are reported separately. Reports are
+written to `coverage/` and uploaded by CI.
 
-## Unit and integration scope
+## Behavior checks
 
-Vitest's V8 report includes every `src/**/*.ts` file. A global 100% executable-line
-threshold is enforced without source-file exclusions. Statement, branch and
-function coverage are reported but have no separate threshold. Tests live in
-`test/`; coverage HTML, LCOV and JSON summaries are in `coverage/`.
+- Real ecosystem updates exercise feeding, photosynthesis, starvation, aging,
+  movement, sensors, predation, armor and reproduction.
+- Mutation repeatedly checks connected anatomy and bounded inherited traits.
+- Climate checks compare adapted versus mismatched organisms and the upkeep cost
+  of broad tolerance, and verify event expiry and food blooms.
+- Seeded worlds match one another. Export/import tests restore complete state and
+  check that both copies continue identically, including RNG and update order.
+- Persistence rejects huge files, malformed versions, bad terrain, invalid anatomy,
+  duplicate organism IDs and overlapping bodies.
+- Worker tests cover pause, resume, single-step, speed, edits, inspection, errors,
+  and failed-import recovery with no duplicate evaluation loop.
+- UI tests exercise design, bounded history, tool selection, camera coordinates,
+  shortcuts, help, import/export, stale messages and disposal. Canvas is a stand-in
+  in these unit tests; visual correctness needs a real browser.
 
-- Real Planck trials check repeatability, motion, motor work, recording, gravity,
-  and each terrain type.
-- A seeded multi-generation run checks improving fitness and unchanged elites.
-  It is a regression fixture, not a promise that every seed improves quickly.
-- Repeated mutations validate body topology and numeric ranges through the same
-  portable-file contract used by real imports.
-- Worker tests exercise yielding, duplicate-resume prevention, pause, restart,
-  and evaluation failures with real population evaluation where appropriate.
-- UI tests check pending versus active settings, bounded history, uninterrupted
-  replay selection, stale-response rejection, file operations, errors and cleanup.
-  Their canvas context is a stand-in; they do not establish visual correctness.
+The earlier locomotion-trial implementation and its tests were retired together.
+The coverage gate remains unchanged for the replacement ecosystem implementation.
 
-## Real browser checks
+## Browser checks
 
-Playwright serves the production `dist/` build, not the development source. Desktop
-and mobile-sized Chromium runs exercise real module workers and Canvas 2D,
-generation advancement, animated replay while paused, file downloads and imports,
-settings changes, and horizontal layout bounds. The initial workflow also fails
-on page errors or requests to external origins.
+Playwright serves the production `dist/` build and exercises desktop and
+mobile-sized Chromium. It runs actual workers and Canvas, verifies births, pause
+and single-step, climate events, inspection and anatomy copying, planting, food
+and wall painting, erasure, camera controls, reseeding, help, keyboard shortcuts,
+complete world downloads/imports and invalid-file recovery. The primary workflow
+checks for page errors, external requests and horizontal page overflow.
 
-Reports are written to `playwright-report/`; traces on failure are in
-`test-results/`. CI uploads these reports, unit coverage, and the static build.
-
-The checks do not verify Safari or Firefox, physical mobile-device performance,
-cross-runtime floating-point identity, unlimited-run stability, or biological
-validity. No fixed generations-per-second or target fitness claim is made.
+Reports are written to `playwright-report/` and `test-results/`. CI uploads browser
+reports, coverage and the static application. These checks do not prove biological
+realism, Safari/Firefox support, infinite-run stability, cross-runtime bitwise
+identity, or a fixed performance capacity.
 
 ## Repository workflow
 
-Work on a branch and open a pull request against `main`. The main-branch rules
-require a PR, linear history, and squash merging, and reject branch deletion and
-force pushes. CI should pass before merging. Update the project guides when
-behavior changes; keep implementation diaries and raw output out of maintained
-documentation. PR size labels use the shared TF-Minecraft action.
+Open feature PRs against protected `main`. The branch requires a PR, linear
+history and squash merging, and rejects deletion and force pushes. Push logical
+milestones regularly; use draft PRs while verification is incomplete. Shared TF
+PR-size automation labels changes. Update project guides with behavior changes;
+keep raw logs and session captures in ignored `.scratch/` or PR discussion.

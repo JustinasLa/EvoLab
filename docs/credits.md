@@ -1,22 +1,31 @@
-# Third-party credits
+# Inspiration and third-party credits
 
 [Project index](README.md)
 
-EvoLab's source is copyright 2026 Justinas Launikonis and licensed under Artistic
-License 2.0. Dependencies retain their own licenses; this project's license does
-not replace them.
+EvoLab's source is copyright 2026 Justinas Launikonis, under Artistic License 2.0.
+Dependencies retain their own licenses.
 
-- [Planck](https://github.com/piqnt/planck.js), MIT: the 2D rigid-body physics engine,
-  derived from Box2D. Distributed in the worker bundle. Its copyright and license
-  notice are preserved in the generated bundle and included in `third-party.txt`.
-- [DM Sans](https://github.com/googlefonts/dm-fonts), SIL Open Font License 1.1:
-  interface text, bundled through `@fontsource-variable/dm-sans`.
-- [DM Mono](https://github.com/googlefonts/dm-mono), SIL Open Font License 1.1:
-  instrumentation labels, bundled through `@fontsource/dm-mono`.
-- Vite, TypeScript, Vitest, jsdom and Playwright are development/build tools.
-  Their packages contain their respective license notices. Exact versions are
-  pinned by `package-lock.json`.
+## Inspiration
 
-The creature drawings, habitat rendering and interface are generated from code.
-No external character models, textures, licensed TF assets, or recorded player
-data are bundled.
+[The Life Engine](https://thelifeengine.net/) by Max Robinson / Emergent Garden
+inspired the open-ended ecosystem of organisms built from functional cells.
+Its [source](https://github.com/MaxRobinsonTheGreat/EvolutionSimulatorV2) is a
+separate GPL-3.0 project. EvoLab uses an original implementation and interface;
+no upstream code, artwork, branding or other assets are copied. The drifting
+climate, inherited temperature traits, tolerance tradeoff and world-file format
+are implemented in this repository.
+
+## Bundled assets
+
+- [DM Sans](https://github.com/googlefonts/dm-fonts), SIL Open Font License 1.1,
+  bundled through `@fontsource-variable/dm-sans`.
+- [DM Mono](https://github.com/googlefonts/dm-mono), SIL Open Font License 1.1,
+  bundled through `@fontsource/dm-mono`.
+
+Complete font notices ship in `public/third-party.txt` and the static build.
+The interface icons, organism previews and world rendering are drawn in code.
+No external models, textures, TF assets or recorded player data are bundled.
+
+Vite, TypeScript, Vitest, jsdom, Prettier and Playwright are development tools;
+their packages contain their license notices. Exact dependencies are pinned in
+`package-lock.json`. The retired rigid-body engine is no longer a dependency.
