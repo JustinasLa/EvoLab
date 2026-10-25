@@ -109,6 +109,7 @@ export class Ecosystem {
   kill(o: Organism): void {
     for (const i of positions(o)) {
       this.occupied[i] = 0;
+      this.food[i] = 1;
     }
     this.organisms.delete(o.id);
     this.deaths++;
