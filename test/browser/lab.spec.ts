@@ -16,8 +16,8 @@ test('Even Hub-style cards retain the dark palette and crisp cellular editor', a
       buttonRadius: styles('#pause').borderRadius,
       typeface: styles('.topbar').fontFamily,
       readoutTypeface: styles('.world-label').fontFamily,
-      activeTab: styles('#ecosystem-tab').backgroundColor,
-      inactiveTab: styles('#organism-tab').backgroundColor,
+      activeTab: styles('#organism-tab').backgroundColor,
+      inactiveTab: styles('#ecosystem-tab').backgroundColor,
     };
   });
   expect(appearance).toEqual({
@@ -89,6 +89,7 @@ test('all controls share the sidebar without crowding the habitat at every layou
     });
   }
   const habitat = await page.locator('#world').boundingBox();
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
   await page.getByText('World settings', { exact: true }).click();
   await page.getByRole('button', { name: 'Reseed world' }).scrollIntoViewIfNeeded();
   await expect(page.getByRole('button', { name: 'Reseed world' })).toBeInViewport();
@@ -137,6 +138,46 @@ async function downloadWorld(page: import('@playwright/test').Page): Promise<Buf
   return Buffer.concat(chunks);
 }
 
+test('Pan and Organism are the defaults and dragging changes only the camera', async ({ page }) => {
+  const expectDefaults = async (): Promise<void> => {
+    await expect(page.locator('.tool-dock [aria-pressed="true"]')).toHaveAttribute(
+      'data-tool',
+      'pan',
+    );
+    await expect(page.locator('[role="tab"][aria-selected="true"]')).toHaveAttribute(
+      'id',
+      'organism-tab',
+    );
+    await expect(page.locator('#world')).toHaveAttribute('data-tool', 'pan');
+    await expect(page.locator('#world')).toHaveCSS('cursor', 'grab');
+    await expect(page.locator('#tool-hint')).toHaveText('Drag to move the world. Scroll to zoom.');
+    await expect(page.locator('#brush-control')).toBeHidden();
+    await expect(page.locator('#organism-panel')).toBeVisible();
+    await expect(page.locator('#ecosystem-panel')).toBeHidden();
+  };
+  await page.goto('/');
+  await expectDefaults();
+  await pause(page);
+  const saved = await downloadWorld(page),
+    rendered = await page
+      .locator('#world')
+      .evaluate((canvas: HTMLCanvasElement) => canvas.toDataURL()),
+    center = await coordinate(page, WIDTH / 2, HEIGHT / 2);
+  await page.mouse.move(center.x, center.y);
+  await page.mouse.down();
+  await page.mouse.move(center.x + 30, center.y + 20, { steps: 5 });
+  await page.mouse.up();
+  await expect
+    .poll(() => page.locator('#world').evaluate((canvas: HTMLCanvasElement) => canvas.toDataURL()))
+    .not.toBe(rendered);
+  expect(await downloadWorld(page)).toEqual(saved);
+  await expect(page.locator('#specimen-details')).not.toHaveAttribute('open');
+  await page.getByTitle('Inspect organism (I)').click();
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  await page.reload();
+  await expectDefaults();
+});
+
 test('new and reseeded worlds begin with one creature and no births', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#population')).toHaveText('1');
@@ -146,6 +187,7 @@ test('new and reseeded worlds begin with one creature and no births', async ({ p
   await expect(page.locator('#species-count')).toHaveText('1 lineage');
   await expect(page.locator('#world-count')).toHaveText('1 organism · 1 lineage');
   await expect(page.locator('#lineages .lineage')).toHaveCount(1);
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
   await page.getByText('World settings', { exact: true }).click();
   await expect(page.getByRole('slider', { name: 'Leaf food chance' })).toHaveValue('5');
   await expect(page.getByText('Nutrient rain', { exact: true })).toHaveCount(0);
@@ -200,6 +242,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   await expect(page.locator('#tick')).toHaveText(tick!);
   await page.getByTitle('Advance one tick while paused').click();
   await expect(page.locator('#tick')).not.toHaveText(tick!);
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
   await page.getByRole('button', { name: 'Show temperature' }).click();
   await expect(page.locator('#thermal')).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: 'Cold snap' }).click();
@@ -214,6 +257,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   let dx = c.x,
     dy = c.y;
   for (let i = 0; i < o.rotation; i++) [dx, dy] = [-dy, dx];
+  await page.getByTitle('Inspect organism (I)').click();
   const pos = await coordinate(page, (o.x + dx + 240) % 240, (o.y + dy + 156) % 156);
   await page.mouse.click(pos.x, pos.y);
   await expect(page.locator('#inspector')).toContainText(`Organism ${o.id}`);

@@ -51,6 +51,10 @@ controls below the tools; inspection, pan and planting show their own short
 instruction. The cell legend and keyboard shortcuts are in a collapsible sidebar
 section.
 
+New tabs start with Pan and the Organism panel selected. Dragging the habitat
+moves only the camera; choose Inspect to select an organism. Reloading restores
+these defaults rather than remembering previous tool or panel choices.
+
 The interface adapts the Even Hub companion-app hierarchy: 12 px screen margins,
 16 px card insets, 6 px card and control radii, segmented tabs and tools, and
 separate cards for population, bodies, climate and settings. EvoLab retains its
@@ -61,8 +65,8 @@ FK Grotesk Neue is not bundled or implied. DM Mono remains on world IDs, tick
 readouts and slider values. No runtime font service is used.
 
 Body previews fit their connected anatomy into the available space instead of reserving a fixed
-nine-cell canvas. Common bodies can be copied directly into the designer. Clicking
-an organism opens its inspector; copying its anatomy folds the inspector away to
+nine-cell canvas. Common bodies can be copied directly into the designer. With
+Inspect selected, clicking an organism opens its inspector; copying its anatomy folds the inspector away to
 make room for the connected-body editor. Placing a design brings the habitat back
 into view, including on phones.
 

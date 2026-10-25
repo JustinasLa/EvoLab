@@ -102,6 +102,26 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe('ecosystem desk', () => {
+  it('starts with Pan and Organism selected without changing the world when dragged', () => {
+    expect(get('world').dataset.tool).toBe('pan');
+    expect(root.querySelector('button[data-tool="pan"]')!.getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    expect(root.querySelector('button[data-tool="inspect"]')!.getAttribute('aria-pressed')).toBe(
+      'false',
+    );
+    expect(get('tool-hint').textContent).toBe('Drag to move the world. Scroll to zoom.');
+    expect(get('brush-control').hidden).toBe(true);
+    expect(get('organism-tab').getAttribute('aria-selected')).toBe('true');
+    expect(get('ecosystem-tab').getAttribute('aria-selected')).toBe('false');
+    expect(get('organism-panel').hidden).toBe(false);
+    expect(get('ecosystem-panel').hidden).toBe(true);
+    pointer('pointerdown');
+    pointer('pointermove', 170, 180);
+    window.dispatchEvent(new Event('pointerup'));
+    expect(worker.postMessage).toHaveBeenCalledTimes(1);
+    expect(get<HTMLDetailsElement>('specimen-details').open).toBe(false);
+  });
   it('keeps the habitat clear and consolidates the interface in the sidebar', () => {
     const sidebar = root.querySelector('.sidebar')!,
       stage = root.querySelector('.world-stage')!;
@@ -209,6 +229,7 @@ describe('ecosystem desk', () => {
   });
   it('paints, inspects, pans and zooms without confusing coordinate systems', () => {
     emit();
+    root.querySelector<HTMLButtonElement>('[data-tool="inspect"]')!.click();
     pointer('pointermove');
     pointer('pointerdown', -500, -500);
     window.dispatchEvent(new Event('pointerup'));
