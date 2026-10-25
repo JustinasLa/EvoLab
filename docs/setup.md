@@ -7,8 +7,9 @@
 Open the [live preview](https://89.116.28.65.sslip.io/evolab/) in a current browser.
 Evolution starts immediately with one central creature. Every tab runs an
 independent world locally; it does not share organism state with other visitors.
+Pan and the Organism panel are selected by default.
 
-- Inspect an organism to open its anatomy, energy, temperature preference and ancestry.
+- Choose Inspect, then click an organism to open its anatomy, energy, temperature preference and ancestry.
 - Copy an inspected organism or click a body in **Common bodies** to open the designer, edit its
   connected body, choose a preferred temperature, and select **Place in world**.
 - Paint food, walls or erasure with the toolbar. Brush radius appears beside the active tool.

@@ -37,7 +37,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     runId = 0,
     paused = false,
     thermal = false,
-    tool: Tool = 'inspect',
+    tool: Tool = 'pan',
     brush = 2;
   let frame: Frame | undefined,
     selected: Organism | null = null,
@@ -433,6 +433,8 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     animation = requestAnimationFrame(render);
   }
   editor();
+  choose(tool);
+  tab('organism');
   reset();
   animation = requestAnimationFrame(render);
   return () => {
