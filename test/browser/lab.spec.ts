@@ -1,4 +1,36 @@
 import { test, expect } from '@playwright/test';
+test('observatory panels keep tools outside the habitat at every layout width', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByRole('link', { name: 'EvoLab / Drift' })).toContainText('drift');
+  for (const width of [360, 760, 780, 1280]) {
+    await page.setViewportSize({ width, height: 800 });
+    const layout = await page.evaluate(() => {
+      const habitat = document.querySelector('#world')!.getBoundingClientRect();
+      const tools = document.querySelector('.tool-dock')!.getBoundingClientRect();
+      const sidebar = document.querySelector('.sidebar')!.getBoundingClientRect();
+      return {
+        fits: document.documentElement.scrollWidth <= innerWidth,
+        toolsAbove: tools.bottom <= habitat.top,
+        panelsSeparate: sidebar.left >= habitat.right || sidebar.top >= habitat.bottom,
+        controlsFit: [...document.querySelectorAll('.topbar button, .tool-dock button')].every(
+          (button) => button.scrollWidth <= button.clientWidth,
+        ),
+      };
+    });
+    expect(layout).toEqual({
+      fits: true,
+      toolsAbove: true,
+      panelsSeparate: true,
+      controlsFit: true,
+    });
+  }
+  await page.getByText('World settings', { exact: true }).click();
+  await page.getByRole('button', { name: 'Reseed world' }).scrollIntoViewIfNeeded();
+  await expect(page.getByRole('button', { name: 'Reseed world' })).toBeInViewport();
+});
+
 async function pause(page: import('@playwright/test').Page): Promise<void> {
   await page.getByRole('button', { name: 'Ⅱ Pause', exact: true }).click();
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
