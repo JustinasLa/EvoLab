@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount } from '../src/main';
-import { chart, drawScene } from '../src/view';
-import { DEFAULTS, Random, creature, type Generation } from '../src/model';
-import { evaluate } from '../src/physics';
-
+import { draw, drawChart, genomeSvg, organismHtml, point, viewport } from '../src/view';
+import { Ecosystem } from '../src/ecosystem';
+import { DEFAULTS, founder, type Frame } from '../src/model';
 class WorkerStub {
   postMessage = vi.fn();
   terminate = vi.fn();
@@ -14,38 +13,36 @@ class WorkerStub {
       data: {
         runId:
           runId ??
-          this.postMessage.mock.calls.filter((c) => c[0].type === 'start').at(-1)?.[0].runId,
+          this.postMessage.mock.calls
+            .filter((c) => ['start', 'load'].includes(c[0].type))
+            .at(-1)?.[0].runId,
         ...data,
       },
     } as MessageEvent);
   }
 }
-const trial = evaluate(creature(new Random(42)), DEFAULTS);
-const generation: Generation = {
-  index: 1,
-  best: trial.fitness,
-  median: -1,
-  diversity: 3,
-  champion: trial,
-};
-let root: HTMLDivElement;
-let worker: WorkerStub;
-let dispose: () => void;
-let paint: FrameRequestCallback;
-let context: Record<string, any>;
+let root: HTMLDivElement, worker: WorkerStub, dispose: () => void, paint: FrameRequestCallback;
+const world = new Ecosystem(),
+  sample = world.frame(),
+  organism = [...world.organisms.values()][0];
 const get = <T extends HTMLElement>(id: string): T => root.querySelector(`#${id}`)!;
-const click = (id: string): void => get(id).click();
-const setting = (id: string, value: string): void => {
+const click = (id: string) => get(id).click();
+const set = (id: string, value: string, event = 'input') => {
   get<HTMLInputElement>(id).value = value;
-  get(id).dispatchEvent(new Event('input'));
+  get(id).dispatchEvent(new Event(event));
 };
-function upload(value?: { size: number; text: () => Promise<string> }): void {
-  Object.defineProperty(get('file'), 'files', { configurable: true, value: value ? [value] : [] });
+const pointer = (type: string, x = 150, y = 150) =>
+  get('world').dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, bubbles: true }));
+function emit(frame: Frame = sample, selected: any = null): void {
+  worker.emit({ type: 'frame', frame, selected });
+}
+function upload(file?: { size: number; text: () => Promise<string> }): void {
+  Object.defineProperty(get('file'), 'files', { configurable: true, value: file ? [file] : [] });
   get('file').dispatchEvent(new Event('change'));
 }
 beforeEach(() => {
-  context = new Proxy(
-    { createLinearGradient: () => ({ addColorStop: vi.fn() }) },
+  const ctx = new Proxy(
+    { createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }) },
     {
       get: (o, p) => (p in o ? o[p as keyof typeof o] : vi.fn()),
       set: (o, p, v) => {
@@ -55,8 +52,28 @@ beforeEach(() => {
     },
   );
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
-    context as unknown as CanvasRenderingContext2D,
+    ctx as unknown as CanvasRenderingContext2D,
   );
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    value: vi.fn(),
+  });
+  Object.defineProperty(HTMLCanvasElement.prototype, 'setPointerCapture', {
+    configurable: true,
+    value: vi.fn(),
+  });
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
+    configurable: true,
+    value: vi.fn(function (this: HTMLDialogElement) {
+      this.open = true;
+    }),
+  });
+  Object.defineProperty(HTMLDialogElement.prototype, 'close', {
+    configurable: true,
+    value: vi.fn(function (this: HTMLDialogElement) {
+      this.open = false;
+    }),
+  });
   vi.stubGlobal(
     'requestAnimationFrame',
     vi.fn((cb: FrameRequestCallback) => {
@@ -68,7 +85,7 @@ beforeEach(() => {
   vi.stubGlobal(
     'URL',
     class extends URL {
-      static createObjectURL = vi.fn(() => 'blob:test');
+      static createObjectURL = vi.fn(() => 'blob:world');
       static revokeObjectURL = vi.fn();
     },
   );
@@ -82,155 +99,255 @@ afterEach(() => {
   document.body.replaceChildren();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
-
-describe('the experiment desk', () => {
-  it('starts, pauses, resumes, and keeps pending settings separate from the active habitat', () => {
-    expect(worker.postMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'start', settings: DEFAULTS }),
-    );
-    paint(performance.now());
-    click('follow');
+describe('ecosystem desk', () => {
+  it('starts immediately, pauses, single-steps, changes settings live and reseeds', () => {
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: 'start',
+      settings: DEFAULTS,
+      runId: 1,
+    });
+    paint(0);
+    window.dispatchEvent(new Event('resize'));
+    click('step');
+    expect(get<HTMLButtonElement>('step').disabled).toBe(true);
     click('pause');
-    expect(get('status').textContent).toContain('paused');
+    expect(get<HTMLButtonElement>('step').disabled).toBe(false);
+    click('step');
+    expect(worker.postMessage).toHaveBeenLastCalledWith({ type: 'step' });
     click('pause');
-    expect(worker.postMessage).toHaveBeenLastCalledWith({ type: 'resume' });
-    root.querySelector<HTMLButtonElement>('[data-course="steps"]')!.click();
-    setting('gravity', '1.6');
-    setting('mutation', '0.3');
-    setting('population-setting', '12');
-    setting('seed', '99');
-    expect(get('habitat-label').textContent).toContain('MEADOW');
-    click('restart');
+    set('speed', '12', 'change');
+    expect(worker.postMessage).toHaveBeenLastCalledWith({ type: 'speed', value: 12 });
+    set('mutation', '.2');
+    set('nutrients', '8');
+    set('climate', '.5');
+    set('brush', '5');
+    expect(get('nutrients-value').textContent).toBe('8 / tick');
+    expect(get('brush-value').textContent).toBe('5 cells');
+    root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
+    expect(worker.postMessage).toHaveBeenLastCalledWith({ type: 'shock', kind: 'heat' });
+    set('seed', '-1');
+    click('reset');
+    expect(get('notice').textContent).toContain('whole-number');
+    set('seed', '99');
+    click('reset');
     expect(worker.postMessage).toHaveBeenLastCalledWith(
       expect.objectContaining({
         type: 'start',
-        settings: { seed: 99, population: 12, course: 'steps', gravity: 1.6, mutation: 0.3 },
+        runId: 2,
+        settings: { ...DEFAULTS, seed: 99, mutation: 0.2, nutrients: 8, climate: 0.5 },
       }),
     );
-    expect(get('habitat-label').textContent).toContain('STEPS');
-    setting('seed', '-2');
-    click('restart');
-    expect(get('notice').textContent).toContain('whole-number');
   });
-  it('shows progress, charts, bounded archives, and uninterrupted champion replays', () => {
-    worker.emit({ type: 'progress', completed: 3, total: 24 });
-    expect(get('progress-text').textContent).toContain('3 / 24');
+  it('renders real population, lineages, weather and a selected organism', () => {
+    emit();
+    expect(Number(get('population').textContent)).toBe(sample.stats.population);
+    paint(1);
+    paint(2);
+    window.dispatchEvent(new Event('resize'));
+    expect(root.querySelectorAll('.lineage')).toHaveLength(3);
+    root.querySelector<HTMLButtonElement>('.lineage')!.click();
+    expect(get('organism-panel').hidden).toBe(false);
+    expect(get<HTMLDetailsElement>('specimen-details').open).toBe(false);
+    emit(sample, organism);
+    expect(get('inspector').textContent).toContain(`Organism ${organism.id}`);
+    click('copy-organism');
+    expect(get('notice').textContent).toContain('Anatomy copied');
+    for (let i = 0; i < 14; i++) emit(sample, organism);
+    click('pause');
+    emit(sample, null);
+    expect(get('inspector').textContent).toContain('Click any organism');
+    const quiet = new Ecosystem(DEFAULTS, false).frame();
+    for (let i = 0; i < 12; i++) emit(quiet);
+    expect(get('lineages').textContent).toContain('quiet');
     worker.emit({ type: 'unknown' });
-    worker.emit({ type: 'generation', generation });
-    paint(performance.now() + 50);
-    const specimen = get('specimen').textContent;
-    worker.emit({
-      type: 'generation',
-      generation: {
-        ...generation,
-        index: 2,
-        champion: { ...trial, genome: { ...trial.genome, id: 'newborn' } },
-      },
-    });
-    expect(get('specimen').textContent).toBe(specimen);
-    paint(performance.now() + 9000);
-    expect(get('specimen').textContent).toContain('NEWBORN');
-    for (let i = 3; i < 250; i++)
-      worker.emit({ type: 'generation', generation: { ...generation, index: i } });
-    expect(root.querySelectorAll('.survivor')).toHaveLength(8);
-    expect(get('generation').textContent).toBe('249');
-    root.querySelector<HTMLButtonElement>('.survivor:last-child')!.click();
-    expect(get('follow').hidden).toBe(false);
-    worker.emit({ type: 'generation', generation: { ...generation, index: 250 } });
-    click('follow');
-    expect(get('follow').hidden).toBe(true);
-    paint(performance.now() + 50);
-    const before = get('generation').textContent;
-    worker.emit({ type: 'generation', generation: { ...generation, index: 900 } }, 0);
-    expect(get('generation').textContent).toBe(before);
+    const before = get('tick').textContent;
+    worker.emit({ type: 'frame', frame: sample, selected: null }, 0);
+    expect(get('tick').textContent).toBe(before);
     dispose();
-    worker.emit({ type: 'generation', generation });
-    expect(get('generation').textContent).toBe(before);
+    emit();
+    expect(get('tick').textContent).toBe(before);
   });
-  it('reports worker failures and can restart an experiment', () => {
-    worker.emit({ type: 'error', message: 'Trial failed' });
-    expect(get('notice').textContent).toBe('Trial failed');
-    expect(get<HTMLButtonElement>('pause').disabled).toBe(true);
-    click('restart');
-    expect(get<HTMLButtonElement>('pause').disabled).toBe(false);
-    worker.onerror?.();
-    expect(get('notice').textContent).toContain('current browser');
-  });
-  it('exports the selected champion and loads validated founders', async () => {
-    vi.useFakeTimers();
-    const anchor = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
-    get<HTMLButtonElement>('export').disabled = false;
-    click('export');
-    expect(anchor).not.toHaveBeenCalled();
-    worker.emit({ type: 'generation', generation });
-    click('export');
-    expect(anchor).toHaveBeenCalled();
-    vi.runAllTimers();
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:test');
-    vi.useRealTimers();
-    const inputClick = vi.spyOn(get('file'), 'click');
-    click('import');
-    expect(inputClick).toHaveBeenCalled();
-    upload();
-    const saved = {
-      version: 1,
-      settings: { ...DEFAULTS, course: 'gaps', gravity: 2 },
-      genome: trial.genome,
-    };
-    upload({ size: 1000, text: async () => JSON.stringify(saved) });
-    await vi.waitFor(() => expect(get('notice').textContent).toContain('Champion loaded'));
+  it('paints, inspects, pans and zooms without confusing coordinate systems', () => {
+    emit();
+    pointer('pointermove');
+    pointer('pointerdown', -500, -500);
+    window.dispatchEvent(new Event('pointerup'));
+    pointer('pointerdown');
+    expect(get<HTMLDetailsElement>('specimen-details').open).toBe(true);
     expect(worker.postMessage).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: 'start', founder: trial.genome, settings: saved.settings }),
+      expect.objectContaining({ type: 'inspect' }),
     );
-    expect(get('habitat-label').textContent).toContain('GAPS');
-    expect(get<HTMLInputElement>('gravity').value).toBe('2');
-    upload({ size: 32001, text: async () => '' });
-    await vi.waitFor(() => expect(get('notice').textContent).toContain('too large'));
-    upload({ size: 10, text: async () => '{' });
-    await vi.waitFor(() => expect(get('notice').textContent).not.toContain('too large'));
+    pointer('pointermove', 155, 155);
+    window.dispatchEvent(new Event('pointerup'));
+    root.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
+    pointer('pointerdown');
+    pointer('pointermove', 160, 150);
+    expect(worker.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'paint', tool: 'food' }),
+    );
+    window.dispatchEvent(new Event('pointercancel'));
+    root.querySelector<HTMLButtonElement>('[data-tool="pan"]')!.click();
+    pointer('pointerdown');
+    pointer('pointermove', 170, 180);
+    window.dispatchEvent(new Event('pointerup'));
+    click('zoom-in');
+    click('zoom-out');
+    get('world').dispatchEvent(
+      new WheelEvent('wheel', { deltaY: -100, clientX: 150, clientY: 150, cancelable: true }),
+    );
+    paint(0);
+    click('fit');
+    get('world').dispatchEvent(new Event('dblclick'));
+    click('thermal');
+    expect(get('thermal').getAttribute('aria-pressed')).toBe('true');
+    paint(1);
+    click('thermal');
+    paint(2);
+  });
+  it('designs connected bodies and rejects disconnected planting', () => {
+    root.querySelector<HTMLButtonElement>('[data-tab="organism"]')!.click();
+    get('editor').click();
+    get<HTMLButtonElement>('editor')
+      .querySelector<HTMLButtonElement>('[data-x="4"][data-y="4"]')!
+      .click();
+    click('plant-design');
+    expect(get('notice').textContent).toContain('connected');
+    get('editor').querySelector<HTMLButtonElement>('[data-x="4"][data-y="4"]')!.click();
+    expect(get('design-note').textContent).toContain('Ready');
+    get('editor').querySelector<HTMLButtonElement>('[data-x="0"][data-y="0"]')!.click();
+    root.querySelector<HTMLButtonElement>('[data-cell="6"]')!.click();
+    get('editor').querySelector<HTMLButtonElement>('[data-x="0"][data-y="0"]')!.click();
+    set('preference', '.75');
+    expect(get('preference-value').textContent).toBe('30°');
+    click('plant-design');
+    expect(get('world').dataset.tool).toBe('plant');
+    expect(get('world').scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
+    pointer('pointerdown');
+    pointer('pointermove');
+    window.dispatchEvent(new Event('pointerup'));
+    expect(worker.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'paint', tool: 'plant' }),
+    );
+    click('clear-design');
+    expect(root.querySelectorAll('#editor button')).toHaveLength(81);
+  });
+  it('handles keyboard shortcuts, help, errors, and disposal', () => {
+    const key = (key: string, code = key) =>
+      window.dispatchEvent(new KeyboardEvent('keydown', { key, code, cancelable: true }));
+    key(' ', 'Space');
+    expect(get('run-state').textContent).toBe('PAUSED');
+    key('f');
+    expect(get('world').dataset.tool).toBe('food');
+    key('q');
+    get('seed').dispatchEvent(new KeyboardEvent('keydown', { key: 'w', bubbles: true }));
+    expect(get('world').dataset.tool).toBe('food');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', ctrlKey: true }));
+    expect(get('world').dataset.tool).toBe('food');
+    click('help');
+    expect(get<HTMLDialogElement>('help-dialog').open).toBe(true);
+    key('w');
+    click('close-help');
+    key('w');
+    expect(get('world').dataset.tool).toBe('wall');
+    worker.emit({ type: 'error', message: 'Bad import' });
+    expect(get('notice').textContent).toBe('Bad import');
+    worker.emit({ type: 'error', message: 'Failed tick', fatal: true });
+    expect(get('run-state').textContent).toBe('STOPPED');
+    worker.onerror?.();
+    expect(get('notice').textContent).toContain('worker stopped');
+    dispose();
+    expect(worker.terminate).toHaveBeenCalled();
+  });
+  it('exports complete worlds and restores settings from successful imports', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    click('save');
+    expect(worker.postMessage).toHaveBeenLastCalledWith({ type: 'save' });
+    worker.emit({ type: 'saved', text: JSON.stringify(world.save()) });
+    expect(URL.createObjectURL).toHaveBeenCalled();
+    vi.runAllTimers();
+    expect(URL.revokeObjectURL).toHaveBeenCalled();
+    vi.useRealTimers();
+    const fileClick = vi.spyOn(get('file'), 'click');
+    click('load');
+    expect(fileClick).toHaveBeenCalled();
+    upload();
+    upload({ size: 100, text: async () => 'world' });
+    await vi.waitFor(() =>
+      expect(worker.postMessage).toHaveBeenLastCalledWith({
+        type: 'load',
+        text: 'world',
+        runId: 2,
+      }),
+    );
+    worker.emit({
+      type: 'loaded',
+      settings: { seed: 88, mutation: 0.3, nutrients: 8, climate: 0.4 },
+    });
+    expect(get('notice').textContent).toContain('World restored');
+    expect(get<HTMLInputElement>('seed').value).toBe('88');
+    upload({ size: 2500001, text: async () => '' });
+    await vi.waitFor(() => expect(get('notice').textContent).toContain('2.5 MB'));
     upload({
       size: 10,
       text: async () => {
-        throw 'read failed';
+        throw new Error('Unreadable');
+      },
+    });
+    await vi.waitFor(() => expect(get('notice').textContent).toBe('Unreadable'));
+    upload({
+      size: 10,
+      text: async () => {
+        throw 'unknown';
       },
     });
     await vi.waitFor(() => expect(get('notice').textContent).toContain('Could not read'));
   });
-  it('does not revive a disposed experiment after an asynchronous file read', async () => {
+  it('ignores a file read that finishes after the view is disposed', async () => {
     let finish: (text: string) => void = () => {};
     upload({
-      size: 10,
+      size: 1,
       text: () =>
         new Promise((resolve) => {
           finish = resolve;
         }),
     });
     dispose();
-    finish(JSON.stringify({ version: 1, settings: DEFAULTS, genome: trial.genome }));
+    finish('world');
     await Promise.resolve();
     expect(worker.postMessage).toHaveBeenCalledTimes(1);
   });
-  it('renders both habitat geometry and data without needing a GPU in unit tests', () => {
-    const canvas = get<HTMLCanvasElement>('world');
-    drawScene(canvas, undefined, 0, 'meadow');
-    for (const course of ['meadow', 'steps', 'gaps'] as const)
-      drawScene(canvas, trial, 99999, course);
-    Object.defineProperty(canvas, 'clientWidth', { value: 640 });
-    Object.defineProperty(canvas, 'clientHeight', { value: 420 });
-    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 0 });
-    drawScene(canvas, trial, 0, 'meadow');
-    chart(canvas, [generation, { ...generation, index: 2 }]);
-    expect(canvas.width).toBe(640);
-  });
-  it('boots the entry point when a host app element exists', async () => {
+  it('boots the app entry point', async () => {
     root.id = 'app';
-    const WorkerConstructor = vi.fn(function () {
+    const constructor = vi.fn(function () {
       return worker;
     });
-    vi.stubGlobal('Worker', WorkerConstructor);
+    vi.stubGlobal('Worker', constructor);
     vi.resetModules();
     await import('../src/main');
-    expect(WorkerConstructor).toHaveBeenCalled();
+    expect(constructor).toHaveBeenCalled();
+  });
+});
+describe('pixel rendering and view transforms', () => {
+  it('draws functional cells, food, temperature, selection and population history', () => {
+    const canvas = get<HTMLCanvasElement>('world'),
+      buffer = document.createElement('canvas'),
+      camera = { zoom: 1, x: 0, y: 0 };
+    expect(viewport(canvas, camera).width).toBe(900);
+    expect(point(canvas, camera, -1, -1)).toBeNull();
+    expect(point(canvas, camera, 450, 325)).not.toBeNull();
+    draw(canvas, buffer, sample, camera, false, organism.id);
+    draw(canvas, buffer, sample, camera, true, 0);
+    Object.defineProperty(canvas, 'clientWidth', { value: 600 });
+    Object.defineProperty(canvas, 'clientHeight', { value: 400 });
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 0 });
+    draw(canvas, buffer, sample, camera, false, 0);
+    drawChart(canvas, [0, 10, 20]);
+    drawChart(canvas, []);
+    expect(genomeSvg(founder(0))).toContain('svg');
+    expect(organismHtml(null, sample)).toContain('Click any');
+    expect(organismHtml(organism, sample)).toContain('Preferred');
   });
 });

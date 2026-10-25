@@ -1,244 +1,448 @@
 import './style.css';
-import '@fontsource-variable/dm-sans';
 import '@fontsource/dm-mono/400.css';
 import {
   DEFAULTS,
-  readChampion,
+  COLORS,
+  WIDTH,
+  HEIGHT,
+  clamp,
+  founder,
+  validGenome,
   validSettings,
-  type Generation,
+  type Frame,
   type Genome,
+  type Organism,
   type Settings,
-  type Trial,
+  type Tool,
+  type CellType,
 } from './model';
-import { chart, drawScene, markup } from './view';
+import {
+  draw,
+  drawChart,
+  genomeSvg,
+  markup,
+  organismHtml,
+  point,
+  viewport,
+  type Camera,
+} from './view';
 
 export function mount(root: HTMLElement, worker: Worker): () => void {
   root.innerHTML = markup;
   const get = <T extends HTMLElement>(id: string): T => root.querySelector<T>(`#${id}`)!;
-  const world = get<HTMLCanvasElement>('world');
-  let settings = { ...DEFAULTS };
-  let pendingCourse = settings.course;
-  let champion: Trial | undefined;
-  let selected: Trial | undefined;
-  let paused = false;
-  let following = true;
-  let replayStart = performance.now();
-  let history: Pick<Generation, 'index' | 'best' | 'median'>[] = [];
-  let survivors: Generation[] = [];
-  let alive = true;
-  let animation = 0;
-  let runId = 0;
-  const notice = (message: string): void => {
-    get('notice').textContent = message;
-  };
+  const canvas = get<HTMLCanvasElement>('world'),
+    buffer = document.createElement('canvas');
+  const camera: Camera = { zoom: 1, x: 0, y: 0 };
+  let settings = { ...DEFAULTS },
+    runId = 0,
+    paused = false,
+    thermal = false,
+    tool: Tool = 'inspect',
+    brush = 2;
+  let frame: Frame | undefined,
+    selected: Organism | null = null,
+    blueprint = founder(0),
+    cellType: CellType = 4;
+  let dragging = false,
+    lastX = 0,
+    lastY = 0,
+    dirty = true,
+    alive = true,
+    animation = 0,
+    updates = 0,
+    history: number[] = [];
   const text = (id: string, value: string): void => {
     get(id).textContent = value;
   };
-  const send = (type: string): void => worker.postMessage({ type });
-  function select(trial: Trial): void {
-    selected = trial;
-    replayStart = performance.now();
+  const notice = (message: string): void => text('notice', message);
+  const send = (data: object): void => worker.postMessage(data);
+  const tab = (name: string): void => {
+    root
+      .querySelectorAll<HTMLButtonElement>('[data-tab]')
+      .forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
+    get('ecosystem-panel').hidden = name !== 'ecosystem';
+    get('organism-panel').hidden = name !== 'organism';
+  };
+  function choose(next: Tool): void {
+    if (next === 'plant' && !validGenome(blueprint)) {
+      notice('Draw 1–16 connected cells before placing an organism.');
+      tab('organism');
+      return;
+    }
+    tool = next;
+    root
+      .querySelectorAll<HTMLButtonElement>('button[data-tool]')
+      .forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === tool)));
+    canvas.dataset.tool = tool;
+    if (tool === 'plant') tab('organism');
+    const painting = ['food', 'wall', 'erase'].includes(tool);
+    get('brush-control').hidden = !painting;
+    get('tool-hint').hidden = painting;
     text(
-      'specimen',
-      `SPECIMEN ${trial.genome.id.toUpperCase()} / ${trial.genome.genes.length} SEGMENTS`,
+      'tool-hint',
+      {
+        inspect: 'Click an organism to inspect its cells.',
+        pan: 'Drag to move the world. Scroll to zoom.',
+        food: 'Paint food.',
+        wall: 'Paint walls.',
+        erase: 'Erase life and terrain.',
+        plant: 'Click an empty patch to place your body.',
+      }[tool],
     );
-    text('replay-label', `${trial.distance.toFixed(2)} m TRAVELLED`);
   }
-  function begin(founder?: Genome): void {
-    champion = undefined;
-    selected = undefined;
-    history = [];
-    survivors = [];
-    paused = false;
-    following = true;
-    get<HTMLButtonElement>('export').disabled = true;
-    get<HTMLButtonElement>('pause').disabled = false;
-    get('follow').hidden = true;
-    text('pause', 'Ⅱ Pause evolution');
-    text('status', 'Evolving');
-    text('generation', '000');
-    text('best', '—');
-    text('diversity', '—');
-    get('population').innerHTML = `${settings.population}<span> creatures</span>`;
-    text('habitat-label', `${settings.course.toUpperCase()} / ${settings.gravity.toFixed(2)} m/s²`);
-    text('survivors', 'Your first champion will be here shortly.');
-    text('specimen', 'Finding our first survivor…');
-    text('replay-label', '8 SECOND TRIAL');
-    text('progress-text', 'Preparing population');
-    text(
-      'chart-description',
-      'Every generation gets the same course and eight seconds to make its case.',
-    );
-    text('pending', 'Same seed. Same settings. Same starting creatures.');
-    notice('');
-    root.classList.remove('paused');
-    chart(get('chart'), []);
-    worker.postMessage({ type: 'start', settings, founder, runId: ++runId });
+  function editor(): void {
+    get('editor').replaceChildren();
+    for (let y = -4; y <= 4; y++)
+      for (let x = -4; x <= 4; x++) {
+        const button = document.createElement('button'),
+          cell = blueprint.cells.find((c) => c.x === x && c.y === y);
+        button.type = 'button';
+        button.dataset.x = String(x);
+        button.dataset.y = String(y);
+        button.setAttribute('aria-label', `Cell ${x}, ${y}`);
+        button.style.background = cell ? COLORS[cell.type] : '#121b25';
+        get('editor').append(button);
+      }
+    get<HTMLInputElement>('preference').value = String(blueprint.preference);
+    text('preference-value', `${Math.round(blueprint.preference * 40)}°`);
   }
-  function readSettings(): Settings {
-    return {
-      seed: Number(get<HTMLInputElement>('seed').value),
-      population: Number(get<HTMLSelectElement>('population-setting').value),
-      gravity: Number(get<HTMLInputElement>('gravity').value),
-      mutation: Number(get<HTMLInputElement>('mutation').value),
-      course: pendingCourse,
-    };
-  }
-  root.querySelectorAll<HTMLButtonElement>('[data-course]').forEach((button) =>
-    button.addEventListener('click', () => {
-      pendingCourse = button.dataset.course as Settings['course'];
-      root
-        .querySelectorAll<HTMLButtonElement>('[data-course]')
-        .forEach((b) => b.setAttribute('aria-pressed', String(b === button)));
-      text('pending', 'Settings changed. Begin a new experiment to apply.');
-    }),
-  );
-  for (const id of ['gravity', 'mutation', 'population-setting', 'seed'])
-    get(id).addEventListener('input', () => {
-      text('gravity-value', `${Number(get<HTMLInputElement>('gravity').value).toFixed(2)} m/s²`);
-      text(
-        'mutation-value',
-        `${Math.round(Number(get<HTMLInputElement>('mutation').value) * 100)}%`,
-      );
-      text('pending', 'Settings changed. Begin a new experiment to apply.');
-    });
-  get('restart').addEventListener('click', () => {
-    const next = readSettings();
+  function reset(): void {
+    const seed = Number(get<HTMLInputElement>('seed').value),
+      next = { ...settings, seed };
     if (!get<HTMLInputElement>('seed').checkValidity() || !validSettings(next)) {
-      notice('Choose a whole-number seed between 0 and 4294967295.');
+      notice('Choose a whole-number seed from 0 to 4294967295.');
       return;
     }
     settings = next;
-    begin();
+    runId++;
+    history = [];
+    updates = 0;
+    paused = false;
+    selected = null;
+    frame = undefined;
+    notice('');
+    text('pause', 'Ⅱ Pause');
+    get<HTMLButtonElement>('step').disabled = true;
+    text('run-state', 'LIVE');
+    root.classList.remove('paused');
+    text('world-label', `WORLD ${String(seed).padStart(4, '0')}`);
+    send({ type: 'start', settings, runId });
+  }
+  function setZoom(next: number, anchorX?: number, anchorY?: number): void {
+    const old = viewport(canvas, camera),
+      zoom = clamp(next, 0.5, 10),
+      factor = zoom / camera.zoom;
+    const x = anchorX ?? old.width / 2,
+      y = anchorY ?? old.height / 2;
+    camera.x = (camera.x + old.width / 2 - x) * factor - old.width / 2 + x;
+    camera.y = (camera.y + old.height / 2 - y) * factor - old.height / 2 + y;
+    camera.zoom = zoom;
+    dirty = true;
+  }
+  function act(event: PointerEvent): void {
+    const rect = canvas.getBoundingClientRect(),
+      p = point(canvas, camera, event.clientX - rect.left, event.clientY - rect.top);
+    if (!p) return;
+    if (tool === 'inspect') {
+      get<HTMLDetailsElement>('specimen-details').open = true;
+      send({ type: 'inspect', ...p });
+      tab('organism');
+    } else if (tool !== 'pan')
+      send({ type: 'paint', tool, ...p, radius: brush, genome: blueprint });
+  }
+  canvas.addEventListener('pointerdown', (event) => {
+    dragging = true;
+    lastX = event.clientX;
+    lastY = event.clientY;
+    canvas.setPointerCapture(event.pointerId);
+    act(event);
   });
+  canvas.addEventListener('pointermove', (event) => {
+    if (!dragging) return;
+    if (tool === 'pan') {
+      camera.x += event.clientX - lastX;
+      camera.y += event.clientY - lastY;
+      dirty = true;
+    } else if (tool !== 'inspect' && tool !== 'plant') act(event);
+    lastX = event.clientX;
+    lastY = event.clientY;
+  });
+  const release = (): void => {
+    dragging = false;
+  };
+  window.addEventListener('pointerup', release);
+  window.addEventListener('pointercancel', release);
+  canvas.addEventListener(
+    'wheel',
+    (event) => {
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      setZoom(
+        camera.zoom * Math.exp(-event.deltaY * 0.0015),
+        event.clientX - rect.left,
+        event.clientY - rect.top,
+      );
+    },
+    { passive: false },
+  );
+  const fit = (): void => {
+    Object.assign(camera, { zoom: 1, x: 0, y: 0 });
+    dirty = true;
+  };
+  canvas.addEventListener('dblclick', fit);
+  get('fit').addEventListener('click', fit);
+  get('zoom-in').addEventListener('click', () => setZoom(camera.zoom * 1.4));
+  get('zoom-out').addEventListener('click', () => setZoom(camera.zoom / 1.4));
+  root
+    .querySelectorAll<HTMLButtonElement>('button[data-tool]')
+    .forEach((b) => b.addEventListener('click', () => choose(b.dataset.tool as Tool)));
+  root
+    .querySelectorAll<HTMLButtonElement>('[data-tab]')
+    .forEach((b) => b.addEventListener('click', () => tab(b.dataset.tab!)));
   get('pause').addEventListener('click', () => {
     paused = !paused;
-    send(paused ? 'pause' : 'resume');
+    send({ type: paused ? 'pause' : 'resume' });
+    text('pause', paused ? '▶ Resume' : 'Ⅱ Pause');
+    get<HTMLButtonElement>('step').disabled = !paused;
+    text('run-state', paused ? 'PAUSED' : 'LIVE');
     root.classList.toggle('paused', paused);
-    text('pause', paused ? '▶ Resume evolution' : 'Ⅱ Pause evolution');
-    text('status', paused ? 'Evolution paused' : 'Evolving');
   });
-  get('follow').addEventListener('click', () => {
-    following = true;
-    get('follow').hidden = true;
-    if (champion) select(champion);
+  get('step').addEventListener('click', () => {
+    send({ type: 'step' });
   });
-  get('export').addEventListener('click', () => {
-    if (!selected) return;
-    const url = URL.createObjectURL(
-      new Blob([JSON.stringify({ version: 1, settings, genome: selected.genome }, null, 2)], {
-        type: 'application/json',
-      }),
+  get('speed').addEventListener('change', () =>
+    send({ type: 'speed', value: Number(get<HTMLSelectElement>('speed').value) }),
+  );
+  get('thermal').addEventListener('click', () => {
+    thermal = !thermal;
+    get('thermal').setAttribute('aria-pressed', String(thermal));
+    text('thermal', thermal ? 'Hide temperature' : 'Show temperature');
+    dirty = true;
+  });
+  for (const id of ['mutation', 'nutrients', 'climate'] as const)
+    get(id).addEventListener('input', () => {
+      settings[id] = Number(get<HTMLInputElement>(id).value);
+      text(
+        `${id}-value`,
+        id === 'nutrients' ? `${settings[id]} / tick` : `${Math.round(settings[id] * 100)}%`,
+      );
+      send({ type: 'settings', settings: { [id]: settings[id] } });
+    });
+  get('brush').addEventListener('input', () => {
+    brush = Number(get<HTMLInputElement>('brush').value);
+    text('brush-value', `${brush} cells`);
+  });
+  get('preference').addEventListener('input', () => {
+    blueprint.preference = Number(get<HTMLInputElement>('preference').value);
+    text('preference-value', `${Math.round(blueprint.preference * 40)}°`);
+  });
+  get('reset').addEventListener('click', reset);
+  root
+    .querySelectorAll<HTMLButtonElement>('[data-shock]')
+    .forEach((b) =>
+      b.addEventListener('click', () => send({ type: 'shock', kind: b.dataset.shock })),
     );
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `evolab-${selected.genome.id}.json`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    notice('Champion saved. Load it later to found a new population.');
+  root.querySelectorAll<HTMLButtonElement>('[data-cell]').forEach((b) =>
+    b.addEventListener('click', () => {
+      cellType = Number(b.dataset.cell) as CellType;
+      text('cell-description', b.title.split(': ')[1]);
+      root
+        .querySelectorAll<HTMLButtonElement>('[data-cell]')
+        .forEach((other) => other.setAttribute('aria-pressed', String(other === b)));
+    }),
+  );
+  get('editor').addEventListener('click', (event) => {
+    const b = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-x]');
+    if (!b) return;
+    const x = Number(b.dataset.x),
+      y = Number(b.dataset.y),
+      existing = blueprint.cells.findIndex((c) => c.x === x && c.y === y);
+    if (existing >= 0 && blueprint.cells[existing].type === cellType)
+      blueprint.cells.splice(existing, 1);
+    else if (existing >= 0) blueprint.cells[existing].type = cellType;
+    else blueprint.cells.push({ x, y, type: cellType });
+    editor();
+    text(
+      'design-note',
+      validGenome(blueprint)
+        ? `${blueprint.cells.length} connected cells. Ready to place.`
+        : 'Use 1–16 cells, connected edge to edge.',
+    );
   });
-  get('import').addEventListener('click', () => get<HTMLInputElement>('file').click());
+  get('clear-design').addEventListener('click', () => {
+    blueprint = founder(0);
+    editor();
+  });
+  get('plant-design').addEventListener('click', () => {
+    choose('plant');
+    if (tool === 'plant') {
+      notice('Click in the world to place your organism.');
+      canvas.scrollIntoView({ block: 'center' });
+    }
+  });
+  root.addEventListener('click', (event) => {
+    if ((event.target as HTMLElement).closest('#copy-organism') && selected) {
+      blueprint = structuredClone(selected.genome);
+      editor();
+      get<HTMLDetailsElement>('specimen-details').open = false;
+      notice('Anatomy copied. Edit it, then place it in the world.');
+    }
+  });
+  get('help').addEventListener('click', () => get<HTMLDialogElement>('help-dialog').showModal());
+  get('close-help').addEventListener('click', () => get<HTMLDialogElement>('help-dialog').close());
+  get('save').addEventListener('click', () => send({ type: 'save' }));
+  get('load').addEventListener('click', () => get<HTMLInputElement>('file').click());
   get('file').addEventListener('change', async () => {
-    const input = get<HTMLInputElement>('file');
-    const file = input.files?.[0];
+    const input = get<HTMLInputElement>('file'),
+      file = input.files?.[0];
     if (!file) return;
     try {
-      if (file.size > 32000)
-        throw new Error('This file is too large. Choose an EvoLab champion JSON.');
-      const saved = readChampion(await file.text());
-      if (!alive) return;
-      settings = saved.settings;
-      pendingCourse = settings.course;
-      for (const id of ['seed', 'gravity', 'mutation'])
-        get<HTMLInputElement>(id).value = String(settings[id as 'seed' | 'gravity' | 'mutation']);
-      get<HTMLSelectElement>('population-setting').value = String(settings.population);
-      root
-        .querySelectorAll<HTMLButtonElement>('[data-course]')
-        .forEach((b) =>
-          b.setAttribute('aria-pressed', String(b.dataset.course === settings.course)),
-        );
-      text('gravity-value', `${settings.gravity.toFixed(2)} m/s²`);
-      text('mutation-value', `${Math.round(settings.mutation * 100)}%`);
-      begin(saved.genome);
-      notice('Champion loaded. Its descendants are entering a fresh experiment.');
+      if (file.size > 2500000) throw new Error('World file exceeds 2.5 MB.');
+      const text = await file.text();
+      if (alive) send({ type: 'load', text, runId: ++runId });
     } catch (error) {
-      if (alive)
-        notice(error instanceof Error ? error.message : 'Could not read this champion file.');
+      if (alive) notice(error instanceof Error ? error.message : 'Could not read this world.');
     } finally {
       input.value = '';
     }
   });
+  const keyboard = (event: KeyboardEvent): void => {
+    if (
+      (event.target instanceof HTMLElement && event.target.matches('input,select,textarea')) ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey ||
+      get<HTMLDialogElement>('help-dialog').open
+    )
+      return;
+    if (event.code === 'Space') {
+      event.preventDefault();
+      get('pause').click();
+    }
+    const keys: Record<string, Tool> = {
+      i: 'inspect',
+      h: 'pan',
+      f: 'food',
+      w: 'wall',
+      e: 'erase',
+      p: 'plant',
+    };
+    if (keys[event.key.toLowerCase()]) choose(keys[event.key.toLowerCase()]);
+  };
+  window.addEventListener('keydown', keyboard);
+  const resize = (): void => {
+    dirty = true;
+    if (frame) drawChart(get('chart'), history);
+  };
+  window.addEventListener('resize', resize);
   worker.onmessage = ({ data }) => {
     if (!alive || data.runId !== runId) return;
     if (data.type === 'error') {
       notice(data.message);
-      text('status', 'Experiment stopped');
-      get<HTMLButtonElement>('pause').disabled = true;
+      if (data.fatal) {
+        paused = true;
+        text('pause', '▶ Resume');
+        get<HTMLButtonElement>('step').disabled = true;
+        text('run-state', 'STOPPED');
+      }
       return;
     }
-    if (data.type === 'progress') {
-      text('progress-text', `Testing creature ${data.completed} / ${data.total}`);
+    if (data.type === 'loaded') {
+      settings = data.settings;
+      history = [];
+      updates = 0;
+      paused = false;
+      text('pause', 'Ⅱ Pause');
+      get<HTMLButtonElement>('step').disabled = true;
+      text('run-state', 'LIVE');
+      root.classList.remove('paused');
+      for (const id of ['seed', 'mutation', 'nutrients', 'climate'] as const)
+        get<HTMLInputElement>(id).value = String(settings[id]);
+      text('mutation-value', `${Math.round(settings.mutation * 100)}%`);
+      text('climate-value', `${Math.round(settings.climate * 100)}%`);
+      text('nutrients-value', `${settings.nutrients} / tick`);
+      text('world-label', `WORLD ${String(settings.seed).padStart(4, '0')}`);
+      notice('World restored. Its evolution continues from the saved state.');
       return;
     }
-    if (data.type !== 'generation') return;
-    const generation = data.generation as Generation;
-    champion = generation.champion;
-    history.push({ index: generation.index, best: generation.best, median: generation.median });
-    history = history.slice(-240);
-    survivors.unshift(generation);
-    survivors = survivors.slice(0, 8);
-    if (following && !selected) select(champion);
-    text('generation', String(generation.index).padStart(3, '0'));
-    text('best', `${generation.best.toFixed(2)} m`);
-    text('diversity', String(generation.diversity));
-    get<HTMLButtonElement>('export').disabled = false;
-    chart(get('chart'), history);
-    text(
-      'chart-description',
-      `Generation ${generation.index}: best fitness ${generation.best.toFixed(2)} m; median ${generation.median.toFixed(2)} m. Showing up to 240 generations.`,
-    );
-    const list = get('survivors');
-    list.replaceChildren();
-    for (const g of survivors) {
-      const button = document.createElement('button');
-      button.className = 'survivor';
-      button.innerHTML = `<span>GEN ${String(g.index).padStart(3, '0')}</span><strong>${g.best.toFixed(2)}<small> m</small></strong><span>${g.champion.genome.genes.length} segments ↗</span>`;
-      button.addEventListener('click', () => {
-        following = false;
-        select(g.champion);
-        get('follow').hidden = false;
-      });
-      list.append(button);
+    if (data.type === 'saved') {
+      const url = URL.createObjectURL(new Blob([data.text], { type: 'application/json' })),
+        a = document.createElement('a');
+      a.href = url;
+      a.download = `evolab-world-${settings.seed}.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      notice('World saved, including every organism and its ancestry.');
+      return;
+    }
+    if (data.type !== 'frame') return;
+    const previousSelection = selected?.id;
+    frame = data.frame;
+    selected = data.selected;
+    dirty = true;
+    updates++;
+    const s = frame!.stats;
+    text('population', s.population.toLocaleString());
+    text('species-count', `${s.species} lineages`);
+    text('births', String(s.births));
+    text('deaths', String(s.deaths));
+    text('food-count', String(s.food));
+    text('generation', `GEN ${s.generation}`);
+    text('tick', `TICK ${s.tick.toLocaleString()}`);
+    text('world-count', `${s.population} organisms · ${s.species} lineages`);
+    text('season', s.season);
+    text('weather', s.event);
+    if (updates % 4 === 1) {
+      history.push(s.population);
+      history = history.slice(-180);
+      drawChart(get('chart'), history);
+    }
+    if (paused || updates % 4 === 1 || previousSelection !== selected?.id)
+      get('inspector').innerHTML = organismHtml(selected, frame!);
+    if (updates % 12 === 1) {
+      const list = get('lineages');
+      list.replaceChildren();
+      for (const species of s.top) {
+        const b = document.createElement('button');
+        b.className = 'lineage';
+        b.title = 'Copy this lineage into the organism designer';
+        b.innerHTML = `${genomeSvg(species.genome, 56)}<span><strong>${species.name} <small>#${species.id}</small></strong><i><b style="width:${(species.count / Math.max(1, s.population)) * 100}%"></b></i></span><em>${species.count}</em>`;
+        b.addEventListener('click', () => {
+          blueprint = structuredClone(species.genome);
+          editor();
+          get<HTMLDetailsElement>('specimen-details').open = false;
+          tab('organism');
+        });
+        list.append(b);
+      }
+      if (!s.population)
+        list.innerHTML =
+          '<p class="muted">This world is quiet. Plant a new organism or reseed.</p>';
     }
   };
   worker.onerror = () => {
-    notice('The simulation could not run. Reload the page or try a current browser.');
-    text('status', 'Experiment stopped');
-    get<HTMLButtonElement>('pause').disabled = true;
+    notice('The ecosystem worker stopped. Reload the page to restart.');
+    text('run-state', 'STOPPED');
   };
-  function render(now: number): void {
-    const speed = Number(get<HTMLSelectElement>('speed').value);
-    if (
-      selected &&
-      now - replayStart >= (selected.frames.length * 50) / speed &&
-      following &&
-      champion
-    )
-      select(champion);
-    const frame = selected
-      ? Math.floor((Math.max(0, now - replayStart) / 50) * speed) % selected.frames.length
-      : 0;
-    drawScene(world, selected, frame, settings.course);
+  function render(): void {
+    if (dirty && frame) {
+      draw(canvas, buffer, frame, camera, thermal, selected?.id ?? 0);
+      dirty = false;
+    }
     animation = requestAnimationFrame(render);
   }
-  begin();
+  editor();
+  reset();
   animation = requestAnimationFrame(render);
   return () => {
     alive = false;
     cancelAnimationFrame(animation);
     worker.terminate();
+    window.removeEventListener('keydown', keyboard);
+    window.removeEventListener('resize', resize);
+    window.removeEventListener('pointerup', release);
+    window.removeEventListener('pointercancel', release);
   };
 }
-
 const root = document.getElementById('app');
 if (root) mount(root, new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }));

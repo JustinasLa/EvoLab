@@ -1,72 +1,82 @@
-# How evolution works
+# Life, evolution and climate
 
 [Project index](README.md)
 
-## Body and controller
+## The habitat
 
-A creature is a connected tree of 3–10 rectangular rigid bodies. New random
-creatures begin with 4–7. Every segment after the root names an earlier segment as
-its parent, so cycles and disconnected limbs cannot occur. Segment-to-segment
-collisions are disabled; every segment collides with the terrain.
+The world is a 240 × 156 cell grid with wrapped boundaries. A creature leaving one
+edge returns on the opposite edge. Food and mineral walls occupy independent
+cells. A seeded starting population includes stationary producers, mobile
+foragers and predators. Porous mineral ridges partition parts of the habitat.
 
-Each joint has a bounded motor and angle limits. A sinusoidal controller supplies
-a desired angle, and proportional feedback converts its error into motor speed.
-The genome contains length, thickness, attachment angle, oscillation frequency,
-phase, amplitude, and torque. The root's initial angle is always zero.
+Every organism occupies one or more connected cells. Bodies contain 1–16 cells,
+with local coordinates between −4 and 4, and can rotate in quarter turns. The
+occupied-cell grid prevents bodies from overlapping walls or other organisms.
+Food can be displaced by movement or placement.
 
-Mutation independently perturbs these values with the configured probability,
-within fixed bounds. It can add a new leaf or remove the final leaf. Changes to
-body shape and controller happen together; no pretrained model or scripted gait
-is involved. Movement is constrained by Planck's rigid-body physics, not biological
-muscle anatomy.
+## Functional cells
 
-## Trials and fitness
+| Cell    | Effect                                                                               |
+| ------- | ------------------------------------------------------------------------------------ |
+| Mouth   | Consumes adjacent food for energy                                                    |
+| Leaf    | Gains energy from light and sometimes produces adjacent food                         |
+| Motor   | Allows translation and rotation; movement uses energy                                |
+| Stinger | Drains energy from adjacent organisms every fourth tick and recovers part of it      |
+| Armor   | Protects the contacted cell against stingers                                         |
+| Eye     | Helps a moving organism choose a direction from food, obstacles and nearby organisms |
 
-Every candidate gets a fresh world with identical gravity and terrain. The body
-is positioned just above the floor and allowed to settle for 36 fixed steps.
-The start position is then measured using the body's mass-weighted center.
+Eyes scan the four cardinal directions up to five cells away. Predators favor
+nearby organisms; other sighted movers avoid them. Unsighted movers occasionally
+change direction randomly. Blocked movers choose a new direction and try a
+quarter turn.
 
-The trial lasts eight seconds at 60 fixed physics steps per second. Fitness is:
+All bodies pay energy upkeep. Death occurs when energy is exhausted or the
+organism exceeds `900 + 75 × body size` ticks. The dead body becomes food.
+The simulation is an artificial ecology, not a calibrated biological model.
 
-```text
-mean forward displacement during the final second
-  − 0.0002 × accumulated absolute motor work
-```
+## Reproduction and mutation
 
-Motor work is estimated from joint torque times angular velocity, integrated
-over time. It is a small regularizer, not a calibrated metabolism. Using average
-late displacement discourages one lucky last-frame jump. Measuring from the
-settled center avoids awarding extra starting reach to a larger body.
+An organism older than 30 ticks can reproduce when its energy exceeds
+`3 × body size + 9`. Birth is attempted every eleventh age tick, with up to three
+placement attempts. Offspring receive energy paid by their parent. A full world
+or blocked placement can prevent reproduction. Population is capped at 1,600.
 
-If the root falls below −6 m the trial ends. A fall before the final second earns
-no positive displacement reward and still pays its motor-work penalty. A later
-fall can retain already accumulated final-second progress; this is a toy fitness
-function, not a proof against all physics exploits. The visible travelled
-distance is final displacement, which differs from energy-adjusted fitness.
+The mutation setting is the probability of mutation at birth. A mutation tries
+to add, remove or change a functional cell. Changes retain connected, bounded
+anatomy. Temperature preference, tolerance and movement tempo can mutate too.
+There is no population ranking, scheduled generation replacement, crossover or
+externally assigned fitness function.
 
-## Selection
+A mutated birth starts a new lineage. Clonal descendants retain their lineage.
+The inspector records up to eight preceding lineage transitions, excluding
+repeated clonal generations. Species labels such as Bloom or Forager describe
+anatomy, not a guaranteed diet or ecological role. Separately arising mutations
+are tracked separately even if their shapes happen to match.
 
-Candidates are ranked by fitness. The best two are retained unchanged. Most new
-creatures are mutated descendants sampled uniformly from the top quarter (at
-least three parents); one fresh random creature provides continuing exploration.
+## The twist: drifting climate
 
-An imported founder is retained unchanged as the first member of the new initial
-population. Other initial members are mutated descendants. Later generations use
-normal selection and the random wildcard.
+Local temperature combines a moving horizontal band, a spatial vertical
+variation and a seasonal oscillation. Climate pressure scales this variation.
+The displayed 0–40° scale is an abstract visualization, not Celsius.
 
-The seed drives a bounded 32-bit Mulberry32 generator. Identical settings and seed
-reproduce a run in the same runtime. Floating-point and physics-engine differences
-mean bit-identical results across browser versions and devices are not promised.
+Organisms inherit a preferred temperature in `[0,1]` and tolerance in
+`[0.12,0.6]`. Outside that tolerance, mismatch adds metabolic stress and reduces
+photosynthesis. Higher tolerance has an upkeep cost even in comfortable
+conditions, so generalists do not receive free resistance. Tolerance above 0.2
+adds `0.025 × (tolerance − 0.2)` energy upkeep per cell per tick to the baseline
+0.012. Climate stress adds `0.2 × mismatch` per cell per tick.
 
-## Environments
+Cold snaps and heatwaves shift the local temperature by −0.32 or +0.32 for 900
+simulation ticks. A nutrient bloom immediately scatters extra food. New climate
+events replace the preceding temperature shift. These are real environmental
+changes applied to the same world, not score adjustments or scripted winners.
 
-- **Meadow:** one flat floor from −20 m to 110 m.
-- **Steps:** the meadow plus 18 low obstacles, with repeating heights.
-- **Gaps:** a starting platform ending at 8 m, then twelve separated platforms.
+## Repeatability
 
-Course geometry is fixed. The world seed controls creatures and mutation, not
-terrain generation. Gravity ranges from 1.6 to 20 m/s². Settings changes start
-a new run because fitness from different environments is not comparable.
+Seeded randomness and fixed logical ticks make identical states evolve
+identically in the same runtime. Save files preserve random-generator state and
+organism iteration order. Cross-browser or future-version bitwise identity is
+not promised. The initial seed governs organisms, terrain and food placement.
 
-There is no crossover, neural network, food chain, reproduction inside the
-physical world, or claim of realistic biological evolution in this version.
+The current cellular world format is version 2. The earlier locomotion simulator
+and version-1 champion files are replaced; they are not imported as ecosystems.

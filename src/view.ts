@@ -1,178 +1,216 @@
-import type { Course, Generation, Trial } from './model';
-import { terrain } from './physics';
-
-export function drawScene(
+import {
+  WIDTH,
+  HEIGHT,
+  COLORS,
+  CELL_NAMES,
+  temperature,
+  type Frame,
+  type Genome,
+  type Organism,
+} from './model';
+export interface Camera {
+  zoom: number;
+  x: number;
+  y: number;
+}
+export interface Viewport {
+  scale: number;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+export function viewport(canvas: HTMLCanvasElement, camera: Camera): Viewport {
+  const width = canvas.clientWidth || 900,
+    height = canvas.clientHeight || 650;
+  const scale = Math.min(width / WIDTH, height / HEIGHT) * camera.zoom;
+  return {
+    scale,
+    left: (width - WIDTH * scale) / 2 + camera.x,
+    top: (height - HEIGHT * scale) / 2 + camera.y,
+    width,
+    height,
+  };
+}
+export function point(
   canvas: HTMLCanvasElement,
-  trial: Trial | undefined,
-  frame: number,
-  course: Course,
+  camera: Camera,
+  x: number,
+  y: number,
+): { x: number; y: number } | null {
+  const view = viewport(canvas, camera),
+    cx = Math.floor((x - view.left) / view.scale),
+    cy = Math.floor((y - view.top) / view.scale);
+  return cx >= 0 && cx < WIDTH && cy >= 0 && cy < HEIGHT ? { x: cx, y: cy } : null;
+}
+export function draw(
+  canvas: HTMLCanvasElement,
+  buffer: HTMLCanvasElement,
+  frame: Frame,
+  camera: Camera,
+  thermal: boolean,
+  selected: number,
 ): void {
-  const ctx = canvas.getContext('2d')!;
-  const ratio = Math.min(window.devicePixelRatio || 1, 2);
-  const width = canvas.clientWidth || 900;
-  const height = canvas.clientHeight || 420;
-  canvas.width = Math.round(width * ratio);
-  canvas.height = Math.round(height * ratio);
+  const ctx = canvas.getContext('2d')!,
+    b = buffer.getContext('2d')!;
+  const v = viewport(canvas, camera),
+    ratio = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = v.width * ratio;
+  canvas.height = v.height * ratio;
   ctx.scale(ratio, ratio);
-  const scale = Math.min(66, width / 10);
-  const pose = trial?.frames[Math.min(frame, trial.frames.length - 1)];
-  const focus = pose ? pose[0] : 0;
-  const camera = Math.max(-3, focus - (width / scale) * 0.36);
-  const floor = height * 0.72;
-  const x = (v: number): number => (v - camera) * scale;
-  const y = (v: number): number => floor - v * scale;
-  const sky = ctx.createLinearGradient(0, 0, 0, height);
-  sky.addColorStop(0, '#142b25');
-  sky.addColorStop(1, '#203c30');
-  ctx.fillStyle = sky;
-  ctx.fillRect(0, 0, width, height);
-  ctx.strokeStyle = '#d8e5be0b';
-  ctx.lineWidth = 1;
-  for (let i = Math.floor(camera); i < camera + width / scale + 1; i++) {
-    ctx.beginPath();
-    ctx.moveTo(x(i), 0);
-    ctx.lineTo(x(i), height);
-    ctx.stroke();
-  }
-  for (let i = 0; i < height / scale; i++) {
-    ctx.beginPath();
-    ctx.moveTo(0, floor - i * scale);
-    ctx.lineTo(width, floor - i * scale);
-    ctx.stroke();
-  }
-  ctx.fillStyle = '#d4ed8809';
-  ctx.beginPath();
-  ctx.arc(width * 0.82, height * 0.24, 70, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(width * 0.82, height * 0.24, 100, 0, Math.PI * 2);
-  ctx.fill();
-  for (const t of terrain(course)) {
-    ctx.fillStyle = '#294938';
-    ctx.fillRect(
-      x(t.x - t.width / 2),
-      y(t.y + t.height / 2),
-      t.width * scale,
-      t.height * scale + height,
-    );
-    ctx.strokeStyle = '#c3d98f';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(x(t.x - t.width / 2), y(t.y + t.height / 2));
-    ctx.lineTo(x(t.x + t.width / 2), y(t.y + t.height / 2));
-    ctx.stroke();
-  }
-  ctx.font = '10px ui-monospace, monospace';
-  ctx.fillStyle = '#a8baa0';
-  for (let i = Math.floor(camera / 5) * 5; i < camera + width / scale; i += 5) {
-    ctx.fillText(`${i} m`, x(i) + 5, floor + 23);
-    ctx.fillRect(x(i), floor + 7, 1, 5);
-  }
-  ctx.setLineDash([4, 5]);
-  ctx.strokeStyle = '#d4ed8840';
-  ctx.beginPath();
-  ctx.moveTo(x(0), 30);
-  ctx.lineTo(x(0), floor);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  if (pose && trial) {
-    for (const [i, g] of trial.genome.genes.entries()) {
-      ctx.save();
-      ctx.translate(x(pose[i * 3]), y(pose[i * 3 + 1]));
-      ctx.rotate(-pose[i * 3 + 2]);
-      ctx.shadowColor = '#00000040';
-      ctx.shadowBlur = 12;
-      ctx.shadowOffsetY = 7;
-      ctx.fillStyle = `hsl(${trial.genome.hue} 48% ${i === 0 ? 75 : 64}%)`;
-      ctx.strokeStyle = '#e5f5c9';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.roundRect(
-        (-g.length / 2) * scale,
-        -g.width * scale,
-        g.length * scale,
-        g.width * 2 * scale,
-        g.width * scale,
+  ctx.fillStyle = '#090f16';
+  ctx.fillRect(0, 0, v.width, v.height);
+  buffer.width = WIDTH;
+  buffer.height = HEIGHT;
+  const pixels = b.createImageData(WIDTH, HEIGHT);
+  const palette = COLORS.map((hex) => [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16),
+  ]);
+  for (let i = 0; i < frame.cells.length; i++) {
+    let color = palette[frame.cells[i]];
+    if (thermal && frame.cells[i] === 0) {
+      const t = temperature(
+        i % WIDTH,
+        Math.floor(i / WIDTH),
+        frame.stats.tick,
+        frame.climate,
+        frame.offset,
       );
-      ctx.fill();
-      ctx.stroke();
-      ctx.shadowBlur = 0;
-      ctx.shadowOffsetY = 0;
-      ctx.fillStyle = '#eff3db';
-      ctx.beginPath();
-      ctx.arc((-g.length / 2) * scale + 3, 0, 3.5, 0, Math.PI * 2);
-      ctx.fill();
-      if (i === 0) {
-        ctx.fillStyle = '#182c24';
-        ctx.beginPath();
-        ctx.arc(g.length * scale * 0.22, -g.width * scale * 0.2, 3.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#fff';
-        ctx.beginPath();
-        ctx.arc(g.length * scale * 0.22 + 1, -g.width * scale * 0.2 - 1, 1, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.restore();
+      color = [
+        Math.round(9 + t * 37),
+        Math.round(18 + (1 - Math.abs(t - 0.5) * 2) * 13),
+        Math.round(20 + (1 - t) * 40),
+      ];
     }
-  } else {
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#d5dfc5';
-    ctx.font = 'italic 24px Georgia, serif';
-    ctx.fillText('A little chaos is taking shape…', width / 2, height * 0.42);
-    ctx.textAlign = 'left';
+    const p = i * 4;
+    pixels.data[p] = color[0];
+    pixels.data[p + 1] = color[1];
+    pixels.data[p + 2] = color[2];
+    pixels.data[p + 3] = 255;
   }
+  b.putImageData(pixels, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(buffer, v.left, v.top, WIDTH * v.scale, HEIGHT * v.scale);
+  if (selected) {
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.2;
+    for (let i = 0; i < frame.ids.length; i++)
+      if (frame.ids[i] === selected)
+        ctx.strokeRect(
+          v.left + (i % WIDTH) * v.scale - 1,
+          v.top + Math.floor(i / WIDTH) * v.scale - 1,
+          v.scale + 2,
+          v.scale + 2,
+        );
+  }
+  ctx.strokeStyle = '#26313a';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(v.left - 0.5, v.top - 0.5, WIDTH * v.scale + 1, HEIGHT * v.scale + 1);
 }
-
-export function chart(
-  canvas: HTMLCanvasElement,
-  history: Pick<Generation, 'index' | 'best' | 'median'>[],
-): void {
+export function genomeSvg(genome: Genome, size = 52): string {
+  const xs = genome.cells.map((c) => c.x),
+    ys = genome.cells.map((c) => c.y),
+    left = Math.min(...xs),
+    top = Math.min(...ys),
+    width = Math.max(...xs) - left + 1,
+    height = Math.max(...ys) - top + 1,
+    side = Math.max(width, height) + 2;
+  return `<svg width="${size}" height="${size}" viewBox="${left - (side - width) / 2} ${top - (side - height) / 2} ${side} ${side}" shape-rendering="crispEdges" aria-hidden="true">${genome.cells.map((c) => `<rect x="${c.x}" y="${c.y}" width=".88" height=".88" fill="${COLORS[c.type]}"/>`).join('')}</svg>`;
+}
+export function drawChart(canvas: HTMLCanvasElement, history: number[]): void {
   const ctx = canvas.getContext('2d')!;
-  const width = (canvas.width = canvas.clientWidth || 600);
-  const height = (canvas.height = 120);
-  ctx.clearRect(0, 0, width, height);
-  const min = Math.min(0, ...history.map((g) => g.median));
-  const max = Math.max(1, ...history.map((g) => g.best));
-  const y = (v: number): number => height - 14 - ((v - min) / (max - min)) * (height - 28);
-  ctx.strokeStyle = '#d6d9c9';
+  const w = (canvas.width = canvas.clientWidth || 250),
+    h = (canvas.height = 70);
+  ctx.clearRect(0, 0, w, h);
+  const max = Math.max(10, ...history);
   ctx.beginPath();
-  ctx.moveTo(0, y(0));
-  ctx.lineTo(width, y(0));
+  history.forEach((n, i) => {
+    const x = (i / Math.max(1, history.length - 1)) * w,
+      y = h - 6 - (n / max) * (h - 12);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = '#7edbaf';
+  ctx.lineWidth = 1.5;
   ctx.stroke();
-  for (const key of ['median', 'best'] as const) {
-    ctx.beginPath();
-    ctx.lineWidth = key === 'best' ? 2.5 : 1.5;
-    ctx.strokeStyle = key === 'best' ? '#3c7151' : '#b3b99d';
-    history.forEach((g, i) => {
-      const px = 4 + (i / Math.max(1, history.length - 1)) * (width - 8);
-      if (i === 0) ctx.moveTo(px, y(g[key]));
-      else ctx.lineTo(px, y(g[key]));
-    });
-    ctx.stroke();
-  }
 }
-
+export function organismHtml(o: Organism | null, frame: Frame): string {
+  if (!o)
+    return `<div class="empty-inspector">${genomeSvg(
+      {
+        cells: [
+          { x: 0, y: 0, type: 4 },
+          { x: 1, y: 0, type: 3 },
+          { x: 0, y: 1, type: 5 },
+        ],
+        preference: 0.5,
+        tolerance: 0.2,
+        tempo: 3,
+      },
+      72,
+    )}<p>Click any organism to inspect it.</p></div>`;
+  const temp = temperature(o.x, o.y, frame.stats.tick, frame.climate, frame.offset);
+  return `<div class="specimen-preview"><div class="anatomy">${genomeSvg(o.genome, 104)}</div><div><strong>Organism ${o.id}</strong><span>Lineage #${o.species}</span><span>Generation ${o.generation}</span></div></div><dl class="specimen-facts"><div><dt>Energy</dt><dd>${o.energy.toFixed(1)}</dd></div><div><dt>Age</dt><dd>${o.age} ticks</dd></div><div><dt>Offspring</dt><dd>${o.children}</dd></div><div><dt>Cells</dt><dd>${o.genome.cells.length}</dd></div><div><dt>Local temperature</dt><dd>${Math.round(temp * 40)}°</dd></div><div><dt>Preferred</dt><dd>${Math.round(o.genome.preference * 40)}° ±${Math.round(o.genome.tolerance * 40)}°</dd></div></dl><p class="ancestry" title="Lineage ancestry">${[...o.ancestry, o.species].map((s) => `#${s}`).join(' → ')}</p><button id="copy-organism" class="secondary wide">Edit this organism</button>`;
+}
+const icon = (path: string): string =>
+  `<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="${path}"/></svg>`;
+const inspectIcon = icon('M2 1h7v2H2zm-2 2h2v7H0zm9 0h2v7H9zM2 10h7v2H2zm8 1h2v2h-2zm2 2h2v2h-2z'),
+  panIcon = icon(
+    'M7 0h2v3h2v2H9v2h2V5h2v2h3v2h-3v2h-2V9H9v2h2v2H9v3H7v-3H5v-2h2V9H5v2H3V9H0V7h3V5h2v2h2V5H5V3h2z',
+  ),
+  foodIcon = icon('M2 2h4v4H2zm8 1h4v4h-4zM5 10h4v4H5z'),
+  wallIcon = icon('M1 1h6v6H1zm8 0h6v6H9zM1 9h6v6H1zm8 0h6v6H9z'),
+  eraseIcon = icon('M7 1h5v2h2v5h-2v2h-2v2H8v2H3v-2H1V7h2V5h2V3h2zM3 8v3h2v1h2l2-2-4-4z'),
+  plantIcon = icon('M6 0h4v6h6v4h-6v6H6v-6H0V6h6z');
+const cellDescriptions = [
+  'Eats adjacent food',
+  'Uses light to produce energy and food',
+  'Moves and rotates the body',
+  'Drains adjacent unarmored organisms',
+  'Protects the contacted cell',
+  'Senses nearby food, walls and organisms',
+];
 export const markup = `
-<header class="topbar"><a class="brand" href="./" aria-label="EvoLab home"><span class="brand-symbol">✳</span> EvoLab<span class="brand-dot">.</span></a><span class="topnote">AN EXERCISE IN NATURAL SELECTION</span><a class="source" href="https://github.com/JustinasLa/EvoLab" target="_blank" rel="noreferrer">Source ↗</a></header>
-<main>
-  <section class="intro"><div><p class="eyebrow">SMALL CREATURES. QUESTIONABLE DECISIONS.</p><h1>Life finds a <em>weird</em> way.</h1><p class="lede">A few joints, a little mutation, and absolutely no idea how to walk.<br class="desktop-break"> Let evolution figure it out.</p></div><div class="run-state"><span class="status-dot"></span><span id="status" role="status">Starting experiment</span></div></section>
-  <div class="lab-grid">
-    <section class="experiment" aria-label="Evolution experiment">
-      <div class="arena"><div class="arena-bar"><span><span class="tiny-dot"></span> THE PROVING GROUND</span><span id="habitat-label">MEADOW / EARTH</span></div><canvas id="world" role="img" aria-label="Replay of the selected creature moving through its habitat"></canvas><div class="arena-bottom"><span id="specimen">Finding our first survivor…</span><span id="replay-label">8 SECOND TRIAL</span></div></div>
-      <div class="transport"><button id="pause" class="button dark">Ⅱ Pause evolution</button><label class="speed-label">Replay <select id="speed" aria-label="Replay speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label><button id="follow" class="text-button" hidden>Follow latest ↗</button><span id="progress-text">Preparing population</span></div>
-      <div class="metrics"><div><span class="metric-label">GENERATION</span><strong id="generation">000</strong></div><div><span class="metric-label">BEST FITNESS <span title="Forward progress minus a small motor-energy cost">ⓘ</span></span><strong id="best">—</strong></div><div><span class="metric-label">POPULATION</span><strong id="population">24<span> creatures</span></strong></div><div><span class="metric-label">BODY VARIANTS</span><strong id="diversity">—</strong></div></div>
-      <section class="progress-panel"><div class="section-heading"><h2>A little better. Eventually.</h2><div class="legend"><span>● Best</span><span>● Median</span></div></div><canvas id="chart" role="img" aria-label="Best and median fitness by generation"></canvas><p id="chart-description" class="small">Every generation gets the same course and eight seconds to make its case.</p></section>
-      <section class="specimens"><div class="section-heading"><h2>The survivors</h2><span class="small">REVISIT A GENERATION</span></div><div id="survivors" class="survivor-list"><p class="small">Your first champion will be here shortly.</p></div></section>
-    </section>
-    <aside class="settings" aria-label="Experiment settings"><div class="section-heading"><h2>Play god. A little.</h2><span class="setting-icon">⚙</span></div><p class="small settings-description">Change the world. See what adapts.<br>New settings start a fresh population.</p>
-      <fieldset><legend>THE HABITAT</legend><div class="course-options"><button type="button" data-course="meadow" aria-pressed="true"><span>〰</span> Meadow</button><button type="button" data-course="steps" aria-pressed="false"><span>⌁</span> Steps</button><button type="button" data-course="gaps" aria-pressed="false"><span>⊔</span> Gaps</button></div></fieldset>
-      <label class="range-label" for="gravity">GRAVITY <output id="gravity-value">9.81 m/s²</output></label><input id="gravity" type="range" min="1.6" max="20" step="0.01" value="9.81"><div class="range-ends"><span>Moon-ish</span><span>Heavy stuff</span></div>
-      <label class="range-label" for="mutation">MUTATION <output id="mutation-value">18%</output></label><input id="mutation" type="range" min="0.05" max="0.6" step="0.01" value="0.18"><div class="range-ends"><span>Small nudges</span><span>Embrace chaos</span></div>
-      <div class="field-row"><label>POPULATION<select id="population-setting"><option value="12">12 creatures</option><option value="24" selected>24 creatures</option><option value="48">48 creatures</option></select></label><label for="seed">WORLD SEED<input id="seed" type="number" min="0" max="4294967295" step="1" value="42" required></label></div>
-      <button id="restart" class="button restart">Begin new experiment <span>↗</span></button><p id="pending" class="small pending" aria-live="polite">Same seed. Same settings. Same starting creatures.</p>
-      <div class="notebook"><span class="eyebrow">FIELD NOTES / 001</span><p>Nobody taught them to walk.</p><p class="small">Bodies and motor rhythms mutate. The best two survive unchanged; their offspring compete with one fresh wildcard.</p></div>
-      <div class="file-actions"><button id="export" class="text-button" disabled>↓ Save champion</button><button id="import" class="text-button">↑ Load champion</button><input id="file" type="file" accept="application/json,.json" hidden></div><p id="notice" class="small notice" role="status"></p>
-    </aside>
-  </div>
-  <details class="how"><summary>A quick note on the science</summary><p>Each creature is a tree of rigid body segments connected by motor-driven joints. Evolution changes its proportions, limb count, joint angles, strength, and movement rhythm. Fitness rewards forward progress with a small energy penalty. Trials use fixed physics steps; this is an evolutionary toy, not a model of biological evolution. The arena replays completed trials while the next generation is evaluated in a background worker. Pause stops evaluation; replays keep playing. Changing environments starts a new fitness comparison.</p></details>
-</main><footer><span>Made of physics, persistence, and happy accidents.</span><a href="https://github.com/JustinasLa/EvoLab/tree/main/docs">The lab notebook ↗</a></footer>`;
+<header class="topbar">
+  <a class="brand" href="./" aria-label="EvoLab / Drift">${genomeSvg(
+    {
+      cells: [
+        { x: 0, y: 0, type: 4 },
+        { x: 1, y: 0, type: 3 },
+        { x: 0, y: 1, type: 5 },
+        { x: 1, y: 1, type: 4 },
+      ],
+      preference: 0.5,
+      tolerance: 0.2,
+      tempo: 3,
+    },
+    32,
+  )}<strong>EvoLab<span> / drift</span></strong></a>
+  <div class="simulation-controls"><button id="pause" class="primary" title="Pause or resume (Space)">Ⅱ Pause</button><button id="step" disabled title="Advance one tick while paused" aria-label="Advance one tick while paused">${icon('M2 2h2v12H2zm4 0h2v2h2v2h2v4h-2v2H8v2H6z')}</button><label><span>Speed</span><select id="speed" aria-label="Simulation speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="12">12×</option></select></label></div>
+  <nav aria-label="World files and help"><button id="save" title="Download this world">Save world</button><button id="load" title="Open a saved world">Load world</button><button id="help" title="How this world works">Help</button><a href="https://github.com/JustinasLa/EvoLab" target="_blank" rel="noreferrer">Source</a></nav><input id="file" type="file" accept="application/json,.json" hidden>
+</header>
+<main class="workspace">
+  <section class="world-stage" aria-label="Living ecosystem">
+    <div class="world-heading"><div class="world-label"><span class="live-dot"></span><span id="world-label">WORLD 0042</span><span id="run-state">LIVE</span></div><div class="zoom-controls"><button id="zoom-out" title="Zoom out">−</button><button id="fit" title="Fit world">Fit</button><button id="zoom-in" title="Zoom in">+</button></div></div>
+    <div class="tool-dock" role="toolbar" aria-label="World tools"><button data-tool="inspect" aria-pressed="true" title="Inspect organism (I)">${inspectIcon}<span>Inspect</span><kbd>I</kbd></button><button data-tool="pan" aria-pressed="false" title="Pan world (H)">${panIcon}<span>Pan</span><kbd>H</kbd></button><button data-tool="food" aria-pressed="false" title="Paint nutrients (F)">${foodIcon}<span>Food</span><kbd>F</kbd></button><button data-tool="wall" aria-pressed="false" title="Paint walls (W)">${wallIcon}<span>Wall</span><kbd>W</kbd></button><button data-tool="erase" aria-pressed="false" title="Erase life and terrain (E)">${eraseIcon}<span>Erase</span><kbd>E</kbd></button><button data-tool="plant" aria-pressed="false" title="Place designed organism (P)">${plantIcon}<span>Plant</span><kbd>P</kbd></button></div>
+    <div class="tool-options"><span id="tool-hint">Click an organism to inspect its cells.</span><label id="brush-control" hidden for="brush">Radius<input id="brush" type="range" min="0" max="8" step="1" value="2"><output id="brush-value">2 cells</output></label></div>
+    <div class="habitat"><canvas id="world" aria-label="Interactive ecosystem. Choose a tool, then click or drag in the world." tabindex="0"></canvas></div>
+    <div class="world-bottom"><span id="tick">TICK 0</span><span id="world-count">Seeding life…</span><span class="world-size">240 × 156 cells · wrapped edges</span></div>
+  </section>
+  <aside class="sidebar" aria-label="Ecosystem controls"><div class="tabs" role="tablist" aria-label="Simulation panels"><button id="ecosystem-tab" data-tab="ecosystem" role="tab" aria-controls="ecosystem-panel" aria-selected="true">Ecosystem</button><button id="organism-tab" data-tab="organism" role="tab" aria-controls="organism-panel" aria-selected="false">Organism</button></div>
+    <div class="panel-scroll">
+      <div id="ecosystem-panel" class="panel" role="tabpanel" aria-labelledby="ecosystem-tab">
+        <section class="population-section"><div class="section-caption"><h2>Population</h2><span id="generation">GEN 0</span></div><div class="population-number"><strong id="population">—</strong><span id="species-count">— lineages</span></div><canvas id="chart" role="img" aria-label="Recent organism population"></canvas><dl class="vital-stats"><div><dt>Births</dt><dd id="births">0</dd></div><div><dt>Deaths</dt><dd id="deaths">0</dd></div><div><dt>Food</dt><dd id="food-count">0</dd></div></dl></section>
+        <section class="lineage-section"><div class="section-caption"><h2>Common bodies</h2><span title="Choose a body to edit its anatomy">Click to edit</span></div><div id="lineages" class="lineages"><p class="muted">Waiting for life…</p></div></section>
+        <section class="climate-section"><div class="section-caption"><h2>Climate</h2><button id="thermal" class="secondary" aria-pressed="false">Show temperature</button></div><div class="world-weather"><strong id="weather">Drifting climate</strong><span id="season">Vernal drift</span></div><div class="temperature-key"><span>0°</span><i></i><span>40°</span></div><label class="slider-label" for="climate">Climate pressure<output id="climate-value">80%</output></label><input id="climate" type="range" min="0" max="1" step="0.05" value="0.8"><div class="events"><button data-shock="cold">${icon('M7 0h2v4h2V2h2v2h-2v2H9v1h3V5h2v2h2v2h-2v2h-2V9H9v2h2v2h2v2h-2v-2H9v3H7v-3H5v2H3v-2h2v-2h2V9H4v2H2V9H0V7h2V5h2v2h3V6H5V4H3V2h2v2h2z')}Cold snap</button><button data-shock="heat">${icon('M6 0h4v2H6zM2 2h2v2H2zm10 0h2v2h-2zM4 4h8v8H4zM0 6h2v4H0zm14 0h2v4h-2zM2 12h2v2H2zm10 0h2v2h-2zm-6 2h4v2H6z')}Heatwave</button><button data-shock="bloom">${foodIcon}Bloom</button></div></section>
+        <details class="world-settings"><summary>World settings</summary><label class="slider-label" for="mutation">Mutation rate<output id="mutation-value">12%</output></label><input id="mutation" type="range" min="0" max="0.4" step="0.01" value="0.12"><label class="slider-label" for="nutrients">Nutrient rain<output id="nutrients-value">5 / tick</output></label><input id="nutrients" type="range" min="0" max="20" step="1" value="5"><label class="seed-label" for="seed">World seed<input id="seed" type="number" min="0" max="4294967295" step="1" required value="42"></label><button id="reset" class="secondary wide">Reseed world</button></details>
+      </div>
+      <div id="organism-panel" class="panel" role="tabpanel" aria-labelledby="organism-tab" hidden><details id="specimen-details" class="specimen-section"><summary>Selected organism</summary><div id="inspector"></div></details><section class="designer-section"><div class="section-caption"><h2>Build a body</h2><button id="clear-design" class="quiet">Reset</button></div><div id="cell-palette" class="cell-palette">${CELL_NAMES.map((name, i) => `<button data-cell="${i + 3}" aria-pressed="${i === 1}" title="${name}: ${cellDescriptions[i]}"><i style="--cell:${COLORS[i + 3]}"></i>${name}</button>`).join('')}</div><p id="cell-description" class="muted">${cellDescriptions[1]}</p><div id="editor" class="editor" aria-label="Organism anatomy editor"></div><p id="design-note" class="muted">Use 1–16 cells, connected edge to edge.</p><label class="slider-label" for="preference">Preferred temperature<output id="preference-value">20°</output></label><input id="preference" type="range" min="0" max="1" step="0.025" value="0.5"><button id="plant-design" class="primary wide">Place in world</button></section></div>
+    </div>
+    <p id="notice" role="status"></p>
+  </aside>
+</main>
+<footer><div class="cell-legend">${CELL_NAMES.map((name, i) => `<span title="${cellDescriptions[i]}"><i style="--cell:${COLORS[i + 3]}"></i>${name}</span>`).join('')}<span><i style="--cell:${COLORS[1]}"></i>Food</span><span><i style="--cell:${COLORS[2]}"></i>Wall</span></div><span class="footer-note">Space: pause · Scroll: zoom</span></footer>
+<dialog id="help-dialog"><button id="close-help" class="dialog-close" aria-label="Close help">×</button><h1>EvoLab / Drift</h1><p>Organisms eat, move, reproduce, mutate, and die. Successful descendants spread through survival and reproduction.</p><p>Climate zones drift across the habitat. Each organism inherits a preferred temperature and tolerance. Wider tolerance costs energy.</p><ul><li>Inspect a body, or click a common body to edit it.</li><li>Choose Food, Wall or Erase and drag to paint.</li><li>Choose a cell type, draw a connected body, then place it in the world.</li><li>Scroll to zoom; use Pan to drag. Space pauses; I / H / F / W / E / P select tools.</li><li>Save your world before leaving. Reloading starts fresh.</li></ul><p class="muted">Inspired by <a href="https://thelifeengine.net/" target="_blank" rel="noreferrer">The Life Engine</a>. An original cellular simulation; temperature uses an abstract 0–40° scale, not a biological model.</p></dialog>`;

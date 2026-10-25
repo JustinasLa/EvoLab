@@ -4,56 +4,73 @@
 
 ## Modules
 
-| File               | Responsibility                                                                                            |
-| ------------------ | --------------------------------------------------------------------------------------------------------- |
-| `src/model.ts`     | Types, settings, seeded random numbers, genome generation and mutation, strict champion import validation |
-| `src/physics.ts`   | Course geometry, physical construction, fixed-step trials, fitness and recorded poses                     |
-| `src/evolution.ts` | Population initialization, ranking, elite selection and offspring                                         |
-| `src/worker.ts`    | One background evaluation loop, yielding after every creature                                             |
-| `src/view.ts`      | Interface markup, scene rendering, and fitness chart                                                      |
-| `src/main.ts`      | Controls, run lifecycle, messages, replay selection, and file operations                                  |
+| File               | Responsibility                                                                              |
+| ------------------ | ------------------------------------------------------------------------------------------- |
+| `src/model.ts`     | Types, bounded genomes, connectivity, seeded random numbers, mutation and climate           |
+| `src/ecosystem.ts` | Occupancy, feeding, movement, birth/death, climate pressure, painting and world persistence |
+| `src/worker.ts`    | One yielding simulation loop, commands, snapshots, saves and inspection                     |
+| `src/view.ts`      | Interface markup, pixel rendering, camera transforms, anatomy previews and charts           |
+| `src/main.ts`      | Pointer/keyboard controls, designer, file operations, frame display and worker lifecycle    |
 
-TypeScript is checked in strict mode. Vite creates separate page and worker
-bundles. Planck runs in the worker at runtime; the main thread draws recorded
-body positions at animation-frame cadence. No physics simulation runs in the
-render loop.
+Strict TypeScript is built with Vite into separate page and worker bundles. The
+engine uses a logical cellular grid, with no rigid-body physics library or model
+service. Typed arrays store food, walls and occupied organism IDs. A map stores
+living organisms in a stable update order.
 
-## Message lifecycle
+## Simulation and rendering
 
-The page sends `start` with validated settings, an optional validated founder,
-and an increasing run ID. `pause` and `resume` control evaluation. The worker
-posts progress after each candidate and a generation result after selection.
-Every response carries its run ID so stale messages cannot populate a restarted
-experiment.
+The worker advances 1, 4 or 12 logical ticks per scheduled batch, yielding between
+batches. Speed labels are tick multipliers; their wall-clock throughput depends
+on the machine. The renderer consumes snapshots independently of simulation
+speed, drawing only when something changes.
 
-Evaluation yields through a timer after each candidate, allowing control messages
-to be processed. Pausing takes effect after the current candidate finishes.
-Repeated resumes share one queued callback. A caught evaluation exception stops
-the loop and reports its message; a browser worker error is also shown in the UI.
+A snapshot contains functional-cell colors, occupant IDs, climate state, aggregate
+statistics, five dominant lineages, and the selected organism if alive. The pixel
+and ID buffers are transferred to the page. Background evaluation never calls
+Canvas APIs. Rendering uses a small offscreen pixel buffer enlarged with nearest
+neighbor sampling, preserving crisp cellular shapes at every zoom.
 
-Fitness-only candidate evaluations do not record frames. Only the champion is
-re-evaluated for a recording, with a pose every third physics step (20 fps).
-Playback consumes these poses; a new generation never cuts a replay short.
+The page rejects messages from stale run IDs after a reset or import. Repeated
+resume commands share one pending callback. Pause takes effect after the current
+batch; inspection, painting and environmental changes still work while paused.
+Single-step advances exactly one logical tick while paused. A failed import
+retains the existing world and reports an error.
 
-## Bounded state and files
+The camera is local view state. Pointer positions are converted through the same
+scale and offset used for drawing. Changing zoom, panning, or inspecting never
+changes the engine state. The anatomy designer validates connected structure and
+numeric limits before placement.
 
-The page retains eight recent generation champions and 240 chart points. Chart
-entries omit recordings. A selected replay can outlive the recent archive until
-selection changes. The worker replaces its candidate results and population every
-generation. Workers are terminated when their view is disposed.
+## Interface
 
-Champion JSON has version `1`, settings, and one genome. Imports validate size,
-version, setting ranges, identifiers, topology, and every motor/body number.
-Imported values never become HTML. A load begins a fresh experiment; this is not a
-full simulation checkpoint.
+The habitat is the main workspace. Tool controls sit outside the drawing area,
+so they do not obscure organisms or intercept painting. Painting exposes radius
+controls in the tool strip; inspection, pan and planting show their own short
+instruction. Playback and world files remain in the top bar.
 
-The application stores no browser database, cookies, or analytics. Downloads are
-explicitly requested. All runtime assets, including fonts, are served locally.
+The interface uses the world's square cells and functional colors. Body previews
+fit their connected anatomy into the available space instead of reserving a fixed
+nine-cell canvas. Common bodies can be copied directly into the designer. Clicking
+an organism opens its inspector; copying its anatomy folds the inspector away to
+make room for the connected-body editor. Placing a design brings the habitat back
+into view, including on phones.
 
-## Extending the simulation
+On desktop the control panel scrolls independently. On phones it follows the
+habitat; the habitat keeps the world's aspect ratio without empty vertical bands.
+The UI does not add a marketing header or explanatory cards around the simulation.
 
-Change body/controller rules in `model.ts` and physical construction together.
-Keep imported ranges in sync with mutation bounds. Changes to fitness, evaluation
-duration, or physics versions can invalidate score comparisons; treat old
-champions as new founders rather than carrying forward old scores. If changing
-the portable file format, introduce an explicit version and conversion policy.
+## World saves
+
+Version-2 JSON contains settings, counters, random state, active climate event,
+food, walls and complete living-organism records. Imports are limited to 2.5 MB.
+Validation rejects invalid coordinates, topology, duplicate IDs, collisions,
+invalid versions, unbounded arrays, or invalid numeric fields before replacing
+the running world. Food under an imported wall is normalized away.
+
+Saved worlds are explicit downloads; there is no automatic browser persistence.
+The population limit is 1,600, the anatomy limit is 16 cells, ancestry retains eight
+lineage transitions, chart history retains 180 samples, and the sidebar lists five
+dominant lineages. Extinct lineages are not retained in a global unbounded log.
+
+All runtime assets and fonts are served by the same origin. There are no accounts,
+analytics or runtime external requests. Saving sends no world data to a server.

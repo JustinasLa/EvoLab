@@ -1,21 +1,26 @@
-# EvoLab
+# EvoLab / Drift
 
-> Give life a few joints and see what happens.
+> A cellular ecosystem with inherited climate adaptation.
 
-EvoLab is a browser playground where strange little creatures evolve their own
-bodies and movement. Start an experiment, watch the survivors learn to tumble,
-crawl, or occasionally walk, then change the world and see what adapts.
+EvoLab is an open-ended cellular ecosystem. Organisms eat, grow, move, reproduce,
+mutate and die in a shared world. There is no assigned fitness score: successful
+lineages spread by surviving and producing descendants.
+
+**[Enter the world](https://89.116.28.65.sslip.io/evolab/)**
 
 ## Features
 
-- **Physical creatures** — rigid body segments and motor-driven joints move through a real 2D physics simulation; there are no walking animations.
-- **Evolving bodies and movement** — limb counts, proportions, joint angles, strength, and movement rhythms mutate between generations.
-- **Three habitats** — a flat meadow, low steps, and separated platforms challenge different ways of moving.
-- **Your own experiments** — adjust gravity, mutation, population size, and the random seed, then begin a fresh run.
-- **Champion replays** — watch complete trials while evolution runs in the background, change replay speed, and revisit the last eight generations.
-- **Portable survivors** — save a champion as JSON and load it later to found a new population.
-- **A visible learning curve** — compare the best and median fitness over the latest 240 generations.
-- **Runs in your browser** — no account, server-side simulation, telemetry, or runtime service is required; fonts are bundled locally.
+- **Living cellular organisms** — mouths, leaves, motors, stingers, armor and eyes combine into bodies that feed, compete and evolve.
+- **Drifting climates** — warm and cold zones move through the habitat; temperature preference and tolerance pass to offspring and can mutate.
+- **Adaptation with a tradeoff** — broad temperature tolerance costs more energy, while specialists are cheaper in favorable habitats.
+- **Shape the habitat** — paint nutrients, build barriers, erase patches, and introduce blooms, heatwaves or cold snaps.
+- **Design your own life** — draw connected organisms, choose their preferred temperature, and place them directly in the ecosystem.
+- **Inspect the survivors** — follow population, dominant lineages, anatomy, energy, offspring and recent lineage ancestry.
+- **Explore at your pace** — pan, zoom, pause, single-step, and change simulation speed independently of rendering.
+- **Keep whole worlds** — save and restore terrain, every organism, counters, settings and random-generator state.
+
+Inspired by [The Life Engine](https://thelifeengine.net/). EvoLab's implementation
+and interface are original; no upstream code or assets are copied.
 
 ## Documentation
 
@@ -36,18 +41,18 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-Vitest runs real Planck physics trials, seeded evolution, mutation and import
-validation, worker lifecycle tests, and UI tests with a mocked canvas. CI enforces
-**100% line coverage across every production TypeScript file, with no file
-exclusions**. Branch and statement coverage are reported separately. Coverage
-reports are written to `coverage/` and uploaded by CI.
+Vitest tests real ecosystem behavior, inheritance and climate stress, mutation
+bounds, complete world restoration, worker controls and UI interactions. CI
+requires **100% line coverage across all production TypeScript, with no file
+exclusions**. Branch and statement coverage are reported separately; HTML and
+LCOV reports are written to `coverage/` and uploaded by CI.
 
-Playwright checks the built application in desktop and mobile Chromium, including
-real worker evaluation, animated canvas replays, pause/resume, habitat changes,
-champion downloads and imports, layout overflow, and absence of external network
-requests. Its reports are written to `playwright-report/` and `test-results/`.
-These checks do not establish cross-browser physics identity, biological realism,
-or performance on every device. See [testing](docs/testing.md) for scope and limits.
+Playwright exercises the built application in desktop and mobile Chromium,
+including real workers, population changes, inspection, organism design, painting,
+camera controls and world downloads/imports. Reports are written to
+`playwright-report/` and `test-results/`. These checks do not establish biological
+realism, cross-browser identity, or performance on every device. See
+[testing](docs/testing.md) for scope and limits.
 
 ## License
 
