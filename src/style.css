@@ -905,3 +905,25 @@ dialog a {
     font-size: 10px;
   }
 }
+
+.specimen-section {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.specimen-section > summary {
+  font-size: 13px;
+}
+.specimen-section[open] > summary {
+  margin-bottom: 12px;
+}
+@media (max-width: 760px) {
+  .world-stage {
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    grid-template-rows: 38px 54px 38px auto 30px;
+  }
+  .habitat {
+    aspect-ratio: 240 / 156;
+  }
+}

@@ -74,6 +74,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       .querySelectorAll<HTMLButtonElement>('button[data-tool]')
       .forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === tool)));
     canvas.dataset.tool = tool;
+    if (tool === 'plant') tab('organism');
     const painting = ['food', 'wall', 'erase'].includes(tool);
     get('brush-control').hidden = !painting;
     get('tool-hint').hidden = painting;
@@ -121,6 +122,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     frame = undefined;
     notice('');
     text('pause', 'Ⅱ Pause');
+    get<HTMLButtonElement>('step').disabled = true;
     text('run-state', 'LIVE');
     root.classList.remove('paused');
     text('world-label', `WORLD ${String(seed).padStart(4, '0')}`);
@@ -142,6 +144,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       p = point(canvas, camera, event.clientX - rect.left, event.clientY - rect.top);
     if (!p) return;
     if (tool === 'inspect') {
+      get<HTMLDetailsElement>('specimen-details').open = true;
       send({ type: 'inspect', ...p });
       tab('organism');
     } else if (tool !== 'pan')
@@ -200,12 +203,12 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     paused = !paused;
     send({ type: paused ? 'pause' : 'resume' });
     text('pause', paused ? '▶ Resume' : 'Ⅱ Pause');
+    get<HTMLButtonElement>('step').disabled = !paused;
     text('run-state', paused ? 'PAUSED' : 'LIVE');
     root.classList.toggle('paused', paused);
   });
   get('step').addEventListener('click', () => {
-    if (paused) send({ type: 'step' });
-    else notice('Pause the world before stepping one tick.');
+    send({ type: 'step' });
   });
   get('speed').addEventListener('change', () =>
     send({ type: 'speed', value: Number(get<HTMLSelectElement>('speed').value) }),
@@ -278,6 +281,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     if ((event.target as HTMLElement).closest('#copy-organism') && selected) {
       blueprint = structuredClone(selected.genome);
       editor();
+      get<HTMLDetailsElement>('specimen-details').open = false;
       notice('Anatomy copied. Edit it, then place it in the world.');
     }
   });
@@ -335,6 +339,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       if (data.fatal) {
         paused = true;
         text('pause', '▶ Resume');
+        get<HTMLButtonElement>('step').disabled = true;
         text('run-state', 'STOPPED');
       }
       return;
@@ -345,6 +350,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       updates = 0;
       paused = false;
       text('pause', 'Ⅱ Pause');
+      get<HTMLButtonElement>('step').disabled = true;
       text('run-state', 'LIVE');
       root.classList.remove('paused');
       for (const id of ['seed', 'mutation', 'nutrients', 'climate'] as const)
@@ -401,6 +407,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         b.addEventListener('click', () => {
           blueprint = structuredClone(species.genome);
           editor();
+          get<HTMLDetailsElement>('specimen-details').open = false;
           tab('organism');
         });
         list.append(b);

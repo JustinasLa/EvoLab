@@ -1,7 +1,8 @@
 import { test, expect } from '@playwright/test';
 async function pause(page: import('@playwright/test').Page): Promise<void> {
-  await page.getByRole('button', { name: 'Pause', exact: false }).click();
+  await page.getByRole('button', { name: 'Ⅱ Pause', exact: true }).click();
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  await expect(page.getByTitle('Advance one tick while paused')).toBeEnabled();
   await page.waitForTimeout(150);
 }
 async function coordinate(
@@ -70,7 +71,9 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   const pos = await coordinate(page, (o.x + dx + 240) % 240, (o.y + dy + 156) % 156);
   await page.mouse.click(pos.x, pos.y);
   await expect(page.locator('#inspector')).toContainText(`Organism ${o.id}`);
+  await expect(page.locator('#specimen-details')).toHaveAttribute('open', '');
   await page.getByRole('button', { name: 'Edit this organism' }).click();
+  await expect(page.locator('#specimen-details')).not.toHaveAttribute('open');
   await expect(page.locator('#notice')).toContainText('Anatomy copied');
   await page.getByRole('button', { name: 'Place in world' }).click();
   await expect(page.locator('button[data-tool="plant"]')).toHaveAttribute('aria-pressed', 'true');
@@ -102,10 +105,15 @@ test('designer, world tools, camera, shortcuts and invalid saves behave in Chrom
   await expect(page.locator('#notice')).toContainText('connected');
   await page.getByRole('button', { name: 'Reset', exact: true }).click();
   await page.getByRole('button', { name: 'Motor', exact: true }).click();
+  await expect(page.locator('#cell-description')).toContainText('Moves');
   await page.getByRole('button', { name: 'Cell 0, 1', exact: true }).click();
   await page.locator('#preference').fill('0.75');
   await expect(page.locator('#preference-value')).toHaveText('30°');
+  await expect(page.locator('#brush-control')).toBeHidden();
   await page.getByTitle('Paint nutrients (F)').click();
+  await expect(page.locator('#brush-control')).toBeVisible();
+  await page.getByRole('slider', { name: 'Radius' }).fill('5');
+  await expect(page.locator('#brush-value')).toHaveText('5 cells');
   let at = await coordinate(page, 100, 80);
   await page.mouse.move(at.x, at.y);
   await page.mouse.down();
@@ -117,6 +125,8 @@ test('designer, world tools, camera, shortcuts and invalid saves behave in Chrom
   await page.mouse.click(at.x, at.y);
   await page.getByTitle('Zoom in', { exact: true }).click();
   await page.getByTitle('Pan world (H)').click();
+  await expect(page.locator('#brush-control')).toBeHidden();
+  await expect(page.locator('#tool-hint')).toContainText('Drag');
   await page.mouse.move(at.x, at.y);
   await page.mouse.down();
   await page.mouse.move(at.x + 30, at.y + 30);

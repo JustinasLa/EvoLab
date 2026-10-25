@@ -107,8 +107,9 @@ describe('ecosystem desk', () => {
     paint(0);
     window.dispatchEvent(new Event('resize'));
     click('step');
-    expect(get('notice').textContent).toContain('Pause');
+    expect(get<HTMLButtonElement>('step').disabled).toBe(true);
     click('pause');
+    expect(get<HTMLButtonElement>('step').disabled).toBe(false);
     click('step');
     expect(worker.postMessage).toHaveBeenLastCalledWith({ type: 'step' });
     click('pause');
@@ -144,6 +145,7 @@ describe('ecosystem desk', () => {
     expect(root.querySelectorAll('.lineage')).toHaveLength(3);
     root.querySelector<HTMLButtonElement>('.lineage')!.click();
     expect(get('organism-panel').hidden).toBe(false);
+    expect(get<HTMLDetailsElement>('specimen-details').open).toBe(false);
     emit(sample, organism);
     expect(get('inspector').textContent).toContain(`Organism ${organism.id}`);
     click('copy-organism');
@@ -169,6 +171,7 @@ describe('ecosystem desk', () => {
     pointer('pointerdown', -500, -500);
     window.dispatchEvent(new Event('pointerup'));
     pointer('pointerdown');
+    expect(get<HTMLDetailsElement>('specimen-details').open).toBe(true);
     expect(worker.postMessage).toHaveBeenLastCalledWith(
       expect.objectContaining({ type: 'inspect' }),
     );
