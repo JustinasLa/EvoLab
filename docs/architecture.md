@@ -43,10 +43,13 @@ numeric limits before placement.
 
 ## Interface
 
-The habitat is the main workspace. Tool controls sit outside the drawing area,
-so they do not obscure organisms or intercept painting. Painting exposes radius
-controls in the tool strip; inspection, pan and planting show their own short
-instruction. Playback and world files remain in the top bar.
+The habitat fills the main workspace without a top toolbar or bottom legend.
+Playback, camera controls, tools, world status, ecosystem panels, world files and
+help all live in the right sidebar, outside the drawing area. Playback remains
+visible above the independently scrolling controls. Painting exposes radius
+controls below the tools; inspection, pan and planting show their own short
+instruction. The cell legend and keyboard shortcuts are in a collapsible sidebar
+section.
 
 The interface adapts the Even Hub companion-app hierarchy: 12 px screen margins,
 16 px card insets, 6 px card and control radii, segmented tabs and tools, and
@@ -63,7 +66,7 @@ an organism opens its inspector; copying its anatomy folds the inspector away to
 make room for the connected-body editor. Placing a design brings the habitat back
 into view, including on phones.
 
-On desktop the control panel scrolls independently. On phones it follows the
+On desktop the sidebar scrolls independently. On phones it follows the
 habitat; the habitat keeps the world's aspect ratio without empty vertical bands.
 The UI does not add a marketing header or explanatory cards around the simulation.
 
@@ -71,6 +74,9 @@ The UI does not add a marketing header or explanatory cards around the simulatio
 
 Version-2 JSON contains settings, counters, random state, active climate event,
 food, walls and complete living-organism records. Imports are limited to 2.5 MB.
+The version-2 `settings.nutrients` field is retained for compatibility and now
+means the maximum per-leaf food-production chance in percent, not nutrient rain.
+Restored food is kept, but no off-plant random food generation resumes.
 Validation rejects invalid coordinates, topology, duplicate IDs, collisions,
 invalid versions, unbounded arrays, or invalid numeric fields before replacing
 the running world. Food under an imported wall is normalized away.

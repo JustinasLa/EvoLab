@@ -48,7 +48,6 @@ export class Ecosystem {
     if (seed) this.seed();
   }
   seed(): void {
-    for (let i = 0; i < 2200; i++) this.food[this.random.int(this.food.length)] = 1;
     // Porous mineral ridges partition habitats without sealing them off.
     for (let i = 0; i < 7; i++) {
       const x = 20 + this.random.int(WIDTH - 40),
@@ -60,15 +59,11 @@ export class Ecosystem {
           this.food[p] = 0;
         }
     }
-    for (let i = 0; i < 280; i++) {
-      const kind = i % 10 < 5 ? 0 : i % 10 < 8 ? 1 : 2;
-      this.spawn(
-        founder(kind, 0.25 + this.random.next() * 0.5),
-        this.random.int(WIDTH),
-        this.random.int(HEIGHT),
-        kind + 1,
-      );
-    }
+    const genome = founder(0),
+      x = WIDTH / 2,
+      y = HEIGHT / 2;
+    for (const position of positions({ genome, x, y, rotation: 0 })) this.walls[position] = 0;
+    this.spawn(genome, x, y, 1);
   }
   canPlace(o: Pick<Organism, 'x' | 'y' | 'rotation' | 'genome'>, ignore = 0): boolean {
     return positions(o).every(
@@ -114,7 +109,6 @@ export class Ecosystem {
   kill(o: Organism): void {
     for (const i of positions(o)) {
       this.occupied[i] = 0;
-      this.food[i] = 1;
     }
     this.organisms.delete(o.id);
     this.deaths++;
@@ -137,10 +131,6 @@ export class Ecosystem {
   }
   step(): void {
     this.tick++;
-    for (let i = 0; i < this.settings.nutrients; i++) {
-      const p = this.random.int(this.food.length);
-      if (!this.occupied[p] && !this.walls[p]) this.food[p] = 1;
-    }
     const daylight = 0.65 + 0.35 * Math.sin(this.tick / 180);
     for (const o of [...this.organisms.values()]) {
       if (!this.organisms.has(o.id)) continue;
@@ -163,7 +153,7 @@ export class Ecosystem {
           y = Math.floor(p / WIDTH);
         if (type === 4) {
           o.energy += 0.04 * daylight * (1 - stress);
-          if (this.random.next() < 0.055 * daylight * (1 - stress)) {
+          if (this.random.next() < (this.settings.nutrients / 100) * daylight * (1 - stress)) {
             const [dx, dy] = DIRECTIONS[this.random.int(4)],
               n = index(x + dx, y + dy);
             if (!this.occupied[n] && !this.walls[n]) this.food[n] = 1;
@@ -279,14 +269,7 @@ export class Ecosystem {
         for (let dx = -radius; dx <= radius; dx++)
           if (dx * dx + dy * dy <= radius * radius) this.food[index(x + dx, y + dy)] = 0;
   }
-  shock(kind: string): void {
-    if (kind === 'bloom') {
-      for (let i = 0; i < 5000; i++) {
-        const p = this.random.int(this.food.length);
-        if (!this.walls[p] && !this.occupied[p]) this.food[p] = 1;
-      }
-      return;
-    }
+  shock(kind: 'cold' | 'heat'): void {
     this.eventOffset = kind === 'cold' ? -0.32 : 0.32;
     this.eventUntil = this.tick + 900;
   }

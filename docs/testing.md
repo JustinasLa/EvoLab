@@ -25,9 +25,15 @@ written to `coverage/` and uploaded by CI.
   movement, sensors, predation, armor and reproduction.
 - Mutation repeatedly checks connected anatomy and bounded inherited traits.
 - Climate checks compare adapted versus mismatched organisms and the upkeep cost
-  of broad tolerance, and verify event expiry and food blooms.
+  of broad tolerance, and verify event expiry without generating food.
+- Plant-food tests verify empty starting terrain, no food without leaves or from
+  deaths, local production across wrapped edges, wall and organism exclusion,
+  disabling production, and preservation of food in imported saves.
 - Seeded worlds match one another. Export/import tests restore complete state and
   check that both copies continue identically, including RNG and update order.
+- New worlds and worker restarts begin with one founder, one lineage and zero
+  births. Multiple seeds verify a clear central footprint; saved worlds with
+  multiple organisms retain their full population when restored.
 - Persistence rejects huge files, malformed versions, bad terrain, invalid anatomy,
   duplicate organism IDs and overlapping bodies.
 - Worker tests cover pause, resume, single-step, speed, edits, inspection, errors,
@@ -57,6 +63,6 @@ identity, or a fixed performance capacity.
 
 Open feature PRs against protected `main`. The branch requires a PR, linear
 history and squash merging, and rejects deletion and force pushes. Push logical
-milestones regularly; use draft PRs while verification is incomplete. Shared TF
-PR-size automation labels changes. Update project guides with behavior changes;
+milestones regularly; use draft PRs while verification is incomplete. A repository-local
+PR-size workflow labels changes. Update project guides with behavior changes;
 keep raw logs and session captures in ignored `.scratch/` or PR discussion.

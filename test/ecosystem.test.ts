@@ -78,17 +78,53 @@ describe('genomes and coordinates', () => {
 });
 
 describe('a shared, living world', () => {
+  it('starts with exactly one central founder and a clear footprint for every tested seed', () => {
+    for (const seed of [0, 1, 42, 100, 123, 4294967295]) {
+      const world = new Ecosystem({ ...DEFAULTS, seed }),
+        [organism] = world.organisms.values();
+      expect(world.organisms.size).toBe(1);
+      expect(organism).toMatchObject({
+        id: 1,
+        species: 1,
+        x: WIDTH / 2,
+        y: HEIGHT / 2,
+        rotation: 0,
+        age: 0,
+        generation: 0,
+        children: 0,
+        ancestry: [],
+        genome: founder(0),
+      });
+      expect(world.frame().stats).toMatchObject({
+        tick: 0,
+        population: 1,
+        species: 1,
+        births: 0,
+        deaths: 0,
+        generation: 0,
+      });
+      expect([...world.occupied].filter(Boolean)).toHaveLength(organism.genome.cells.length);
+      for (const position of positions(organism)) {
+        expect(world.occupied[position]).toBe(organism.id);
+        expect(world.walls[position]).toBe(0);
+        expect(world.food[position]).toBe(0);
+      }
+      expect(world.food.some(Boolean)).toBe(false);
+      expect(world.walls.some(Boolean)).toBe(true);
+    }
+  });
   it('reproduces the same ecosystem from the same seed, then changes through actual births and deaths', () => {
     const a = new Ecosystem(),
       b = new Ecosystem();
     expect(a.save()).toEqual(b.save());
-    for (let i = 0; i < 350; i++) {
+    for (let i = 0; i < 1600; i++) {
       a.step();
       b.step();
     }
     expect(a.save()).toEqual(b.save());
     expect(a.births).toBeGreaterThan(0);
     expect(a.deaths).toBeGreaterThan(0);
+    expect(a.organisms.has(1)).toBe(false);
     expect(a.frame().stats.generation).toBeGreaterThan(0);
     expect(a.frame().stats.top.length).toBeLessThanOrEqual(5);
     expect([...a.food.keys()].some((i) => a.food[i] && a.walls[i])).toBe(false);
@@ -108,10 +144,46 @@ describe('a shared, living world', () => {
     eater.energy = 0;
     w.step();
     expect(w.organisms.has(eater.id)).toBe(false);
-    expect(w.food[index(10, 10)]).toBe(1);
+    expect(w.food[index(10, 10)]).toBe(0);
     leaf.age = 2000;
     w.step();
     expect(w.organisms.has(leaf.id)).toBe(false);
+  });
+  it('does not scatter food without leaves, including after deaths and climate events', () => {
+    const world = new Ecosystem({ ...DEFAULTS, nutrients: 20, climate: 0 }, false);
+    world.spawn(single(3), 20, 20);
+    world.spawn(single(7), 40, 40);
+    world.shock('cold');
+    world.shock('heat');
+    for (let tick = 0; tick < 1000; tick++) world.step();
+    expect(world.organisms.size).toBe(0);
+    expect(world.deaths).toBe(2);
+    expect(world.births).toBe(0);
+    expect(world.food.some(Boolean)).toBe(false);
+  });
+  it('produces food beside leaves only, respecting wrapped edges, walls, occupancy and the rate', () => {
+    const world = new Ecosystem({ ...DEFAULTS, nutrients: 20, climate: 0 }, false);
+    world.spawn(single(4), 0, 0);
+    world.spawn(single(7), 1, 0);
+    world.walls[index(0, -1)] = 1;
+    for (let tick = 0; tick < 100; tick++) world.step();
+    const food = world.save().food,
+      allowed = new Set([index(-1, 0), index(0, 1)]);
+    expect(food.length).toBeGreaterThan(0);
+    expect(food.every((position) => allowed.has(position))).toBe(true);
+    expect(world.food[index(0, -1)]).toBe(0);
+    expect(world.food[index(1, 0)]).toBe(0);
+    world.settings.nutrients = 0;
+    world.food.fill(0);
+    for (let tick = 0; tick < 100; tick++) world.step();
+    expect(world.food.some(Boolean)).toBe(false);
+  });
+  it('retains food from saved worlds without resuming random food generation', () => {
+    const world = new Ecosystem({ ...DEFAULTS, nutrients: 20, climate: 0 }, false);
+    world.food[index(10, 10)] = 1;
+    const restored = Ecosystem.load(JSON.stringify(world.save()));
+    for (let tick = 0; tick < 1000; tick++) restored.step();
+    expect(restored.save().food).toEqual([index(10, 10)]);
   });
   it('requires room for births and movement, and wraps at world edges', () => {
     const w = empty(),
@@ -165,6 +237,27 @@ describe('a shared, living world', () => {
     expect(blind.x).toBe(50);
     expect(blind.rotation).toBe(1);
   });
+  it('makes sighted foragers avoid nearby organisms while predators approach them', () => {
+    for (const predator of [false, true]) {
+      const world = empty(),
+        genome: Genome = {
+          cells: [
+            { x: 0, y: 0, type: 5 },
+            { x: -1, y: 0, type: 8 },
+            { x: 0, y: -1, type: predator ? 6 : 3 },
+          ],
+          preference: 0.5,
+          tolerance: 0.3,
+          tempo: 2,
+        },
+        observer = world.spawn(genome, 20, 20)!;
+      world.spawn(single(), 22, 20);
+      observer.age = 1;
+      world.step();
+      expect(observer.x).toBe(predator ? 21 : 20);
+      expect(observer.y).toBe(predator ? 20 : 21);
+    }
+  });
   it('inherits anatomy and temperature preferences, with mutation creating new lineages', () => {
     for (const mutation of [0, 0.4]) {
       const w = empty();
@@ -199,9 +292,6 @@ describe('a shared, living world', () => {
     expect(w.frame().offset).toBe(0);
     w.tick = 2800;
     expect(w.frame().stats.season).toBe('Cold season');
-    const food = w.frame().stats.food;
-    w.shock('bloom');
-    expect(w.frame().stats.food).toBeGreaterThan(food);
   });
   it('makes broad climate tolerance cost energy in a comfortable habitat', () => {
     const w = empty();
@@ -235,8 +325,11 @@ describe('whole-world persistence', () => {
   it('restores every organism, terrain, counters and RNG state and continues identically', () => {
     const w = new Ecosystem();
     for (let i = 0; i < 100; i++) w.step();
+    expect(w.spawn(founder(1), 2, 10)).toBeDefined();
+    expect(w.spawn(founder(2), 2, 25)).toBeDefined();
     w.shock('heat');
     const saved = w.save();
+    expect(saved.organisms.length).toBeGreaterThan(1);
     const restored = Ecosystem.load(JSON.stringify(saved));
     expect(restored.save()).toEqual(saved);
     for (let i = 0; i < 100; i++) {

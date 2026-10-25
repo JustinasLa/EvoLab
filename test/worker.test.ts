@@ -21,7 +21,13 @@ describe('worker control and persistence', () => {
     send({ type: 'start', settings: {}, runId: 1 });
     expect(last().type).toBe('error');
     send({ type: 'start', settings: DEFAULTS, runId: 1 });
-    expect(last().frame.stats.population).toBeGreaterThan(0);
+    expect(last().frame.stats).toMatchObject({
+      tick: 0,
+      population: 1,
+      births: 0,
+      species: 1,
+      food: 0,
+    });
     send({ type: 'resume' });
     expect(tasks).toHaveLength(1);
     send({ type: 'pause' });
@@ -37,6 +43,9 @@ describe('worker control and persistence', () => {
     expect(last().frame.stats.tick).toBe(13);
     send({ type: 'settings', settings: { nutrients: 10 } });
     send({ type: 'settings', settings: { nutrients: -1 } });
+    const beforeBloom = vi.mocked(scope.postMessage).mock.calls.length;
+    send({ type: 'shock', kind: 'bloom' });
+    expect(scope.postMessage).toHaveBeenCalledTimes(beforeBloom);
     send({ type: 'paint', tool: 'food', x: 20, y: 20, radius: 2, genome: founder(0) });
     send({ type: 'paint', tool: 'plant', x: 40, y: 40, radius: 0, genome: founder(0) });
     send({ type: 'inspect', x: 40, y: 40 });
@@ -54,6 +63,12 @@ describe('worker control and persistence', () => {
     expect(last().runId).toBe(3);
     send({ type: 'snapshot' });
     expect(last().frame.stats.tick).toBe(13);
+    const savedPopulation = JSON.parse(save).organisms.length;
+    expect(savedPopulation).toBeGreaterThan(1);
+    expect(last().frame.stats.population).toBe(savedPopulation);
+    send({ type: 'start', settings: { ...DEFAULTS, seed: 123 }, runId: 4 });
+    expect(last().runId).toBe(4);
+    expect(last().frame.stats).toMatchObject({ tick: 0, population: 1, births: 0, species: 1 });
     send({ type: 'unknown' });
   });
   it('reports failed ticks and reads without duplicating evaluation', () => {

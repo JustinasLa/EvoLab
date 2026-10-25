@@ -11,5 +11,5 @@ An open-ended cellular ecosystem with inherited climate adaptation.
 - [Inspiration and third-party credits](credits.md)
 
 This is a standalone personal project. Its guides live alongside the source. It
-uses no Minecraft infrastructure, production player data, hosted inference,
+uses no unrelated infrastructure, production user data, hosted inference,
 accounts, or runtime external services.

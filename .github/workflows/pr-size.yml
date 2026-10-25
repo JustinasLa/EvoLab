@@ -19,8 +19,31 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: TF-Minecraft/TLibs/.github/actions/pr-size@0bfb259256648c6139c6a94a0935492830cbbec9
+      - name: Label changed lines
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          changes=$(gh pr view "$PR_NUMBER" --json additions,deletions --jq '.additions + .deletions')
+          if (( changes < 10 )); then
+            size=XS
+          elif (( changes < 100 )); then
+            size=S
+          elif (( changes < 500 )); then
+            size=M
+          elif (( changes < 1000 )); then
+            size=L
+          else
+            size=XL
+          fi
+          target="size/$size"
+          gh label create "$target" --color bfd4f2 --description "PR size: $size" --force
+          while IFS= read -r label; do
+            if [[ "$label" != "$target" ]]; then
+              gh pr edit "$PR_NUMBER" --remove-label "$label"
+            fi
+          done < <(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name | select(startswith("size/"))')
+          gh pr edit "$PR_NUMBER" --add-label "$target"

@@ -4,8 +4,8 @@
 
 An original cellular ecosystem inspired by The Life Engine, with drifting climate
 and inherited temperature adaptation. Read `docs/README.md`, `docs/evolution.md`
-and `docs/architecture.md` before changing behavior. Keep TF production services
-and private assets out of this standalone project.
+and `docs/architecture.md` before changing behavior. Keep unrelated production
+services and private assets out of this standalone project.
 
 ## Implementation
 

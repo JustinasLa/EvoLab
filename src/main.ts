@@ -224,7 +224,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       settings[id] = Number(get<HTMLInputElement>(id).value);
       text(
         `${id}-value`,
-        id === 'nutrients' ? `${settings[id]} / tick` : `${Math.round(settings[id] * 100)}%`,
+        id === 'nutrients' ? `${settings[id]}%` : `${Math.round(settings[id] * 100)}%`,
       );
       send({ type: 'settings', settings: { [id]: settings[id] } });
     });
@@ -360,7 +360,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         get<HTMLInputElement>(id).value = String(settings[id]);
       text('mutation-value', `${Math.round(settings.mutation * 100)}%`);
       text('climate-value', `${Math.round(settings.climate * 100)}%`);
-      text('nutrients-value', `${settings.nutrients} / tick`);
+      text('nutrients-value', `${settings.nutrients}%`);
       text('world-label', `WORLD ${String(settings.seed).padStart(4, '0')}`);
       notice('World restored. Its evolution continues from the saved state.');
       return;
@@ -382,14 +382,15 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     dirty = true;
     updates++;
     const s = frame!.stats;
+    const lineages = `${s.species} lineage${s.species === 1 ? '' : 's'}`;
     text('population', s.population.toLocaleString());
-    text('species-count', `${s.species} lineages`);
+    text('species-count', lineages);
     text('births', String(s.births));
     text('deaths', String(s.deaths));
     text('food-count', String(s.food));
     text('generation', `GEN ${s.generation}`);
     text('tick', `TICK ${s.tick.toLocaleString()}`);
-    text('world-count', `${s.population} organisms · ${s.species} lineages`);
+    text('world-count', `${s.population} organism${s.population === 1 ? '' : 's'} · ${lineages}`);
     text('season', s.season);
     text('weather', s.event);
     if (updates % 4 === 1) {

@@ -102,6 +102,35 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe('ecosystem desk', () => {
+  it('keeps the habitat clear and consolidates the interface in the sidebar', () => {
+    const sidebar = root.querySelector('.sidebar')!,
+      stage = root.querySelector('.world-stage')!;
+    expect(stage.children).toHaveLength(1);
+    expect(stage.firstElementChild).toBe(get('world').parentElement);
+    for (const id of [
+      'pause',
+      'step',
+      'speed',
+      'zoom-in',
+      'zoom-out',
+      'fit',
+      'brush',
+      'world-label',
+      'run-state',
+      'tick',
+      'world-count',
+      'ecosystem-panel',
+      'organism-panel',
+      'save',
+      'load',
+      'help',
+      'notice',
+    ])
+      expect(sidebar.contains(get(id))).toBe(true);
+    expect(sidebar.contains(root.querySelector('.tool-dock'))).toBe(true);
+    expect(sidebar.contains(root.querySelector('.cell-legend'))).toBe(true);
+    expect(root.querySelector<HTMLDetailsElement>('.legend')!.open).toBe(false);
+  });
   it('starts immediately, pauses, single-steps, changes settings live and reseeds', () => {
     expect(worker.postMessage).toHaveBeenCalledWith({
       type: 'start',
@@ -123,7 +152,7 @@ describe('ecosystem desk', () => {
     set('nutrients', '8');
     set('climate', '.5');
     set('brush', '5');
-    expect(get('nutrients-value').textContent).toBe('8 / tick');
+    expect(get('nutrients-value').textContent).toBe('8%');
     expect(get('brush-value').textContent).toBe('5 cells');
     root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
     expect(worker.postMessage).toHaveBeenLastCalledWith({ type: 'shock', kind: 'heat' });
@@ -146,7 +175,16 @@ describe('ecosystem desk', () => {
     paint(1);
     paint(2);
     window.dispatchEvent(new Event('resize'));
+    expect(root.querySelectorAll('.lineage')).toHaveLength(1);
+    expect(get('species-count').textContent).toBe('1 lineage');
+    expect(get('world-count').textContent).toBe('1 organism · 1 lineage');
+    const populated = Ecosystem.load(JSON.stringify(world.save()));
+    populated.spawn(founder(1), 2, 10, 2);
+    populated.spawn(founder(2), 2, 25, 3);
+    for (let update = 0; update < 12; update++) emit(populated.frame());
     expect(root.querySelectorAll('.lineage')).toHaveLength(3);
+    expect(get('species-count').textContent).toBe('3 lineages');
+    expect(get('world-count').textContent).toBe('3 organisms · 3 lineages');
     root.querySelector<HTMLButtonElement>('.lineage')!.click();
     expect(get('organism-panel').hidden).toBe(false);
     expect(get<HTMLDetailsElement>('specimen-details').open).toBe(false);
@@ -288,6 +326,7 @@ describe('ecosystem desk', () => {
     });
     expect(get('notice').textContent).toContain('World restored');
     expect(get<HTMLInputElement>('seed').value).toBe('88');
+    expect(get('nutrients-value').textContent).toBe('8%');
     upload({ size: 2500001, text: async () => '' });
     await vi.waitFor(() => expect(get('notice').textContent).toContain('2.5 MB'));
     upload({

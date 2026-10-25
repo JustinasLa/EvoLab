@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { WIDTH, HEIGHT, type WorldFile } from '../../src/model';
 test('Even Hub-style cards retain the dark palette and crisp cellular editor', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#population')).not.toHaveText('—');
@@ -41,7 +42,9 @@ test('Even Hub-style cards retain the dark palette and crisp cellular editor', a
   await expect(page.locator('#ecosystem-panel')).toBeVisible();
 });
 
-test('panels keep tools outside the habitat at every layout width', async ({ page }) => {
+test('all controls share the sidebar without crowding the habitat at every layout width', async ({
+  page,
+}) => {
   await page.goto('/');
   await expect(page.getByRole('link', { name: 'EvoLab / Drift' })).toContainText('drift');
   for (const width of [360, 390, 760, 780, 1024, 1280, 1600]) {
@@ -52,23 +55,52 @@ test('panels keep tools outside the habitat at every layout width', async ({ pag
       const sidebar = document.querySelector('.sidebar')!.getBoundingClientRect();
       return {
         fits: document.documentElement.scrollWidth <= innerWidth,
-        toolsAbove: tools.bottom <= habitat.top,
+        toolsOutside: tools.left >= habitat.right || tools.top >= habitat.bottom,
         panelsSeparate: sidebar.left >= habitat.right || sidebar.top >= habitat.bottom,
-        controlsFit: [...document.querySelectorAll('.topbar button, .tool-dock button')].every(
+        habitatFillsWorkspace:
+          innerWidth <= 760 || (habitat.top === sidebar.top && habitat.bottom === sidebar.bottom),
+        pageFits: innerWidth <= 760 || document.documentElement.scrollHeight <= innerHeight,
+        controlsFit: [...document.querySelectorAll('.sidebar button, .sidebar select')].every(
           (button) => button.scrollWidth <= button.clientWidth,
         ),
+        controlsInSidebar: [
+          '.topbar',
+          '.simulation-controls',
+          '.world-heading',
+          '.tool-dock',
+          '.tool-options',
+          '.world-bottom',
+          '.tabs',
+          '.panel',
+          'footer',
+        ].every((selector) => document.querySelector(selector)!.closest('.sidebar') !== null),
+        unobstructed: document.querySelector('.world-stage')!.children.length === 1,
       };
     });
     expect(layout).toEqual({
       fits: true,
-      toolsAbove: true,
+      toolsOutside: true,
       panelsSeparate: true,
+      habitatFillsWorkspace: true,
+      pageFits: true,
       controlsFit: true,
+      controlsInSidebar: true,
+      unobstructed: true,
     });
   }
+  const habitat = await page.locator('#world').boundingBox();
   await page.getByText('World settings', { exact: true }).click();
   await page.getByRole('button', { name: 'Reseed world' }).scrollIntoViewIfNeeded();
   await expect(page.getByRole('button', { name: 'Reseed world' })).toBeInViewport();
+  expect(await page.locator('#world').boundingBox()).toEqual(habitat);
+  await page.getByText('Cell legend & shortcuts', { exact: true }).click();
+  await expect(page.locator('.cell-legend')).toBeVisible();
+  await expect(page.locator('.footer-note')).toContainText('Space: pause');
+  await expect(page.getByRole('link', { name: 'Source', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Help', exact: true }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.getByRole('button', { name: 'Close help' }).click();
+  await expect(page.getByRole('dialog')).toBeHidden();
 });
 
 async function pause(page: import('@playwright/test').Page): Promise<void> {
@@ -95,6 +127,58 @@ async function coordinate(
     { x, y },
   );
 }
+async function downloadWorld(page: import('@playwright/test').Page): Promise<Buffer> {
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save world' }).click();
+  const download = await downloadPromise,
+    stream = await download.createReadStream(),
+    chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
+test('new and reseeded worlds begin with one creature and no births', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('#population')).toHaveText('1');
+  await pause(page);
+  await expect(page.locator('#population')).toHaveText('1');
+  await expect(page.locator('#births')).toHaveText('0');
+  await expect(page.locator('#species-count')).toHaveText('1 lineage');
+  await expect(page.locator('#world-count')).toHaveText('1 organism · 1 lineage');
+  await expect(page.locator('#lineages .lineage')).toHaveCount(1);
+  await page.getByText('World settings', { exact: true }).click();
+  await expect(page.getByRole('slider', { name: 'Leaf food chance' })).toHaveValue('5');
+  await expect(page.getByText('Nutrient rain', { exact: true })).toHaveCount(0);
+  await page.locator('#seed').fill('100');
+  await page.getByRole('button', { name: 'Reseed world' }).click();
+  await expect(page.locator('#world-label')).toHaveText('WORLD 0100');
+  await pause(page);
+  await expect(page.locator('#population')).toHaveText('1');
+  await expect(page.locator('#births')).toHaveText('0');
+  await expect(page.locator('#generation')).toHaveText('GEN 0');
+  const world = JSON.parse((await downloadWorld(page)).toString()) as WorldFile,
+    [organism] = world.organisms;
+  expect(world.organisms).toHaveLength(1);
+  expect(organism.rotation).toBe(0);
+  const allowed = new Set(
+    organism.genome.cells
+      .filter((cell) => cell.type === 4)
+      .flatMap((cell) =>
+        [
+          [1, 0],
+          [0, 1],
+          [-1, 0],
+          [0, -1],
+        ].map(
+          ([offsetX, offsetY]) =>
+            ((organism.y + cell.y + offsetY + HEIGHT) % HEIGHT) * WIDTH +
+            ((organism.x + cell.x + offsetX + WIDTH) % WIDTH),
+        ),
+      ),
+  );
+  expect(world.food.every((position) => allowed.has(position))).toBe(true);
+});
+
 test('a live ecosystem evolves, pauses, paints, inspects and restores a whole world', async ({
   page,
 }) => {
@@ -120,21 +204,11 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   await expect(page.locator('#thermal')).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: 'Cold snap' }).click();
   await expect(page.locator('#weather')).toContainText('Cold snap');
-  const oldFood = Number(await page.locator('#food-count').textContent());
-  await page.getByRole('button', { name: 'Bloom', exact: true }).click();
-  await expect
-    .poll(async () => Number(await page.locator('#food-count').textContent()))
-    .toBeGreaterThan(oldFood);
-  const downloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save world' }).click();
-  const download = await downloadPromise,
-    stream = await download.createReadStream(),
-    chunks: Buffer[] = [];
-  for await (const chunk of stream) chunks.push(chunk);
-  const saved = Buffer.concat(chunks),
+  await expect(page.locator('[data-shock="bloom"]')).toHaveCount(0);
+  const saved = await downloadWorld(page),
     world = JSON.parse(saved.toString());
   expect(world.version).toBe(2);
-  expect(world.organisms.length).toBeGreaterThan(0);
+  expect(world.organisms.length).toBeGreaterThan(1);
   const o = world.organisms[0],
     c = o.genome.cells[0];
   let dx = c.x,
@@ -161,6 +235,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
     .locator('#file')
     .setInputFiles({ name: 'world.json', mimeType: 'application/json', buffer: saved });
   await expect(page.locator('#notice')).toContainText('World restored');
+  await expect(page.locator('#population')).toHaveText(String(world.organisms.length));
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(errors).toEqual([]);
   expect(external).toEqual([]);
