@@ -78,17 +78,53 @@ describe('genomes and coordinates', () => {
 });
 
 describe('a shared, living world', () => {
+  it('starts with exactly one central founder and a clear footprint for every tested seed', () => {
+    for (const seed of [0, 1, 42, 100, 123, 4294967295]) {
+      const world = new Ecosystem({ ...DEFAULTS, seed }),
+        [organism] = world.organisms.values();
+      expect(world.organisms.size).toBe(1);
+      expect(organism).toMatchObject({
+        id: 1,
+        species: 1,
+        x: WIDTH / 2,
+        y: HEIGHT / 2,
+        rotation: 0,
+        age: 0,
+        generation: 0,
+        children: 0,
+        ancestry: [],
+        genome: founder(0),
+      });
+      expect(world.frame().stats).toMatchObject({
+        tick: 0,
+        population: 1,
+        species: 1,
+        births: 0,
+        deaths: 0,
+        generation: 0,
+      });
+      expect([...world.occupied].filter(Boolean)).toHaveLength(organism.genome.cells.length);
+      for (const position of positions(organism)) {
+        expect(world.occupied[position]).toBe(organism.id);
+        expect(world.walls[position]).toBe(0);
+        expect(world.food[position]).toBe(0);
+      }
+      expect(world.food.some(Boolean)).toBe(true);
+      expect(world.walls.some(Boolean)).toBe(true);
+    }
+  });
   it('reproduces the same ecosystem from the same seed, then changes through actual births and deaths', () => {
     const a = new Ecosystem(),
       b = new Ecosystem();
     expect(a.save()).toEqual(b.save());
-    for (let i = 0; i < 350; i++) {
+    for (let i = 0; i < 1600; i++) {
       a.step();
       b.step();
     }
     expect(a.save()).toEqual(b.save());
     expect(a.births).toBeGreaterThan(0);
     expect(a.deaths).toBeGreaterThan(0);
+    expect(a.organisms.has(1)).toBe(false);
     expect(a.frame().stats.generation).toBeGreaterThan(0);
     expect(a.frame().stats.top.length).toBeLessThanOrEqual(5);
     expect([...a.food.keys()].some((i) => a.food[i] && a.walls[i])).toBe(false);
@@ -235,8 +271,11 @@ describe('whole-world persistence', () => {
   it('restores every organism, terrain, counters and RNG state and continues identically', () => {
     const w = new Ecosystem();
     for (let i = 0; i < 100; i++) w.step();
+    expect(w.spawn(founder(1), 2, 10)).toBeDefined();
+    expect(w.spawn(founder(2), 2, 25)).toBeDefined();
     w.shock('heat');
     const saved = w.save();
+    expect(saved.organisms.length).toBeGreaterThan(1);
     const restored = Ecosystem.load(JSON.stringify(saved));
     expect(restored.save()).toEqual(saved);
     for (let i = 0; i < 100; i++) {

@@ -27,7 +27,7 @@ and interface are original; no upstream code or assets are copied.
 [Project documentation](docs/README.md)
 
 Technical documentation is maintained in this repository's [docs](docs/README.md)
-folder, using the TF-Minecraft project-guide structure.
+folder.
 
 ## Tests and coverage
 

@@ -146,7 +146,16 @@ describe('ecosystem desk', () => {
     paint(1);
     paint(2);
     window.dispatchEvent(new Event('resize'));
+    expect(root.querySelectorAll('.lineage')).toHaveLength(1);
+    expect(get('species-count').textContent).toBe('1 lineage');
+    expect(get('world-count').textContent).toBe('1 organism · 1 lineage');
+    const populated = Ecosystem.load(JSON.stringify(world.save()));
+    populated.spawn(founder(1), 2, 10, 2);
+    populated.spawn(founder(2), 2, 25, 3);
+    for (let update = 0; update < 12; update++) emit(populated.frame());
     expect(root.querySelectorAll('.lineage')).toHaveLength(3);
+    expect(get('species-count').textContent).toBe('3 lineages');
+    expect(get('world-count').textContent).toBe('3 organisms · 3 lineages');
     root.querySelector<HTMLButtonElement>('.lineage')!.click();
     expect(get('organism-panel').hidden).toBe(false);
     expect(get<HTMLDetailsElement>('specimen-details').open).toBe(false);

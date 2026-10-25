@@ -60,15 +60,11 @@ export class Ecosystem {
           this.food[p] = 0;
         }
     }
-    for (let i = 0; i < 280; i++) {
-      const kind = i % 10 < 5 ? 0 : i % 10 < 8 ? 1 : 2;
-      this.spawn(
-        founder(kind, 0.25 + this.random.next() * 0.5),
-        this.random.int(WIDTH),
-        this.random.int(HEIGHT),
-        kind + 1,
-      );
-    }
+    const genome = founder(0),
+      x = WIDTH / 2,
+      y = HEIGHT / 2;
+    for (const position of positions({ genome, x, y, rotation: 0 })) this.walls[position] = 0;
+    this.spawn(genome, x, y, 1);
   }
   canPlace(o: Pick<Organism, 'x' | 'y' | 'rotation' | 'genome'>, ignore = 0): boolean {
     return positions(o).every(

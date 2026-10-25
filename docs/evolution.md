@@ -6,8 +6,12 @@
 
 The world is a 240 × 156 cell grid with wrapped boundaries. A creature leaving one
 edge returns on the opposite edge. Food and mineral walls occupy independent
-cells. A seeded starting population includes stationary producers, mobile
-foragers and predators. Porous mineral ridges partition parts of the habitat.
+cells. Every new or reseeded world starts with exactly one stationary producer
+at the center: one mouth and four leaf cells. Its footprint is cleared of walls;
+the rest of the food and porous mineral ridges are generated from the world seed.
+Further life comes from reproduction and mutation, or organisms placed by the
+player. There are no automatic population top-ups. Imported saves retain their
+complete saved population instead of restarting with a founder.
 
 Every organism occupies one or more connected cells. Bodies contain 1–16 cells,
 with local coordinates between −4 and 4, and can rotate in quarter turns. The

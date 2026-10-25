@@ -382,14 +382,15 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     dirty = true;
     updates++;
     const s = frame!.stats;
+    const lineages = `${s.species} lineage${s.species === 1 ? '' : 's'}`;
     text('population', s.population.toLocaleString());
-    text('species-count', `${s.species} lineages`);
+    text('species-count', lineages);
     text('births', String(s.births));
     text('deaths', String(s.deaths));
     text('food-count', String(s.food));
     text('generation', `GEN ${s.generation}`);
     text('tick', `TICK ${s.tick.toLocaleString()}`);
-    text('world-count', `${s.population} organisms · ${s.species} lineages`);
+    text('world-count', `${s.population} organism${s.population === 1 ? '' : 's'} · ${lineages}`);
     text('season', s.season);
     text('weather', s.event);
     if (updates % 4 === 1) {

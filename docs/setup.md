@@ -5,8 +5,8 @@
 ## Play
 
 Open the [live preview](https://89.116.28.65.sslip.io/evolab/) in a current browser.
-Evolution starts immediately. Every tab runs an independent world locally; it does
-not share organism state with other visitors.
+Evolution starts immediately with one central creature. Every tab runs an
+independent world locally; it does not share organism state with other visitors.
 
 - Inspect an organism to open its anatomy, energy, temperature preference and ancestry.
 - Copy an inspected organism or click a body in **Common bodies** to open the designer, edit its
@@ -18,7 +18,7 @@ not share organism state with other visitors.
   disabled while the world is running.
 - Toggle temperature view and introduce cold snaps, heatwaves or nutrient blooms.
 - Mutation, nutrient rain and climate pressure settings apply immediately.
-  Reseeding replaces the world with a fresh one using the selected seed/settings.
+  Reseeding replaces the world with a fresh one-creature start using the selected seed/settings.
 - Save a world before leaving; reloading otherwise starts from seed 42 again.
 
 Keyboard shortcuts: Space pauses/resumes; I inspects; H pans; F paints food; W

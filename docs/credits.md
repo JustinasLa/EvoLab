@@ -28,7 +28,7 @@ sans-serif is an explicit fallback for FK Grotesk Neue.
 
 Complete font notices ship in `public/third-party.txt` and the static build.
 The interface icons, organism previews and world rendering are drawn in code.
-No external models, textures, TF assets or recorded player data are bundled.
+No external models, textures, private assets or recorded user data are bundled.
 
 Vite, TypeScript, Vitest, jsdom, Prettier and Playwright are development tools;
 their packages contain their license notices. Exact dependencies are pinned in

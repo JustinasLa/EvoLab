@@ -95,6 +95,25 @@ async function coordinate(
     { x, y },
   );
 }
+test('new and reseeded worlds begin with one creature and no births', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('#population')).toHaveText('1');
+  await pause(page);
+  await expect(page.locator('#population')).toHaveText('1');
+  await expect(page.locator('#births')).toHaveText('0');
+  await expect(page.locator('#species-count')).toHaveText('1 lineage');
+  await expect(page.locator('#world-count')).toHaveText('1 organism · 1 lineage');
+  await expect(page.locator('#lineages .lineage')).toHaveCount(1);
+  await page.getByText('World settings', { exact: true }).click();
+  await page.locator('#seed').fill('100');
+  await page.getByRole('button', { name: 'Reseed world' }).click();
+  await expect(page.locator('#world-label')).toHaveText('WORLD 0100');
+  await pause(page);
+  await expect(page.locator('#population')).toHaveText('1');
+  await expect(page.locator('#births')).toHaveText('0');
+  await expect(page.locator('#generation')).toHaveText('GEN 0');
+});
+
 test('a live ecosystem evolves, pauses, paints, inspects and restores a whole world', async ({
   page,
 }) => {
@@ -134,7 +153,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   const saved = Buffer.concat(chunks),
     world = JSON.parse(saved.toString());
   expect(world.version).toBe(2);
-  expect(world.organisms.length).toBeGreaterThan(0);
+  expect(world.organisms.length).toBeGreaterThan(1);
   const o = world.organisms[0],
     c = o.genome.cells[0];
   let dx = c.x,
@@ -161,6 +180,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
     .locator('#file')
     .setInputFiles({ name: 'world.json', mimeType: 'application/json', buffer: saved });
   await expect(page.locator('#notice')).toContainText('World restored');
+  await expect(page.locator('#population')).toHaveText(String(world.organisms.length));
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(errors).toEqual([]);
   expect(external).toEqual([]);
