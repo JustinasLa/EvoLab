@@ -1,0 +1,26 @@
+name: PR size
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pr-size-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  size:
+    name: PR size
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: TF-Minecraft/TLibs/.github/actions/pr-size@0bfb259256648c6139c6a94a0935492830cbbec9
