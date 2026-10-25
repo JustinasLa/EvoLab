@@ -622,6 +622,18 @@ input[type='range'] {
   background: #090f16;
   opacity: 0.6;
 }
+
+.specimen-section {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.specimen-section > summary {
+  font-size: 13px;
+}
+.specimen-section[open] > summary {
+  margin-bottom: 12px;
+}
+
 .specimen-preview {
   display: flex;
   align-items: center;
@@ -792,6 +804,13 @@ dialog a {
     gap: 6px;
   }
 }
+@media (min-width: 761px) and (max-width: 1000px) {
+  .tool-dock button {
+    flex-direction: column;
+    gap: 3px;
+    font-size: 11px;
+  }
+}
 @media (max-width: 760px) {
   #app {
     height: auto;
@@ -843,10 +862,11 @@ dialog a {
     flex-direction: column;
   }
   .world-stage {
-    height: 70dvh;
-    min-height: 430px;
-    max-height: 650px;
-    grid-template-rows: 38px 54px 38px minmax(0, 1fr) 30px;
+    height: auto;
+    grid-template-rows: 38px 54px 38px auto 30px;
+  }
+  .habitat {
+    aspect-ratio: 240 / 156;
   }
   .tool-dock button {
     flex-direction: column;
@@ -903,27 +923,5 @@ dialog a {
   }
   .cell-legend span {
     font-size: 10px;
-  }
-}
-
-.specimen-section {
-  padding: 14px 0;
-  border-bottom: 1px solid var(--border);
-}
-.specimen-section > summary {
-  font-size: 13px;
-}
-.specimen-section[open] > summary {
-  margin-bottom: 12px;
-}
-@media (max-width: 760px) {
-  .world-stage {
-    height: auto;
-    min-height: 0;
-    max-height: none;
-    grid-template-rows: 38px 54px 38px auto 30px;
-  }
-  .habitat {
-    aspect-ratio: 240 / 156;
   }
 }

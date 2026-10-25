@@ -275,7 +275,10 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   });
   get('plant-design').addEventListener('click', () => {
     choose('plant');
-    if (tool === 'plant') notice('Click in the world to place your organism.');
+    if (tool === 'plant') {
+      notice('Click in the world to place your organism.');
+      canvas.scrollIntoView({ block: 'center' });
+    }
   });
   root.addEventListener('click', (event) => {
     if ((event.target as HTMLElement).closest('#copy-organism') && selected) {

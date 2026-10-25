@@ -42,8 +42,8 @@ The coverage gate remains unchanged for the replacement ecosystem implementation
 ## Browser checks
 
 Playwright serves the production `dist/` build and exercises desktop and
-mobile-sized Chromium. It runs actual workers and Canvas, verifies births, pause
-and single-step, climate events, inspection and anatomy copying, planting, food
+mobile-sized Chromium (1280 × 800 desktop and iPhone 13 portrait). It runs actual workers and Canvas, verifies births, pause
+and single-step availability, contextual brush controls, cell descriptions, climate events, inspection and anatomy copying, planting, food
 and wall painting, erasure, camera controls, reseeding, help, keyboard shortcuts,
 complete world downloads/imports and invalid-file recovery. The primary workflow
 checks for page errors, external requests and horizontal page overflow.

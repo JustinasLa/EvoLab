@@ -153,4 +153,12 @@ test('designer, world tools, camera, shortcuts and invalid saves behave in Chrom
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
   await page.keyboard.press('f');
   await expect(page.locator('button[data-tool="food"]')).toHaveAttribute('aria-pressed', 'true');
+  if (test.info().project.name === 'desktop') {
+    await page.setViewportSize({ width: 780, height: 768 });
+    expect(
+      await page
+        .locator('.tool-dock button')
+        .evaluateAll((buttons) => buttons.every((b) => b.scrollWidth <= b.clientWidth)),
+    ).toBe(true);
+  }
 });

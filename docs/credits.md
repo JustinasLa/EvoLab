@@ -17,8 +17,6 @@ are implemented in this repository.
 
 ## Bundled assets
 
-- [DM Sans](https://github.com/googlefonts/dm-fonts), SIL Open Font License 1.1,
-  bundled through `@fontsource-variable/dm-sans`.
 - [DM Mono](https://github.com/googlefonts/dm-mono), SIL Open Font License 1.1,
   bundled through `@fontsource/dm-mono`.
 

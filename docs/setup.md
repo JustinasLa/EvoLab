@@ -8,13 +8,14 @@ Open the [live preview](https://89.116.28.65.sslip.io/evolab/) in a current brow
 Evolution starts immediately. Every tab runs an independent world locally; it does
 not share organism state with other visitors.
 
-- Inspect an organism to see anatomy, energy, temperature preference and ancestry.
-- Copy an inspected organism or a dominant lineage into the designer, edit its
+- Inspect an organism to open its anatomy, energy, temperature preference and ancestry.
+- Copy an inspected organism or click a body in **Common bodies** to open the designer, edit its
   connected body, choose a preferred temperature, and select **Place in world**.
-- Paint food, walls or erasure with the toolbar. Brush radius is in World settings.
+- Paint food, walls or erasure with the toolbar. Brush radius appears beside the active tool.
   Erasing any part of an organism removes its whole body.
 - Pan with the Pan tool, scroll to zoom, and use Fit to restore the camera.
-- Pause, then single-step, to inspect state changes closely.
+- Pause, then single-step, to inspect state changes closely. The step control is
+  disabled while the world is running.
 - Toggle temperature view and introduce cold snaps, heatwaves or nutrient blooms.
 - Mutation, nutrient rain and climate pressure settings apply immediately.
   Reseeding replaces the world with a fresh one using the selected seed/settings.

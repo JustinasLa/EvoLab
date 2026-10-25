@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "A physics playground where creatures evolve their own bodies and movement.",
+  "description": "A cellular ecosystem with drifting climates and inherited adaptation.",
   "license": "Artistic-2.0",
   "engines": {
     "node": ">=24"

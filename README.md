@@ -1,6 +1,6 @@
 # EvoLab / Drift
 
-> A small world. An endless experiment.
+> A cellular ecosystem with inherited climate adaptation.
 
 EvoLab is an open-ended cellular ecosystem. Organisms eat, grow, move, reproduce,
 mutate and die in a shared world. There is no assigned fitness score: successful

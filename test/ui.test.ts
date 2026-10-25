@@ -54,6 +54,10 @@ beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
     ctx as unknown as CanvasRenderingContext2D,
   );
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    value: vi.fn(),
+  });
   Object.defineProperty(HTMLCanvasElement.prototype, 'setPointerCapture', {
     configurable: true,
     value: vi.fn(),
@@ -219,6 +223,7 @@ describe('ecosystem desk', () => {
     expect(get('preference-value').textContent).toBe('30°');
     click('plant-design');
     expect(get('world').dataset.tool).toBe('plant');
+    expect(get('world').scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
     pointer('pointerdown');
     pointer('pointermove');
     window.dispatchEvent(new Event('pointerup'));

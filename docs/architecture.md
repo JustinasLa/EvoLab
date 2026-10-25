@@ -41,6 +41,24 @@ scale and offset used for drawing. Changing zoom, panning, or inspecting never
 changes the engine state. The anatomy designer validates connected structure and
 numeric limits before placement.
 
+## Interface
+
+The habitat is the main workspace. Tool controls sit outside the drawing area,
+so they do not obscure organisms or intercept painting. Painting exposes radius
+controls in the tool strip; inspection, pan and planting show their own short
+instruction. Playback and world files remain in the top bar.
+
+The interface uses the world's square cells and functional colors. Body previews
+fit their connected anatomy into the available space instead of reserving a fixed
+nine-cell canvas. Common bodies can be copied directly into the designer. Clicking
+an organism opens its inspector; copying its anatomy folds the inspector away to
+make room for the connected-body editor. Placing a design brings the habitat back
+into view, including on phones.
+
+On desktop the control panel scrolls independently. On phones it follows the
+habitat; the habitat keeps the world's aspect ratio without empty vertical bands.
+The UI does not add a marketing header or explanatory cards around the simulation.
+
 ## World saves
 
 Version-2 JSON contains settings, counters, random state, active climate event,
