@@ -18,10 +18,11 @@ with local coordinates between −4 and 4, and can rotate in quarter turns. The
 occupied-cell grid prevents bodies from overlapping walls or other organisms.
 Food can be displaced by movement or placement.
 
-Leaves are the only automatic food source. A leaf can produce food in one of its
-four neighboring cells, wrapping at world edges, only if that cell has no wall or
-organism. There is no random food seeding, nutrient rain, global bloom action or
-food from dead bodies. The Food brush is an explicit manual editor override.
+Leaves and dead bodies are the automatic food sources. A leaf can produce food in
+one of its four neighboring cells, wrapping at world edges, only if that cell has
+no wall or organism. Every cell of a dead organism becomes food at its occupied
+position. There is no random food seeding, nutrient rain or global bloom action.
+The Food brush is an explicit manual editor override.
 Existing food in imported saves is preserved rather than silently removed.
 
 **Leaf food chance** sets the maximum food-production chance per leaf per tick
@@ -45,8 +46,10 @@ change direction randomly. Blocked movers choose a new direction and try a
 quarter turn.
 
 All bodies pay energy upkeep. Death occurs when energy is exhausted or the
-organism exceeds `900 + 75 × body size` ticks. The dead body's cells become empty
-ground.
+organism exceeds `900 + 75 × body size` ticks. All of the dead body's cells become
+food, regardless of their functional type. The Erase brush removes an entire
+organism when it touches any of its cells, then clears food inside the brush;
+food from body cells outside the brush remains.
 The simulation is an artificial ecology, not a calibrated biological model.
 
 ## Reproduction and mutation
