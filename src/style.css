@@ -609,7 +609,7 @@ input[type='range'] {
 }
 .events {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   margin-top: 12px;
 }
@@ -626,9 +626,6 @@ input[type='range'] {
 }
 .events [data-shock='heat'] svg {
   color: #edae57;
-}
-.events [data-shock='bloom'] svg {
-  color: #66db8b;
 }
 .world-settings summary {
   color: #c3cfc2;

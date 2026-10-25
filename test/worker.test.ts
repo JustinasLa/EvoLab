@@ -21,7 +21,13 @@ describe('worker control and persistence', () => {
     send({ type: 'start', settings: {}, runId: 1 });
     expect(last().type).toBe('error');
     send({ type: 'start', settings: DEFAULTS, runId: 1 });
-    expect(last().frame.stats).toMatchObject({ tick: 0, population: 1, births: 0, species: 1 });
+    expect(last().frame.stats).toMatchObject({
+      tick: 0,
+      population: 1,
+      births: 0,
+      species: 1,
+      food: 0,
+    });
     send({ type: 'resume' });
     expect(tasks).toHaveLength(1);
     send({ type: 'pause' });
@@ -37,6 +43,9 @@ describe('worker control and persistence', () => {
     expect(last().frame.stats.tick).toBe(13);
     send({ type: 'settings', settings: { nutrients: 10 } });
     send({ type: 'settings', settings: { nutrients: -1 } });
+    const beforeBloom = vi.mocked(scope.postMessage).mock.calls.length;
+    send({ type: 'shock', kind: 'bloom' });
+    expect(scope.postMessage).toHaveBeenCalledTimes(beforeBloom);
     send({ type: 'paint', tool: 'food', x: 20, y: 20, radius: 2, genome: founder(0) });
     send({ type: 'paint', tool: 'plant', x: 40, y: 40, radius: 0, genome: founder(0) });
     send({ type: 'inspect', x: 40, y: 40 });

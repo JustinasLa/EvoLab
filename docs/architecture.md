@@ -71,6 +71,9 @@ The UI does not add a marketing header or explanatory cards around the simulatio
 
 Version-2 JSON contains settings, counters, random state, active climate event,
 food, walls and complete living-organism records. Imports are limited to 2.5 MB.
+The version-2 `settings.nutrients` field is retained for compatibility and now
+means the maximum per-leaf food-production chance in percent, not nutrient rain.
+Restored food is kept, but no off-plant random food generation resumes.
 Validation rejects invalid coordinates, topology, duplicate IDs, collisions,
 invalid versions, unbounded arrays, or invalid numeric fields before replacing
 the running world. Food under an imported wall is normalized away.

@@ -25,7 +25,10 @@ written to `coverage/` and uploaded by CI.
   movement, sensors, predation, armor and reproduction.
 - Mutation repeatedly checks connected anatomy and bounded inherited traits.
 - Climate checks compare adapted versus mismatched organisms and the upkeep cost
-  of broad tolerance, and verify event expiry and food blooms.
+  of broad tolerance, and verify event expiry without generating food.
+- Plant-food tests verify empty starting terrain, no food without leaves or from
+  deaths, local production across wrapped edges, wall and organism exclusion,
+  disabling production, and preservation of food in imported saves.
 - Seeded worlds match one another. Export/import tests restore complete state and
   check that both copies continue identically, including RNG and update order.
 - New worlds and worker restarts begin with one founder, one lineage and zero

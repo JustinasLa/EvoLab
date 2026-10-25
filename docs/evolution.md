@@ -8,7 +8,7 @@ The world is a 240 × 156 cell grid with wrapped boundaries. A creature leaving 
 edge returns on the opposite edge. Food and mineral walls occupy independent
 cells. Every new or reseeded world starts with exactly one stationary producer
 at the center: one mouth and four leaf cells. Its footprint is cleared of walls;
-the rest of the food and porous mineral ridges are generated from the world seed.
+porous mineral ridges are generated from the world seed, with no starting food.
 Further life comes from reproduction and mutation, or organisms placed by the
 player. There are no automatic population top-ups. Imported saves retain their
 complete saved population instead of restarting with a founder.
@@ -17,6 +17,16 @@ Every organism occupies one or more connected cells. Bodies contain 1–16 cells
 with local coordinates between −4 and 4, and can rotate in quarter turns. The
 occupied-cell grid prevents bodies from overlapping walls or other organisms.
 Food can be displaced by movement or placement.
+
+Leaves are the only automatic food source. A leaf can produce food in one of its
+four neighboring cells, wrapping at world edges, only if that cell has no wall or
+organism. There is no random food seeding, nutrient rain, global bloom action or
+food from dead bodies. The Food brush is an explicit manual editor override.
+Existing food in imported saves is preserved rather than silently removed.
+
+**Leaf food chance** sets the maximum food-production chance per leaf per tick
+from 0–20% (default 5%). Daylight and climate stress reduce that chance; setting it
+to zero stops food production without disabling photosynthetic energy gain.
 
 ## Functional cells
 
@@ -35,7 +45,8 @@ change direction randomly. Blocked movers choose a new direction and try a
 quarter turn.
 
 All bodies pay energy upkeep. Death occurs when energy is exhausted or the
-organism exceeds `900 + 75 × body size` ticks. The dead body becomes food.
+organism exceeds `900 + 75 × body size` ticks. The dead body's cells become empty
+ground.
 The simulation is an artificial ecology, not a calibrated biological model.
 
 ## Reproduction and mutation
@@ -71,9 +82,9 @@ adds `0.025 × (tolerance − 0.2)` energy upkeep per cell per tick to the basel
 0.012. Climate stress adds `0.2 × mismatch` per cell per tick.
 
 Cold snaps and heatwaves shift the local temperature by −0.32 or +0.32 for 900
-simulation ticks. A nutrient bloom immediately scatters extra food. New climate
-events replace the preceding temperature shift. These are real environmental
-changes applied to the same world, not score adjustments or scripted winners.
+simulation ticks. New climate events replace the preceding temperature shift.
+These are real environmental changes applied to the same world, not score
+adjustments or scripted winners.
 
 ## Repeatability
 

@@ -109,7 +109,7 @@ describe('a shared, living world', () => {
         expect(world.walls[position]).toBe(0);
         expect(world.food[position]).toBe(0);
       }
-      expect(world.food.some(Boolean)).toBe(true);
+      expect(world.food.some(Boolean)).toBe(false);
       expect(world.walls.some(Boolean)).toBe(true);
     }
   });
@@ -144,10 +144,46 @@ describe('a shared, living world', () => {
     eater.energy = 0;
     w.step();
     expect(w.organisms.has(eater.id)).toBe(false);
-    expect(w.food[index(10, 10)]).toBe(1);
+    expect(w.food[index(10, 10)]).toBe(0);
     leaf.age = 2000;
     w.step();
     expect(w.organisms.has(leaf.id)).toBe(false);
+  });
+  it('does not scatter food without leaves, including after deaths and climate events', () => {
+    const world = new Ecosystem({ ...DEFAULTS, nutrients: 20, climate: 0 }, false);
+    world.spawn(single(3), 20, 20);
+    world.spawn(single(7), 40, 40);
+    world.shock('cold');
+    world.shock('heat');
+    for (let tick = 0; tick < 1000; tick++) world.step();
+    expect(world.organisms.size).toBe(0);
+    expect(world.deaths).toBe(2);
+    expect(world.births).toBe(0);
+    expect(world.food.some(Boolean)).toBe(false);
+  });
+  it('produces food beside leaves only, respecting wrapped edges, walls, occupancy and the rate', () => {
+    const world = new Ecosystem({ ...DEFAULTS, nutrients: 20, climate: 0 }, false);
+    world.spawn(single(4), 0, 0);
+    world.spawn(single(7), 1, 0);
+    world.walls[index(0, -1)] = 1;
+    for (let tick = 0; tick < 100; tick++) world.step();
+    const food = world.save().food,
+      allowed = new Set([index(-1, 0), index(0, 1)]);
+    expect(food.length).toBeGreaterThan(0);
+    expect(food.every((position) => allowed.has(position))).toBe(true);
+    expect(world.food[index(0, -1)]).toBe(0);
+    expect(world.food[index(1, 0)]).toBe(0);
+    world.settings.nutrients = 0;
+    world.food.fill(0);
+    for (let tick = 0; tick < 100; tick++) world.step();
+    expect(world.food.some(Boolean)).toBe(false);
+  });
+  it('retains food from saved worlds without resuming random food generation', () => {
+    const world = new Ecosystem({ ...DEFAULTS, nutrients: 20, climate: 0 }, false);
+    world.food[index(10, 10)] = 1;
+    const restored = Ecosystem.load(JSON.stringify(world.save()));
+    for (let tick = 0; tick < 1000; tick++) restored.step();
+    expect(restored.save().food).toEqual([index(10, 10)]);
   });
   it('requires room for births and movement, and wraps at world edges', () => {
     const w = empty(),
@@ -201,6 +237,27 @@ describe('a shared, living world', () => {
     expect(blind.x).toBe(50);
     expect(blind.rotation).toBe(1);
   });
+  it('makes sighted foragers avoid nearby organisms while predators approach them', () => {
+    for (const predator of [false, true]) {
+      const world = empty(),
+        genome: Genome = {
+          cells: [
+            { x: 0, y: 0, type: 5 },
+            { x: -1, y: 0, type: 8 },
+            { x: 0, y: -1, type: predator ? 6 : 3 },
+          ],
+          preference: 0.5,
+          tolerance: 0.3,
+          tempo: 2,
+        },
+        observer = world.spawn(genome, 20, 20)!;
+      world.spawn(single(), 22, 20);
+      observer.age = 1;
+      world.step();
+      expect(observer.x).toBe(predator ? 21 : 20);
+      expect(observer.y).toBe(predator ? 20 : 21);
+    }
+  });
   it('inherits anatomy and temperature preferences, with mutation creating new lineages', () => {
     for (const mutation of [0, 0.4]) {
       const w = empty();
@@ -235,9 +292,6 @@ describe('a shared, living world', () => {
     expect(w.frame().offset).toBe(0);
     w.tick = 2800;
     expect(w.frame().stats.season).toBe('Cold season');
-    const food = w.frame().stats.food;
-    w.shock('bloom');
-    expect(w.frame().stats.food).toBeGreaterThan(food);
   });
   it('makes broad climate tolerance cost energy in a comfortable habitat', () => {
     const w = empty();

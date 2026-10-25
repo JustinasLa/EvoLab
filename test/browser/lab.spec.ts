@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { WIDTH, HEIGHT, type WorldFile } from '../../src/model';
 test('Even Hub-style cards retain the dark palette and crisp cellular editor', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#population')).not.toHaveText('—');
@@ -95,6 +96,16 @@ async function coordinate(
     { x, y },
   );
 }
+async function downloadWorld(page: import('@playwright/test').Page): Promise<Buffer> {
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save world' }).click();
+  const download = await downloadPromise,
+    stream = await download.createReadStream(),
+    chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
 test('new and reseeded worlds begin with one creature and no births', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#population')).toHaveText('1');
@@ -105,6 +116,8 @@ test('new and reseeded worlds begin with one creature and no births', async ({ p
   await expect(page.locator('#world-count')).toHaveText('1 organism · 1 lineage');
   await expect(page.locator('#lineages .lineage')).toHaveCount(1);
   await page.getByText('World settings', { exact: true }).click();
+  await expect(page.getByRole('slider', { name: 'Leaf food chance' })).toHaveValue('5');
+  await expect(page.getByText('Nutrient rain', { exact: true })).toHaveCount(0);
   await page.locator('#seed').fill('100');
   await page.getByRole('button', { name: 'Reseed world' }).click();
   await expect(page.locator('#world-label')).toHaveText('WORLD 0100');
@@ -112,6 +125,27 @@ test('new and reseeded worlds begin with one creature and no births', async ({ p
   await expect(page.locator('#population')).toHaveText('1');
   await expect(page.locator('#births')).toHaveText('0');
   await expect(page.locator('#generation')).toHaveText('GEN 0');
+  const world = JSON.parse((await downloadWorld(page)).toString()) as WorldFile,
+    [organism] = world.organisms;
+  expect(world.organisms).toHaveLength(1);
+  expect(organism.rotation).toBe(0);
+  const allowed = new Set(
+    organism.genome.cells
+      .filter((cell) => cell.type === 4)
+      .flatMap((cell) =>
+        [
+          [1, 0],
+          [0, 1],
+          [-1, 0],
+          [0, -1],
+        ].map(
+          ([offsetX, offsetY]) =>
+            ((organism.y + cell.y + offsetY + HEIGHT) % HEIGHT) * WIDTH +
+            ((organism.x + cell.x + offsetX + WIDTH) % WIDTH),
+        ),
+      ),
+  );
+  expect(world.food.every((position) => allowed.has(position))).toBe(true);
 });
 
 test('a live ecosystem evolves, pauses, paints, inspects and restores a whole world', async ({
@@ -139,18 +173,8 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   await expect(page.locator('#thermal')).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: 'Cold snap' }).click();
   await expect(page.locator('#weather')).toContainText('Cold snap');
-  const oldFood = Number(await page.locator('#food-count').textContent());
-  await page.getByRole('button', { name: 'Bloom', exact: true }).click();
-  await expect
-    .poll(async () => Number(await page.locator('#food-count').textContent()))
-    .toBeGreaterThan(oldFood);
-  const downloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save world' }).click();
-  const download = await downloadPromise,
-    stream = await download.createReadStream(),
-    chunks: Buffer[] = [];
-  for await (const chunk of stream) chunks.push(chunk);
-  const saved = Buffer.concat(chunks),
+  await expect(page.locator('[data-shock="bloom"]')).toHaveCount(0);
+  const saved = await downloadWorld(page),
     world = JSON.parse(saved.toString());
   expect(world.version).toBe(2);
   expect(world.organisms.length).toBeGreaterThan(1);

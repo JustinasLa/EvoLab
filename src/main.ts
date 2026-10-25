@@ -224,7 +224,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       settings[id] = Number(get<HTMLInputElement>(id).value);
       text(
         `${id}-value`,
-        id === 'nutrients' ? `${settings[id]} / tick` : `${Math.round(settings[id] * 100)}%`,
+        id === 'nutrients' ? `${settings[id]}%` : `${Math.round(settings[id] * 100)}%`,
       );
       send({ type: 'settings', settings: { [id]: settings[id] } });
     });
@@ -360,7 +360,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         get<HTMLInputElement>(id).value = String(settings[id]);
       text('mutation-value', `${Math.round(settings.mutation * 100)}%`);
       text('climate-value', `${Math.round(settings.climate * 100)}%`);
-      text('nutrients-value', `${settings.nutrients} / tick`);
+      text('nutrients-value', `${settings.nutrients}%`);
       text('world-label', `WORLD ${String(settings.seed).padStart(4, '0')}`);
       notice('World restored. Its evolution continues from the saved state.');
       return;

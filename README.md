@@ -13,7 +13,8 @@ lineages spread by surviving and producing descendants.
 - **Living cellular organisms** — mouths, leaves, motors, stingers, armor and eyes combine into bodies that feed, compete and evolve.
 - **Drifting climates** — warm and cold zones move through the habitat; temperature preference and tolerance pass to offspring and can mutate.
 - **Adaptation with a tradeoff** — broad temperature tolerance costs more energy, while specialists are cheaper in favorable habitats.
-- **Shape the habitat** — paint nutrients, build barriers, erase patches, and introduce blooms, heatwaves or cold snaps.
+- **Plant-fed food chain** — leaves produce food in neighboring free cells; there is no random food seeding or rainfall.
+- **Shape the habitat** — manually paint food, build barriers, erase patches, and introduce heatwaves or cold snaps.
 - **Design your own life** — draw connected organisms, choose their preferred temperature, and place them directly in the ecosystem.
 - **Inspect the survivors** — follow population, dominant lineages, anatomy, energy, offspring and recent lineage ancestry.
 - **Explore at your pace** — pan, zoom, pause, single-step, and change simulation speed independently of rendering.

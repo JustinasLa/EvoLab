@@ -89,7 +89,7 @@ export function startWorker(
       } else if (data.type === 'inspect' && world) {
         selected = world.occupied[index(data.x, data.y)];
         send();
-      } else if (data.type === 'shock' && world && ['bloom', 'cold', 'heat'].includes(data.kind)) {
+      } else if (data.type === 'shock' && world && ['cold', 'heat'].includes(data.kind)) {
         world.shock(data.kind);
         send();
       } else if (data.type === 'save' && world)

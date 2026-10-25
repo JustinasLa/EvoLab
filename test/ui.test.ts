@@ -123,7 +123,7 @@ describe('ecosystem desk', () => {
     set('nutrients', '8');
     set('climate', '.5');
     set('brush', '5');
-    expect(get('nutrients-value').textContent).toBe('8 / tick');
+    expect(get('nutrients-value').textContent).toBe('8%');
     expect(get('brush-value').textContent).toBe('5 cells');
     root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
     expect(worker.postMessage).toHaveBeenLastCalledWith({ type: 'shock', kind: 'heat' });
@@ -297,6 +297,7 @@ describe('ecosystem desk', () => {
     });
     expect(get('notice').textContent).toContain('World restored');
     expect(get<HTMLInputElement>('seed').value).toBe('88');
+    expect(get('nutrients-value').textContent).toBe('8%');
     upload({ size: 2500001, text: async () => '' });
     await vi.waitFor(() => expect(get('notice').textContent).toContain('2.5 MB'));
     upload({
