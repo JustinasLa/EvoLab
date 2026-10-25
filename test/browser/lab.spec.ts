@@ -1,7 +1,5 @@
 import { test, expect } from '@playwright/test';
-test('observatory panels keep tools outside the habitat at every layout width', async ({
-  page,
-}) => {
+test('panels keep tools outside the habitat at every layout width', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('link', { name: 'EvoLab / Drift' })).toContainText('drift');
   for (const width of [360, 760, 780, 1280]) {

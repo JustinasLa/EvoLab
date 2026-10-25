@@ -48,13 +48,6 @@ so they do not obscure organisms or intercept painting. Painting exposes radius
 controls in the tool strip; inspection, pan and planting show their own short
 instruction. Playback and world files remain in the top bar.
 
-The interface has a field-observatory identity: an italic Drift wordmark, warm
-paper instrument panels, burnt-orange active controls and a dark green habitat
-frame. Monospaced readouts distinguish live data from editorial headings. The
-habitat retains its original cellular palette; color changes in the surrounding
-interface do not alter simulation state or the camera transform. Desktop panels
-have a narrow separation, while mobile panels stack without shrinking the world.
-
 The interface uses the world's square cells and functional colors. Body previews
 fit their connected anatomy into the available space instead of reserving a fixed
 nine-cell canvas. Common bodies can be copied directly into the designer. Clicking
