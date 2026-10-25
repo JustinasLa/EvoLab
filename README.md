@@ -23,13 +23,6 @@ lineages spread by surviving and producing descendants.
 Inspired by [The Life Engine](https://thelifeengine.net/). EvoLab's implementation
 and interface are original; no upstream code or assets are copied.
 
-## Documentation
-
-[Project documentation](docs/README.md)
-
-Technical documentation is maintained in this repository's [docs](docs/README.md)
-folder.
-
 ## Tests and coverage
 
 With Node.js 24 or newer installed:
@@ -52,8 +45,7 @@ Playwright exercises the built application in desktop and mobile Chromium,
 including real workers, population changes, inspection, organism design, painting,
 camera controls and world downloads/imports. Reports are written to
 `playwright-report/` and `test-results/`. These checks do not establish biological
-realism, cross-browser identity, or performance on every device. See
-[testing](docs/testing.md) for scope and limits.
+realism, cross-browser identity, or performance on every device.
 
 ## License
 
