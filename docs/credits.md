@@ -15,6 +15,12 @@ no upstream code, artwork, branding or other assets are copied. The drifting
 climate, inherited temperature traits, tolerance tradeoff and world-file format
 are implemented in this repository.
 
+The interface's spacing, card radii and type hierarchy are informed by
+[evenhub-app-ui](https://github.com/JustinasLa/evenhub-app-ui) and its Even Hub
+companion-app guidelines. EvoLab keeps its own palette and original pixel icons;
+no official icon assets or proprietary fonts are copied. Arial/Helvetica/system
+sans-serif is an explicit fallback for FK Grotesk Neue.
+
 ## Bundled assets
 
 - [DM Mono](https://github.com/googlefonts/dm-mono), SIL Open Font License 1.1,
