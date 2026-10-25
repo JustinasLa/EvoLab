@@ -4,6 +4,8 @@ coverage/
 test-results/
 playwright-report/
 .scratch/
+/AGENTS.md
+/docs/
 .env
 .env.*
 *.local
