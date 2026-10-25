@@ -102,6 +102,35 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe('ecosystem desk', () => {
+  it('keeps the habitat clear and consolidates the interface in the sidebar', () => {
+    const sidebar = root.querySelector('.sidebar')!,
+      stage = root.querySelector('.world-stage')!;
+    expect(stage.children).toHaveLength(1);
+    expect(stage.firstElementChild).toBe(get('world').parentElement);
+    for (const id of [
+      'pause',
+      'step',
+      'speed',
+      'zoom-in',
+      'zoom-out',
+      'fit',
+      'brush',
+      'world-label',
+      'run-state',
+      'tick',
+      'world-count',
+      'ecosystem-panel',
+      'organism-panel',
+      'save',
+      'load',
+      'help',
+      'notice',
+    ])
+      expect(sidebar.contains(get(id))).toBe(true);
+    expect(sidebar.contains(root.querySelector('.tool-dock'))).toBe(true);
+    expect(sidebar.contains(root.querySelector('.cell-legend'))).toBe(true);
+    expect(root.querySelector<HTMLDetailsElement>('.legend')!.open).toBe(false);
+  });
   it('starts immediately, pauses, single-steps, changes settings live and reseeds', () => {
     expect(worker.postMessage).toHaveBeenCalledWith({
       type: 'start',

@@ -96,18 +96,20 @@ button > svg {
 }
 #app {
   display: grid;
-  grid-template-rows: 60px minmax(0, 1fr) 36px;
+  grid-template-rows: minmax(0, 1fr);
   height: 100dvh;
   min-height: 600px;
   background: var(--page);
 }
 .topbar {
   display: flex;
-  align-items: center;
-  gap: 24px;
-  padding: 0 24px 0 12px;
+  flex-direction: column;
+  align-items: stretch;
+  flex-shrink: 0;
+  gap: 12px;
+  padding: 16px;
   background: var(--surface);
-  border-bottom: 1px solid var(--page);
+  border-radius: var(--radius);
 }
 .brand {
   display: flex;
@@ -129,22 +131,21 @@ button > svg {
   width: 28px;
   height: 28px;
 }
-.topbar nav {
-  margin-left: auto;
+footer nav {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 13px;
 }
-.topbar nav a {
+footer nav a {
   color: var(--muted);
   padding: 6px 12px;
 }
-.topbar nav button {
+footer nav button {
   background: transparent;
   color: var(--muted);
 }
-.topbar nav button:hover {
+footer nav button:hover {
   background: var(--raised);
 }
 .simulation-controls {
@@ -166,7 +167,7 @@ button > svg {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-left: 6px;
+  margin-left: auto;
   color: var(--muted);
 }
 select {
@@ -199,12 +200,12 @@ select {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 360px;
   gap: 12px;
-  padding: 12px 12px 0;
+  padding: 12px;
   min-height: 0;
 }
 .world-stage {
   display: grid;
-  grid-template-rows: 48px 60px 36px minmax(0, 1fr) 36px;
+  grid-template-rows: minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   background: var(--surface);
@@ -216,7 +217,7 @@ select {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 0 16px;
+  padding: 12px 16px;
 }
 .world-label {
   display: flex;
@@ -262,7 +263,7 @@ select {
 }
 .tool-dock {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
   margin: 0 12px;
   padding: 6px;
@@ -274,18 +275,17 @@ select {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 6px;
-  position: relative;
+  padding: 6px 4px;
   font-size: 13px;
   color: var(--muted);
   background: transparent;
 }
-.tool-dock button:last-child {
-  border-right: 0;
-}
 .tool-dock button > svg {
-  width: 24px;
-  height: 24px;
+  width: 18px;
+  height: 18px;
+}
+.tool-dock kbd {
+  display: none;
 }
 kbd {
   font-family: var(--mono);
@@ -319,10 +319,10 @@ kbd {
 }
 .tool-options {
   display: flex;
-  align-items: center;
-  padding: 0 16px;
-  gap: 12px;
-  background: #1b2121;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 12px 16px;
+  gap: 6px;
   border-bottom: 1px solid var(--border);
   min-width: 0;
 }
@@ -336,7 +336,9 @@ kbd {
   gap: 12px;
 }
 #brush-control input {
-  width: 140px;
+  flex: 1;
+  width: 0;
+  min-width: 0;
   margin: 0;
 }
 #brush-value {
@@ -365,16 +367,17 @@ kbd {
 }
 .world-bottom {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  padding: 0 16px;
+  gap: 6px 12px;
+  padding: 12px 16px;
   color: var(--muted);
   font-family: var(--mono);
   font-size: 11px;
   white-space: nowrap;
 }
 .world-size {
-  margin-left: auto;
+  width: 100%;
   color: #89988d;
 }
 .sidebar {
@@ -404,12 +407,22 @@ kbd {
   color: var(--text);
 }
 .panel-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   overflow-y: auto;
   scrollbar-width: thin;
   min-height: 0;
   flex: 1;
   border-radius: var(--radius);
   scrollbar-color: var(--border) var(--page);
+}
+.panel-scroll > * {
+  flex-shrink: 0;
+}
+.world-controls {
+  background: var(--surface);
+  border-radius: var(--radius);
 }
 .panel {
   display: flex;
@@ -778,16 +791,28 @@ input[type='range'] {
 }
 footer {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
   gap: 12px;
-  padding: 0 12px;
-  background: var(--page);
+  padding: 16px;
+  background: var(--surface);
+  border-radius: var(--radius);
+}
+footer nav {
+  flex-wrap: wrap;
+}
+footer nav a,
+footer nav button {
+  padding: 6px;
+}
+.legend summary {
+  color: var(--muted);
+  font-size: 13px;
 }
 .cell-legend {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px 6px;
+  margin-top: 16px;
 }
 .cell-legend span {
   display: flex;
@@ -797,6 +822,7 @@ footer {
   color: #b3bfb4;
 }
 .footer-note {
+  margin: 16px 0 0;
   color: #89988d;
   font-size: 11px;
 }
@@ -837,71 +863,20 @@ dialog a {
   font-size: 20px;
 }
 @media (max-width: 1120px) {
-  .topbar {
-    gap: 12px;
-    padding-right: 12px;
-  }
-  .brand strong span,
-  .simulation-controls label > span,
-  .tool-dock kbd,
-  .footer-note,
-  .world-size {
-    display: none;
-  }
-  .topbar nav {
-    gap: 4px;
-  }
   .workspace {
     grid-template-columns: minmax(0, 1fr) 336px;
-  }
-  .tool-dock button {
-    gap: 6px;
-  }
-}
-@media (min-width: 761px) and (max-width: 1000px) {
-  .tool-dock button {
-    flex-direction: column;
-    gap: 6px;
-    padding: 6px 2px;
-    font-size: 11px;
   }
 }
 @media (max-width: 760px) {
   #app {
     height: auto;
     min-height: 100dvh;
-    grid-template-rows: auto auto auto;
+    grid-template-rows: auto;
   }
-  .topbar {
-    flex-wrap: wrap;
-    gap: 12px;
-    padding: 12px;
-  }
-  .brand {
-    margin-right: auto;
-  }
-  .brand strong {
-    font-size: 20px;
-  }
-  .brand > svg {
-    width: 24px;
-    height: 24px;
-  }
-  .topbar nav {
-    margin: 0;
-    gap: 6px;
-  }
-  .topbar nav button {
-    font-size: 13px;
+  footer nav button,
+  footer nav a,
+  .legend summary {
     min-height: 44px;
-    padding: 6px;
-  }
-  .topbar nav a {
-    display: none;
-  }
-  .simulation-controls {
-    order: 3;
-    width: 100%;
   }
   .simulation-controls button,
   .simulation-controls select {
@@ -910,12 +885,6 @@ dialog a {
   .simulation-controls #step {
     width: 44px;
   }
-  .simulation-controls label {
-    margin-left: auto;
-  }
-  .simulation-controls label > span {
-    display: inline;
-  }
   .workspace {
     display: flex;
     flex-direction: column;
@@ -923,42 +892,20 @@ dialog a {
   }
   .world-stage {
     height: auto;
-    grid-template-rows: 56px 66px 44px auto 36px;
+    grid-template-rows: auto;
   }
   .habitat {
     aspect-ratio: 240 / 156;
   }
   .tool-dock button {
-    flex-direction: column;
-    gap: 6px;
-    padding: 6px 2px;
-    font-size: 11px;
-  }
-  .tool-dock button > svg {
-    width: 24px;
-    height: 24px;
+    min-height: 44px;
   }
   .zoom-controls button {
     min-height: 44px;
   }
-  .tool-options {
-    padding: 0 12px;
-  }
-  #tool-hint {
-    font-size: 11px;
-  }
   #brush-control {
     gap: 6px;
     font-size: 13px;
-  }
-  #brush-control input {
-    width: 100px;
-  }
-  .world-bottom {
-    padding: 0 12px;
-    justify-content: space-between;
-    gap: 6px;
-    font-size: 10px;
   }
   .tabs button {
     height: 44px;
@@ -993,15 +940,5 @@ dialog a {
   .editor {
     max-width: 340px;
     margin: auto;
-  }
-  footer {
-    padding: 12px;
-  }
-  .cell-legend {
-    flex-wrap: wrap;
-    gap: 6px 12px;
-  }
-  .cell-legend span {
-    font-size: 11px;
   }
 }

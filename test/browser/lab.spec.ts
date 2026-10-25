@@ -42,7 +42,9 @@ test('Even Hub-style cards retain the dark palette and crisp cellular editor', a
   await expect(page.locator('#ecosystem-panel')).toBeVisible();
 });
 
-test('panels keep tools outside the habitat at every layout width', async ({ page }) => {
+test('all controls share the sidebar without crowding the habitat at every layout width', async ({
+  page,
+}) => {
   await page.goto('/');
   await expect(page.getByRole('link', { name: 'EvoLab / Drift' })).toContainText('drift');
   for (const width of [360, 390, 760, 780, 1024, 1280, 1600]) {
@@ -53,23 +55,52 @@ test('panels keep tools outside the habitat at every layout width', async ({ pag
       const sidebar = document.querySelector('.sidebar')!.getBoundingClientRect();
       return {
         fits: document.documentElement.scrollWidth <= innerWidth,
-        toolsAbove: tools.bottom <= habitat.top,
+        toolsOutside: tools.left >= habitat.right || tools.top >= habitat.bottom,
         panelsSeparate: sidebar.left >= habitat.right || sidebar.top >= habitat.bottom,
-        controlsFit: [...document.querySelectorAll('.topbar button, .tool-dock button')].every(
+        habitatFillsWorkspace:
+          innerWidth <= 760 || (habitat.top === sidebar.top && habitat.bottom === sidebar.bottom),
+        pageFits: innerWidth <= 760 || document.documentElement.scrollHeight <= innerHeight,
+        controlsFit: [...document.querySelectorAll('.sidebar button, .sidebar select')].every(
           (button) => button.scrollWidth <= button.clientWidth,
         ),
+        controlsInSidebar: [
+          '.topbar',
+          '.simulation-controls',
+          '.world-heading',
+          '.tool-dock',
+          '.tool-options',
+          '.world-bottom',
+          '.tabs',
+          '.panel',
+          'footer',
+        ].every((selector) => document.querySelector(selector)!.closest('.sidebar') !== null),
+        unobstructed: document.querySelector('.world-stage')!.children.length === 1,
       };
     });
     expect(layout).toEqual({
       fits: true,
-      toolsAbove: true,
+      toolsOutside: true,
       panelsSeparate: true,
+      habitatFillsWorkspace: true,
+      pageFits: true,
       controlsFit: true,
+      controlsInSidebar: true,
+      unobstructed: true,
     });
   }
+  const habitat = await page.locator('#world').boundingBox();
   await page.getByText('World settings', { exact: true }).click();
   await page.getByRole('button', { name: 'Reseed world' }).scrollIntoViewIfNeeded();
   await expect(page.getByRole('button', { name: 'Reseed world' })).toBeInViewport();
+  expect(await page.locator('#world').boundingBox()).toEqual(habitat);
+  await page.getByText('Cell legend & shortcuts', { exact: true }).click();
+  await expect(page.locator('.cell-legend')).toBeVisible();
+  await expect(page.locator('.footer-note')).toContainText('Space: pause');
+  await expect(page.getByRole('link', { name: 'Source', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Help', exact: true }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.getByRole('button', { name: 'Close help' }).click();
+  await expect(page.getByRole('dialog')).toBeHidden();
 });
 
 async function pause(page: import('@playwright/test').Page): Promise<void> {
