@@ -144,12 +144,49 @@ describe('a shared, living world', () => {
     eater.energy = 0;
     w.step();
     expect(w.organisms.has(eater.id)).toBe(false);
-    expect(w.food[index(10, 10)]).toBe(0);
+    expect(w.food[index(10, 10)]).toBe(1);
     leaf.age = 2000;
     w.step();
     expect(w.organisms.has(leaf.id)).toBe(false);
+    expect(w.food[index(25, 25)]).toBe(1);
   });
-  it('does not scatter food without leaves, including after deaths and climate events', () => {
+  it.each(['starvation', 'old age'] as const)(
+    'turns every cell type into food after %s, including rotated bodies across wrapped edges',
+    (cause) => {
+      for (const rotation of [0, 1, 2, 3]) {
+        const world = empty(),
+          genome: Genome = {
+            ...single(),
+            cells: [
+              { x: 0, y: 0, type: 3 },
+              { x: 1, y: 0, type: 4 },
+              { x: 2, y: 0, type: 5 },
+              { x: 0, y: 1, type: 6 },
+              { x: 1, y: 1, type: 7 },
+              { x: 2, y: 1, type: 8 },
+            ],
+          },
+          organism = world.spawn(genome, WIDTH - 1, HEIGHT - 1, 1, undefined, rotation)!,
+          footprint = positions(organism).sort((left, right) => left - right);
+        if (cause === 'starvation') organism.energy = -100;
+        else organism.age = 900 + genome.cells.length * 75;
+        world.step();
+        expect(world.organisms.size).toBe(0);
+        expect(world.deaths).toBe(1);
+        expect(world.occupied.some(Boolean)).toBe(false);
+        expect(world.save().food).toEqual(footprint);
+        const frame = world.frame();
+        expect(frame.stats.food).toBe(genome.cells.length);
+        for (const position of footprint) {
+          expect(frame.cells[position]).toBe(1);
+          expect(frame.ids[position]).toBe(0);
+        }
+        const restored = Ecosystem.load(JSON.stringify(world.save()));
+        expect(restored.save()).toEqual(world.save());
+      }
+    },
+  );
+  it('does not scatter food beyond dead bodies without leaves, including after climate events', () => {
     const world = new Ecosystem({ ...DEFAULTS, nutrients: 20, climate: 0 }, false);
     world.spawn(single(3), 20, 20);
     world.spawn(single(7), 40, 40);
@@ -159,7 +196,7 @@ describe('a shared, living world', () => {
     expect(world.organisms.size).toBe(0);
     expect(world.deaths).toBe(2);
     expect(world.births).toBe(0);
-    expect(world.food.some(Boolean)).toBe(false);
+    expect(world.save().food).toEqual([index(20, 20), index(40, 40)]);
   });
   it('produces food beside leaves only, respecting wrapped edges, walls, occupancy and the rate', () => {
     const world = new Ecosystem({ ...DEFAULTS, nutrients: 20, climate: 0 }, false);
@@ -316,6 +353,8 @@ describe('a shared, living world', () => {
     expect(w.organisms.size).toBe(0);
     expect(w.occupied.some(Boolean)).toBe(false);
     expect(w.food[index(30, 30)]).toBe(0);
+    for (const position of positions({ genome: g, x: 30, y: 30, rotation: 0 }))
+      expect(w.food[position]).toBe(position === index(30, 30) ? 0 : 1);
     w.paint('erase', 10, 10, 2, g);
     expect(w.walls[index(10, 10)]).toBe(0);
   });
