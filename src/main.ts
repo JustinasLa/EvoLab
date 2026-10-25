@@ -353,6 +353,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       return;
     }
     if (data.type !== 'frame') return;
+    const previousSelection = selected?.id;
     frame = data.frame;
     selected = data.selected;
     dirty = true;
@@ -372,8 +373,9 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       history.push(s.population);
       history = history.slice(-180);
       drawChart(get('chart'), history);
-      get('inspector').innerHTML = organismHtml(selected, frame!);
     }
+    if (paused || updates % 4 === 1 || previousSelection !== selected?.id)
+      get('inspector').innerHTML = organismHtml(selected, frame!);
     if (updates % 12 === 1) {
       const list = get('lineages');
       list.replaceChildren();

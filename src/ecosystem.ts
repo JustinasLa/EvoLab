@@ -54,7 +54,11 @@ export class Ecosystem {
       const x = 20 + this.random.int(WIDTH - 40),
         y = 15 + this.random.int(HEIGHT - 30);
       for (let j = -9; j <= 9; j++)
-        if (Math.abs(j) > 2) this.walls[index(x + j, y + Math.round(Math.sin(j / 3) * 2))] = 1;
+        if (Math.abs(j) > 2) {
+          const p = index(x + j, y + Math.round(Math.sin(j / 3) * 2));
+          this.walls[p] = 1;
+          this.food[p] = 0;
+        }
     }
     for (let i = 0; i < 280; i++) {
       const kind = i % 10 < 5 ? 0 : i % 10 < 8 ? 1 : 2;
@@ -153,7 +157,7 @@ export class Ecosystem {
           x = p % WIDTH,
           y = Math.floor(p / WIDTH);
         if (type === 4) {
-          o.energy += 0.013 * daylight * (1 - stress);
+          o.energy += 0.04 * daylight * (1 - stress);
           if (this.random.next() < 0.055 * daylight * (1 - stress)) {
             const [dx, dy] = DIRECTIONS[this.random.int(4)],
               n = index(x + dx, y + dy);
