@@ -176,7 +176,9 @@ describe('a shared, living world', () => {
       expect(w.births).toBeGreaterThan(0);
       expect(o.children).toBeGreaterThan(0);
       const descendants = [...w.organisms.values()].filter((c) => c.id !== o.id);
-      expect(descendants.some((c) => c.ancestry.includes(o.species))).toBe(true);
+      expect(
+        descendants.every((c) => c.species === o.species || c.ancestry.includes(o.species)),
+      ).toBe(true);
       if (mutation === 0) expect(descendants.every((c) => c.genome.preference === 0.7)).toBe(true);
     }
   });
@@ -200,6 +202,13 @@ describe('a shared, living world', () => {
     const food = w.frame().stats.food;
     w.shock('bloom');
     expect(w.frame().stats.food).toBeGreaterThan(food);
+  });
+  it('makes broad climate tolerance cost energy in a comfortable habitat', () => {
+    const w = empty();
+    const narrow = w.spawn({ ...single(4), tolerance: 0.12 }, 10, 10)!;
+    const broad = w.spawn({ ...single(4), tolerance: 0.6 }, 30, 30)!;
+    for (let i = 0; i < 10; i++) w.step();
+    expect(narrow.energy).toBeGreaterThan(broad.energy);
   });
   it('paints food, blocking walls, complete organisms and erasure without corrupting occupancy', () => {
     const w = empty(),

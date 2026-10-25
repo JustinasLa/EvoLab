@@ -95,7 +95,11 @@ export class Ecosystem {
       energy: 8 + genome.cells.length,
       generation: parent ? parent.generation + 1 : 0,
       children: 0,
-      ancestry: parent ? [...parent.ancestry, parent.species].slice(-8) : [],
+      ancestry: parent
+        ? parent.species === species
+          ? [...parent.ancestry]
+          : [...parent.ancestry, parent.species].slice(-8)
+        : [],
       genome: structuredClone(genome),
     };
     if (!this.canPlace(o)) return;
@@ -149,7 +153,8 @@ export class Ecosystem {
         this.tick < this.eventUntil ? this.eventOffset : 0,
       );
       const stress = Math.max(0, Math.abs(temp - o.genome.preference) - o.genome.tolerance);
-      o.energy -= 0.012 * o.genome.cells.length + stress * 0.2 * o.genome.cells.length;
+      const upkeep = 0.012 + Math.max(0, o.genome.tolerance - 0.2) * 0.025;
+      o.energy -= (upkeep + stress * 0.2) * o.genome.cells.length;
       const places = positions(o);
       for (let c = 0; c < o.genome.cells.length; c++) {
         const type = o.genome.cells[c].type,

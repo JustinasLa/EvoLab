@@ -287,7 +287,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   });
   const keyboard = (event: KeyboardEvent): void => {
     if (
-      (event.target as HTMLElement).matches('input,select,textarea') ||
+      (event.target instanceof HTMLElement && event.target.matches('input,select,textarea')) ||
       event.ctrlKey ||
       event.metaKey ||
       event.altKey ||
