@@ -48,7 +48,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   await page.getByRole('button', { name: 'Cold snap' }).click();
   await expect(page.locator('#weather')).toContainText('Cold snap');
   const oldFood = Number(await page.locator('#food-count').textContent());
-  await page.getByRole('button', { name: '✦ Bloom', exact: true }).click();
+  await page.getByRole('button', { name: 'Bloom', exact: true }).click();
   await expect
     .poll(async () => Number(await page.locator('#food-count').textContent()))
     .toBeGreaterThan(oldFood);

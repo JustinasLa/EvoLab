@@ -58,7 +58,7 @@ export function draw(
   canvas.width = v.width * ratio;
   canvas.height = v.height * ratio;
   ctx.scale(ratio, ratio);
-  ctx.fillStyle = '#080c12';
+  ctx.fillStyle = '#090f16';
   ctx.fillRect(0, 0, v.width, v.height);
   buffer.width = WIDTH;
   buffer.height = HEIGHT;
@@ -110,7 +110,14 @@ export function draw(
   ctx.strokeRect(v.left - 0.5, v.top - 0.5, WIDTH * v.scale + 1, HEIGHT * v.scale + 1);
 }
 export function genomeSvg(genome: Genome, size = 52): string {
-  return `<svg width="${size}" height="${size}" viewBox="-5 -5 10 10" aria-hidden="true">${genome.cells.map((c) => `<rect x="${c.x - 0.43}" y="${c.y - 0.43}" width=".86" height=".86" rx=".06" fill="${COLORS[c.type]}"/>`).join('')}</svg>`;
+  const xs = genome.cells.map((c) => c.x),
+    ys = genome.cells.map((c) => c.y),
+    left = Math.min(...xs),
+    top = Math.min(...ys),
+    width = Math.max(...xs) - left + 1,
+    height = Math.max(...ys) - top + 1,
+    side = Math.max(width, height) + 2;
+  return `<svg width="${size}" height="${size}" viewBox="${left - (side - width) / 2} ${top - (side - height) / 2} ${side} ${side}" shape-rendering="crispEdges" aria-hidden="true">${genome.cells.map((c) => `<rect x="${c.x}" y="${c.y}" width=".88" height=".88" fill="${COLORS[c.type]}"/>`).join('')}</svg>`;
 }
 export function drawChart(canvas: HTMLCanvasElement, history: number[]): void {
   const ctx = canvas.getContext('2d')!;
@@ -131,20 +138,79 @@ export function drawChart(canvas: HTMLCanvasElement, history: number[]): void {
 }
 export function organismHtml(o: Organism | null, frame: Frame): string {
   if (!o)
-    return '<p class="empty-inspector">Click any organism to see its anatomy, energy, and ancestry.</p>';
+    return `<div class="empty-inspector">${genomeSvg(
+      {
+        cells: [
+          { x: 0, y: 0, type: 4 },
+          { x: 1, y: 0, type: 3 },
+          { x: 0, y: 1, type: 5 },
+        ],
+        preference: 0.5,
+        tolerance: 0.2,
+        tempo: 3,
+      },
+      72,
+    )}<p>Click any organism to inspect it.</p></div>`;
   const temp = temperature(o.x, o.y, frame.stats.tick, frame.climate, frame.offset);
-  return `<div class="specimen-preview">${genomeSvg(o.genome, 86)}<div><strong>Organism ${o.id}</strong><span>Lineage ${o.species} · generation ${o.generation}</span></div></div><dl class="specimen-facts"><div><dt>Energy</dt><dd>${o.energy.toFixed(1)}</dd></div><div><dt>Age</dt><dd>${o.age} ticks</dd></div><div><dt>Offspring</dt><dd>${o.children}</dd></div><div><dt>Cells</dt><dd>${o.genome.cells.length}</dd></div><div><dt>Local temperature</dt><dd>${Math.round(temp * 40)}°</dd></div><div><dt>Preferred</dt><dd>${Math.round(o.genome.preference * 40)}° ±${Math.round(o.genome.tolerance * 40)}°</dd></div></dl><p class="ancestry">${[...o.ancestry, o.species].map((s) => `#${s}`).join(' → ')}</p><button id="copy-organism" class="secondary wide">Edit this organism ↗</button>`;
+  return `<div class="specimen-preview"><div class="anatomy">${genomeSvg(o.genome, 104)}</div><div><strong>Organism ${o.id}</strong><span>Lineage #${o.species}</span><span>Generation ${o.generation}</span></div></div><dl class="specimen-facts"><div><dt>Energy</dt><dd>${o.energy.toFixed(1)}</dd></div><div><dt>Age</dt><dd>${o.age} ticks</dd></div><div><dt>Offspring</dt><dd>${o.children}</dd></div><div><dt>Cells</dt><dd>${o.genome.cells.length}</dd></div><div><dt>Local temperature</dt><dd>${Math.round(temp * 40)}°</dd></div><div><dt>Preferred</dt><dd>${Math.round(o.genome.preference * 40)}° ±${Math.round(o.genome.tolerance * 40)}°</dd></div></dl><p class="ancestry" title="Lineage ancestry">${[...o.ancestry, o.species].map((s) => `#${s}`).join(' → ')}</p><button id="copy-organism" class="secondary wide">Edit this organism</button>`;
 }
+const icon = (path: string): string =>
+  `<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="${path}"/></svg>`;
+const inspectIcon = icon('M2 1h7v2H2zm-2 2h2v7H0zm9 0h2v7H9zM2 10h7v2H2zm8 1h2v2h-2zm2 2h2v2h-2z'),
+  panIcon = icon(
+    'M7 0h2v3h2v2H9v2h2V5h2v2h3v2h-3v2h-2V9H9v2h2v2H9v3H7v-3H5v-2h2V9H5v2H3V9H0V7h3V5h2v2h2V5H5V3h2z',
+  ),
+  foodIcon = icon('M2 2h4v4H2zm8 1h4v4h-4zM5 10h4v4H5z'),
+  wallIcon = icon('M1 1h6v6H1zm8 0h6v6H9zM1 9h6v6H1zm8 0h6v6H9z'),
+  eraseIcon = icon('M7 1h5v2h2v5h-2v2h-2v2H8v2H3v-2H1V7h2V5h2V3h2zM3 8v3h2v1h2l2-2-4-4z'),
+  plantIcon = icon('M6 0h4v6h6v4h-6v6H6v-6H0V6h6z');
+const cellDescriptions = [
+  'Eats adjacent food',
+  'Uses light to produce energy and food',
+  'Moves and rotates the body',
+  'Drains adjacent unarmored organisms',
+  'Protects the contacted cell',
+  'Senses nearby food, walls and organisms',
+];
 export const markup = `
-<header class="topbar"><a class="brand" href="./"><svg width="23" height="23" viewBox="0 0 23 23" aria-hidden="true"><rect x="2" y="9" width="5" height="5" fill="#66db8b"/><rect x="9" y="2" width="5" height="5" fill="#edae57"/><rect x="9" y="9" width="5" height="5" fill="#66db8b"/><rect x="16" y="9" width="5" height="5" fill="#58bce5"/><rect x="9" y="16" width="5" height="5" fill="#66db8b"/></svg><strong>EvoLab</strong><span>DRIFT</span></a><span class="top-caption">AN OPEN-ENDED ARTIFICIAL ECOSYSTEM</span><nav><button id="help" title="How this world works">?</button><a href="https://github.com/JustinasLa/EvoLab" target="_blank" rel="noreferrer">Source ↗</a></nav></header>
-<main class="workspace"><section class="world-stage" aria-label="Living ecosystem"><canvas id="world" aria-label="Interactive ecosystem. Choose a tool, then click or drag in the world." tabindex="0"></canvas><div class="world-label"><span class="live-dot"></span><span id="world-label">WORLD 0042</span><span id="run-state">LIVE</span></div><div class="world-weather"><span id="season">Vernal drift</span><strong id="weather">Drifting climate</strong></div><div class="zoom-controls"><button id="zoom-out" title="Zoom out">−</button><button id="fit" title="Fit world">Fit</button><button id="zoom-in" title="Zoom in">+</button></div><div class="world-bottom"><span id="tick">TICK 0</span><span id="world-count">Seeding life…</span></div><div class="tool-dock" role="toolbar" aria-label="World tools"><button data-tool="inspect" aria-pressed="true" title="Inspect organism (I)"><span>⌖</span><small>Inspect</small></button><button data-tool="pan" aria-pressed="false" title="Pan world (H)"><span>✥</span><small>Pan</small></button><i></i><button data-tool="food" aria-pressed="false" title="Paint nutrients (F)"><span class="food-icon">✦</span><small>Food</small></button><button data-tool="wall" aria-pressed="false" title="Paint walls (W)"><span>▦</span><small>Wall</small></button><button data-tool="erase" aria-pressed="false" title="Erase life and terrain (E)"><span>◩</span><small>Erase</small></button><button data-tool="plant" aria-pressed="false" title="Place designed organism (P)"><span class="plant-icon">✚</span><small>Plant</small></button></div></section>
-<aside class="sidebar"><div class="simulation-controls"><button id="pause" class="primary" title="Pause or resume (Space)">Ⅱ Pause</button><label>Speed<select id="speed" aria-label="Simulation speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="12">12×</option></select></label><button id="step" class="icon-button" title="Advance one tick while paused">▹</button></div><div class="tabs" role="tablist"><button data-tab="ecosystem" role="tab" aria-selected="true">Ecosystem</button><button data-tab="organism" role="tab" aria-selected="false">Organism</button></div>
-<div id="ecosystem-panel" class="panel"><section class="population-section"><div class="section-caption"><span>POPULATION</span><span id="generation">GEN 0</span></div><div class="population-number"><strong id="population">—</strong><span id="species-count">— lineages</span></div><canvas id="chart" role="img" aria-label="Recent organism population"></canvas><div class="vital-stats"><span>↑ <b id="births">0</b> births</span><span>↓ <b id="deaths">0</b> deaths</span><span>✦ <b id="food-count">0</b> food</span></div></section>
-<section><div class="section-caption"><span>DOMINANT LINEAGES</span><span>ALIVE</span></div><div id="lineages" class="lineages"><p class="muted">Waiting for the first inhabitants.</p></div></section>
-<section class="climate-section"><div class="section-caption"><span>THE TWIST: A WORLD THAT DRIFTS</span></div><p class="muted">Warm and cold zones move. Temperature preferences are inherited. Survivors shape the next generation.</p><button id="thermal" class="secondary wide" aria-pressed="false">◒ Show temperature</button><div class="temperature-key"><span>Cold · 0°</span><i></i><span>40° · Hot</span></div><label class="slider-label" for="climate">Climate pressure<output id="climate-value">80%</output></label><input id="climate" type="range" min="0" max="1" step="0.05" value="0.8"><div class="events"><button data-shock="cold">❄ Cold snap</button><button data-shock="heat">☀ Heatwave</button><button data-shock="bloom">✦ Bloom</button></div></section>
-<details class="world-settings"><summary>World settings</summary><label class="slider-label" for="mutation">Mutation rate<output id="mutation-value">12%</output></label><input id="mutation" type="range" min="0" max="0.4" step="0.01" value="0.12"><label class="slider-label" for="nutrients">Nutrient rain<output id="nutrients-value">5 / tick</output></label><input id="nutrients" type="range" min="0" max="20" step="1" value="5"><label class="slider-label" for="brush">Brush radius<output id="brush-value">2 cells</output></label><input id="brush" type="range" min="0" max="8" step="1" value="2"><label class="seed-label" for="seed">World seed<input id="seed" type="number" min="0" max="4294967295" step="1" required value="42"></label><button id="reset" class="secondary wide">↺ Reseed world</button></details>
-</div>
-<div id="organism-panel" class="panel" hidden><section><div class="section-caption"><span>UNDER THE MICROSCOPE</span></div><div id="inspector"><p class="empty-inspector">Click any organism to see its anatomy, energy, and ancestry.</p></div></section><section><div class="section-caption"><span>ORGANISM DESIGNER</span><button id="clear-design" class="quiet">Reset</button></div><p class="muted">Draw a connected body. Choose a cell, then click the grid.</p><div id="cell-palette" class="cell-palette">${CELL_NAMES.map((name, i) => `<button data-cell="${i + 3}" aria-pressed="${i === 1}" title="${name}"><i style="background:${COLORS[i + 3]}"></i>${name}</button>`).join('')}</div><div id="editor" class="editor" aria-label="Organism anatomy editor"></div><label class="slider-label" for="preference">Preferred temperature<output id="preference-value">20°</output></label><input id="preference" type="range" min="0" max="1" step="0.025" value="0.5"><button id="plant-design" class="primary wide">✚ Place in world</button><p id="design-note" class="muted">The organism will reproduce and mutate on its own.</p></section></div>
-<div class="sidebar-bottom"><button id="save" class="quiet">↓ Save world</button><button id="load" class="quiet">↑ Load world</button><input id="file" type="file" accept="application/json,.json" hidden></div><p id="notice" role="status"></p></aside></main>
-<footer><div class="cell-legend">${CELL_NAMES.map((name, i) => `<span title="${['Eats adjacent nutrients', 'Grows food using light', 'Enables movement', 'Drains adjacent unarmored organisms', 'Protects the contacted cell', 'Senses nearby food and organisms'][i]}"><i style="background:${COLORS[i + 3]}"></i>${name}</span>`).join('')}<span><i style="background:${COLORS[1]}"></i>Food</span></div><span class="footer-note">No assigned fitness. Just survival.</span></footer>
-<dialog id="help-dialog"><button id="close-help" class="dialog-close" aria-label="Close help">×</button><span class="section-caption">WELCOME TO EVOLAB / DRIFT</span><h1>A small world.<br>An endless experiment.</h1><p>Organisms eat, move, reproduce, mutate, and die. No leaderboard chooses who breeds. Successful descendants simply occupy more of the world.</p><p><b>The twist:</b> climate zones drift across the habitat. Every organism inherits a preferred temperature and a tolerance range. Heatwaves and cold snaps change which bodies can thrive.</p><ul><li>Click an organism to inspect it or copy its anatomy into the designer.</li><li>Paint food, build barriers, erase patches, or design and place your own life.</li><li>Scroll to zoom; use Pan to drag. Space pauses; I / H / F / W / E / P select tools.</li><li>Save the whole world before leaving. Reloading otherwise starts fresh.</li></ul><p class="muted">Inspired by <a href="https://thelifeengine.net/" target="_blank" rel="noreferrer">The Life Engine</a>. An original cellular simulation; temperature is an abstract 0–40° scale, not a biological model.</p></dialog>`;
+<header class="topbar">
+  <a class="brand" href="./" aria-label="EvoLab / Drift">${genomeSvg(
+    {
+      cells: [
+        { x: 0, y: 0, type: 4 },
+        { x: 1, y: 0, type: 3 },
+        { x: 0, y: 1, type: 5 },
+        { x: 1, y: 1, type: 4 },
+      ],
+      preference: 0.5,
+      tolerance: 0.2,
+      tempo: 3,
+    },
+    32,
+  )}<strong>EvoLab<span> / drift</span></strong></a>
+  <div class="simulation-controls"><button id="pause" class="primary" title="Pause or resume (Space)">Ⅱ Pause</button><button id="step" title="Advance one tick while paused" aria-label="Advance one tick while paused">${icon('M2 2h2v12H2zm4 0h2v2h2v2h2v4h-2v2H8v2H6z')}</button><label><span>Speed</span><select id="speed" aria-label="Simulation speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="12">12×</option></select></label></div>
+  <nav aria-label="World files and help"><button id="save" title="Download this world">Save world</button><button id="load" title="Open a saved world">Load world</button><button id="help" title="How this world works">Help</button><a href="https://github.com/JustinasLa/EvoLab" target="_blank" rel="noreferrer">Source</a></nav><input id="file" type="file" accept="application/json,.json" hidden>
+</header>
+<main class="workspace">
+  <section class="world-stage" aria-label="Living ecosystem">
+    <div class="world-heading"><div class="world-label"><span class="live-dot"></span><span id="world-label">WORLD 0042</span><span id="run-state">LIVE</span></div><div class="zoom-controls"><button id="zoom-out" title="Zoom out">−</button><button id="fit" title="Fit world">Fit</button><button id="zoom-in" title="Zoom in">+</button></div></div>
+    <div class="tool-dock" role="toolbar" aria-label="World tools"><button data-tool="inspect" aria-pressed="true" title="Inspect organism (I)">${inspectIcon}<span>Inspect</span><kbd>I</kbd></button><button data-tool="pan" aria-pressed="false" title="Pan world (H)">${panIcon}<span>Pan</span><kbd>H</kbd></button><button data-tool="food" aria-pressed="false" title="Paint nutrients (F)">${foodIcon}<span>Food</span><kbd>F</kbd></button><button data-tool="wall" aria-pressed="false" title="Paint walls (W)">${wallIcon}<span>Wall</span><kbd>W</kbd></button><button data-tool="erase" aria-pressed="false" title="Erase life and terrain (E)">${eraseIcon}<span>Erase</span><kbd>E</kbd></button><button data-tool="plant" aria-pressed="false" title="Place designed organism (P)">${plantIcon}<span>Plant</span><kbd>P</kbd></button></div>
+    <div class="tool-options"><span id="tool-hint">Click an organism to inspect its cells.</span><label id="brush-control" hidden for="brush">Radius<input id="brush" type="range" min="0" max="8" step="1" value="2"><output id="brush-value">2 cells</output></label></div>
+    <div class="habitat"><canvas id="world" aria-label="Interactive ecosystem. Choose a tool, then click or drag in the world." tabindex="0"></canvas></div>
+    <div class="world-bottom"><span id="tick">TICK 0</span><span id="world-count">Seeding life…</span><span class="world-size">240 × 156 cells · wrapped edges</span></div>
+  </section>
+  <aside class="sidebar" aria-label="Ecosystem controls"><div class="tabs" role="tablist" aria-label="Simulation panels"><button id="ecosystem-tab" data-tab="ecosystem" role="tab" aria-controls="ecosystem-panel" aria-selected="true">Ecosystem</button><button id="organism-tab" data-tab="organism" role="tab" aria-controls="organism-panel" aria-selected="false">Organism</button></div>
+    <div class="panel-scroll">
+      <div id="ecosystem-panel" class="panel" role="tabpanel" aria-labelledby="ecosystem-tab">
+        <section class="population-section"><div class="section-caption"><h2>Population</h2><span id="generation">GEN 0</span></div><div class="population-number"><strong id="population">—</strong><span id="species-count">— lineages</span></div><canvas id="chart" role="img" aria-label="Recent organism population"></canvas><dl class="vital-stats"><div><dt>Births</dt><dd id="births">0</dd></div><div><dt>Deaths</dt><dd id="deaths">0</dd></div><div><dt>Food</dt><dd id="food-count">0</dd></div></dl></section>
+        <section class="lineage-section"><div class="section-caption"><h2>Common bodies</h2><span title="Choose a body to edit its anatomy">Click to edit</span></div><div id="lineages" class="lineages"><p class="muted">Waiting for life…</p></div></section>
+        <section class="climate-section"><div class="section-caption"><h2>Climate</h2><button id="thermal" class="secondary" aria-pressed="false">Show temperature</button></div><div class="world-weather"><strong id="weather">Drifting climate</strong><span id="season">Vernal drift</span></div><div class="temperature-key"><span>0°</span><i></i><span>40°</span></div><label class="slider-label" for="climate">Climate pressure<output id="climate-value">80%</output></label><input id="climate" type="range" min="0" max="1" step="0.05" value="0.8"><div class="events"><button data-shock="cold">${icon('M7 0h2v4h2V2h2v2h-2v2H9v1h3V5h2v2h2v2h-2v2h-2V9H9v2h2v2h2v2h-2v-2H9v3H7v-3H5v2H3v-2h2v-2h2V9H4v2H2V9H0V7h2V5h2v2h3V6H5V4H3V2h2v2h2z')}Cold snap</button><button data-shock="heat">${icon('M6 0h4v2H6zM2 2h2v2H2zm10 0h2v2h-2zM4 4h8v8H4zM0 6h2v4H0zm14 0h2v4h-2zM2 12h2v2H2zm10 0h2v2h-2zm-6 2h4v2H6z')}Heatwave</button><button data-shock="bloom">${foodIcon}Bloom</button></div></section>
+        <details class="world-settings"><summary>World settings</summary><label class="slider-label" for="mutation">Mutation rate<output id="mutation-value">12%</output></label><input id="mutation" type="range" min="0" max="0.4" step="0.01" value="0.12"><label class="slider-label" for="nutrients">Nutrient rain<output id="nutrients-value">5 / tick</output></label><input id="nutrients" type="range" min="0" max="20" step="1" value="5"><label class="seed-label" for="seed">World seed<input id="seed" type="number" min="0" max="4294967295" step="1" required value="42"></label><button id="reset" class="secondary wide">Reseed world</button></details>
+      </div>
+      <div id="organism-panel" class="panel" role="tabpanel" aria-labelledby="organism-tab" hidden><section><div class="section-caption"><h2>Selected organism</h2></div><div id="inspector"></div></section><section class="designer-section"><div class="section-caption"><h2>Build a body</h2><button id="clear-design" class="quiet">Reset</button></div><div id="cell-palette" class="cell-palette">${CELL_NAMES.map((name, i) => `<button data-cell="${i + 3}" aria-pressed="${i === 1}" title="${name}: ${cellDescriptions[i]}"><i style="--cell:${COLORS[i + 3]}"></i>${name}</button>`).join('')}</div><p id="cell-description" class="muted">${cellDescriptions[1]}</p><div id="editor" class="editor" aria-label="Organism anatomy editor"></div><p id="design-note" class="muted">Use 1–16 cells, connected edge to edge.</p><label class="slider-label" for="preference">Preferred temperature<output id="preference-value">20°</output></label><input id="preference" type="range" min="0" max="1" step="0.025" value="0.5"><button id="plant-design" class="primary wide">Place in world</button></section></div>
+    </div>
+    <p id="notice" role="status"></p>
+  </aside>
+</main>
+<footer><div class="cell-legend">${CELL_NAMES.map((name, i) => `<span title="${cellDescriptions[i]}"><i style="--cell:${COLORS[i + 3]}"></i>${name}</span>`).join('')}<span><i style="--cell:${COLORS[1]}"></i>Food</span><span><i style="--cell:${COLORS[2]}"></i>Wall</span></div><span class="footer-note">Space: pause · Scroll: zoom</span></footer>
+<dialog id="help-dialog"><button id="close-help" class="dialog-close" aria-label="Close help">×</button><h1>EvoLab / Drift</h1><p>Organisms eat, move, reproduce, mutate, and die. Successful descendants spread through survival and reproduction.</p><p>Climate zones drift across the habitat. Each organism inherits a preferred temperature and tolerance. Wider tolerance costs energy.</p><ul><li>Inspect a body, or click a common body to edit it.</li><li>Choose Food, Wall or Erase and drag to paint.</li><li>Choose a cell type, draw a connected body, then place it in the world.</li><li>Scroll to zoom; use Pan to drag. Space pauses; I / H / F / W / E / P select tools.</li><li>Save your world before leaving. Reloading starts fresh.</li></ul><p class="muted">Inspired by <a href="https://thelifeengine.net/" target="_blank" rel="noreferrer">The Life Engine</a>. An original cellular simulation; temperature uses an abstract 0–40° scale, not a biological model.</p></dialog>`;

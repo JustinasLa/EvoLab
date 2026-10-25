@@ -1,5 +1,4 @@
 import './style.css';
-import '@fontsource-variable/dm-sans';
 import '@fontsource/dm-mono/400.css';
 import {
   DEFAULTS,
@@ -75,6 +74,20 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       .querySelectorAll<HTMLButtonElement>('button[data-tool]')
       .forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === tool)));
     canvas.dataset.tool = tool;
+    const painting = ['food', 'wall', 'erase'].includes(tool);
+    get('brush-control').hidden = !painting;
+    get('tool-hint').hidden = painting;
+    text(
+      'tool-hint',
+      {
+        inspect: 'Click an organism to inspect its cells.',
+        pan: 'Drag to move the world. Scroll to zoom.',
+        food: 'Paint food.',
+        wall: 'Paint walls.',
+        erase: 'Erase life and terrain.',
+        plant: 'Click an empty patch to place your body.',
+      }[tool],
+    );
   }
   function editor(): void {
     get('editor').replaceChildren();
@@ -200,7 +213,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   get('thermal').addEventListener('click', () => {
     thermal = !thermal;
     get('thermal').setAttribute('aria-pressed', String(thermal));
-    text('thermal', thermal ? '◒ Hide temperature' : '◒ Show temperature');
+    text('thermal', thermal ? 'Hide temperature' : 'Show temperature');
     dirty = true;
   });
   for (const id of ['mutation', 'nutrients', 'climate'] as const)
@@ -229,6 +242,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   root.querySelectorAll<HTMLButtonElement>('[data-cell]').forEach((b) =>
     b.addEventListener('click', () => {
       cellType = Number(b.dataset.cell) as CellType;
+      text('cell-description', b.title.split(': ')[1]);
       root
         .querySelectorAll<HTMLButtonElement>('[data-cell]')
         .forEach((other) => other.setAttribute('aria-pressed', String(other === b)));
@@ -383,7 +397,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         const b = document.createElement('button');
         b.className = 'lineage';
         b.title = 'Copy this lineage into the organism designer';
-        b.innerHTML = `${genomeSvg(species.genome, 34)}<span><strong>${species.name} <small>#${species.id}</small></strong><i><b style="width:${(species.count / Math.max(1, s.population)) * 100}%"></b></i></span><em>${species.count}</em>`;
+        b.innerHTML = `${genomeSvg(species.genome, 56)}<span><strong>${species.name} <small>#${species.id}</small></strong><i><b style="width:${(species.count / Math.max(1, s.population)) * 100}%"></b></i></span><em>${species.count}</em>`;
         b.addEventListener('click', () => {
           blueprint = structuredClone(species.genome);
           editor();
