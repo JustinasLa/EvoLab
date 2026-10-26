@@ -1,17 +1,496 @@
 import { test, expect } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { cpus, platform, totalmem } from 'node:os';
 import { Ecosystem } from '../../src/ecosystem';
-import { DEFAULTS, type Frame, type LegacyWorldFile } from '../../src/model';
+import { DEFAULTS, founder, type Frame, type LegacyWorldFile } from '../../src/model';
 
 declare global {
   interface Window {
     telemetryEvidence: { frame: Frame | null; points: number[][] };
+    telemetryPerformance: {
+      enabled: boolean;
+      action: string;
+      records: {
+        action: string;
+        durationMs: number;
+        callbackMs: number;
+        nodes: number;
+        view: string;
+        sample: string;
+      }[];
+    };
   }
 }
+
+function telemetryScenario(
+  state: 'empty' | 'single' | 'full-ring' | 'legacy' | 'extinct-paused',
+): WorldFile {
+  let world = new Ecosystem({ ...DEFAULTS, nutrients: 0, mutation: 0, climate: 0.8 }, false);
+  if (state === 'empty') return world.save();
+  if (state === 'extinct-paused') {
+    const organism = world.spawn(
+      { cells: [{ x: 0, y: 0, type: 3 }], preference: 0.5, tolerance: 0.6, tempo: 2 },
+      40,
+      40,
+    )!;
+    organism.energy = 5;
+    for (let tick = 0; tick < 90; tick++) world.step();
+    organism.age = 975;
+    organism.energy = 5;
+    return world.save();
+  }
+  const intervals = state === 'single' ? 1 : 181;
+  for (let interval = 0; interval < intervals; interval++) {
+    world.food.fill(0);
+    const organism = world.spawn(
+      {
+        cells: Array.from({ length: 6 }, (_, cell) => ({
+          x: cell % 3,
+          y: Math.floor(cell / 3),
+          type: (cell + 3) as import('../../src/model').CellType,
+        })),
+        preference: ((interval % 10) + 0.35) / 10,
+        tolerance: 0.3,
+        tempo: 4,
+      },
+      40,
+      40,
+    )!;
+    organism.energy = 100;
+    for (let tick = 0; tick < 30; tick++) world.step();
+    for (const living of [...world.organisms.values()]) world.kill(living, 'manual');
+  }
+  if (state === 'legacy') {
+    const saved = world.save(),
+      { adaptationOriginTick: _origin, ...telemetry } = saved.telemetry;
+    world = Ecosystem.load(
+      JSON.stringify({
+        ...saved,
+        version: 3,
+        telemetry: {
+          ...telemetry,
+          version: 1,
+          samples: telemetry.samples.map(({ adaptation: _adaptation, ...sample }) => sample),
+        },
+      }),
+    );
+    world.spawn(founder(0), 50, 50);
+    for (let tick = 0; tick < 30; tick++) world.step();
+    for (const living of [...world.organisms.values()]) world.kill(living, 'manual');
+  }
+  return world.save();
+}
+
+for (const state of ['empty', 'single', 'full-ring', 'legacy', 'extinct-paused'] as const) {
+  test(`telemetry ${state}: three honest views, accessible keyboard data and unchanged world across approved widths`, async ({
+    page,
+  }, testInfo) => {
+    await observeTelemetry(page);
+    const errors: string[] = [],
+      requests: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    page.on('request', (request) => {
+      if (!request.url().startsWith('http://127.0.0.1:4173/')) requests.push(request.url());
+    });
+    const fixture = telemetryScenario(state),
+      reference = Ecosystem.load(JSON.stringify(fixture));
+    if (state === 'extinct-paused') reference.step();
+    await page.goto('/');
+    await importTelemetryWorld(page, fixture, state === 'extinct-paused');
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    const checkpoint = await downloadWorld(page),
+      expected = reference.save();
+    expect(JSON.parse(checkpoint.toString())).toEqual(expected);
+    await expect(page.locator('#tick')).toHaveText(`TICK ${expected.tick.toLocaleString('en-US')}`);
+    await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+    const samples = expected.telemetry.samples,
+      measurements: object[] = [];
+    for (const width of state === 'full-ring'
+      ? [360, 390, 640, 760, 780, 1024, 1280, 1600]
+      : [360, 390, 1280]) {
+      await page.setViewportSize({ width, height: 800 });
+      for (const view of ['population', 'food', 'adaptation']) {
+        await page.getByLabel('Telemetry view', { exact: true }).selectOption(view);
+        await expect(page.locator('#telemetry-status')).toContainText('View:');
+        if (samples.length) {
+          const sample = state === 'legacy' ? samples[0] : samples.at(-1)!;
+          await page
+            .getByLabel('Recorded sample', { exact: true })
+            .selectOption(String(sample.tick));
+          await expect(page.locator('#telemetry-details caption')).toHaveText(
+            `Selected sample at tick ${sample.tick}`,
+          );
+          const details = await page.locator('#telemetry-details').textContent();
+          expect(details).toContain(String(sample.population));
+          if (view === 'adaptation' && sample.adaptation) {
+            expect(
+              await page
+                .locator('[data-bin]')
+                .evaluateAll((bars) => bars.map((bar) => Number(bar.getAttribute('data-count')))),
+            ).toEqual(sample.adaptation.preferenceBins);
+            expect(details).toContain(
+              sample.population
+                ? `${sample.adaptation.stressedOrganisms} / ${sample.population}`
+                : 'stressed fraction undefined',
+            );
+          }
+          if (view === 'adaptation' && !sample.adaptation) {
+            expect(details).toContain('not recorded');
+            await expect(page.locator('[data-bin]')).toHaveCount(0);
+          }
+        } else
+          await expect(page.locator('#telemetry-plots')).toContainText('No recorded samples yet');
+        const layout = await page.evaluate(() => {
+          const section = document.querySelector('#telemetry')!,
+            selects = [...section.querySelectorAll('select')],
+            rect = (selector: string) =>
+              document.querySelector(selector)!.getBoundingClientRect().toJSON();
+          const luminance = (color: string) => {
+              const channels = color
+                .match(/[\d.]+/g)!
+                .slice(0, 3)
+                .map(Number);
+              return channels.reduce((total, channel, position) => {
+                const normalized = channel / 255;
+                return (
+                  total +
+                  (normalized <= 0.04045
+                    ? normalized / 12.92
+                    : ((normalized + 0.055) / 1.055) ** 2.4) *
+                    [0.2126, 0.7152, 0.0722][position]
+                );
+              }, 0);
+            },
+            contrast = (node: Element, color: string) => {
+              let surface: Element | null = node;
+              while (surface) {
+                const background = getComputedStyle(surface).backgroundColor;
+                if (background !== 'rgba(0, 0, 0, 0)' && background !== 'transparent') {
+                  const foregroundLight = luminance(color),
+                    backgroundLight = luminance(background);
+                  return (
+                    (Math.max(foregroundLight, backgroundLight) + 0.05) /
+                    (Math.min(foregroundLight, backgroundLight) + 0.05)
+                  );
+                }
+                surface = surface.parentElement;
+              }
+              throw new Error('No painted telemetry background');
+            };
+          return {
+            width: innerWidth,
+            zoomEquivalent:
+              innerWidth === 640
+                ? '1280 physical pixels at 200% CSS-pixel reflow equivalent'
+                : null,
+            fits: document.documentElement.scrollWidth <= innerWidth,
+            nodes: section.querySelectorAll('*').length,
+            habitat: rect('#world'),
+            sidebar: rect('.sidebar'),
+            telemetry: rect('#telemetry'),
+            controls: selects.map((select) => ({
+              height: select.getBoundingClientRect().height,
+              label: document.querySelector(`label[for="${select.id}"]`)?.textContent,
+            })),
+            plots: [...section.querySelectorAll('svg')].map((svg) => ({
+              width: svg.getBoundingClientRect().width,
+              height: svg.getBoundingClientRect().height,
+              viewBox: svg.getAttribute('viewBox'),
+              titles: svg
+                .getAttribute('aria-labelledby')!
+                .split(' ')
+                .map((id) => document.getElementById(id)?.textContent),
+              labelSizes: [...svg.querySelectorAll('text')].map((label) =>
+                parseFloat(getComputedStyle(label).fontSize),
+              ),
+              labelsContained: [...svg.querySelectorAll('text')].every((label) => {
+                const bounds = label.getBoundingClientRect(),
+                  plot = svg.getBoundingClientRect();
+                return bounds.left >= plot.left - 1 && bounds.right <= plot.right + 1;
+              }),
+            })),
+            textContrast: Math.min(
+              ...[
+                ...section.querySelectorAll(
+                  'label, p, figcaption, li, th, td, caption, select, text',
+                ),
+              ]
+                .filter((node) => node.textContent)
+                .map((node) =>
+                  contrast(
+                    node,
+                    getComputedStyle(node)[node.tagName === 'text' ? 'fill' : 'color'],
+                  ),
+                ),
+            ),
+            seriesContrast: Math.min(
+              ...[
+                ...section.querySelectorAll(
+                  '[data-series] > *, [data-bin], .telemetry-axis, .telemetry-selection',
+                ),
+              ].map((node) => {
+                const style = getComputedStyle(node);
+                return contrast(node, style.stroke === 'none' ? style.fill : style.stroke);
+              }),
+            ),
+            tableHeaders: section.querySelectorAll('th[scope]').length,
+            summary: document.querySelector('#telemetry-summary')!.textContent,
+          };
+        });
+        expect(layout.fits).toBe(true);
+        expect(layout.nodes).toBeLessThan(2000);
+        expect(layout.textContrast).toBeGreaterThanOrEqual(4.5);
+        expect(layout.seriesContrast).toBeGreaterThanOrEqual(3);
+        expect(
+          layout.telemetry.left >= layout.habitat.right ||
+            layout.telemetry.top >= layout.habitat.bottom,
+        ).toBe(true);
+        for (const control of layout.controls) {
+          expect(control.height).toBeGreaterThanOrEqual(width <= 780 ? 44 : 36);
+          expect(control.label).toBeTruthy();
+        }
+        for (const plot of layout.plots) {
+          expect(plot.width).toBeGreaterThanOrEqual(180);
+          expect(plot.titles.every(Boolean)).toBe(true);
+          expect(plot.labelSizes.every((size) => size >= 12)).toBe(true);
+          expect(plot.labelsContained).toBe(true);
+        }
+        if (samples.length) expect(layout.tableHeaders).toBeGreaterThan(2);
+        measurements.push({ state, view, ...layout });
+        if ([360, 390, 640, 1280].includes(width)) {
+          await page.locator('#telemetry').scrollIntoViewIfNeeded();
+          await testInfo.attach(`${state}-${view}-${width}-screen`, {
+            body: await page.screenshot({ fullPage: true }),
+            contentType: 'image/png',
+          });
+          for (const [position, plot] of (await page.locator('#telemetry figure').all()).entries())
+            await testInfo.attach(`${state}-${view}-${width}-plot-${position}`, {
+              body: await plot.screenshot(),
+              contentType: 'image/png',
+            });
+          if (state === 'full-ring' && width === 1280) {
+            const sidebar = page.locator('.sidebar'),
+              dimensions = await sidebar.evaluate((node) => ({
+                height: node.clientHeight,
+                fullHeight: node.scrollHeight,
+              }));
+            for (let offset = 0; offset < dimensions.fullHeight; offset += dimensions.height) {
+              await sidebar.evaluate((node, top) => {
+                node.scrollTop = top;
+              }, offset);
+              await testInfo.attach(`${state}-${view}-${width}-sidebar-${offset}`, {
+                body: await sidebar.screenshot(),
+                contentType: 'image/png',
+              });
+            }
+          }
+        }
+      }
+    }
+    if (samples.length) {
+      const select = page.getByLabel('Recorded sample', { exact: true });
+      await select.focus();
+      await select.press('Home');
+      await select.press('ArrowDown');
+      await expect(select).toHaveValue(String(samples[0].tick));
+      await expect(select).toBeFocused();
+      await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+      await expect(select).toBeFocused();
+      const focus = await select.evaluate((node) => ({
+        width: getComputedStyle(node).outlineWidth,
+        style: getComputedStyle(node).outlineStyle,
+      }));
+      expect(parseFloat(focus.width)).toBeGreaterThanOrEqual(2);
+      expect(focus.style).not.toBe('none');
+      await select.selectOption('latest');
+      await expect(page.locator('#telemetry-details caption')).toHaveText(
+        `Selected sample at tick ${samples.at(-1)!.tick}`,
+      );
+    }
+    await page.locator('#thermal').click();
+    await page.locator('#thermal').click();
+    await page.getByRole('button', { name: 'Fit', exact: true }).click();
+    const after = await downloadWorld(page);
+    expect(after).toEqual(checkpoint);
+    await page.getByTitle('Advance one tick while paused').click();
+    await expect(page.locator('#tick')).toHaveText(
+      `TICK ${(expected.tick + 1).toLocaleString('en-US')}`,
+    );
+    reference.step();
+    expect(JSON.parse((await downloadWorld(page)).toString())).toEqual(reference.save());
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    expect(errors).toEqual([]);
+    expect(requests).toEqual([]);
+    const evidence = JSON.stringify({
+      project: testInfo.project.name,
+      measurements,
+      beforeSHA256: createHash('sha256').update(checkpoint).digest('hex'),
+      afterSHA256: createHash('sha256').update(after).digest('hex'),
+      serializedBytes: checkpoint.byteLength,
+      noPageErrors: true,
+      noExternalRequests: true,
+      nativeIOSOrScreenReaderCertification: false,
+    });
+    await writeFile(testInfo.outputPath('telemetry-measurements.json'), evidence);
+    await testInfo.attach(`telemetry-${state}-measurements`, {
+      body: evidence,
+      contentType: 'application/json',
+    });
+  });
+}
+
+test('full-ring telemetry retains raw render, selection and resize timings with bounded DOM', async ({
+  page,
+}, testInfo) => {
+  await observeTelemetry(page);
+  await page.addInitScript(() => {
+    const metrics = (window.telemetryPerformance = {
+      enabled: false,
+      action: '',
+      records: [] as Window['telemetryPerformance']['records'],
+    });
+    let start: number | null = null;
+    const replace = Element.prototype.replaceChildren,
+      append = Element.prototype.append,
+      raf = window.requestAnimationFrame;
+    Element.prototype.replaceChildren = function (...nodes) {
+      if (metrics.enabled && this.id === 'telemetry-plots') start = performance.now();
+      return replace.apply(this, nodes);
+    };
+    Element.prototype.append = function (...nodes) {
+      const result = append.apply(this, nodes);
+      if (
+        start !== null &&
+        this.id === 'telemetry-details' &&
+        nodes.some((node) => node instanceof HTMLTableElement)
+      ) {
+        metrics.records.push({
+          action: metrics.action,
+          durationMs: performance.now() - start,
+          callbackMs: 0,
+          nodes: document.querySelector('#telemetry')!.querySelectorAll('*').length,
+          view: (document.querySelector('#telemetry-view') as HTMLSelectElement).value,
+          sample: (document.querySelector('#telemetry-sample') as HTMLSelectElement).value,
+        });
+        start = null;
+      }
+      return result;
+    };
+    window.requestAnimationFrame = (callback) =>
+      raf.call(window, (timestamp) => {
+        const started = performance.now(),
+          length = metrics.records.length;
+        callback(timestamp);
+        if (metrics.records.length > length)
+          metrics.records.at(-1)!.callbackMs = performance.now() - started;
+      });
+  });
+  const fixture = telemetryScenario('full-ring');
+  await page.goto('/');
+  await importTelemetryWorld(page, fixture);
+  const checkpoint = await downloadWorld(page);
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  await page.getByLabel('Telemetry view', { exact: true }).selectOption('food');
+  await expect(page.locator('[data-series="Eye"] [data-tick]')).toHaveCount(180);
+  const samples = fixture.telemetry.samples;
+  await page.evaluate(() => {
+    window.telemetryPerformance.enabled = true;
+  });
+  for (let observation = 0; observation < 48; observation++) {
+    const kind = ['render', 'selection', 'resize'][observation % 3];
+    const count = await page.evaluate((action) => {
+      window.telemetryPerformance.action = action;
+      return window.telemetryPerformance.records.length;
+    }, kind);
+    if (kind === 'render')
+      await page
+        .getByLabel('Telemetry view', { exact: true })
+        .selectOption(observation % 2 ? 'population' : 'food');
+    else if (kind === 'selection')
+      await page
+        .getByLabel('Recorded sample', { exact: true })
+        .selectOption(String(observation % 2 ? samples[0].tick : samples.at(-1)!.tick));
+    else
+      await page.setViewportSize({
+        width:
+          testInfo.project.name === 'desktop'
+            ? page.viewportSize()!.width === 1280
+              ? 1024
+              : 1280
+            : page.viewportSize()!.width === 360
+              ? 390
+              : 360,
+        height: 800,
+      });
+    await expect
+      .poll(() => page.evaluate(() => window.telemetryPerformance.records.length))
+      .toBe(count + 1);
+  }
+  const measured = await page.evaluate(() => ({
+    userAgent: navigator.userAgent,
+    devicePixelRatio,
+    hardwareConcurrency: navigator.hardwareConcurrency,
+    raw: window.telemetryPerformance.records.slice(6),
+  }));
+  expect(measured.raw).toHaveLength(42);
+  expect(Math.max(...measured.raw.map((record) => record.nodes))).toBeLessThan(2000);
+  const beforeNoObservation = await page.evaluate(() => window.telemetryPerformance.records.length);
+  if (testInfo.project.name === 'desktop') await page.setViewportSize({ width: 1600, height: 800 });
+  await page.locator('#thermal').click();
+  await page.locator('#thermal').click();
+  await page.getByRole('button', { name: 'Fit', exact: true }).click();
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  expect(await page.evaluate(() => window.telemetryPerformance.records.length)).toBe(
+    beforeNoObservation,
+  );
+  expect(await downloadWorld(page)).toEqual(checkpoint);
+  const durations = measured.raw
+      .map((record) => record.durationMs)
+      .sort((left, right) => left - right),
+    p95 = durations[Math.ceil(durations.length * 0.95) - 1];
+  const evidence = JSON.stringify({
+    project: testInfo.project.name,
+    host: {
+      runtime: process.version,
+      platform: platform(),
+      cpu: cpus()[0]?.model,
+      logicalCPUs: cpus().length,
+      memoryBytes: totalmem(),
+    },
+    ...measured,
+    measurement:
+      'Synchronous DOM rebuild from telemetry plots replacement through selected-table append; callbackMs additionally includes whole animation callback. Six warm-ups excluded. Real built app and Worker, no CPU throttling; shared host/GC/layout noise remains.',
+    medianMs: durations[Math.floor(durations.length / 2)],
+    p95Ms: p95,
+    targetMs: testInfo.project.name === 'desktop' ? 16 : 50,
+    targetMet: p95 < (testInfo.project.name === 'desktop' ? 16 : 50),
+    maxNodes: Math.max(...measured.raw.map((record) => record.nodes)),
+    noObservationRedraws: 0,
+    beforeSHA256: createHash('sha256').update(checkpoint).digest('hex'),
+    nativeIOSOrScreenReaderCertification: false,
+  });
+  await writeFile(testInfo.outputPath('telemetry-performance.json'), evidence);
+  await testInfo.attach('telemetry-full-ring-raw-performance', {
+    body: evidence,
+    contentType: 'application/json',
+  });
+});
 
 async function observeTelemetry(page: import('@playwright/test').Page): Promise<void> {
   await page.addInitScript(() => {
     window.telemetryEvidence = { frame: null, points: [] };
+    Object.defineProperty(window.telemetryEvidence, 'points', {
+      get: () =>
+        [...document.querySelectorAll('[data-series="Population"] circle[data-tick]')].map(
+          (mark) => [Number(mark.getAttribute('cx')), Number(mark.getAttribute('cy'))],
+        ),
+    });
     window.Worker = new Proxy(window.Worker, {
       construct(target, args: ConstructorParameters<typeof Worker>, newTarget) {
         const worker: Worker = Reflect.construct(target, args, newTarget);
@@ -21,21 +500,6 @@ async function observeTelemetry(page: import('@playwright/test').Page): Promise<
         return worker;
       },
     });
-    const clear = CanvasRenderingContext2D.prototype.clearRect,
-      move = CanvasRenderingContext2D.prototype.moveTo,
-      line = CanvasRenderingContext2D.prototype.lineTo;
-    CanvasRenderingContext2D.prototype.clearRect = function (...args) {
-      if (this.canvas.id === 'chart') window.telemetryEvidence.points = [];
-      return clear.apply(this, args);
-    };
-    CanvasRenderingContext2D.prototype.moveTo = function (x, y) {
-      if (this.canvas.id === 'chart') window.telemetryEvidence.points.push([x, y]);
-      return move.call(this, x, y);
-    };
-    CanvasRenderingContext2D.prototype.lineTo = function (x, y) {
-      if (this.canvas.id === 'chart') window.telemetryEvidence.points.push([x, y]);
-      return line.call(this, x, y);
-    };
   });
 }
 
@@ -52,13 +516,19 @@ async function expectPopulationChart(
   page: import('@playwright/test').Page,
   populations: number[],
 ): Promise<void> {
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
   await expect
     .poll(() =>
       page.evaluate((values) => {
-        const width = (document.querySelector('#chart') as HTMLCanvasElement).width;
-        const expected = values.map((population, sample) => [
-          (sample / Math.max(1, values.length - 1)) * width,
-          64 - (population / Math.max(10, ...values)) * 58,
+        const svg = document.querySelector('#telemetry-plots svg') as SVGSVGElement | null;
+        if (!svg) return values.length === 0;
+        const width = svg.viewBox.baseVal.width,
+          samples = window.telemetryEvidence.frame!.telemetry.samples,
+          start = samples.length === 1 ? samples[0].fromTick : samples[0].tick,
+          end = samples.at(-1)!.tick;
+        const expected = values.map((population, position) => [
+          50 + ((samples[position].tick - start) / (end - start)) * (width - 64),
+          144 - (population / Math.max(1, ...values)) * 128,
         ]);
         return JSON.stringify(window.telemetryEvidence.points) === JSON.stringify(expected);
       }, populations),
@@ -69,6 +539,7 @@ async function expectPopulationChart(
 async function importTelemetryWorld(
   page: import('@playwright/test').Page,
   world: object,
+  waitForExtinction = false,
 ): Promise<void> {
   await page.locator('#file').setInputFiles({
     name: 'telemetry-world.json',
@@ -76,7 +547,8 @@ async function importTelemetryWorld(
     buffer: Buffer.from(JSON.stringify(world)),
   });
   await expect(page.locator('#notice')).toContainText('World restored');
-  if (await page.getByRole('button', { name: 'Ⅱ Pause', exact: true }).isVisible())
+  if (waitForExtinction) await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  else if (await page.getByRole('button', { name: 'Ⅱ Pause', exact: true }).isVisible())
     await pause(page);
 }
 
@@ -194,11 +666,15 @@ test('all controls share the sidebar without crowding the habitat at every layou
   await expect(page.getByRole('dialog')).toBeHidden();
 });
 
-async function pause(page: import('@playwright/test').Page): Promise<void> {
+async function pause(page: import('@playwright/test').Page): Promise<Buffer> {
   await page.getByRole('button', { name: 'Ⅱ Pause', exact: true }).click();
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
   await expect(page.getByTitle('Advance one tick while paused')).toBeEnabled();
-  await page.waitForTimeout(150);
+  const saved = await downloadWorld(page);
+  await expect(page.locator('#tick')).toHaveText(
+    `TICK ${JSON.parse(saved.toString()).tick.toLocaleString('en-US')}`,
+  );
+  return saved;
 }
 async function coordinate(
   page: import('@playwright/test').Page,
@@ -558,7 +1034,7 @@ test.describe('pause on total extinction', () => {
     };
     expect(await readWorld(page)).toEqual(expected);
     await page.evaluate('window.recoveryDelivery.release()');
-    await expect(page.locator('#notice')).toContainText('version 2 or 3');
+    await expect(page.locator('#notice')).toContainText('version 2, 3 or 4');
     await expect(page.locator('#nutrients')).toHaveValue('7');
     await expect(page.locator('#nutrients-value')).toHaveText('7%');
     await expect(page.locator('#mutation-value')).toHaveText('37%');
@@ -671,7 +1147,7 @@ for (const terminalTick of [90, 91]) {
       expect(populations).toHaveLength(3);
       await expectPopulationChart(page, populations);
       await importWorld(page, { ...terminal, version: 99 } as unknown as WorldFile);
-      await expect(page.locator('#notice')).toContainText('version 2 or 3');
+      await expect(page.locator('#notice')).toContainText('version 2, 3 or 4');
       expect(await readWorld(page)).toEqual(terminal);
       await expectPopulationChart(page, populations);
       await page.waitForTimeout(160);
@@ -745,30 +1221,38 @@ test('restores real worker telemetry, renders its population projection and down
   await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
   for (const width of [360, 390, 1280]) {
     await page.setViewportSize({ width, height: 800 });
+    await expectPopulationChart(
+      page,
+      before.samples.map((sample) => sample.population),
+    );
     const rendered = await page.evaluate(() => ({
       telemetry: window.telemetryEvidence.frame!.telemetry,
       points: window.telemetryEvidence.points,
-      width: (document.querySelector('#chart') as HTMLCanvasElement).width,
+      width: (document.querySelector('#telemetry-plots svg') as SVGSVGElement).viewBox.baseVal
+        .width,
       fits: document.documentElement.scrollWidth <= innerWidth,
       chartOutsideHabitat: (() => {
-        const chart = document.querySelector('#chart')!.getBoundingClientRect(),
+        const chart = document.querySelector('#telemetry')!.getBoundingClientRect(),
           world = document.querySelector('#world')!.getBoundingClientRect();
         return chart.left >= world.right || chart.top >= world.bottom;
       })(),
     }));
     expect(rendered.telemetry).toEqual(before);
     expect(rendered.points).toHaveLength(before.samples.length);
-    const maximum = Math.max(10, ...before.samples.map((sample) => sample.population));
+    const maximum = Math.max(1, ...before.samples.map((sample) => sample.population));
     expect(rendered.points).toEqual(
-      before.samples.map((sample, index) => [
-        (index / Math.max(1, before.samples.length - 1)) * rendered.width,
-        64 - (sample.population / maximum) * 58,
+      before.samples.map((sample) => [
+        50 +
+          ((sample.tick - before.samples[0].tick) /
+            (before.samples.at(-1)!.tick - before.samples[0].tick)) *
+            (rendered.width - 64),
+        144 - (sample.population / maximum) * 128,
       ]),
     );
     expect(rendered.fits).toBe(true);
     expect(rendered.chartOutsideHabitat).toBe(true);
     await test.info().attach(`restored-population-chart-${width}`, {
-      body: await page.locator('.population-section').screenshot(),
+      body: await page.locator('#telemetry').screenshot(),
       contentType: 'image/png',
     });
   }
@@ -776,8 +1260,8 @@ test('restores real worker telemetry, renders its population projection and down
   expect(frame.telemetry).toEqual(before);
   const downloaded = JSON.parse((await downloadWorld(page)).toString());
   expect(downloaded.telemetry).toEqual(before);
-  expect(downloaded.version).toBe(3);
-  expect(downloaded.telemetry.version).toBe(1);
+  expect(downloaded.version).toBe(4);
+  expect(downloaded.telemetry.version).toBe(2);
   expect(downloaded.telemetry.intervalTicks).toBe(30);
   const restored = Ecosystem.load(JSON.stringify(downloaded));
   expect(restored.save()).toEqual(reference.save());
@@ -997,7 +1481,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   await expect(page.locator('[data-shock="bloom"]')).toHaveCount(0);
   const saved = await downloadWorld(page),
     world = JSON.parse(saved.toString());
-  expect(world.version).toBe(3);
+  expect(world.version).toBe(4);
   expect(world.organisms.length).toBeGreaterThan(1);
   const o = world.organisms[0],
     c = o.genome.cells[0];

@@ -98,7 +98,12 @@ export function createTelemetryView(root: HTMLElement) {
   viewSelect.addEventListener('change', changeView);
   sampleSelect.addEventListener('change', change);
   const observer =
-    typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(invalidate);
+    typeof ResizeObserver === 'undefined'
+      ? undefined
+      : new ResizeObserver(() => {
+          if (Math.max(180, Math.floor(plots.getBoundingClientRect().width)) !== renderedWidth)
+            invalidate();
+        });
   observer?.observe(section);
 
   function table(caption: string, rows: [string, string][]): void {
@@ -194,7 +199,7 @@ export function createTelemetryView(root: HTMLElement) {
             'text-anchor':
               position === 0 ? 'start' : position === ticks.length - 1 ? 'end' : 'middle',
           },
-          axisText(tick),
+          String(tick),
         ),
       );
     svg.append(

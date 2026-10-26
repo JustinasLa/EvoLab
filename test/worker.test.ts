@@ -4,6 +4,7 @@ import { Ecosystem } from '../src/ecosystem';
 import {
   DEFAULTS,
   WIDTH,
+  WORLD_MAX_BYTES,
   founder,
   index,
   type WorldFile,
@@ -63,6 +64,37 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe('worker control and persistence', () => {
+  it('rejects oversized outbound UTF-8 saves nonfatally without download, truncation or scheduling changes', () => {
+    const original = new Ecosystem().save(),
+      { telemetry: _telemetry, ...ecology } = original;
+    const file = {
+      ...ecology,
+      version: 2,
+      organisms: ecology.organisms.map((organism) => ({ ...organism, retainedExtension: '' })),
+    };
+    file.organisms[0].retainedExtension = 'x'.repeat(WORLD_MAX_BYTES - JSON.stringify(file).length);
+    const text = JSON.stringify(file);
+    expect(new TextEncoder().encode(text).byteLength).toBe(WORLD_MAX_BYTES);
+    const harness = workerHarness();
+    harness.send({ type: 'load', text, runId: 1 });
+    harness.send({ type: 'pause' });
+    const before = harness.frame(),
+      queued = harness.tasks.length,
+      savedCount = harness.messages.filter((message) => message.type === 'saved').length;
+    const result = harness.send({ type: 'save' });
+    expect(result).toMatchObject({
+      type: 'error',
+      runId: 1,
+      message: 'World file exceeds 2.5 MB. World preserved; no download created.',
+    });
+    expect(result).not.toHaveProperty('fatal');
+    expect(result).not.toHaveProperty('recovery');
+    expect(harness.messages.filter((message) => message.type === 'saved')).toHaveLength(savedCount);
+    expect(harness.frame()).toEqual(before);
+    expect(harness.tasks).toHaveLength(queued);
+    harness.send({ type: 'step' });
+    expect(harness.frame().stats.tick).toBe(before.stats.tick + 1);
+  });
   it.each([1, 4, 12])(
     'collects tick-aligned history across actual yielding %ix batches',
     (speed) => {
@@ -729,8 +761,8 @@ describe('integrated extinction and telemetry', () => {
       harness.advance();
       reference.step();
       const terminal = harness.save();
-      expect(terminal.version).toBe(3);
-      expect(terminal.telemetry.version).toBe(1);
+      expect(terminal.version).toBe(4);
+      expect(terminal.telemetry.version).toBe(2);
       expect(terminal.telemetry.samples.at(-1)).toMatchObject({
         fromTick: version === 2 ? 89 : 60,
         tick: 90,

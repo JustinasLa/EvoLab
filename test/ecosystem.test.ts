@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { cpus, platform, totalmem } from 'node:os';
 import { Ecosystem } from '../src/ecosystem';
 import {
   DEFAULTS,
@@ -1003,6 +1004,128 @@ describe('actual-operation energy and terminal causes', () => {
 });
 
 describe('measured thermal adaptation', () => {
+  it('measures populated 1600-organism/16-cell/eight-ancestor full-history UTF-8 payloads', () => {
+    const world = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0, mutation: 0 }, false);
+    world.nextId = 999_998_000;
+    world.nextSpecies = 1_000_000_000;
+    for (let position = 0; position < LIMIT; position++) {
+      const genome: Genome = {
+        cells: Array.from({ length: 16 }, (_, cell) => ({
+          x: cell % 4,
+          y: Math.floor(cell / 4),
+          type: (3 + (cell % 6)) as CellType,
+        })),
+        preference: ((position % 10) + 0.12345678901234568) / 10,
+        tolerance: 0.3456789012345679,
+        tempo: 12,
+      };
+      const organism = world.spawn(
+        genome,
+        (position % 60) * 4,
+        Math.floor(position / 60) * 4,
+        999_999_999,
+      )!;
+      organism.energy = 80000.12345678901;
+      organism.generation = 999_999_999;
+      organism.children = 999_999_999;
+      organism.ancestry = Array(8).fill(999_999_999);
+    }
+    world.births = 999_999_999;
+    world.deaths = 999_999_999;
+    const size = (file: unknown) => new TextEncoder().encode(JSON.stringify(file)).byteLength;
+    const emptyHistoryBytes = size(world.save());
+    advance(world, 30);
+    expect(world.organisms.size).toBe(LIMIT);
+    const saved = world.save(),
+      observation = saved.telemetry.samples[0];
+    saved.tick = 5400;
+    saved.telemetry.samples = Array.from({ length: 180 }, (_, interval) => ({
+      ...structuredClone(observation),
+      fromTick: interval * 30,
+      tick: (interval + 1) * 30,
+    }));
+    saved.telemetry.pending.fromTick = 5400;
+    const restored = Ecosystem.load(JSON.stringify(saved));
+    expect(restored.save()).toEqual(saved);
+    const old = oldTelemetry(restored),
+      fullHistoryBytes = size(saved),
+      legacyFullHistoryBytes = size(old);
+    expect(fullHistoryBytes).toBeLessThan(WORLD_MAX_BYTES);
+    console.info(
+      'TELEMETRY_SIZE_MEASUREMENTS',
+      JSON.stringify({
+        fixture:
+          'Validated populated saturated-shape fixture: one real 1600-organism boundary repeated in 180 explicit schema-valid intervals for payload sizing, not an uninterrupted ecology trajectory',
+        population: LIMIT,
+        cellsPerOrganism: 16,
+        ancestryPerOrganism: 8,
+        samples: 180,
+        emptyHistoryBytes,
+        fullHistoryBytes,
+        legacyFullHistoryBytes,
+        addedBytes: fullHistoryBytes - legacyFullHistoryBytes,
+        cap: WORLD_MAX_BYTES,
+      }),
+    );
+  });
+
+  it('retains raw paired observer timings with 1600 surviving organisms and exact ecology equality', () => {
+    const enabled = colony(1600, 0.3),
+      disabled = colony(1600, 0.3, 0.5, false),
+      raw: object[] = [];
+    for (const world of [enabled, disabled]) {
+      for (const organism of world.organisms.values()) organism.energy = 100;
+      advance(world, 29);
+    }
+    const measure = (world: Ecosystem) => {
+      for (const organism of world.organisms.values()) {
+        organism.age = 0;
+        organism.energy = 100;
+      }
+      const start = performance.now();
+      world.step();
+      const boundaryMs = performance.now() - start;
+      advance(world, 29);
+      return { boundaryMs, thirtyTicksMs: performance.now() - start };
+    };
+    for (let pair = 0; pair < 45; pair++) {
+      let observed, control;
+      if (pair % 2) {
+        control = measure(disabled);
+        observed = measure(enabled);
+      } else {
+        observed = measure(enabled);
+        control = measure(disabled);
+      }
+      expect(enabled.organisms.size).toBe(1600);
+      expect(ecology(enabled.save())).toEqual(ecology(disabled.save()));
+      if (pair >= 5)
+        raw.push({
+          pair: pair - 5,
+          tick: enabled.tick,
+          population: enabled.organisms.size,
+          first: pair % 2 ? 'disabled' : 'enabled',
+          enabledBoundaryMs: observed.boundaryMs,
+          disabledBoundaryMs: control.boundaryMs,
+          enabledThirtyTicksMs: observed.thirtyTicksMs,
+          disabledThirtyTicksMs: control.thirtyTicksMs,
+        });
+    }
+    console.info(
+      'TELEMETRY_OBSERVER_RAW',
+      JSON.stringify({
+        runtime: process.version,
+        platform: platform(),
+        cpu: cpus()[0]?.model,
+        logicalCpus: cpus().length,
+        memoryBytes: totalmem(),
+        notes:
+          'Same process/runtime; five warm-up pairs; alternating order; 1600 one-cell stationary organisms; identical explicit age/energy resets before each 30-tick observation; scheduler/CPU/GC noise not isolated; no universal throughput claim',
+        raw,
+      }),
+    );
+  });
+
   it('classifies stored binary64 endpoints and adjacent values without scaled rounding', () => {
     const values = [
         -0,
@@ -1025,6 +1148,52 @@ describe('measured thermal adaptation', () => {
       expected[Math.min(9, PREFERENCE_ENDPOINTS.filter((endpoint) => value >= endpoint).length)]++;
     expect(sample.population).toBe(values.length);
     expect(sample.adaptation!.preferenceBins).toEqual(expected);
+  });
+
+  it('samples boundary newborns and excludes boundary deaths rather than reusing the tick-start population', () => {
+    const world = empty();
+    advance(world, 29);
+    const parent = world.spawn({ ...single(7, 0), tolerance: 0.12 }, 40, 40)!,
+      doomed = world.spawn(single(7), 80, 80)!;
+    parent.age = 32;
+    parent.energy = 100;
+    doomed.energy = 0.001;
+    world.step();
+    const sample = world.save().telemetry.samples[0];
+    expect(sample).toMatchObject({
+      tick: 30,
+      population: 2,
+      births: 1,
+      deaths: { energy: 1 },
+      adaptation: { stressedOrganisms: 2, preferenceBins: [2, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
+    });
+    expect(world.organisms.has(doomed.id)).toBe(false);
+    expect([...world.organisms.values()].some((organism) => organism.age === 0)).toBe(true);
+  });
+
+  it('observes post-movement stress rather than the earlier upkeep location', () => {
+    const source = new Ecosystem({ ...DEFAULTS, nutrients: 0, mutation: 0, climate: 1 }, false);
+    advance(source, 29);
+    const mover = source.spawn({ ...single(5), tolerance: 0.12 }, 40, 40)!;
+    mover.age = 1;
+    mover.energy = 100;
+    mover.direction = 0;
+    const saved = source.save();
+    source.step();
+    const moved = [...source.organisms.values()][0],
+      before = temperature(40, 40, 30, 1),
+      after = temperature(moved.x, moved.y, 30, 1);
+    expect(after).not.toBe(before);
+    saved.organisms[0].genome.preference = (before + after) / 2 - 0.12;
+    const world = Ecosystem.load(JSON.stringify(saved));
+    world.step();
+    const preference = saved.organisms[0].genome.preference,
+      earlyStress = Math.max(0, Math.abs(before - preference) - 0.12) > 0,
+      lateStress = Math.max(0, Math.abs(after - preference) - 0.12) > 0;
+    expect(lateStress).not.toBe(earlyStress);
+    expect(world.save().telemetry.samples[0].adaptation!.stressedOrganisms).toBe(
+      Number(lateStress),
+    );
   });
 
   it.each([0, 0.8, 1])(
