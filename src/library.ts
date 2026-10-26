@@ -221,11 +221,13 @@ export function createLibrary(
     factory?: () => IDBFactory | undefined;
     randomId?: () => string;
     status?: (message: string) => void;
+    invalidated?: () => void;
   } = {},
 ) {
   let database: IDBDatabase | undefined;
   let opening: IDBOpenDBRequest | undefined;
   let active: IDBTransaction | undefined;
+  let operationTimer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
   const status = (message: string): void => {
     if (!disposed) options.status?.(message);
@@ -292,6 +294,8 @@ export function createLibrary(
         finish();
         if (expired || disposed) {
           connection.close();
+          if (expired)
+            status('Late library open closed. Refresh explicitly to read current entries.');
           reject(new LibraryError('unavailable'));
           return;
         }
@@ -308,11 +312,13 @@ export function createLibrary(
         connection.onversionchange = () => {
           abort();
           close();
+          options.invalidated?.();
           status('Another tab changed the library. Confirmations cancelled; Retry explicitly.');
         };
         connection.onclose = () => {
           abort();
           close();
+          options.invalidated?.();
           status('The library connection closed. The list is stale; Retry explicitly.');
         };
         resolve();
@@ -348,8 +354,10 @@ export function createLibrary(
         abort();
         reject(new LibraryError('pending'));
       }, 10000);
+      operationTimer = timer;
       const finish = (): void => {
         clearTimeout(timer);
+        operationTimer = undefined;
         native.oncomplete = native.onabort = native.onerror = null;
         if (active === native) active = undefined;
       };
@@ -526,9 +534,15 @@ export function createLibrary(
     get busy(): boolean {
       return !!opening || !!active;
     },
-    cancel: abort,
+    cancel(): void {
+      clearTimeout(operationTimer);
+      operationTimer = undefined;
+      abort();
+    },
     dispose(): void {
       disposed = true;
+      clearTimeout(operationTimer);
+      operationTimer = undefined;
       abort();
       close();
     },

@@ -132,9 +132,14 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     if (alive) text('library-status', message);
   };
   const library = createLibrary({
+    invalidated: () => {
+      refreshNeeded = false;
+    },
     status: (message) => {
+      if (!alive) return;
       cancelDialog('Library connection or operation changed.');
       libraryStatus(message);
+      updateCapture();
       drainRefresh();
     },
   });
@@ -152,19 +157,12 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       else get('organism-tab').focus();
     }
     captureButton.disabled = !eligible;
-    captureButton.setAttribute(
-      'aria-disabled',
-      String(
-        !!libraryWorking ||
-          library.busy ||
-          !!candidate ||
-          !!picker ||
-          !!blueprintReader ||
-          !!dialogIntent,
-      ),
-    );
+    const busy = libraryBusy() || !!candidate;
+    captureButton.setAttribute('aria-disabled', String(busy));
     captureStatus.textContent = eligible
-      ? 'Captures the last received genotype and observation tick, not fitness or living identity.'
+      ? busy
+        ? 'Library busy or an unsaved blueprint is pending. Capture is not started; playback is unchanged.'
+        : 'Captures the last received genotype and observation tick, not fitness or living identity.'
       : 'Inspect an organism after the current world response to capture it.';
   }
   function cancelDialog(message: string): void {
@@ -196,7 +194,10 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     } else if (previous?.kind === 'file' && alive)
       text('designer-file-status', `Blueprint import cancelled: ${message}`);
     if (dialogIntent?.type === 'load') cancelDialog(message);
-    if (blueprintReader && previous?.kind === 'file') blueprintReader.abort();
+    if (blueprintReader && previous?.kind === 'file') {
+      clearTimeout(fileTimer);
+      blueprintReader.abort();
+    }
   }
   function invalidateDesign(): void {
     cancelReplacement('the design or world changed.');
@@ -232,7 +233,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       (dialogIntent && dialogIntent.type !== 'load') ||
       candidate ||
       (blueprintReader && replacement?.kind !== 'file') ||
-      (kind === 'library' && library.busy && libraryWorking !== 'load')
+      (kind === 'library' && library.busy)
     ) {
       libraryStatus('Busy: replacement not started. No action was queued.');
       return;
@@ -251,10 +252,14 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     };
     return replacement;
   }
-  function replacementCurrent(intent: NonNullable<typeof replacement>): boolean {
+  function replacementCurrent(
+    intent: NonNullable<typeof replacement>,
+    generation = intent.generation,
+  ): boolean {
     return (
       alive &&
       replacement === intent &&
+      intent.generation === generation &&
       intent.generation === replacementGeneration &&
       intent.revision === designRevision &&
       intent.run === runId &&
@@ -281,6 +286,14 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     const existing = new Map(
       [...list.children].map((node) => [(node as HTMLElement).dataset.key!, node as HTMLElement]),
     );
+    const keys = new Set(librarySnapshot.rows.map((row, index) => row.id ?? `problem-${index}`));
+    for (const [key, item] of existing) {
+      if (!keys.has(key)) {
+        if (item.contains(document.activeElement)) get('library-heading').focus();
+        item.remove();
+        existing.delete(key);
+      }
+    }
     librarySnapshot.rows.forEach((row, index) => {
       const key = row.id ?? `problem-${index}`;
       let item = existing.get(key);
@@ -398,6 +411,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     }
     libraryWorking = 'write';
     updateCapture();
+    const focusOwner = document.activeElement;
     const request = ++libraryRequest;
     const valid = librarySnapshot.rows.filter((row): row is LibraryEntry => row.kind === 'valid');
     const deletedIndex =
@@ -428,7 +442,10 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       libraryWorking = undefined;
       renderLibrary();
       await refreshLibrary('Write committed. Duplicate names are allowed.');
-      if (action.type === 'delete' || action.type === 'repair') {
+      if (
+        (action.type === 'delete' || action.type === 'repair') &&
+        (document.activeElement === focusOwner || document.activeElement === document.body)
+      ) {
         const neighbor = [
           ...get('library-rows').querySelectorAll<HTMLButtonElement>('button'),
         ].find((button) => button.dataset.libraryId === librarySelected);
@@ -527,7 +544,8 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     clearTimeout(dialogTimer);
     get<HTMLDialogElement>('library-dialog').close();
     if (intent.type === 'load') {
-      const owner = replacement!;
+      const owner = replacement?.kind === 'library' ? replacement : undefined;
+      if (!owner || !replacementCurrent(owner, intent.generation)) return;
       libraryWorking = 'load';
       const request = ++libraryRequest;
       try {
@@ -1102,7 +1120,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     candidate = undefined;
     candidateRun = undefined;
     renderLibrary();
-    libraryStatus('Unsaved blueprint discarded.');
+    libraryStatus('Blueprint candidate copy discarded. Stored entries are unchanged.');
   });
   listen(get('library-export-candidate'), 'click', () => {
     if (candidate) exportLibrary(candidate);

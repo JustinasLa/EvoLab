@@ -577,7 +577,7 @@ describe('explicit bounded local library', () => {
     click('library-load');
     await flush();
     click('library-load');
-    expect(get('library-status').textContent).toContain('native owner has not settled');
+    expect(get('library-status').textContent).toContain('replacement not started');
     await vi.advanceTimersByTimeAsync(10000);
     await flush();
     expect(get('library-status').textContent).toContain('uncertain');
@@ -614,6 +614,70 @@ describe('explicit bounded local library', () => {
     await flush();
     expect(root.innerHTML).toBe(before);
     expect(storage.values.size).toBe(1);
+  });
+
+  it('retains focused keyed rows when an earlier key disappears and never steals a newer control focus', async () => {
+    storage.values.set(first, encodeRecord(draft(), 1));
+    storage.values.set(second, encodeRecord(draft('focused'), 1));
+    await open();
+    select(second);
+    const button = root.querySelector<HTMLButtonElement>(`[data-library-id="${second}"]`)!;
+    button.focus();
+    storage.values.delete(first);
+    click('library-refresh');
+    await flush();
+    expect(document.activeElement).toBe(button);
+    storage.faults.txStall = true;
+    click('library-delete');
+    click('library-confirm');
+    await flush();
+    get('blueprint-name').focus();
+    delete storage.faults.txStall;
+    storage.current.complete();
+    await flush();
+    expect(document.activeElement).toBe(get('blueprint-name'));
+    storage.values.set(first, encodeRecord(draft(), 1));
+    click('library-refresh');
+    await flush();
+    const remaining = root.querySelector<HTMLButtonElement>(`[data-library-id="${first}"]`)!;
+    remaining.focus();
+    storage.values.clear();
+    click('library-refresh');
+    await flush();
+    expect(document.activeElement).toBe(get('library-heading'));
+  });
+
+  it('retains an aborting native reader without queuing a rejected replacement or another deadline', async () => {
+    vi.useFakeTimers();
+    storage.values.set(first, encodeRecord(draft(), 1));
+    await open();
+    let finish!: (value: string) => void;
+    const input = get<HTMLInputElement>('blueprint-file');
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [
+        {
+          size: 1,
+          text: () =>
+            new Promise((resolve) => {
+              finish = resolve;
+            }),
+        },
+      ],
+    });
+    input.dispatchEvent(new Event('change'));
+    const abort = vi.spyOn(FileReader.prototype, 'abort').mockImplementationOnce(() => {});
+    click('library-load');
+    expect(get('library-status').textContent).toContain('native owner has not settled');
+    expect(abort).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(abort).toHaveBeenCalledTimes(1);
+    finish(serializeBlueprint(draft('old reader').blueprint));
+    await flush();
+    expect(get<HTMLInputElement>('blueprint-name').value).not.toBe('old reader');
+    click('library-load');
+    await flush();
+    expect(get<HTMLDialogElement>('library-dialog').open).toBe(true);
   });
 
   it('cancels captures before native transaction admission and never relabels their tick', async () => {

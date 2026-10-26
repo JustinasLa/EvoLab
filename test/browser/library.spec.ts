@@ -85,16 +85,14 @@ async function fixture(page: Page) {
   await page.locator('#pause').click();
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
   await pausedSave(page);
-  const world = new Ecosystem({ ...DEFAULTS, nutrients: 100, mutation: 0, climate: 0 }, false);
+  const world = new Ecosystem({ ...DEFAULTS, nutrients: 10, mutation: 0, climate: 0 }, false);
   world.spawn(founder(0), 40, 40);
   const saved = world.save();
-  await page
-    .locator('#file')
-    .setInputFiles({
-      name: 'world.json',
-      mimeType: 'application/json',
-      buffer: Buffer.from(JSON.stringify(saved)),
-    });
+  await page.locator('#file').setInputFiles({
+    name: 'world.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(saved)),
+  });
   await expect(page.locator('#notice')).toContainText('World restored');
   await page.locator('#pause').click();
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
@@ -114,6 +112,377 @@ async function fixture(page: Page) {
   await expect(page.locator('#inspector')).toContainText('Organism 1');
   return pausedSave(page);
 }
+
+async function deliveryProbe(page: Page) {
+  await page.addInitScript(() => {
+    const state = {
+      holdWorker: '',
+      heldWorker: [] as { worker: Worker; event: MessageEvent }[],
+      holdDatabase: false,
+      heldDatabase: [] as (() => void)[],
+      holdOpen: false,
+      heldOpen: [] as (() => void)[],
+      openCalls: 0,
+    };
+    (window as any).libraryProbe = state;
+    window.Worker = new Proxy(window.Worker, {
+      construct(target, args: ConstructorParameters<typeof Worker>, newTarget) {
+        const worker: Worker = Reflect.construct(target, args, newTarget);
+        worker.addEventListener('message', (event) => {
+          if (state.holdWorker !== event.data.type) return;
+          event.stopImmediatePropagation();
+          if (!state.heldWorker.length) state.heldWorker.push({ worker, event });
+        });
+        return worker;
+      },
+    });
+    const nativeTransaction = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function (...args: Parameters<typeof nativeTransaction>) {
+      const transaction = nativeTransaction.apply(this, args);
+      transaction.addEventListener('complete', (event) => {
+        if (!state.holdDatabase) return;
+        event.stopImmediatePropagation();
+        if (!state.heldDatabase.length) {
+          const callback = transaction.oncomplete;
+          state.heldDatabase.push(() => callback?.call(transaction, event));
+        }
+      });
+      return transaction;
+    };
+    const nativeOpen = IDBFactory.prototype.open;
+    IDBFactory.prototype.open = function (...args: Parameters<typeof nativeOpen>) {
+      state.openCalls++;
+      const request = nativeOpen.apply(this, args);
+      request.addEventListener('success', (event) => {
+        if (!state.holdOpen) return;
+        event.stopImmediatePropagation();
+        if (!state.heldOpen.length) {
+          const callback = request.onsuccess;
+          state.heldOpen.push(() => callback?.call(request, event));
+        }
+      });
+      return request;
+    };
+  });
+}
+
+async function releaseWorker(page: Page) {
+  await page.evaluate(() => {
+    const state = (window as any).libraryProbe;
+    state.holdWorker = '';
+    for (const { worker, event } of state.heldWorker.splice(0))
+      worker.dispatchEvent(new MessageEvent('message', { data: event.data }));
+  });
+}
+
+async function releaseDatabase(page: Page) {
+  await page.evaluate(() => {
+    const state = (window as any).libraryProbe;
+    state.holdDatabase = false;
+    for (const callback of state.heldDatabase.splice(0)) callback();
+  });
+}
+
+test('native abort rollback and a failed post-commit refresh never invent an unsaved outcome', async ({
+  page,
+}, info) => {
+  const before = await fixture(page);
+  await database(page, [[first, encodeRecord(candidate(), 1)]]);
+  await openLibrary(page);
+  const original = await database(page);
+  await page.evaluate(() => {
+    const native = IDBObjectStore.prototype.add;
+    IDBObjectStore.prototype.add = function (...args: Parameters<typeof native>) {
+      const request = native.apply(this, args);
+      this.transaction.abort();
+      return request;
+    };
+    (window as any).restoreLibraryAdd = () => {
+      IDBObjectStore.prototype.add = native;
+    };
+  });
+  await page.locator('#library-save').click();
+  await expect(page.locator('#library-status')).toContainText('Local storage failed');
+  await expect(page.locator('#library-candidate')).toBeVisible();
+  expect(await database(page)).toEqual(original);
+  const source = await download(page, '#library-export-candidate');
+  expect(parseBlueprint(source.toString()).name).toBe('Untitled organism');
+  await page.evaluate(() => {
+    (window as any).restoreLibraryAdd();
+    const native = IDBDatabase.prototype.transaction;
+    let failRead = true;
+    IDBDatabase.prototype.transaction = function (...args: Parameters<typeof native>) {
+      const transaction = native.apply(this, args);
+      if (args[1] === 'readonly' && failRead) {
+        failRead = false;
+        queueMicrotask(() => transaction.abort());
+      }
+      return transaction;
+    };
+    (window as any).restoreLibraryTransaction = () => {
+      IDBDatabase.prototype.transaction = native;
+    };
+  });
+  await page.locator('#library-add').click();
+  await expect(page.locator('#library-status')).toContainText(
+    'committed outcome is unchanged; refresh failed',
+  );
+  await expect(page.locator('#library-candidate')).toBeHidden();
+  await page.evaluate(() => (window as any).restoreLibraryTransaction());
+  expect((await database(page)).length).toBe(2);
+  await page.locator('#library-refresh').click();
+  await expect(page.locator('#library-count')).toContainText('2 / 100');
+  for (let repeat = 0; repeat < 3; repeat++) expect(await pausedSave(page)).toEqual(before);
+  await info.attach('native-rollback-and-committed-refresh-failure.json', {
+    contentType: 'application/json',
+    body: JSON.stringify({
+      initialPhysical: original.length,
+      abortedWritePhysical: original.length,
+      committedPhysical: 2,
+      failedRefreshDidNotUndoCommit: true,
+      abortedAddFaultInjected: true,
+      nativeQuotaExhaustionProved: false,
+    }),
+  });
+});
+
+test('future native database declarations remain read-only and never offer damaged repair', async ({
+  page,
+}, info) => {
+  const before = await fixture(page);
+  const token = encodeRecord(candidate(), 1);
+  await page.evaluate(
+    async ({ name, id, token }) =>
+      new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open(name, 2);
+        request.onupgradeneeded = () => request.result.createObjectStore('entries');
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const connection = request.result,
+            transaction = connection.transaction('entries', 'readwrite');
+          transaction.objectStore('entries').add(token, id);
+          transaction.oncomplete = () => {
+            connection.close();
+            resolve();
+          };
+          transaction.onabort = () => reject(transaction.error);
+        };
+      }),
+    { name: LIBRARY_DATABASE, id: first, token },
+  );
+  await page.locator('#local-library > summary').click();
+  await expect(page.locator('#library-status')).toContainText('schema is unsupported');
+  await expect(page.locator('[data-repair-index]')).toHaveCount(0);
+  await page.locator('#library-save').click();
+  await expect(page.locator('#library-status')).toContainText('schema is unsupported');
+  await expect(page.locator('#library-candidate')).toBeVisible();
+  const current = await page.evaluate(
+    async ({ name, id }) =>
+      new Promise<unknown>((resolve, reject) => {
+        const request = indexedDB.open(name);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const connection = request.result,
+            transaction = connection.transaction('entries', 'readonly');
+          const row = transaction.objectStore('entries').get(id);
+          transaction.oncomplete = () => {
+            connection.close();
+            resolve(row.result);
+          };
+        };
+      }),
+    { name: LIBRARY_DATABASE, id: first },
+  );
+  expect(current).toBe(token);
+  for (let repeat = 0; repeat < 3; repeat++) expect(await pausedSave(page)).toEqual(before);
+  await info.attach('native-future-database.json', {
+    contentType: 'application/json',
+    body: JSON.stringify({ databaseVersion: 2, unchangedStoredToken: token, repairOffered: false }),
+  });
+});
+
+test('current-run capture rejects loaded/saved acknowledgements and waits for successful frames or failed-load recovery', async ({
+  page,
+}, info) => {
+  await deliveryProbe(page);
+  const before = await fixture(page);
+  const capture = page.locator('#capture-selected');
+  await capture.focus();
+  await page.evaluate(() => {
+    (window as any).libraryProbe.holdWorker = 'error';
+  });
+  await page.locator('#file').setInputFiles({
+    name: 'invalid.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from('{}'),
+  });
+  await expect
+    .poll(() => page.evaluate(() => (window as any).libraryProbe.heldWorker.length))
+    .toBe(1);
+  await expect(capture).toBeDisabled();
+  await expect(page.locator('#specimen-details > summary')).toBeFocused();
+  expect(await download(page, '#save')).toEqual(before);
+  await expect(capture).toBeDisabled();
+  await releaseWorker(page);
+  await expect(page.locator('#notice')).toContainText('Not a valid EvoLab');
+  await expect(capture).toBeEnabled();
+  await expect(page.locator('#save')).toBeFocused();
+  for (let repeat = 0; repeat < 3; repeat++) expect(await pausedSave(page)).toEqual(before);
+  await page.evaluate(() => {
+    (window as any).libraryProbe.holdWorker = 'frame';
+  });
+  await page
+    .locator('#file')
+    .setInputFiles({ name: 'valid.json', mimeType: 'application/json', buffer: before });
+  await expect(page.locator('#notice')).toContainText('World restored');
+  await expect(capture).toBeDisabled();
+  await page.locator('#pause').click();
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  await download(page, '#save');
+  await expect(capture).toBeDisabled();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).libraryProbe.heldWorker.length))
+    .toBe(1);
+  await releaseWorker(page);
+  await expect(capture).toBeDisabled();
+  await info.attach('accepted-observation-gaps.json', {
+    contentType: 'application/json',
+    body: JSON.stringify({
+      failedLoadSavedWorld: createHash('sha256').update(before).digest('hex'),
+      failedLoadRepeatedSaves: 3,
+      loadedAckEligible: false,
+      savedAckEligible: false,
+      retainedWorkerMessages: await page.evaluate(
+        () => (window as any).libraryProbe.heldWorker.length,
+      ),
+    }),
+  });
+});
+
+test('native read completion cannot resurrect an older designer replacement after invalid or cancelled newer intent', async ({
+  page,
+}, info) => {
+  await deliveryProbe(page);
+  const before = await fixture(page);
+  await database(page, [[first, encodeRecord(candidate('old library replacement'), 1)]]);
+  await openLibrary(page);
+  await page.locator('#blueprint-name').fill('current designer');
+  await page.evaluate(() => {
+    (window as any).libraryProbe.holdDatabase = true;
+  });
+  await page.locator('#library-load').click();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).libraryProbe.heldDatabase.length))
+    .toBe(1);
+  await page.locator('#blueprint-file').setInputFiles({
+    name: 'invalid.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from('{}'),
+  });
+  await expect(page.locator('#designer-file-status')).toContainText('standalone EvoLab');
+  const status = await page.locator('#designer-file-status').textContent();
+  await releaseDatabase(page);
+  await expect(page.locator('#library-dialog')).toBeHidden();
+  await expect(page.locator('#blueprint-name')).toHaveValue('current designer');
+  await expect(page.locator('#designer-file-status')).toHaveText(status!);
+  await page.locator('#library-load').click();
+  await expect(page.locator('#library-dialog')).toBeVisible();
+  await page.evaluate(() => {
+    (window as any).libraryProbe.holdDatabase = true;
+  });
+  await page.locator('#library-confirm').click();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).libraryProbe.heldDatabase.length))
+    .toBe(1);
+  await page.locator('#blueprint-file').setInputFiles({
+    name: 'new.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(serializeBlueprint(candidate('new designer').blueprint)),
+  });
+  await expect(page.locator('#blueprint-name')).toHaveValue('new designer');
+  await releaseDatabase(page);
+  await expect(page.locator('#blueprint-name')).toHaveValue('new designer');
+  await page.evaluate(() => {
+    (window as any).libraryProbe.holdDatabase = true;
+  });
+  await page.locator('#library-load').click();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).libraryProbe.heldDatabase.length))
+    .toBe(1);
+  const chooser = page.waitForEvent('filechooser');
+  await page.locator('#import-blueprint').click();
+  await chooser;
+  await page.locator('#blueprint-file').dispatchEvent('cancel');
+  await releaseDatabase(page);
+  await expect(page.locator('#library-dialog')).toBeHidden();
+  await expect(page.locator('#blueprint-name')).toHaveValue('new designer');
+  for (let repeat = 0; repeat < 3; repeat++) expect(await pausedSave(page)).toEqual(before);
+  await info.attach('native-replacement-ownership.json', {
+    contentType: 'application/json',
+    body: JSON.stringify({
+      fullPausedWorldBytes: before.length,
+      initialReadInvalidSupersession: true,
+      finalReadValidSupersession: true,
+      domCancellationOnly: true,
+      nativeOSPickerCancellationProved: false,
+    }),
+  });
+});
+
+test('native committed-but-late completion and late open retain ownership until actual terminal callbacks', async ({
+  page,
+}, info) => {
+  await deliveryProbe(page);
+  await fixture(page);
+  await openLibrary(page);
+  await page.clock.install();
+  await page.evaluate(() => {
+    (window as any).libraryProbe.holdDatabase = true;
+  });
+  await page.locator('#library-save').click();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).libraryProbe.heldDatabase.length))
+    .toBe(1);
+  await page.clock.fastForward(10001);
+  await expect(page.locator('#library-status')).toContainText('uncertain');
+  await page.locator('#library-add').click();
+  await expect(page.locator('#library-status')).toContainText('busy');
+  await releaseDatabase(page);
+  await expect(page.locator('#library-status')).toContainText('committed after');
+  await page.locator('#library-refresh').click();
+  await expect(page.locator('#library-count')).toContainText('1 / 100');
+  const committed = await database(page);
+  await page.reload();
+  await page.clock.install();
+  await page.evaluate(() => {
+    (window as any).libraryProbe.holdOpen = true;
+  });
+  await page.locator('#local-library > summary').click();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).libraryProbe.heldOpen.length))
+    .toBe(1);
+  await page.clock.fastForward(5001);
+  await expect(page.locator('#library-status')).toContainText('uncertain');
+  await page.locator('#library-refresh').click();
+  await page.locator('#library-refresh').click();
+  expect(await page.evaluate(() => (window as any).libraryProbe.openCalls)).toBe(1);
+  await page.evaluate(() => {
+    const state = (window as any).libraryProbe;
+    state.holdOpen = false;
+    for (const callback of state.heldOpen.splice(0)) callback();
+  });
+  await expect(page.locator('#library-count')).toContainText('1 / 100');
+  expect(await database(page)).toEqual(committed);
+  await info.attach('native-late-settlement.json', {
+    contentType: 'application/json',
+    body: JSON.stringify({
+      committedRecords: committed,
+      timedOutNativeOpCount: 1,
+      nativeOpenCountWhilePending: 1,
+      claimedNoncommitAtTimeout: false,
+    }),
+  });
+});
 
 test('native library reload, exact standalone bytes, explicit mutations and complete paused-world neutrality', async ({
   page,
@@ -313,9 +682,8 @@ test('native Enter and Space capture preserve focus through live frames and boun
   const handle = await capture.elementHandle();
   await page.locator('#pause').click();
   await capture.focus();
-  await expect
-    .poll(async () => await page.locator('#tick').textContent())
-    .not.toBe(`TICK ${before.tick.toLocaleString()}`);
+  const focusedTick = await page.locator('#tick').textContent();
+  await expect.poll(async () => await page.locator('#tick').textContent()).not.toBe(focusedTick);
   await expect(capture).toBeFocused();
   expect(await capture.evaluate((node, old) => node === old, handle)).toBe(true);
   await page.locator('#pause').click();
@@ -324,9 +692,20 @@ test('native Enter and Space capture preserve focus through live frames and boun
   for (const width of [320, 390, 760, 1120, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await page.locator('#local-library').scrollIntoViewIfNeeded();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
-      true,
-    );
+    const layout = await page.evaluate(() => ({
+      width: innerWidth,
+      scroll: document.documentElement.scrollWidth,
+      overflow: [...document.querySelectorAll<HTMLElement>('body *')]
+        .map((node) => ({
+          id: node.id,
+          tag: node.tagName,
+          right: node.getBoundingClientRect().right,
+          width: node.getBoundingClientRect().width,
+        }))
+        .filter((node) => node.right > innerWidth + 1 && node.width)
+        .slice(0, 20),
+    }));
+    expect(layout, JSON.stringify(layout)).toMatchObject({ scroll: width });
     for (const id of ['capture-selected', 'library-refresh', 'library-save', 'library-import']) {
       const box = await page.locator(`#${id}`).boundingBox();
       expect(box!.height).toBeGreaterThanOrEqual(44);

@@ -231,6 +231,7 @@ select {
   gap: 12px;
   padding: 12px;
   min-height: 0;
+  min-width: 0;
 }
 .world-stage {
   display: grid;
