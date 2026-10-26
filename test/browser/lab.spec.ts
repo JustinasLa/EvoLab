@@ -114,10 +114,14 @@ test('all controls share the sidebar without crowding the habitat at every layou
   await expect(page.getByRole('dialog')).toBeHidden();
 });
 
-async function pause(page: import('@playwright/test').Page): Promise<void> {
+async function requestPause(page: import('@playwright/test').Page): Promise<void> {
   await page.getByRole('button', { name: 'Ⅱ Pause', exact: true }).click();
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
   await expect(page.getByTitle('Advance one tick while paused')).toBeEnabled();
+}
+async function pause(page: import('@playwright/test').Page): Promise<Buffer> {
+  await requestPause(page);
+  return downloadPausedWorld(page);
 }
 async function coordinate(
   page: import('@playwright/test').Page,
@@ -145,6 +149,22 @@ async function downloadWorld(page: import('@playwright/test').Page): Promise<Buf
     chunks: Buffer[] = [];
   for await (const chunk of stream) chunks.push(chunk);
   return Buffer.concat(chunks);
+}
+async function downloadPausedWorld(page: import('@playwright/test').Page): Promise<Buffer> {
+  const bytes = await downloadWorld(page),
+    world = JSON.parse(bytes.toString()) as WorldFile;
+  await expect(page.locator('#tick')).toHaveText(`TICK ${world.tick.toLocaleString()}`);
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  await expect(page.getByTitle('Advance one tick while paused')).toBeEnabled();
+  await test.info().attach('pause-completion.json', {
+    contentType: 'application/json',
+    body: JSON.stringify({
+      savedTick: world.tick,
+      displayedTick: await page.locator('#tick').textContent(),
+      worldBytes: bytes.length,
+    }),
+  });
+  return bytes;
 }
 
 async function downloadBlueprint(
@@ -187,8 +207,7 @@ test('standalone inspector and designer downloads round-trip full traits before 
       external.push(request.url());
   });
   await page.goto('/');
-  await pause(page);
-  const beforeBytes = await downloadWorld(page),
+  const beforeBytes = await pause(page),
     before = JSON.parse(beforeBytes.toString()) as WorldFile;
   const selected = before.organisms[0];
   await page.getByTitle('Inspect organism (I)').click();
@@ -398,7 +417,7 @@ test.describe('blueprint file rejection and cancellation', () => {
 
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
-    await pause(page);
+    await requestPause(page);
     await page.locator('#blueprint-file').setInputFiles({
       name: 'draft.json',
       mimeType: 'application/json',
@@ -431,7 +450,7 @@ test.describe('blueprint file rejection and cancellation', () => {
     }, testInfo) => {
       const downloads: string[] = [];
       page.on('download', (download) => downloads.push(download.suggestedFilename()));
-      const before = await downloadWorld(page);
+      const before = await downloadPausedWorld(page);
       await expect(page.locator('#notice')).toHaveText(
         'World saved, including every organism and its ancestry.',
       );
@@ -477,7 +496,7 @@ test.describe('blueprint file rejection and cancellation', () => {
   }, testInfo) => {
     const downloads: string[] = [];
     page.on('download', (download) => downloads.push(download.suggestedFilename()));
-    const before = await downloadWorld(page),
+    const before = await downloadPausedWorld(page),
       notice = 'World saved, including every organism and its ancestry.';
     await expect(page.locator('#notice')).toHaveText(notice);
     await expect(page.locator('#blueprint-file')).toHaveValue('');
@@ -511,8 +530,7 @@ test('blueprint labels, keyboard focus and multiline fields fit intermediate and
   page,
 }, testInfo) => {
   await page.goto('/');
-  await pause(page);
-  const before = await downloadWorld(page);
+  const before = await pause(page);
   const name = 'n'.repeat(80),
     description = 'Description line\n'.repeat(50);
   await page.getByLabel('Blueprint name', { exact: true }).fill(name);
@@ -582,8 +600,7 @@ test('Pan and Organism are the defaults and dragging changes only the camera', a
   };
   await page.goto('/');
   await expectDefaults();
-  await pause(page);
-  const saved = await downloadWorld(page),
+  const saved = await pause(page),
     rendered = await page
       .locator('#world')
       .evaluate((canvas: HTMLCanvasElement) => canvas.toDataURL()),
@@ -619,11 +636,11 @@ test('new and reseeded worlds begin with one creature and no births', async ({ p
   await page.locator('#seed').fill('100');
   await page.getByRole('button', { name: 'Reseed world' }).click();
   await expect(page.locator('#world-label')).toHaveText('WORLD 0100');
-  await pause(page);
+  const saved = await pause(page);
   await expect(page.locator('#population')).toHaveText('1');
   await expect(page.locator('#births')).toHaveText('0');
   await expect(page.locator('#generation')).toHaveText('GEN 0');
-  const world = JSON.parse((await downloadWorld(page)).toString()) as WorldFile,
+  const world = JSON.parse(saved.toString()) as WorldFile,
     [organism] = world.organisms;
   expect(world.organisms).toHaveLength(1);
   expect(organism.rotation).toBe(0);
@@ -648,7 +665,7 @@ test('new and reseeded worlds begin with one creature and no births', async ({ p
 
 test('a live ecosystem evolves, pauses, paints, inspects and restores a whole world', async ({
   page,
-}) => {
+}, testInfo) => {
   const errors: string[] = [],
     external: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
@@ -661,12 +678,23 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   await expect
     .poll(async () => Number((await page.locator('#births').textContent())?.replaceAll(',', '')))
     .toBeGreaterThan(0);
-  await pause(page);
-  const tick = await page.locator('#tick').textContent();
+  const pausedWorld = JSON.parse((await pause(page)).toString()) as WorldFile,
+    tick = await page.locator('#tick').textContent();
   await page.waitForTimeout(200);
   await expect(page.locator('#tick')).toHaveText(tick!);
+  const observedTick = await page.locator('#tick').textContent();
   await page.getByTitle('Advance one tick while paused').click();
-  await expect(page.locator('#tick')).not.toHaveText(tick!);
+  await expect(page.locator('#tick')).toHaveText(`TICK ${(pausedWorld.tick + 1).toLocaleString()}`);
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  await testInfo.attach('pause-stability-and-step.json', {
+    contentType: 'application/json',
+    body: JSON.stringify({
+      savedTick: pausedWorld.tick,
+      displayedTick: tick,
+      afterObservation: observedTick,
+      afterStep: await page.locator('#tick').textContent(),
+    }),
+  });
   await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
   await page.getByRole('button', { name: 'Show temperature' }).click();
   await expect(page.locator('#thermal')).toHaveAttribute('aria-pressed', 'true');
