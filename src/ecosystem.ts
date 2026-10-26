@@ -17,6 +17,7 @@ import {
   finite,
   integer,
   speciesName,
+  observedGenome,
   temperature,
   type Genome,
   type Organism,
@@ -290,7 +291,7 @@ export class Ecosystem {
     this.telemetry.samples.push(sample);
     this.telemetry.pending = { ...emptyFlow(), fromTick: this.tick };
   }
-  private telemetrySnapshot(): TelemetryState {
+  telemetrySnapshot(): TelemetryState {
     return this.recording ? structuredClone(this.telemetry) : emptyTelemetry(this.tick);
   }
   seed(): void {
@@ -543,20 +544,14 @@ export class Ecosystem {
     this.eventOffset = kind === 'cold' ? -0.32 : 0.32;
     this.eventUntil = this.tick + 900;
   }
-  frame(): Frame {
-    const cells = new Uint8Array(this.food.length),
-      ids = this.occupied.slice();
+  presentation(): Pick<Frame, 'stats' | 'climate' | 'offset'> {
     const species = new Map<number, Species>();
     let generation = 0,
       food = 0;
-    for (let i = 0; i < cells.length; i++) {
-      cells[i] = this.walls[i] ? 2 : this.food[i] ? 1 : 0;
+    for (let i = 0; i < this.food.length; i++) {
       if (this.food[i]) food++;
     }
     for (const o of this.organisms.values()) {
-      positions(o).forEach((p, c) => {
-        cells[p] = o.genome.cells[c].type;
-      });
       const s = species.get(o.species);
       if (s) {
         s.count++;
@@ -566,17 +561,14 @@ export class Ecosystem {
           id: o.species,
           count: 1,
           generation: o.generation,
-          genome: o.genome,
+          genome: observedGenome(o.genome),
           name: speciesName(o.genome),
         });
       generation = Math.max(generation, o.generation);
     }
     return {
-      cells,
-      ids,
       offset: this.tick < this.eventUntil ? this.eventOffset : 0,
       climate: this.settings.climate,
-      telemetry: this.telemetrySnapshot(),
       stats: {
         tick: this.tick,
         population: this.organisms.size,
@@ -595,6 +587,20 @@ export class Ecosystem {
         top: [...species.values()].sort((a, b) => b.count - a.count).slice(0, 5),
       },
     };
+  }
+  display(presentation: Pick<Frame, 'stats' | 'climate' | 'offset'>): Omit<Frame, 'telemetry'> {
+    const cells = new Uint8Array(this.food.length),
+      ids = this.occupied.slice();
+    for (let position = 0; position < cells.length; position++)
+      cells[position] = this.walls[position] ? 2 : this.food[position] ? 1 : 0;
+    for (const organism of this.organisms.values())
+      positions(organism).forEach((position, cell) => {
+        cells[position] = organism.genome.cells[cell].type;
+      });
+    return { cells, ids, ...presentation };
+  }
+  frame(): Frame {
+    return { ...this.display(this.presentation()), telemetry: this.telemetrySnapshot() };
   }
   save(): WorldFile {
     return {

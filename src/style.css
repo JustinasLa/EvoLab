@@ -1097,3 +1097,53 @@ dialog a {
     margin: auto;
   }
 }
+.render-controls,
+.target-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.render-controls label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.target-controls label {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+.target-controls input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+.target-controls button,
+.render-controls button {
+  min-height: 36px;
+}
+#target-progress {
+  width: 100%;
+  accent-color: var(--accent, #b5ef68);
+}
+#target-status,
+#tick-rate,
+#habitat-freshness,
+#target-help,
+#render-pending {
+  margin: 6px 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+#target-status:empty,
+#render-pending:empty {
+  display: none;
+}
+@media (max-width: 780px) {
+  .target-controls button,
+  .render-controls button,
+  .render-controls label {
+    min-height: 44px;
+  }
+}

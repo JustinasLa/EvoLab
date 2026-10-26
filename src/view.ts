@@ -4,7 +4,8 @@ import {
   COLORS,
   CELL_NAMES,
   temperature,
-  type Frame,
+  type HabitatFrame,
+  type WorldPresentation,
   type Genome,
   type Organism,
 } from './model';
@@ -46,7 +47,7 @@ export function point(
 export function draw(
   canvas: HTMLCanvasElement,
   buffer: HTMLCanvasElement,
-  frame: Frame,
+  frame: HabitatFrame,
   camera: Camera,
   thermal: boolean,
   selected: number,
@@ -119,7 +120,7 @@ export function genomeSvg(genome: Genome, size = 52): string {
     side = Math.max(width, height) + 2;
   return `<svg width="${size}" height="${size}" viewBox="${left - (side - width) / 2} ${top - (side - height) / 2} ${side} ${side}" shape-rendering="crispEdges" aria-hidden="true">${genome.cells.map((c) => `<rect x="${c.x}" y="${c.y}" width=".88" height=".88" fill="${COLORS[c.type]}"/>`).join('')}</svg>`;
 }
-export function organismHtml(o: Organism | null, frame: Frame): string {
+export function organismHtml(o: Organism | null, frame: WorldPresentation): string {
   if (!o)
     return `<div class="empty-inspector">${genomeSvg(
       {
@@ -177,6 +178,12 @@ export const markup = `
     32,
   )}<strong>EvoLab<span> / drift</span></strong></a>
   <div class="simulation-controls"><button id="pause" class="primary" title="Pause or resume (Space)">Ⅱ Pause</button><button id="step" disabled title="Advance one tick while paused" aria-label="Advance one tick while paused">${icon('M2 2h2v12H2zm4 0h2v2h2v2h2v4h-2v2H8v2H6z')}</button><label><span>Speed</span><select id="speed" aria-label="Simulation speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="12">12×</option></select></label></div>
+  <div class="render-controls"><label for="render-habitat"><input id="render-habitat" type="checkbox" checked>Render habitat</label><button id="refresh-habitat" class="secondary">Refresh habitat</button></div>
+  <p id="render-pending" class="muted"></p>
+  <div class="target-controls"><label for="target-tick">Absolute target tick<input id="target-tick" type="number" min="0" max="1000000000" step="1" required aria-describedby="target-help"></label><button id="run-to-tick" class="secondary">Run to tick</button><button id="cancel-target" class="secondary" disabled>Cancel target</button></div>
+  <p id="target-help" class="muted">Accelerated complete ticks, yielding in bounded batches. Pause suspends; Cancel pauses and discards the target.</p>
+  <progress id="target-progress" aria-label="Actual target progress" hidden></progress><p id="target-status" role="status" aria-live="polite"></p>
+  <p id="tick-rate" class="muted">Measured ticks/s: measuring…</p><p id="habitat-freshness">No habitat received.</p>
   <label class="extinction-preference" for="pause-on-extinction"><input id="pause-on-extinction" type="checkbox" checked aria-describedby="extinction-help"><span>Pause on extinction<small id="extinction-help">On by default; applies to this tab.</small></span></label>
   <p id="extinction-summary" role="status" aria-live="polite" hidden></p>
   </header>

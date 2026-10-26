@@ -156,16 +156,163 @@ export interface PlaybackState {
   extinction: ExtinctionSummary | null;
 }
 export interface RetainedWorldState {
-  frame: Frame;
+  state: ControlState;
+  telemetry: TelemetrySnapshot;
+}
+export type Speed = 1 | 4 | 12;
+export type WorldPresentation = Pick<Frame, 'stats' | 'climate' | 'offset'>;
+export type HabitatFrame = Pick<Frame, 'cells' | 'ids' | 'stats' | 'climate' | 'offset'>;
+export interface DisplayView {
+  epoch: number;
+  enabled: boolean;
+  visible: boolean;
+}
+export interface TargetRun {
+  id: number;
+  fromTick: number;
+  targetTick: number;
+  status: 'running' | 'suspended' | 'reached' | 'cancelled' | 'extinct';
+  stoppedTick: number | null;
+}
+export interface TickRate {
+  value: number | null;
+  elapsedMs: number;
+  completedTicks: number;
+  context: 'visible' | 'hidden';
+  status: 'warming' | 'measured' | 'paused' | 'timing-gap';
+}
+export interface ControlState {
+  replacementId: number;
+  revision: number;
+  world: WorldPresentation;
   selected: Organism | null;
   settings: Settings;
+  speed: Speed;
   playback: PlaybackState;
+  target: TargetRun | null;
+  display: DisplayView;
+  rate: TickRate;
 }
-export interface LoadFailureResponse {
-  type: 'error';
+export interface TelemetrySnapshot {
+  revision: number;
+  tick: number;
+  telemetry: TelemetryState;
+}
+export interface AcceptedTelemetrySource extends TelemetrySnapshot {
   runId: number;
-  message: string;
+  replacementId: number;
+}
+export type CommandPayload =
+  | { type: 'start'; settings: Settings; display: DisplayView }
+  | { type: 'load'; text: string }
+  | { type: 'pause' | 'resume' | 'step' | 'save' }
+  | { type: 'snapshot'; display: boolean }
+  | { type: 'run-to'; targetTick: number }
+  | { type: 'cancel-target'; targetId: number }
+  | { type: 'speed'; value: Speed }
+  | { type: 'pause-on-extinction'; value: boolean }
+  | { type: 'display-view'; view: DisplayView }
+  | { type: 'settings'; settings: Partial<Pick<Settings, 'mutation' | 'nutrients' | 'climate'>> }
+  | { type: 'inspect'; x: number; y: number }
+  | {
+      type: 'paint';
+      tool: 'food' | 'wall' | 'erase' | 'plant';
+      x: number;
+      y: number;
+      radius: number;
+      genome: Genome;
+    }
+  | { type: 'shock'; kind: 'cold' | 'heat' };
+export type OrdinaryCommand = CommandPayload & { runId: number; commandId: number };
+export interface FlowAck {
+  type: 'flow-ack';
+  runId: number;
+  channel: 'progress' | 'display';
+  sequence: number;
+}
+export type WorkerCommand = OrdinaryCommand | FlowAck;
+export type WorkerResponse =
+  | {
+      type: 'progress';
+      runId: number;
+      sequence: number;
+      state: ControlState;
+      telemetry?: TelemetrySnapshot;
+    }
+  | {
+      type: 'frame';
+      runId: number;
+      sequence: number;
+      viewEpoch: number;
+      state: ControlState;
+      frame: HabitatFrame;
+      selectedId: number;
+    }
+  | {
+      type: 'control';
+      runId: number;
+      commandId: number;
+      state: ControlState;
+      telemetry?: TelemetrySnapshot;
+    }
+  | {
+      type: 'loaded';
+      runId: number;
+      commandId: number;
+      state: ControlState;
+      telemetry: TelemetrySnapshot;
+    }
+  | { type: 'saved'; runId: number; commandId: number; state: ControlState; text: string }
+  | {
+      type: 'error';
+      runId: number;
+      commandId?: number;
+      code:
+        | 'invalid-command'
+        | 'stale-run'
+        | 'invalid-target'
+        | 'target-busy'
+        | 'load-failed'
+        | 'save-failed'
+        | 'fatal';
+      message: string;
+      fatal?: true;
+      recovery?: RetainedWorldState;
+    };
+export type LoadFailureResponse = Extract<WorkerResponse, { type: 'error' }> & {
   recovery: RetainedWorldState;
+};
+export function observedGenome(genome: Genome): Genome {
+  return {
+    cells: genome.cells.map(({ x, y, type }) => ({ x, y, type })),
+    preference: genome.preference,
+    tolerance: genome.tolerance,
+    tempo: genome.tempo,
+  };
+}
+export function observedSettings(settings: Settings): Settings {
+  return {
+    seed: settings.seed,
+    mutation: settings.mutation,
+    nutrients: settings.nutrients,
+    climate: settings.climate,
+  };
+}
+export function observedOrganism(organism: Organism): Organism {
+  return {
+    id: organism.id,
+    species: organism.species,
+    x: organism.x,
+    y: organism.y,
+    rotation: organism.rotation,
+    direction: organism.direction,
+    age: organism.age,
+    energy: organism.energy,
+    generation: organism.generation,
+    children: organism.children,
+    ancestry: Array.from(organism.ancestry),
+    genome: observedGenome(organism.genome),
+  };
 }
 export interface WorldFile {
   version: 4;
