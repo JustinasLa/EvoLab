@@ -227,6 +227,52 @@ describe('ecosystem desk', () => {
     emit();
     expect(get('tick').textContent).toBe(before);
   });
+  it('projects only accepted worker history through repeated frames, resize, load, errors and reset', () => {
+    const chart = get<HTMLCanvasElement>('chart'),
+      context = {
+        clearRect: vi.fn(),
+        beginPath: vi.fn(),
+        moveTo: vi.fn(),
+        lineTo: vi.fn(),
+        stroke: vi.fn(),
+      };
+    vi.spyOn(chart, 'getContext').mockReturnValue(context as unknown as CanvasRenderingContext2D);
+    const points = (action: () => void) => {
+      context.moveTo.mockClear();
+      context.lineTo.mockClear();
+      action();
+      return [...context.moveTo.mock.calls, ...context.lineTo.mock.calls];
+    };
+    const observed = new Ecosystem();
+    expect(points(() => emit(observed.frame()))).toEqual([]);
+    for (let tick = 0; tick < 30; tick++) observed.step();
+    const one = points(() => emit(observed.frame()));
+    expect(one).toHaveLength(1);
+    observed.paint('plant', 40, 40, 0, founder(0));
+    const edited = observed.frame();
+    expect(edited.stats.population).toBe(2);
+    for (let inspection = 0; inspection < 20; inspection++)
+      expect(points(() => emit(edited, [...observed.organisms.values()][0]))).toEqual(one);
+    expect(get('population').textContent).toBe('2');
+    expect(points(() => window.dispatchEvent(new Event('resize')))).toEqual(one);
+    for (let tick = 0; tick < 30; tick++) observed.step();
+    const two = points(() => emit(observed.frame()));
+    expect(two).toHaveLength(2);
+    expect(points(() => worker.emit({ type: 'frame', frame: sample }, 0))).toEqual([]);
+    expect(points(() => window.dispatchEvent(new Event('resize')))).toEqual(two);
+    worker.emit({ type: 'error', message: 'Invalid ecosystem telemetry.' });
+    expect(points(() => window.dispatchEvent(new Event('resize')))).toEqual(two);
+    worker.emit({ type: 'loaded', settings: DEFAULTS });
+    expect(points(() => emit(observed.frame()))).toEqual(two);
+    const ring = new Ecosystem(DEFAULTS, false);
+    for (let tick = 0; tick < 5430; tick++) ring.step();
+    expect(points(() => emit(ring.frame()))).toHaveLength(180);
+    expect(points(() => window.dispatchEvent(new Event('resize')))).toHaveLength(180);
+    worker.emit({ type: 'loaded', settings: DEFAULTS });
+    expect(points(() => emit(sample))).toEqual([]);
+    click('reset');
+    expect(points(() => emit(sample))).toEqual([]);
+  });
   it('paints, inspects, pans and zooms without confusing coordinate systems', () => {
     emit();
     root.querySelector<HTMLButtonElement>('[data-tool="inspect"]')!.click();

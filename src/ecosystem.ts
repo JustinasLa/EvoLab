@@ -234,7 +234,7 @@ export class Ecosystem {
       ...this.telemetry.pending,
       tick: this.tick,
       population: this.organisms.size,
-      food: this.food.reduce((total, value) => total + value, 0),
+      food: this.food.reduce((total, value) => total + (value ? 1 : 0), 0),
       cellCounts,
       meanPreference: traitMean(preference, this.organisms.size, 0, 1, view),
       meanTolerance: traitMean(tolerance, this.organisms.size, 0.12, 0.6, view),

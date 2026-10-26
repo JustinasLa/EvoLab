@@ -1,13 +1,214 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { startWorker, type Scope } from '../src/worker';
 import { Ecosystem } from '../src/ecosystem';
-import { DEFAULTS, founder } from '../src/model';
+import { DEFAULTS, WIDTH, founder, type WorldFile, type Frame } from '../src/model';
+function workerHarness() {
+  const tasks: (() => void)[] = [],
+    messages: any[] = [],
+    scope: Scope = {
+      postMessage: (message) => messages.push(structuredClone(message)),
+      onmessage: null,
+    };
+  startWorker(scope, (callback) => tasks.push(callback));
+  const send = (data: object) => {
+      scope.onmessage!({ data } as MessageEvent);
+      return messages.at(-1);
+    },
+    save = (): WorldFile => JSON.parse(send({ type: 'save' }).text),
+    frame = (): Frame => send({ type: 'snapshot' }).frame;
+  return { tasks, messages, send, save, frame };
+}
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 describe('worker control and persistence', () => {
+  it.each([1, 4, 12])(
+    'collects tick-aligned history across actual yielding %ix batches',
+    (speed) => {
+      const harness = workerHarness(),
+        reference = new Ecosystem();
+      harness.send({ type: 'start', settings: DEFAULTS, runId: 1 });
+      harness.send({ type: 'speed', value: speed });
+      harness.send({ type: 'resume' });
+      harness.send({ type: 'resume' });
+      expect(harness.tasks).toHaveLength(1);
+      expect(harness.frame().telemetry.samples).toEqual([]);
+      for (let batch = 1; batch <= 120 / speed; batch++) {
+        harness.tasks.shift()!();
+        for (let tick = 0; tick < speed; tick++) reference.step();
+        expect(harness.tasks).toHaveLength(1);
+        expect(harness.save()).toEqual(reference.save());
+        const samples = harness.frame().telemetry.samples;
+        expect(samples.map((sample) => sample.tick)).toEqual(
+          Array.from({ length: Math.floor((batch * speed) / 30) }, (_, index) => (index + 1) * 30),
+        );
+        const before = harness.save();
+        harness.send({ type: 'inspect', x: WIDTH / 2, y: 78 });
+        harness.frame();
+        expect(harness.save()).toEqual(before);
+      }
+      harness.send({ type: 'pause' });
+      harness.tasks.shift()!();
+      expect(harness.tasks).toHaveLength(0);
+    },
+  );
+
+  it('keeps paused edits and boundary steps real, restores pending state, and fails loads atomically under the incoming run ID', () => {
+    const world = new Ecosystem();
+    for (let tick = 0; tick < 29; tick++) world.step();
+    const harness = workerHarness();
+    harness.send({ type: 'load', runId: 5, text: JSON.stringify(world.save()) });
+    harness.send({ type: 'pause' });
+    harness.tasks.shift()!();
+    expect(harness.frame().telemetry.samples).toEqual([]);
+    harness.send({ type: 'inspect', x: 120, y: 78 });
+    expect(harness.messages.at(-1).selected.id).toBe(1);
+    harness.send({ type: 'step' });
+    expect(harness.frame().stats.tick).toBe(30);
+    const history = harness.frame().telemetry.samples;
+    expect(history.map((sample) => sample.tick)).toEqual([30]);
+    harness.send({ type: 'paint', tool: 'erase', x: 120, y: 78, radius: 0, genome: founder(0) });
+    harness.send({ type: 'settings', settings: { nutrients: 0 } });
+    harness.send({ type: 'shock', kind: 'heat' });
+    harness.frame();
+    harness.frame();
+    expect(harness.frame().telemetry.samples).toEqual(history);
+    expect(harness.frame().telemetry.pending).toMatchObject({
+      fromTick: 30,
+      deaths: { manual: 1 },
+    });
+    harness.send({ type: 'paint', tool: 'plant', x: 40, y: 40, radius: 0, genome: founder(0) });
+    harness.send({ type: 'inspect', x: 40, y: 40 });
+    const before = harness.save(),
+      selected = harness.messages.filter((message) => message.type === 'frame').at(-1).selected;
+    for (const corrupt of [
+      (file: any) => {
+        file.telemetry.intervalTicks = 12;
+      },
+      (file: any) => {
+        file.telemetry.samples[0].energy.upkeepSpent = -1;
+      },
+      (file: any) => {
+        file.telemetry.pending.deaths.manual = 2;
+      },
+    ]) {
+      const invalid = structuredClone(before);
+      corrupt(invalid);
+      const error = harness.send({ type: 'load', runId: 6, text: JSON.stringify(invalid) });
+      expect(error).toMatchObject({ type: 'error', runId: 6 });
+      const recovered = harness.send({ type: 'snapshot' });
+      expect(recovered.runId).toBe(6);
+      expect(recovered.selected).toEqual(selected);
+      expect(harness.save()).toEqual(before);
+      expect(harness.tasks).toHaveLength(0);
+    }
+    harness.send({ type: 'step' });
+    expect(harness.frame().stats.tick).toBe(31);
+    expect(harness.frame().telemetry.samples).toEqual(history);
+    const pending = harness.save();
+    harness.send({ type: 'load', runId: 7, text: JSON.stringify(pending) });
+    expect(harness.frame().telemetry).toEqual(pending.telemetry);
+    const reference = Ecosystem.load(JSON.stringify(pending));
+    harness.send({ type: 'speed', value: 12 });
+    for (let batch = 0; batch < 10; batch++) {
+      harness.tasks.shift()!();
+      for (let tick = 0; tick < 12; tick++) reference.step();
+    }
+    expect(harness.save()).toEqual(reference.save());
+  });
+
+  it.each([0.12, 0.6])(
+    'observes real endpoint colonies at tolerance %s inside 12-tick batches and continues through JSON',
+    (tolerance) => {
+      for (const population of [31, 100, 1600]) {
+        const reference = new Ecosystem(
+          { ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 },
+          false,
+        );
+        for (let position = 0; position < population; position++)
+          reference.spawn(
+            { cells: [{ x: 0, y: 0, type: 7 }], preference: 0.5, tolerance, tempo: 2 },
+            position % WIDTH,
+            Math.floor(position / WIDTH),
+          );
+        for (let tick = 0; tick < 24; tick++) reference.step();
+        const harness = workerHarness();
+        harness.send({ type: 'load', runId: 1, text: JSON.stringify(reference.save()) });
+        harness.send({ type: 'speed', value: 12 });
+        expect(harness.frame().telemetry.samples).toEqual([]);
+        harness.tasks.shift()!();
+        for (let tick = 0; tick < 6; tick++) reference.step();
+        const first = reference.save().telemetry.samples[0];
+        expect(first).toMatchObject({
+          tick: 30,
+          population,
+          meanPreference: 0.5,
+          meanTolerance: tolerance,
+        });
+        for (let tick = 0; tick < 6; tick++) reference.step();
+        expect(harness.save()).toEqual(reference.save());
+        expect(harness.frame().telemetry.samples[0]).toEqual(first);
+        expect(harness.frame().telemetry.pending.fromTick).toBe(30);
+        const midpoint = harness.save();
+        harness.send({ type: 'load', runId: 2, text: JSON.stringify(midpoint) });
+        expect(harness.save()).toEqual(midpoint);
+        for (let batch = 0; batch < 5; batch++) {
+          harness.tasks.shift()!();
+          for (let tick = 0; tick < 12; tick++) reference.step();
+          expect(harness.save()).toEqual(reference.save());
+        }
+        expect(harness.frame().stats.tick).toBe(96);
+        expect(harness.frame().telemetry.samples.at(-1)).toMatchObject({
+          tick: 90,
+          population,
+          meanTolerance: tolerance,
+        });
+        for (let batch = 0; batch < 9; batch++) {
+          harness.tasks.shift()!();
+          harness.send({ type: 'inspect', x: 0, y: 0 });
+          harness.frame();
+          for (let tick = 0; tick < 12; tick++) reference.step();
+        }
+        expect(harness.save()).toEqual(reference.save());
+        const invalid = harness.save();
+        const view = new DataView(new ArrayBuffer(8));
+        view.setFloat64(0, tolerance, false);
+        view.setBigUint64(0, view.getBigUint64(0, false) + (tolerance === 0.12 ? -1n : 1n), false);
+        invalid.telemetry.samples[0].meanTolerance = view.getFloat64(0, false);
+        expect(
+          harness.send({ type: 'load', runId: 3, text: JSON.stringify(invalid) }),
+        ).toMatchObject({ type: 'error', runId: 3 });
+        expect(harness.save()).toEqual(reference.save());
+      }
+    },
+    30000,
+  );
+
+  it('restores and transports a complete wrapped history without synthetic read/edit samples', () => {
+    const world = new Ecosystem(DEFAULTS, false);
+    for (let tick = 0; tick < 5430; tick++) world.step();
+    const harness = workerHarness();
+    harness.send({ type: 'load', runId: 1, text: JSON.stringify(world.save()) });
+    harness.send({ type: 'pause' });
+    harness.tasks.shift()!();
+    expect(harness.frame().telemetry.samples).toHaveLength(180);
+    expect(harness.frame().telemetry.samples[0].tick).toBe(60);
+    harness.send({ type: 'paint', tool: 'food', x: 30, y: 30, radius: 0, genome: founder(0) });
+    const before = harness.save().telemetry;
+    harness.send({ type: 'inspect', x: 30, y: 30 });
+    harness.frame();
+    expect(harness.save().telemetry).toEqual(before);
+    harness.send({ type: 'resume' });
+    harness.send({ type: 'speed', value: 12 });
+    for (let batch = 0; batch < 3; batch++) harness.tasks.shift()!();
+    expect(harness.frame().telemetry.samples).toHaveLength(180);
+    expect(harness.frame().telemetry.samples[0].tick).toBe(90);
+    expect(harness.frame().telemetry.samples.at(-1)!.tick).toBe(5460);
+    expect(harness.frame().telemetry.pending.fromTick).toBe(5460);
+  });
+
   it('uses one yielding loop, obeys pause and speed, and processes edits while paused', () => {
     const tasks: (() => void)[] = [],
       scope: Scope = { postMessage: vi.fn(), onmessage: null };
