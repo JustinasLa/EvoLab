@@ -25,6 +25,7 @@ import {
   type Frame,
   type Species,
   type Tool,
+  type DeathRecord,
   type LegacyWorldFile,
   type WorldFileV3,
   type PreferenceBins,
@@ -235,6 +236,7 @@ export class Ecosystem {
   nextSpecies = 5;
   eventUntil = 0;
   eventOffset = 0;
+  lastDeath: DeathRecord | null = null;
   private telemetry = emptyTelemetry(0);
   private readonly recording: boolean;
   constructor(settings: Settings = DEFAULTS, seed = true, options: { telemetry?: boolean } = {}) {
@@ -357,6 +359,7 @@ export class Ecosystem {
     }
     this.organisms.delete(o.id);
     this.deaths++;
+    this.lastDeath = { tick: this.tick, cause };
     if (this.recording) this.telemetry.pending.deaths[cause]++;
   }
   move(o: Organism, dx: number, dy: number, rotation = o.rotation): boolean {
