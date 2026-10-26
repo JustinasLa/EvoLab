@@ -259,27 +259,52 @@ describe('native event ownership and transactions', () => {
     ).rejects.toMatchObject({ code: 'invalid' });
     library.dispose();
   });
+  it('retries a request collision with a new transaction after native abort, preserving original bytes', async () => {
+    const native = harness();
+    const original = token();
+    native.values.set(first, original);
+    const id = vi.fn().mockReturnValueOnce(first).mockReturnValue(second);
+    const library = createLibrary({ factory: () => native.factory, randomId: id });
+    await library.open();
+    const writing = library.mutate({ type: 'create', candidate: candidate() });
+    const transaction = native.current.native;
+    const onerror = transaction.onerror;
+    const observed = vi.fn((event: Event) => {
+      expect(transaction.error).toBeNull();
+      expect((event.target as IDBRequest).error?.name).toBe('ConstraintError');
+      onerror(event);
+    });
+    transaction.onerror = observed;
+    await expect(writing).resolves.toBe(second);
+    expect(observed).toHaveBeenCalledOnce();
+    expect(transaction.error.name).toBe('ConstraintError');
+    expect(id).toHaveBeenCalledTimes(2);
+    expect(native.connection.transaction).toHaveBeenCalledTimes(2);
+    expect(native.values.get(first)).toBe(original);
+    expect(classifyRecord(second, native.values.get(second))).toMatchObject({ kind: 'valid' });
+    library.dispose();
+  });
   it.each([
-    'QuotaExceededError',
-    'UnknownError',
-    'SecurityError',
-    'InvalidStateError',
-    'VersionError',
-  ])('maps %s and never publishes an uncommitted request', async (name) => {
+    ['QuotaExceededError', 'quota'],
+    ['UnknownError', 'storage'],
+    ['SecurityError', 'unavailable'],
+    ['InvalidStateError', 'unavailable'],
+    ['VersionError', 'unsupported'],
+  ])('maps request and commit %s to %s without publishing', async (name, code) => {
     const native = harness(),
       status = vi.fn(),
       library = createLibrary({ factory: () => native.factory, status });
     await library.open();
     native.faults.requestError = name;
-    await expect(library.mutate({ type: 'create', candidate: candidate() })).rejects.toBeInstanceOf(
-      LibraryError,
-    );
+    await expect(library.mutate({ type: 'create', candidate: candidate() })).rejects.toMatchObject({
+      code,
+    });
     expect(native.values.size).toBe(0);
     delete native.faults.requestError;
     native.faults.commitError = name;
-    await expect(library.mutate({ type: 'create', candidate: candidate() })).rejects.toBeInstanceOf(
-      LibraryError,
-    );
+    await expect(library.mutate({ type: 'create', candidate: candidate() })).rejects.toMatchObject({
+      code,
+    });
     expect(native.values.size).toBe(0);
     library.dispose();
   });

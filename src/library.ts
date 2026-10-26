@@ -365,8 +365,9 @@ export function createLibrary(
         failure = storageError(error);
         abort();
       };
-      native.onerror = () => {
-        failure ??= storageError(native.error);
+      native.onerror = (event) => {
+        const error = (event.target as IDBRequest | null)?.error;
+        if (error) failure ??= storageError(error);
       };
       native.onabort = () => {
         const error = failure ?? storageError(native.error);

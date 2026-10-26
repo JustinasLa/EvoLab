@@ -246,6 +246,148 @@ test('native abort rollback and a failed post-commit refresh never invent an uns
   });
 });
 
+test('native request ConstraintError retries a new UUID and stops after three collisions without overwriting', async ({
+  page,
+}, info) => {
+  const before = await fixture(page);
+  const original = encodeRecord(candidate('original collision owner'), 1);
+  await database(page, [[first, original]]);
+  await openLibrary(page);
+  await page.evaluate(
+    ({ first, second }) => {
+      const evidence = { ids: [] as string[], errors: [] as unknown[], aborts: [] as string[] };
+      const nativeTransaction = IDBDatabase.prototype.transaction;
+      IDBDatabase.prototype.transaction = function (...args: Parameters<typeof nativeTransaction>) {
+        const transaction = nativeTransaction.apply(this, args);
+        transaction.addEventListener('error', (event) => {
+          evidence.errors.push({
+            requestError: (event.target as IDBRequest).error?.name,
+            transactionError: transaction.error?.name ?? null,
+          });
+        });
+        transaction.addEventListener('abort', () => evidence.aborts.push(transaction.error!.name));
+        return transaction;
+      };
+      const nativeId = crypto.randomUUID.bind(crypto);
+      crypto.randomUUID = () => {
+        const id = evidence.ids.length ? second : first;
+        evidence.ids.push(id);
+        return id as ReturnType<Crypto['randomUUID']>;
+      };
+      (window as any).collisionEvidence = evidence;
+      (window as any).restoreCollisionProbe = () => {
+        crypto.randomUUID = nativeId;
+        IDBDatabase.prototype.transaction = nativeTransaction;
+      };
+    },
+    { first, second },
+  );
+  await page.locator('#blueprint-name').fill('collision retry candidate');
+  await page.locator('#library-save').click();
+  await expect(page.locator('#library-status')).toContainText('committed');
+  const retried = await page.evaluate(() => structuredClone((window as any).collisionEvidence));
+  expect(retried).toEqual({
+    ids: [first, second],
+    errors: [{ requestError: 'ConstraintError', transactionError: null }],
+    aborts: ['ConstraintError'],
+  });
+  const committed = await database(page);
+  expect(committed[0]).toEqual([first, original]);
+  expect(parseBlueprint(JSON.parse(committed[1][1] as string).blueprint).name).toBe(
+    'collision retry candidate',
+  );
+  await page.evaluate((id) => {
+    const evidence = (window as any).collisionEvidence;
+    evidence.ids = [];
+    evidence.errors = [];
+    evidence.aborts = [];
+    crypto.randomUUID = () => {
+      evidence.ids.push(id);
+      return id as ReturnType<Crypto['randomUUID']>;
+    };
+  }, first);
+  await page.locator('#blueprint-name').fill('three collision candidate');
+  await page.locator('#library-save').click();
+  await expect(page.locator('#library-status')).toContainText('after three attempts');
+  const bounded = await page.evaluate(() => structuredClone((window as any).collisionEvidence));
+  expect(bounded.ids).toEqual([first, first, first]);
+  expect(bounded.errors).toEqual(
+    Array.from({ length: 3 }, () => ({ requestError: 'ConstraintError', transactionError: null })),
+  );
+  expect(bounded.aborts).toEqual(['ConstraintError', 'ConstraintError', 'ConstraintError']);
+  expect(await database(page)).toEqual(committed);
+  expect(parseBlueprint((await download(page, '#library-export-candidate')).toString()).name).toBe(
+    'three collision candidate',
+  );
+  await page.evaluate(() => (window as any).restoreCollisionProbe());
+  expect(await pausedSave(page)).toEqual(before);
+  await info.attach('native-request-collision-retries.json', {
+    contentType: 'application/json',
+    body: JSON.stringify({ retried, bounded, committed, ecologicalBytesUnchanged: true }),
+  });
+});
+
+test('request-level quota fault injection retains native rollback, actionable status and an exportable candidate', async ({
+  page,
+}, info) => {
+  const before = await fixture(page);
+  const original = [[first, encodeRecord(candidate('retained owner'), 1)]] as [string, unknown][];
+  await database(page, original);
+  await openLibrary(page);
+  await page.evaluate((id) => {
+    const nativeAdd = IDBObjectStore.prototype.add;
+    const evidence = { addCalls: 0, errors: [] as unknown[], aborts: [] as string[] };
+    IDBObjectStore.prototype.add = function (value) {
+      evidence.addCalls++;
+      const transaction = this.transaction;
+      const request = nativeAdd.call(this, value, id);
+      request.addEventListener('error', () => {
+        Object.defineProperty(request, 'error', {
+          value: new DOMException('', 'QuotaExceededError'),
+        });
+      });
+      transaction.addEventListener('error', (event) => {
+        evidence.errors.push({
+          injectedRequestError: (event.target as IDBRequest).error?.name,
+          transactionErrorBeforeAbort: transaction.error?.name ?? null,
+        });
+      });
+      transaction.addEventListener('abort', () => evidence.aborts.push(transaction.error!.name));
+      return request;
+    };
+    (window as any).quotaFaultEvidence = evidence;
+    (window as any).restoreQuotaFault = () => {
+      IDBObjectStore.prototype.add = nativeAdd;
+    };
+  }, first);
+  await page.locator('#blueprint-name').fill('request quota candidate');
+  await page.locator('#library-save').click();
+  await expect(page.locator('#library-status')).toContainText('storage is full');
+  await expect(page.locator('#library-status')).toContainText('Export the unsaved blueprint');
+  expect(await database(page)).toEqual(original);
+  expect(parseBlueprint((await download(page, '#library-export-candidate')).toString()).name).toBe(
+    'request quota candidate',
+  );
+  const evidence = await page.evaluate(() => structuredClone((window as any).quotaFaultEvidence));
+  expect(evidence).toEqual({
+    addCalls: 1,
+    errors: [{ injectedRequestError: 'QuotaExceededError', transactionErrorBeforeAbort: null }],
+    aborts: ['ConstraintError'],
+  });
+  await page.evaluate(() => (window as any).restoreQuotaFault());
+  expect(await pausedSave(page)).toEqual(before);
+  await info.attach('injected-request-quota-native-rollback.json', {
+    contentType: 'application/json',
+    body: JSON.stringify({
+      ...evidence,
+      injection:
+        'Request error getter overridden during a real duplicate-key error; default native ConstraintError abort supplies rollback.',
+      physicalQuotaExhaustionProved: false,
+      ecologicalBytesUnchanged: true,
+    }),
+  });
+});
+
 test('future native database declarations remain read-only and never offer damaged repair', async ({
   page,
 }, info) => {

@@ -51,7 +51,7 @@ export function libraryHarness() {
           if (count || finished || faults.txStall) return;
           if (faults.commitError) {
             native.error = new DOMException('', faults.commitError);
-            native.onerror?.();
+            native.onerror?.({ target: native });
             native.abort();
             return;
           }
@@ -62,7 +62,7 @@ export function libraryHarness() {
         });
       };
       const request = (compute: () => unknown) => {
-        const result: any = { result: undefined };
+        const result: any = { result: undefined, error: null };
         count++;
         queueMicrotask(() => {
           count--;
@@ -72,8 +72,12 @@ export function libraryHarness() {
             result.result = compute();
             result.onsuccess?.();
           } catch (error) {
+            result.error = error;
+            const event = new Event('error', { bubbles: true, cancelable: true });
+            Object.defineProperty(event, 'target', { value: result });
+            result.onerror?.(event);
+            native.onerror?.(event);
             native.error = error;
-            native.onerror?.();
             native.abort();
           }
           complete();
