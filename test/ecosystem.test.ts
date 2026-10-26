@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { cpus, platform, totalmem } from 'node:os';
 import { Ecosystem } from '../src/ecosystem';
+import { advance, colony, ecology, legacyV3 } from './fixtures/telemetry';
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
 import {
   DEFAULTS,
@@ -32,36 +32,8 @@ const single = (type: CellType = 3, preference = 0.5): Genome => ({
   tolerance: 0.3,
   tempo: 2,
 });
-const advance = (world: Ecosystem, ticks: number): void => {
-  for (let tick = 0; tick < ticks; tick++) world.step();
-};
-const ecology = ({ telemetry: _telemetry, ...saved }: WorldFile) => saved;
 function oldTelemetry(world: Ecosystem): WorldFileV3 {
-  const saved = world.save(),
-    { adaptationOriginTick: _origin, ...telemetry } = saved.telemetry;
-  return {
-    ...saved,
-    version: 3,
-    telemetry: {
-      ...telemetry,
-      version: 1,
-      samples: telemetry.samples.map(({ adaptation: _adaptation, ...sample }) => sample),
-    },
-  };
-}
-function colony(count: number, tolerance: number, preference = 0.5, telemetry = true): Ecosystem {
-  const world = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0, mutation: 0 }, false, {
-    telemetry,
-  });
-  for (let organism = 0; organism < count; organism++)
-    expect(
-      world.spawn(
-        { ...single(7, preference), tolerance },
-        organism % WIDTH,
-        Math.floor(organism / WIDTH),
-      ),
-    ).toBeDefined();
-  return world;
+  return legacyV3(world.save());
 }
 function adjacent(value: number, direction: -1 | 1): number {
   const view = new DataView(new ArrayBuffer(8));
@@ -1200,61 +1172,34 @@ describe('measured thermal adaptation', () => {
     );
   });
 
-  it('retains raw paired observer timings with 1600 surviving organisms and exact ecology equality', () => {
-    const enabled = colony(1600, 0.3),
-      disabled = colony(1600, 0.3, 0.5, false),
-      raw: object[] = [];
-    for (const world of [enabled, disabled]) {
+  it('preserves complete ecology and real boundary observations with 1600 survivors', () => {
+    const enabled = colony(LIMIT, 0.3),
+      disabled = colony(LIMIT, 0.3, 0.5, false);
+    for (const world of [enabled, disabled])
       for (const organism of world.organisms.values()) organism.energy = 100;
-      advance(world, 29);
-    }
-    const measure = (world: Ecosystem) => {
-      for (const organism of world.organisms.values()) {
-        organism.age = 0;
-        organism.energy = 100;
-      }
-      const start = performance.now();
-      world.step();
-      const boundaryMs = performance.now() - start;
-      advance(world, 29);
-      return { boundaryMs, thirtyTicksMs: performance.now() - start };
-    };
-    for (let pair = 0; pair < 45; pair++) {
-      let observed, control;
-      if (pair % 2) {
-        control = measure(disabled);
-        observed = measure(enabled);
-      } else {
-        observed = measure(enabled);
-        control = measure(disabled);
-      }
-      expect(enabled.organisms.size).toBe(1600);
-      expect(ecology(enabled.save())).toEqual(ecology(disabled.save()));
-      if (pair >= 5)
-        raw.push({
-          pair: pair - 5,
-          tick: enabled.tick,
-          population: enabled.organisms.size,
-          first: pair % 2 ? 'disabled' : 'enabled',
-          enabledBoundaryMs: observed.boundaryMs,
-          disabledBoundaryMs: control.boundaryMs,
-          enabledThirtyTicksMs: observed.thirtyTicksMs,
-          disabledThirtyTicksMs: control.thirtyTicksMs,
+    for (const tick of [29, 30, 59, 60]) {
+      advance(enabled, tick - enabled.tick);
+      advance(disabled, tick - disabled.tick);
+      const observed = enabled.save(),
+        control = disabled.save();
+      expect(enabled.organisms.size).toBe(LIMIT);
+      expect(disabled.organisms.size).toBe(LIMIT);
+      expect(ecology(observed)).toEqual(ecology(control));
+      expect(observed.telemetry.samples.map((sample) => sample.tick)).toEqual(
+        tick < 30 ? [] : tick < 60 ? [30] : [30, 60],
+      );
+      expect(observed.telemetry.pending.fromTick).toBe(Math.floor(tick / 30) * 30);
+      for (const sample of observed.telemetry.samples)
+        expect(sample).toMatchObject({
+          population: LIMIT,
+          meanPreference: 0.5,
+          meanTolerance: 0.3,
+          adaptation: {
+            preferenceBins: [0, 0, 0, 0, 0, LIMIT, 0, 0, 0, 0],
+            stressedOrganisms: 0,
+          },
         });
     }
-    console.info(
-      'TELEMETRY_OBSERVER_RAW',
-      JSON.stringify({
-        runtime: process.version,
-        platform: platform(),
-        cpu: cpus()[0]?.model,
-        logicalCpus: cpus().length,
-        memoryBytes: totalmem(),
-        notes:
-          'Same process/runtime; five warm-up pairs; alternating order; 1600 one-cell stationary organisms; identical explicit age/energy resets before each 30-tick observation; scheduler/CPU/GC noise not isolated; no universal throughput claim',
-        raw,
-      }),
-    );
   });
 
   it('classifies stored binary64 endpoints and adjacent values without scaled rounding', () => {
