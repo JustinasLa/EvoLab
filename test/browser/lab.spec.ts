@@ -1,4 +1,71 @@
 import { test, expect } from '@playwright/test';
+import { Ecosystem } from '../../src/ecosystem';
+import { DEFAULTS, type Frame, type LegacyWorldFile } from '../../src/model';
+
+declare global {
+  interface Window {
+    telemetryEvidence: { frame: Frame | null; points: number[][] };
+  }
+}
+
+async function observeTelemetry(page: import('@playwright/test').Page): Promise<void> {
+  await page.addInitScript(() => {
+    window.telemetryEvidence = { frame: null, points: [] };
+    window.Worker = new Proxy(window.Worker, {
+      construct(target, args: ConstructorParameters<typeof Worker>) {
+        const worker = new target(...args);
+        worker.addEventListener('message', ({ data }) => {
+          if (data.type === 'frame') window.telemetryEvidence.frame = data.frame;
+        });
+        return worker;
+      },
+    });
+    const clear = CanvasRenderingContext2D.prototype.clearRect,
+      move = CanvasRenderingContext2D.prototype.moveTo,
+      line = CanvasRenderingContext2D.prototype.lineTo;
+    CanvasRenderingContext2D.prototype.clearRect = function (...args) {
+      if (this.canvas.id === 'chart') window.telemetryEvidence.points = [];
+      return clear.apply(this, args);
+    };
+    CanvasRenderingContext2D.prototype.moveTo = function (x, y) {
+      if (this.canvas.id === 'chart') window.telemetryEvidence.points.push([x, y]);
+      return move.call(this, x, y);
+    };
+    CanvasRenderingContext2D.prototype.lineTo = function (x, y) {
+      if (this.canvas.id === 'chart') window.telemetryEvidence.points.push([x, y]);
+      return line.call(this, x, y);
+    };
+  });
+}
+
+async function telemetryFrame(
+  page: import('@playwright/test').Page,
+): Promise<Pick<Frame, 'stats' | 'telemetry'>> {
+  return page.evaluate(() => {
+    const { stats, telemetry } = window.telemetryEvidence.frame!;
+    return { stats, telemetry };
+  });
+}
+
+async function importWorld(page: import('@playwright/test').Page, world: object): Promise<void> {
+  await page.locator('#file').setInputFiles({
+    name: 'telemetry-world.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(world)),
+  });
+  await expect(page.locator('#notice')).toContainText('World restored');
+  await pause(page);
+}
+
+async function stepTo(page: import('@playwright/test').Page, target: number): Promise<void> {
+  let tick = (await telemetryFrame(page)).stats.tick;
+  expect(tick).toBeLessThanOrEqual(target);
+  while (tick < target) {
+    await page.getByTitle('Advance one tick while paused').click();
+    tick++;
+    await expect(page.locator('#tick')).toHaveText(`TICK ${tick.toLocaleString('en-US')}`);
+  }
+}
 import { WIDTH, HEIGHT, type WorldFile } from '../../src/model';
 test('Even Hub-style cards retain the dark palette and crisp cellular editor', async ({ page }) => {
   await page.goto('/');
@@ -138,6 +205,181 @@ async function downloadWorld(page: import('@playwright/test').Page): Promise<Buf
   return Buffer.concat(chunks);
 }
 
+test('restores real worker telemetry, renders its population projection and downloads unchanged paused history', async ({
+  page,
+}) => {
+  await observeTelemetry(page);
+  const reference = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0, mutation: 0 }, false),
+    genome = {
+      cells: [{ x: 0, y: 0, type: 7 as const }],
+      preference: 0.5,
+      tolerance: 0.12,
+      tempo: 2,
+    };
+  reference.spawn(genome, 20, 20);
+  for (let tick = 0; tick < 30; tick++) reference.step();
+  reference.paint('plant', 40, 40, 0, genome);
+  for (let tick = 0; tick < 35; tick++) reference.step();
+  reference.paint('erase', 20, 20, 0, genome);
+  const fixture = reference.save();
+  await page.goto('/');
+  await expect(page.locator('#population')).not.toHaveText('—');
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  await importWorld(page, fixture);
+  let frame = await telemetryFrame(page);
+  expect(frame.stats.tick).toBeGreaterThanOrEqual(fixture.tick);
+  for (let tick = fixture.tick; tick < frame.stats.tick; tick++) reference.step();
+  expect(frame.telemetry).toEqual(reference.save().telemetry);
+  expect(frame.telemetry.samples.slice(0, 2).map((sample) => sample.population)).toEqual([1, 2]);
+  expect(frame.telemetry.pending.deaths.manual).toBe(1);
+  const before = frame.telemetry;
+  await page.getByTitle('Inspect organism (I)').click();
+  const at = await coordinate(page, 40, 40);
+  await page.mouse.click(at.x, at.y);
+  await expect(page.locator('#inspector')).toContainText('Organism 2');
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  for (const width of [360, 390, 1280]) {
+    await page.setViewportSize({ width, height: 800 });
+    const rendered = await page.evaluate(() => ({
+      telemetry: window.telemetryEvidence.frame!.telemetry,
+      points: window.telemetryEvidence.points,
+      width: (document.querySelector('#chart') as HTMLCanvasElement).width,
+      fits: document.documentElement.scrollWidth <= innerWidth,
+      chartOutsideHabitat: (() => {
+        const chart = document.querySelector('#chart')!.getBoundingClientRect(),
+          world = document.querySelector('#world')!.getBoundingClientRect();
+        return chart.left >= world.right || chart.top >= world.bottom;
+      })(),
+    }));
+    expect(rendered.telemetry).toEqual(before);
+    expect(rendered.points).toHaveLength(before.samples.length);
+    const maximum = Math.max(10, ...before.samples.map((sample) => sample.population));
+    expect(rendered.points).toEqual(
+      before.samples.map((sample, index) => [
+        (index / Math.max(1, before.samples.length - 1)) * rendered.width,
+        64 - (sample.population / maximum) * 58,
+      ]),
+    );
+    expect(rendered.fits).toBe(true);
+    expect(rendered.chartOutsideHabitat).toBe(true);
+    await test.info().attach(`restored-population-chart-${width}`, {
+      body: await page.locator('.population-section').screenshot(),
+      contentType: 'image/png',
+    });
+  }
+  frame = await telemetryFrame(page);
+  expect(frame.telemetry).toEqual(before);
+  const downloaded = JSON.parse((await downloadWorld(page)).toString());
+  expect(downloaded.telemetry).toEqual(before);
+  expect(downloaded.version).toBe(3);
+  expect(downloaded.telemetry.version).toBe(1);
+  expect(downloaded.telemetry.intervalTicks).toBe(30);
+  const restored = Ecosystem.load(JSON.stringify(downloaded));
+  expect(restored.save()).toEqual(reference.save());
+  for (let tick = 0; tick < 100; tick++) {
+    reference.step();
+    restored.step();
+  }
+  expect(restored.save()).toEqual(reference.save());
+});
+
+test('legacy history begins empty, only exact Step 29→30 samples, and corrupt telemetry preserves the paused world/chart', async ({
+  page,
+}) => {
+  await observeTelemetry(page);
+  const legacy: LegacyWorldFile = {
+    version: 2,
+    settings: { seed: 77, mutation: 0.12, nutrients: 5, climate: 0.8 },
+    random: 77,
+    tick: 0,
+    births: 0,
+    deaths: 0,
+    nextId: 1,
+    nextSpecies: 5,
+    eventUntil: 0,
+    eventOffset: 0,
+    food: [],
+    walls: [],
+    organisms: [],
+  };
+  await page.goto('/');
+  await expect(page.locator('#population')).not.toHaveText('—');
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  await importWorld(page, legacy);
+  expect((await telemetryFrame(page)).telemetry).toMatchObject({ originTick: 0, samples: [] });
+  expect(await page.evaluate(() => window.telemetryEvidence.points)).toEqual([]);
+  await stepTo(page, 29);
+  expect((await telemetryFrame(page)).telemetry.samples).toEqual([]);
+  await stepTo(page, 30);
+  const history = (await telemetryFrame(page)).telemetry.samples;
+  expect(history).toHaveLength(1);
+  expect(history[0]).toMatchObject({
+    tick: 30,
+    population: 0,
+    meanPreference: null,
+    meanTolerance: null,
+  });
+  await stepTo(page, 31);
+  expect((await telemetryFrame(page)).telemetry.samples).toEqual(history);
+  expect(await page.evaluate(() => window.telemetryEvidence.points)).toHaveLength(1);
+  const before = (await telemetryFrame(page)).telemetry,
+    invalid: any = Ecosystem.load(JSON.stringify(legacy)).save();
+  invalid.telemetry.intervalTicks = 12;
+  await page.locator('#file').setInputFiles({
+    name: 'bad-telemetry.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(invalid)),
+  });
+  await expect(page.locator('#notice')).toContainText('Invalid ecosystem telemetry');
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  expect((await telemetryFrame(page)).telemetry).toEqual(before);
+  await page.setViewportSize({ width: 390, height: 800 });
+  expect(await page.evaluate(() => window.telemetryEvidence.points)).toHaveLength(1);
+  await stepTo(page, 32);
+  expect((await telemetryFrame(page)).telemetry.samples).toEqual(history);
+  const downloaded = JSON.parse((await downloadWorld(page)).toString());
+  expect(downloaded.tick).toBe(32);
+  expect(downloaded.telemetry).toEqual((await telemetryFrame(page)).telemetry);
+  expect(Ecosystem.load(JSON.stringify(downloaded)).save()).toEqual(downloaded);
+});
+
+test('restores the full 180-sample ring in the existing chart across desktop/mobile widths', async ({
+  page,
+}) => {
+  await observeTelemetry(page);
+  const reference = new Ecosystem(DEFAULTS, false);
+  for (let tick = 0; tick < 5430; tick++) reference.step();
+  const fixture = reference.save();
+  await page.goto('/');
+  await expect(page.locator('#population')).not.toHaveText('—');
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  await importWorld(page, fixture);
+  const frame = await telemetryFrame(page);
+  for (let tick = fixture.tick; tick < frame.stats.tick; tick++) reference.step();
+  expect(frame.telemetry).toEqual(reference.save().telemetry);
+  expect(frame.telemetry.samples).toHaveLength(180);
+  for (const width of [360, 390, 1280]) {
+    await page.setViewportSize({ width, height: 800 });
+    await expect.poll(() => page.evaluate(() => window.telemetryEvidence.points.length)).toBe(180);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+    expect((await telemetryFrame(page)).telemetry).toEqual(frame.telemetry);
+    await test.info().attach(`wrapped-population-chart-${width}`, {
+      body: await page.locator('.population-section').screenshot(),
+      contentType: 'image/png',
+    });
+  }
+  const downloaded = JSON.parse((await downloadWorld(page)).toString());
+  expect(downloaded.telemetry).toEqual(frame.telemetry);
+  expect(downloaded.telemetry.samples[0].tick).toBe(60);
+  expect(downloaded.telemetry.samples.at(-1).tick).toBe(5430);
+  expect(downloaded.telemetry.samples.at(-1).tick - downloaded.telemetry.samples[0].fromTick).toBe(
+    5400,
+  );
+  expect(Ecosystem.load(JSON.stringify(downloaded)).save()).toEqual(downloaded);
+});
+
 test('Pan and Organism are the defaults and dragging changes only the camera', async ({ page }) => {
   const expectDefaults = async (): Promise<void> => {
     await expect(page.locator('.tool-dock [aria-pressed="true"]')).toHaveAttribute(
@@ -250,7 +492,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   await expect(page.locator('[data-shock="bloom"]')).toHaveCount(0);
   const saved = await downloadWorld(page),
     world = JSON.parse(saved.toString());
-  expect(world.version).toBe(2);
+  expect(world.version).toBe(3);
   expect(world.organisms.length).toBeGreaterThan(1);
   const o = world.organisms[0],
     c = o.genome.cells[0];

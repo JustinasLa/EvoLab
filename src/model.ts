@@ -1,6 +1,8 @@
 export const WIDTH = 240;
 export const HEIGHT = 156;
 export const LIMIT = 1600;
+export const TELEMETRY_INTERVAL_TICKS = 30;
+export const TELEMETRY_CAPACITY = 180;
 export const COLORS = [
   '#090f16',
   '#284b3b',
@@ -72,9 +74,50 @@ export interface Frame {
   stats: Stats;
   climate: number;
   offset: number;
+  telemetry: TelemetryState;
+}
+export type DeathCause = 'age' | 'energy' | 'manual';
+export type TraitMean = number | null;
+export interface DeathCounts {
+  age: number;
+  energy: number;
+  manual: number;
+}
+export interface EnergyLedger {
+  leavesGained: number;
+  mouthsGained: number;
+  movementSpent: number;
+  upkeepSpent: number;
+  climateUpkeepSpent: number;
+  reproductionSpent: number;
+  offspringGranted: number;
+  stingsGained: number;
+  stingsDrained: number;
+}
+export interface TelemetryFlow {
+  births: number;
+  deaths: DeathCounts;
+  energy: EnergyLedger;
+}
+export interface TelemetrySample extends TelemetryFlow {
+  fromTick: number;
+  tick: number;
+  population: number;
+  food: number;
+  cellCounts: [number, number, number, number, number, number];
+  meanPreference: TraitMean;
+  meanTolerance: TraitMean;
+}
+export interface TelemetryState {
+  version: 1;
+  intervalTicks: 30;
+  originTick: number;
+  samples: TelemetrySample[];
+  pending: TelemetryFlow & { fromTick: number };
 }
 export interface WorldFile {
-  version: 2;
+  version: 3;
+  telemetry: TelemetryState;
   settings: Settings;
   random: number;
   tick: number;
@@ -88,6 +131,7 @@ export interface WorldFile {
   walls: number[];
   organisms: Organism[];
 }
+export type LegacyWorldFile = Omit<WorldFile, 'version' | 'telemetry'> & { version: 2 };
 export const clamp = (v: number, min: number, max: number): number =>
   Math.max(min, Math.min(max, v));
 export const index = (x: number, y: number): number =>
