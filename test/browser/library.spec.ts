@@ -652,6 +652,87 @@ for (const phase of ['initial', 'final']) {
   });
 }
 
+for (const phase of ['initial', 'final']) {
+  test(`versionchange cancels the ${phase} completed native replacement read before delayed delivery`, async ({
+    page,
+  }, info) => {
+    await deliveryProbe(page);
+    const before = await fixture(page);
+    const stored = [[first, encodeRecord(candidate('must not publish'), 1)]] as [string, string][];
+    await database(page, stored);
+    await openLibrary(page);
+    await page.locator('#blueprint-name').fill('retained designer');
+    await page.locator('#blueprint-description').fill('retained description');
+    const design = await download(page, '#export-blueprint');
+    if (phase === 'final') {
+      await page.locator('#library-load').click();
+      await expect(page.locator('#library-dialog')).toBeVisible();
+    }
+    await page.evaluate(() => {
+      (window as any).libraryProbe.holdDatabase = true;
+    });
+    await page.locator(phase === 'initial' ? '#library-load' : '#library-confirm').click();
+    await expect
+      .poll(() => page.evaluate(() => (window as any).libraryProbe.heldDatabase.length))
+      .toBe(1);
+    const transactions = await page.evaluate(
+      () => (window as any).libraryProbe.databaseTransactions,
+    );
+    await page.locator('#blueprint-description').focus();
+    await page.evaluate(
+      (name) =>
+        new Promise<void>((resolve, reject) => {
+          const request = indexedDB.open(name, 2);
+          request.onerror = () => reject(request.error);
+          request.onsuccess = () => {
+            request.result.close();
+            resolve();
+          };
+        }),
+      LIBRARY_DATABASE,
+    );
+    await expect(page.locator('#library-status')).toContainText('Another tab changed');
+    const status = await page.locator('#library-status').textContent();
+    await page.locator('#library-refresh').evaluate((button: HTMLButtonElement) => button.click());
+    expect(await page.evaluate(() => (window as any).libraryProbe.databaseTransactions)).toBe(
+      transactions,
+    );
+    expect(await page.evaluate(() => (window as any).libraryProbe.heldDatabase.length)).toBe(1);
+    await releaseDatabase(page);
+    await expect(page.locator('#library-dialog')).toBeHidden();
+    await expect(page.locator('#blueprint-name')).toHaveValue('retained designer');
+    await expect(page.locator('#blueprint-description')).toHaveValue('retained description');
+    await expect(page.locator('#organism-panel')).toBeVisible();
+    await expect(page.locator('#ecosystem-panel')).toBeHidden();
+    await expect(page.locator('button[data-tool="inspect"]')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await expect(page.locator('#blueprint-description')).toBeFocused();
+    await expect(page.locator('#library-status')).toHaveText(status!);
+    expect(await download(page, '#export-blueprint')).toEqual(design);
+    expect(await pausedSave(page)).toEqual(before);
+    await page.screenshot({
+      path: info.outputPath(`library-${phase}-read-versionchange.png`),
+      fullPage: true,
+    });
+    await info.attach(`native-${phase}-read-versionchange.json`, {
+      contentType: 'application/json',
+      body: JSON.stringify({
+        phase,
+        fullId: first,
+        actualNativeVersionchange: true,
+        completedTransactionCallbackDeliveryHeld: true,
+        nativeOwnerRetainedUntilTerminalDelivery: true,
+        noModalPublicationToolPanelChangeOrFocusTheft: true,
+        status,
+        designerSha256: createHash('sha256').update(design).digest('hex'),
+        ecologicalSha256: createHash('sha256').update(before).digest('hex'),
+      }),
+    });
+  });
+}
+
 test('native committed-but-late completion and late open retain ownership until actual terminal callbacks', async ({
   page,
 }, info) => {

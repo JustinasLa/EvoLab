@@ -15,6 +15,7 @@ export function libraryHarness() {
     requestError?: string;
     commitError?: string;
     txStall?: boolean;
+    completionStall?: IDBTransactionMode;
     abortThrow?: boolean;
     createThrow?: boolean;
     storeThrow?: boolean;
@@ -27,11 +28,12 @@ export function libraryHarness() {
     createObjectStore: vi.fn(() => {
       if (faults.createThrow) throw new Error('create');
     }),
-    transaction: vi.fn(() => {
+    transaction: vi.fn((_stores: string, mode: IDBTransactionMode) => {
       if (faults.transactionThrow) throw new DOMException('', faults.transactionThrow);
       const working = new Map(values);
       let count = 0,
         finished = false;
+      let heldCompletion: (() => void) | undefined;
       const native: any = {
         error: null,
         abort: vi.fn(() => {
@@ -58,7 +60,8 @@ export function libraryHarness() {
           finished = true;
           values.clear();
           for (const [key, value] of working) values.set(key, value);
-          native.oncomplete?.();
+          if (faults.completionStall === mode) heldCompletion = () => native.oncomplete?.();
+          else native.oncomplete?.();
         });
       };
       const request = (compute: () => unknown) => {
@@ -118,7 +121,15 @@ export function libraryHarness() {
           return cursor;
         },
       };
-      current = { native, complete };
+      current = {
+        native,
+        complete,
+        releaseCompletion: () => {
+          const callback = heldCompletion;
+          heldCompletion = undefined;
+          callback?.();
+        },
+      };
       queueMicrotask(complete);
       return native;
     }),

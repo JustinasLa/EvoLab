@@ -134,6 +134,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   const library = createLibrary({
     invalidated: () => {
       refreshNeeded = false;
+      if (replacement?.kind === 'library') cancelReplacement('the library connection changed.');
     },
     status: (message) => {
       if (!alive) return;
