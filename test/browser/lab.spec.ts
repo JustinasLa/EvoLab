@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { createHash } from 'node:crypto';
 import {
   WIDTH,
   HEIGHT,
@@ -117,7 +118,6 @@ async function pause(page: import('@playwright/test').Page): Promise<void> {
   await page.getByRole('button', { name: 'Ⅱ Pause', exact: true }).click();
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
   await expect(page.getByTitle('Advance one tick while paused')).toBeEnabled();
-  await page.waitForTimeout(150);
 }
 async function coordinate(
   page: import('@playwright/test').Page,
@@ -327,12 +327,7 @@ test('standalone inspector and designer downloads round-trip full traits before 
   });
 });
 
-test('invalid and cancelled blueprint files preserve paused world and current designer', async ({
-  page,
-}) => {
-  await page.goto('/');
-  await pause(page);
-  const before = await downloadWorld(page);
+test.describe('blueprint file rejection and cancellation', () => {
   const payload = {
     name: 'Saved draft',
     description: 'Keep this\nexact description',
@@ -340,58 +335,176 @@ test('invalid and cancelled blueprint files preserve paused world and current de
   };
   const valid = serializeBlueprint(payload),
     parsed = JSON.parse(valid);
-  await page.locator('#blueprint-file').setInputFiles({
-    name: 'draft.json',
-    mimeType: 'application/json',
-    buffer: Buffer.from(valid),
-  });
-  await expect(page.locator('#notice')).toContainText('loaded into the designer');
-  await page.locator('#plant-design').click();
   const malformed = [
-    '{broken',
-    JSON.stringify({ ...parsed, version: 99 }),
-    JSON.stringify({
-      ...parsed,
-      genome: {
-        ...parsed.genome,
-        cells: [
-          { x: 0, y: 0, type: 3 },
-          { x: 2, y: 0, type: 4 },
-        ],
-      },
-    }),
-    JSON.stringify({
-      ...parsed,
-      genome: {
-        ...parsed.genome,
-        cells: [
-          { x: 0, y: 0, type: 3 },
-          { x: 0, y: 0, type: 4 },
-        ],
-      },
-    }),
-    JSON.stringify({ ...parsed, genome: { ...parsed.genome, preference: 2 } }),
-    JSON.stringify({ ...parsed, id: 27 }),
-    ' '.repeat(BLUEPRINT_MAX_BYTES + 1),
-    '🌿'.repeat(4500),
+    {
+      name: 'invalid JSON',
+      text: '{broken',
+      notice: 'Could not parse this blueprint. Choose a valid JSON file.',
+    },
+    {
+      name: 'unsupported version',
+      text: JSON.stringify({ ...parsed, version: 99 }),
+      notice: 'Unsupported blueprint version. Expected version 1.',
+    },
+    {
+      name: 'disconnected cells',
+      text: JSON.stringify({
+        ...parsed,
+        genome: {
+          ...parsed.genome,
+          cells: [
+            { x: 0, y: 0, type: 3 },
+            { x: 2, y: 0, type: 4 },
+          ],
+        },
+      }),
+      notice: 'Blueprint needs 1–16 connected cells and valid temperature and tempo traits.',
+    },
+    {
+      name: 'duplicate cells',
+      text: JSON.stringify({
+        ...parsed,
+        genome: {
+          ...parsed.genome,
+          cells: [
+            { x: 0, y: 0, type: 3 },
+            { x: 0, y: 0, type: 4 },
+          ],
+        },
+      }),
+      notice: 'Blueprint needs 1–16 connected cells and valid temperature and tempo traits.',
+    },
+    {
+      name: 'invalid temperature trait',
+      text: JSON.stringify({ ...parsed, genome: { ...parsed.genome, preference: 2 } }),
+      notice: 'Blueprint needs 1–16 connected cells and valid temperature and tempo traits.',
+    },
+    {
+      name: 'unknown root key',
+      text: JSON.stringify({ ...parsed, id: 27 }),
+      notice: 'Choose a standalone EvoLab organism blueprint.',
+    },
+    {
+      name: 'byte oversize',
+      text: ' '.repeat(BLUEPRINT_MAX_BYTES + 1),
+      notice: 'Blueprint files must be 16 KiB or smaller.',
+    },
+    {
+      name: 'multibyte oversize',
+      text: '🌿'.repeat(4500),
+      notice: 'Blueprint files must be 16 KiB or smaller.',
+    },
   ];
-  for (const text of malformed) {
-    await page
-      .locator('#blueprint-file')
-      .setInputFiles({ name: 'bad.json', mimeType: 'application/json', buffer: Buffer.from(text) });
-    await expect(page.locator('#notice')).not.toContainText('loaded into the designer');
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/');
+    await pause(page);
+    await page.locator('#blueprint-file').setInputFiles({
+      name: 'draft.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(valid),
+    });
+    await expect(page.locator('#notice')).toHaveText(
+      'Blueprint loaded into the designer. Place it explicitly to add an organism.',
+    );
+    await expect(page.locator('#blueprint-file')).toHaveValue('');
+    await page.locator('#plant-design').click();
+    await expect(page.locator('#notice')).toHaveText('Click in the world to place your organism.');
+    await expect(page.locator('#world')).toHaveAttribute('data-tool', 'plant');
+  });
+
+  async function expectRetainedDesign(page: import('@playwright/test').Page) {
     await expect(page.getByLabel('Blueprint name', { exact: true })).toHaveValue(payload.name);
     await expect(page.getByLabel('Description', { exact: true })).toHaveValue(payload.description);
     await expect(page.locator('#world')).toHaveAttribute('data-tool', 'plant');
-    expect((await downloadBlueprint(page)).file).toMatchObject(payload);
-    expect(await downloadWorld(page)).toEqual(before);
+    expect((await downloadBlueprint(page)).file).toEqual({
+      format: 'evolab-organism-blueprint',
+      version: 1,
+      ...payload,
+    });
     await expect(page.locator('#run-state')).toHaveText('PAUSED');
   }
-  const notice = await page.locator('#notice').textContent();
-  await page.locator('#blueprint-file').setInputFiles([]);
-  await expect(page.locator('#notice')).toHaveText(notice!);
-  expect((await downloadBlueprint(page)).file).toMatchObject(payload);
-  expect(await downloadWorld(page)).toEqual(before);
+
+  for (const fixture of malformed) {
+    test(`${fixture.name} preserves paused world and current designer`, async ({
+      page,
+    }, testInfo) => {
+      const downloads: string[] = [];
+      page.on('download', (download) => downloads.push(download.suggestedFilename()));
+      const before = await downloadWorld(page);
+      await expect(page.locator('#notice')).toHaveText(
+        'World saved, including every organism and its ancestry.',
+      );
+      const started = performance.now();
+      await page.locator('#blueprint-file').setInputFiles({
+        name: 'bad.json',
+        mimeType: 'application/json',
+        buffer: Buffer.from(fixture.text),
+      });
+      await expect(page.locator('#notice')).toHaveText(fixture.notice);
+      await expect(page.locator('#blueprint-file')).toHaveValue('');
+      const settled = {
+        notice: await page.locator('#notice').textContent(),
+        inputValue: await page.locator('#blueprint-file').inputValue(),
+        elapsedMs: performance.now() - started,
+      };
+      await expectRetainedDesign(page);
+      const after = await downloadWorld(page);
+      expect(after).toEqual(before);
+      expect(downloads).toHaveLength(3);
+      await expect(page.locator('#run-state')).toHaveText('PAUSED');
+      await testInfo.attach('blueprint-rejection.json', {
+        contentType: 'application/json',
+        body: JSON.stringify({
+          fixture: fixture.name,
+          downloads,
+          inputBytes: Buffer.byteLength(fixture.text),
+          settledBeforeExportAndSave: settled,
+          worldBytes: { before: before.length, after: after.length },
+          worldSha256: {
+            before: createHash('sha256').update(before).digest('hex'),
+            after: createHash('sha256').update(after).digest('hex'),
+          },
+          worldBytesEqual: after.equals(before),
+          designer: payload,
+        }),
+      });
+    });
+  }
+
+  test('cancelled selection preserves settled notice, paused world and current designer', async ({
+    page,
+  }, testInfo) => {
+    const downloads: string[] = [];
+    page.on('download', (download) => downloads.push(download.suggestedFilename()));
+    const before = await downloadWorld(page),
+      notice = 'World saved, including every organism and its ancestry.';
+    await expect(page.locator('#notice')).toHaveText(notice);
+    await expect(page.locator('#blueprint-file')).toHaveValue('');
+    await page.locator('#blueprint-file').setInputFiles([]);
+    await expect(page.locator('#notice')).toHaveText(notice);
+    await expect(page.locator('#blueprint-file')).toHaveValue('');
+    await expectRetainedDesign(page);
+    const after = await downloadWorld(page);
+    expect(after).toEqual(before);
+    expect(downloads).toHaveLength(3);
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    await testInfo.attach('blueprint-cancellation.json', {
+      contentType: 'application/json',
+      body: JSON.stringify({
+        settledNotice: notice,
+        downloads,
+        inputValue: await page.locator('#blueprint-file').inputValue(),
+        worldBytes: { before: before.length, after: after.length },
+        worldSha256: {
+          before: createHash('sha256').update(before).digest('hex'),
+          after: createHash('sha256').update(after).digest('hex'),
+        },
+        worldBytesEqual: after.equals(before),
+        designer: payload,
+      }),
+    });
+  });
 });
 
 test('blueprint labels, keyboard focus and multiline fields fit intermediate and narrow layouts', async ({
