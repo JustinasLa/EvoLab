@@ -317,7 +317,9 @@ for (const state of ['empty', 'single', 'full-ring', 'legacy', 'extinct-paused']
             await expect(page.locator('[data-bin]')).toHaveCount(0);
           }
         } else
-          await expect(page.locator('#telemetry-plots')).toContainText('No recorded samples yet');
+          await expect(page.locator('#telemetry-plots')).toContainText(
+            'Received history was empty at source tick',
+          );
         const layout = await page.evaluate(() => {
           const section = document.querySelector('#telemetry')!,
             selects = [...section.querySelectorAll('select')],
@@ -1856,7 +1858,7 @@ test.describe('pause on total extinction', () => {
         set onmessage(handler: ((this: Worker, event: MessageEvent) => void) | null) {
           super.onmessage = (event) => {
             if (event.data.type === 'error' && event.data.recovery) {
-              delivery.nutrients = event.data.recovery.settings.nutrients;
+              delivery.nutrients = event.data.recovery.state.settings.nutrients;
               delivery.release = () => handler?.call(this, event);
             } else handler?.call(this, event);
           };
@@ -1885,8 +1887,9 @@ test.describe('pause on total extinction', () => {
       ...before,
       settings: { ...before.settings, nutrients: 7, mutation: 0.37, climate: 0.25 },
     };
-    expect(await readWorld(page)).toEqual(expected);
+    const pendingSave = readWorld(page);
     await page.evaluate('window.recoveryDelivery.release()');
+    expect(await pendingSave).toEqual(expected);
     await expect(page.locator('#notice')).toContainText('version 2, 3 or 4');
     await expect(page.locator('#nutrients')).toHaveValue('7');
     await expect(page.locator('#nutrients-value')).toHaveText('7%');

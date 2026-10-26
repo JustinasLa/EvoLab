@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mount } from '../src/main';
+import { mount, captureCommand } from '../src/main';
+import * as model from '../src/model';
 import { draw, genomeSvg, organismHtml, point, viewport } from '../src/view';
 import { Ecosystem } from '../src/ecosystem';
 import { DEFAULTS, founder, type Frame, type PlaybackState, type WorldFile } from '../src/model';
@@ -162,7 +163,11 @@ async function loadText(text: string): Promise<void> {
   upload({ size: text.length, text: async () => text });
   await Promise.resolve();
 }
-function realWorker() {
+function realWorker(clean = false) {
+  if (clean) {
+    dispose();
+    worker = new WorkerStub();
+  }
   const tasks: (() => void)[] = [],
     outbox: any[] = [];
   let commandId = 0,
@@ -226,12 +231,13 @@ function realWorker() {
       },
     } as MessageEvent);
   };
-  const initial = worker.commands.mock.calls[0][0];
+  const initial = clean ? undefined : worker.commands.mock.calls[0][0];
   worker.postMessage.mockImplementation((data) => {
     if (data.type !== 'flow-ack') worker.commands(data);
     command(data, true);
   });
-  command(initial, true);
+  if (initial) command(initial, true);
+  else dispose = mount(root, worker as unknown as Worker);
   const deliver = () => {
     let deliveries = 0;
     while (outbox.length) {
@@ -367,6 +373,414 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+});
+describe('owned command admission and real-worker interleavings', () => {
+  it('rejects invalid slider edits, non-Error reads and conflicting same-run replacement identities', async () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    const input = get<HTMLInputElement>('mutation');
+    input.type = 'text';
+    set('mutation', '1');
+    expect(input.value).toBe(String(DEFAULTS.mutation));
+    upload({
+      size: 1,
+      text: async () => {
+        throw 'not an Error';
+      },
+    });
+    await Promise.resolve();
+    expect(get('notice').textContent).toBe('Could not read this world.');
+    const progress = worker.postMessage.mock.calls.find(
+      ([command]) => command.type === 'flow-ack' && command.channel === 'progress',
+    )![0];
+    const control = worker.state;
+    expect(control).toBeUndefined();
+    const before = root.innerHTML;
+    const world = new Ecosystem().presentation();
+    worker.onmessage!({
+      data: {
+        type: 'progress',
+        runId: 1,
+        sequence: progress.sequence + 1,
+        state: { replacementId: 999, revision: 99, world },
+      },
+    } as MessageEvent);
+    expect(root.innerHTML).toBe(before);
+  });
+  it('keeps correlated fatal commands and failed startup stopped and reports real download failure', () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementationOnce(() => {
+      throw new Error('download failed');
+    });
+    click('save');
+    harness.deliver();
+    expect(get('notice').textContent).toContain('Could not download this world');
+    click('pause');
+    harness.deliver();
+    const step = vi.spyOn(Ecosystem.prototype, 'step').mockImplementationOnce(() => {
+      throw new Error('step failed');
+    });
+    click('step');
+    harness.deliver();
+    step.mockRestore();
+    expect(get('run-state').textContent).toBe('STOPPED');
+    click('reset');
+    harness.outbox.length = 0;
+    const command = worker.commands.mock.calls.at(-1)![0];
+    worker.onmessage!({
+      data: {
+        type: 'error',
+        runId: command.runId,
+        commandId: command.commandId,
+        code: 'invalid-command',
+        message: 'cannot start',
+      },
+    } as MessageEvent);
+    expect(get('run-state').textContent).toBe('STOPPED');
+    expect(get('telemetry-summary').textContent).toContain('history unknown');
+  });
+  it('rejects complete invalid payloads before capture and detaches every admitted field', () => {
+    const invalid = [
+      null,
+      { type: 'unknown' },
+      { type: 'start', settings: DEFAULTS },
+      { type: 'load', text: {} },
+      { type: 'snapshot', display: 1 },
+      { type: 'run-to', targetTick: -1 },
+      { type: 'cancel-target', targetId: 0 },
+      { type: 'speed', value: 2 },
+      { type: 'pause-on-extinction', value: 'false' },
+      { type: 'settings', settings: { seed: 4 } },
+      { type: 'inspect', x: -1, y: 0 },
+      { type: 'paint', tool: 'plant', x: 0, y: 0, radius: 0, genome: { ...founder(0), cells: [] } },
+      { type: 'shock', kind: 'rain' },
+    ];
+    for (const payload of invalid) expect(() => captureCommand(payload, DEFAULTS)).toThrow();
+    const original = { type: 'paint', tool: 'plant', x: 40, y: 40, radius: 0, genome: founder(0) };
+    const captured = captureCommand(original, DEFAULTS);
+    original.genome.cells[0].type = 8;
+    expect(captured).toMatchObject({ genome: founder(0) });
+    expect(captureCommand({ type: 'inspect', x: 239, y: 155, extra: 1 }, DEFAULTS)).toEqual({
+      type: 'inspect',
+      x: 239,
+      y: 155,
+    });
+    expect(captureCommand({ type: 'shock', kind: 'heat' }, DEFAULTS)).toEqual({
+      type: 'shock',
+      kind: 'heat',
+    });
+  });
+  it('cancels a queued target by its eventual exact wire identity and disables cancellation after settling', () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    click('pause');
+    set('target-tick', '120');
+    click('run-to-tick');
+    expect(get<HTMLButtonElement>('cancel-target').disabled).toBe(false);
+    click('cancel-target');
+    harness.deliver();
+    const commands = worker.commands.mock.calls.map(([command]) => command);
+    const target = commands.find((command) => command.type === 'run-to');
+    expect(commands.find((command) => command.type === 'cancel-target').targetId).toBe(
+      target.commandId,
+    );
+    expect(get('target-status').textContent).toContain('cancelled');
+    expect(get('run-state').textContent).toBe('PAUSED');
+    expect(get<HTMLButtonElement>('cancel-target').disabled).toBe(true);
+    expect(harness.save().tick).toBe(0);
+    set('target-tick', '');
+    click('run-to-tick');
+    expect(get('target-status').textContent).toContain('absolute whole tick');
+    set('target-tick', '0');
+    get('target-tick').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    harness.deliver();
+    expect(get('target-status').textContent).toContain('reached');
+    expect(get<HTMLProgressElement>('target-progress').value).toBe(1);
+  });
+  it('preserves admitted plant A after designer edits, Clear, successful import B and later invalidity', async () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    const before = harness.save();
+    const expected = Ecosystem.load(JSON.stringify(before));
+    set('mutation', '0.2');
+    click('plant-design');
+    pointer('pointerdown');
+    window.dispatchEvent(new Event('pointerup'));
+    const view = viewport(get<HTMLCanvasElement>('world'), { zoom: 1, x: 0, y: 0 });
+    const location = point(get<HTMLCanvasElement>('world'), { zoom: 1, x: 0, y: 0 }, 150, 150)!;
+    expect(view.scale).toBeGreaterThan(0);
+    expected.settings.mutation = 0.2;
+    expected.paint('plant', location.x, location.y, 2, founder(0));
+    set('preference', '0.9');
+    click('clear-design');
+    const imported = serializeBlueprint({ name: 'B', description: '', genome: founder(2) });
+    Object.defineProperty(get('blueprint-file'), 'files', {
+      configurable: true,
+      value: [{ size: imported.length, text: async () => imported }],
+    });
+    get('blueprint-file').dispatchEvent(new Event('change'));
+    await Promise.resolve();
+    const cells = [...get('editor').querySelectorAll<HTMLButtonElement>('button')];
+    for (const cell of cells.filter((cell) => cell.dataset.x === '4' && cell.dataset.y === '4'))
+      cell.click();
+    const rejected = worker.commands.mock.calls.length;
+    pointer('pointerdown');
+    window.dispatchEvent(new Event('pointerup'));
+    expect(worker.commands.mock.calls).toHaveLength(rejected);
+    harness.deliver();
+    expect(harness.save()).toEqual(expected.save());
+    const plant = worker.commands.mock.calls
+      .map(([command]) => command)
+      .filter((command) => command.type === 'paint');
+    expect(plant).toHaveLength(1);
+    expect(plant[0].genome).toEqual(founder(0));
+    click('step');
+    harness.deliver();
+    expected.step();
+    expect(harness.save()).toEqual(expected.save());
+  });
+  it('finishes real Save download bookkeeping and every admitted predecessor before posting a candidate load', async () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    const events: string[] = [],
+      original = worker.postMessage.getMockImplementation()!;
+    worker.postMessage.mockImplementation((command) => {
+      if (command.type !== 'flow-ack') events.push(command.type);
+      original(command);
+    });
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      events.push(this.download);
+    });
+    set('mutation', '0.2');
+    click('save');
+    const candidate = new Ecosystem({ ...DEFAULTS, seed: 99 }).save();
+    await loadText(JSON.stringify(candidate));
+    set('nutrients', '7');
+    expect(events).toEqual(['settings']);
+    harness.deliver();
+    expect(events).toEqual(['settings', 'save', 'evolab-world-42.json', 'load', 'settings']);
+    const downloaded = URL.createObjectURL.mock.calls[0][0] as Blob;
+    const file = JSON.parse(await downloaded.text());
+    expect(file.settings).toEqual({ ...DEFAULTS, mutation: 0.2 });
+    expect(harness.save()).toEqual({
+      ...candidate,
+      settings: { ...candidate.settings, nutrients: 7 },
+    });
+  });
+  it.each(
+    [false, true].flatMap((frameFirst) =>
+      ['valid', 'invalid', 'empty'].map((candidate) => ({ frameFirst, candidate })),
+    ),
+  )(
+    'releases held old display after $candidate replacement proof (frame first=$frameFirst)',
+    async ({ frameFirst, candidate }) => {
+      const displays = vi.spyOn(Ecosystem.prototype, 'display');
+      const harness = realWorker(true);
+      const frame = harness.outbox.find((data) => data.type === 'frame');
+      harness.outbox.splice(harness.outbox.indexOf(frame), 1);
+      harness.deliver();
+      if (frameFirst) worker.onmessage!({ data: frame } as MessageEvent);
+      await loadText(
+        candidate === 'invalid'
+          ? '{}'
+          : JSON.stringify(new Ecosystem(DEFAULTS, candidate !== 'empty').save()),
+      );
+      harness.deliver();
+      if (!frameFirst) worker.onmessage!({ data: frame } as MessageEvent);
+      const acknowledgement = worker.postMessage.mock.calls
+        .map(([command]) => command)
+        .find(
+          (command) =>
+            command.type === 'flow-ack' &&
+            command.channel === 'display' &&
+            command.sequence === frame.sequence,
+        );
+      expect(acknowledgement).toMatchObject({ runId: 1, sequence: frame.sequence });
+      expect(displays).toHaveBeenCalledTimes(2);
+      harness.deliver();
+      paint(0);
+      expect(get('habitat-freshness').textContent).toContain('tick 0');
+    },
+  );
+  it('retains a newly admitted target dependency while startup proof is still held', () => {
+    const harness = realWorker(true);
+    set('target-tick', '120');
+    click('run-to-tick');
+    click('cancel-target');
+    harness.deliver();
+    const commands = worker.commands.mock.calls.map(([command]) => command);
+    expect(commands.map((command) => command.type)).toEqual(['start', 'run-to', 'cancel-target']);
+    expect(commands[2].targetId).toBe(commands[1].commandId);
+    expect(get('target-status').textContent).toContain('cancelled');
+    expect(get<HTMLButtonElement>('cancel-target').disabled).toBe(true);
+  });
+  it('keeps the newer disabling-view fence through failed adoption before retiring an old display owner', async () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    await loadText('{}');
+    click('render-habitat');
+    const before = worker.postMessage.mock.calls.length;
+    const recovery = harness.outbox.find((data) => data.type === 'error');
+    harness.outbox.splice(harness.outbox.indexOf(recovery), 1);
+    worker.onmessage!({ data: recovery } as MessageEvent);
+    expect(worker.commands.mock.calls.at(-1)![0]).toMatchObject({
+      type: 'display-view',
+      view: { enabled: false },
+    });
+    expect(
+      worker.postMessage.mock.calls
+        .slice(before)
+        .some(([command]) => command.type === 'flow-ack' && command.channel === 'display'),
+    ).toBe(false);
+    harness.deliver();
+    expect(
+      worker.postMessage.mock.calls
+        .slice(before)
+        .some(([command]) => command.type === 'flow-ack' && command.channel === 'display'),
+    ).toBe(true);
+    expect(get('habitat-freshness').textContent).toContain('Rendering off');
+  });
+  it('bounds general/lifecycle/latest-view owners and converges to the newest view without displacing queued effects', () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    click('pause');
+    for (let index = 0; index < 30; index++) click('refresh-habitat');
+    click('refresh-habitat');
+    expect(get('notice').textContent).toContain('Controls busy');
+    click('pause');
+    click('pause');
+    for (let index = 0; index < 21; index++) click('render-habitat');
+    expect(worker.commands.mock.calls).toHaveLength(2);
+    harness.deliver();
+    const commands = worker.commands.mock.calls.map(([command]) => command);
+    expect(commands.filter((command) => command.type === 'snapshot')).toHaveLength(30);
+    expect(commands.filter((command) => command.type === 'pause')).toHaveLength(2);
+    expect(commands.filter((command) => command.type === 'display-view')).toHaveLength(1);
+    expect(commands.find((command) => command.type === 'display-view').view).toMatchObject({
+      epoch: 21,
+      enabled: false,
+    });
+    expect(commands.map((command) => command.commandId)).toEqual(
+      commands.map((_, index) => index + 1),
+    );
+    expect(harness.save().tick).toBe(0);
+  });
+  it('coalesces only the unsent replaceable tail, preserving fields and identities through barriers', () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    click('pause');
+    set('mutation', '0.2');
+    set('nutrients', '3');
+    set('mutation', '0.3');
+    set('speed', '1', 'change');
+    set('speed', '12', 'change');
+    harness.deliver();
+    expect(harness.save().settings).toEqual({ ...DEFAULTS, mutation: 0.3, nutrients: 3 });
+    const commands = worker.commands.mock.calls.map(([command]) => command);
+    expect(commands.filter((command) => command.type === 'settings')).toHaveLength(1);
+    expect(commands.filter((command) => command.type === 'speed')).toHaveLength(1);
+    expect(get<HTMLSelectElement>('speed').value).toBe('12');
+  });
+  it('serializes candidate reads and keeps only the latest waiting read, cancelling unposted candidates', async () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    let finish!: (text: string) => void;
+    const discarded = vi.fn(async () => '{}'),
+      latest = vi.fn(async () => JSON.stringify(nearDeath()));
+    upload({
+      size: 1,
+      text: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    });
+    upload({ size: 1, text: discarded });
+    upload({ size: 1, text: latest });
+    expect(latest).not.toHaveBeenCalled();
+    finish('{}');
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.deliver();
+    expect(discarded).not.toHaveBeenCalled();
+    expect(latest).toHaveBeenCalledTimes(1);
+    expect(harness.save().tick).toBe(71);
+    click('pause');
+    await loadText('{}');
+    get('file').dispatchEvent(new Event('cancel'));
+    harness.deliver();
+    expect(
+      worker.commands.mock.calls
+        .map(([command]) => command)
+        .filter((command) => command.type === 'load'),
+    ).toHaveLength(1);
+  });
+  it('wires intersection/document visibility, preserves monotonic view epochs and disconnects on teardown', () => {
+    let intersection!: IntersectionObserverCallback;
+    const disconnected = vi.fn(),
+      observed = vi.fn();
+    vi.stubGlobal(
+      'IntersectionObserver',
+      class {
+        constructor(callback: IntersectionObserverCallback) {
+          intersection = callback;
+        }
+        observe = observed;
+        disconnect = disconnected;
+      },
+    );
+    const harness = realWorker(true);
+    harness.deliver();
+    const notify = (isIntersecting: boolean) =>
+      intersection(
+        [
+          {
+            target: get('world'),
+            isIntersecting,
+            intersectionRect: { width: isIntersecting ? 250 : 0, height: 180 },
+          } as IntersectionObserverEntry,
+        ],
+        {} as IntersectionObserver,
+      );
+    notify(false);
+    harness.deliver();
+    expect(get('habitat-freshness').textContent).toContain('not visible');
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    notify(true);
+    harness.deliver();
+    expect(get('habitat-freshness').textContent).toContain('not visible');
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    harness.deliver();
+    paint(0);
+    expect(get('habitat-freshness').textContent).toContain('Habitat current');
+    expect(observed).toHaveBeenCalledWith(get('world'));
+    dispose();
+    notify(false);
+    expect(disconnected).toHaveBeenCalledTimes(1);
+  });
+  it('fails closed on session-counter exhaustion without retaining a pending action', () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    const increment = vi.spyOn(model, 'nextSessionId').mockImplementationOnce(() => {
+      throw new Error('counter exhausted');
+    });
+    click('refresh-habitat');
+    expect(get('run-state').textContent).toBe('STOPPED');
+    expect(get('notice').textContent).toBe('counter exhausted');
+    increment.mockRestore();
+    click('render-habitat');
+    expect(get('notice').textContent).toContain('cannot change while stopped');
+  });
 });
 describe('ecosystem desk', () => {
   it('starts with Pan and Organism selected without changing the world when dragged', () => {

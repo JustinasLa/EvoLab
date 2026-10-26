@@ -142,6 +142,88 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe('bounded long-run transport', () => {
+  it('retains independent grid-free source credit while real history advances across multiple recording boundaries', () => {
+    const display = vi.spyOn(Ecosystem.prototype, 'display');
+    const harness = workerHarness(false);
+    harness.send({
+      type: 'start',
+      settings: DEFAULTS,
+      runId: 1,
+      display: { epoch: 0, enabled: false, visible: true },
+    });
+    const owner = harness.last('progress'),
+      source = harness.source();
+    for (let batch = 0; batch < 20; batch++) harness.advance();
+    expect(harness.save().tick).toBe(80);
+    expect(harness.save().telemetry.samples.map((sample) => sample.tick)).toEqual([30, 60]);
+    expect(harness.source()).toEqual(source);
+    expect(source.tick).toBe(0);
+    expect(display).not.toHaveBeenCalled();
+    harness.scope.onmessage!({
+      data: { type: 'flow-ack', channel: 'progress', runId: owner.runId, sequence: owner.sequence },
+    } as MessageEvent);
+    expect(harness.last('progress').state.world.stats.tick).toBe(80);
+    expect(harness.source().tick).toBe(80);
+    expect(harness.source().telemetry.samples.map((sample: any) => sample.tick)).toEqual([30, 60]);
+    expect(harness.transferStats.batches).toBe(0);
+    harness.send({ type: 'snapshot', display: false });
+    expect(display).not.toHaveBeenCalled();
+  });
+  it('rejects malformed and duplicate envelopes, obsolete view epochs and obsolete world commands', () => {
+    const harness = workerHarness();
+    harness.send({ type: 'start', settings: DEFAULTS, runId: 1 });
+    const before = harness.responseCount;
+    harness.scope.onmessage!({ data: { type: 'pause', runId: 1 } } as MessageEvent);
+    harness.scope.onmessage!({ data: { type: 'pause', runId: 1, commandId: 1 } } as MessageEvent);
+    expect(harness.responseCount).toBe(before);
+    expect(harness.send({ type: 'settings', runId: 0, settings: {} }).code).toBe('stale-run');
+    expect(
+      harness.send({ type: 'display-view', view: { epoch: 0, enabled: false, visible: true } })
+        .code,
+    ).toBe('invalid-command');
+    expect(
+      harness.send({ type: 'display-view', view: { epoch: 1, enabled: false, visible: 'yes' } })
+        .code,
+    ).toBe('invalid-command');
+  });
+  it('fails closed when a credited publication or active target tick throws', () => {
+    const harness = workerHarness(false);
+    harness.send({ type: 'start', settings: DEFAULTS, runId: 1 });
+    const owner = harness.last('frame');
+    harness.send({ type: 'pause' });
+    const display = vi.spyOn(Ecosystem.prototype, 'display').mockImplementationOnce(() => {
+      throw new Error('display failed');
+    });
+    harness.scope.onmessage!({
+      data: { type: 'flow-ack', channel: 'display', runId: owner.runId, sequence: owner.sequence },
+    } as MessageEvent);
+    expect(harness.last('error')).toMatchObject({ fatal: true, message: 'display failed' });
+    display.mockRestore();
+    harness.send({ type: 'start', settings: DEFAULTS, runId: 2 });
+    harness.send({ type: 'run-to', targetTick: 120 });
+    const step = vi.spyOn(Ecosystem.prototype, 'step').mockImplementationOnce(() => {
+      throw new Error('tick failed');
+    });
+    harness.advance();
+    expect(harness.last('error')).toMatchObject({ fatal: true, message: 'tick failed' });
+    step.mockRestore();
+  });
+  it('defensively settles before a scheduled batch when the real retained world is already empty', () => {
+    let retained!: Ecosystem;
+    const save = Ecosystem.prototype.save;
+    vi.spyOn(Ecosystem.prototype, 'save').mockImplementation(function (this: Ecosystem) {
+      retained = this;
+      return save.call(this);
+    });
+    const harness = workerHarness();
+    harness.send({ type: 'start', settings: DEFAULTS, runId: 1 });
+    harness.save();
+    retained.paint('erase', 120, 78, 2, founder(0));
+    harness.advance();
+    expect(harness.state().playback.paused).toBe(true);
+    expect(harness.save().tick).toBe(0);
+    expect(harness.tasks).toHaveLength(0);
+  });
   it.each([1, 4, 12])(
     'reaches exactly 120 at speed %s with identical complete on/off saves at every batch',
     (speed) => {

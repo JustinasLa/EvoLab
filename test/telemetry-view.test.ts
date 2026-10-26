@@ -75,6 +75,105 @@ afterEach(() => {
 });
 
 describe('bounded model-dependent telemetry presentation', () => {
+  it('distinguishes unknown sources, received empty sources and progress beyond the source boundary', () => {
+    controller.update({
+      status: 'accepted',
+      runId: 1,
+      replacementId: 2,
+      currentTick: 25,
+      currentRevision: 3,
+      source: null,
+    });
+    controller.render();
+    expect(get('telemetry-summary').textContent).toContain('history not yet known');
+    expect(get<HTMLSelectElement>('telemetry-sample').disabled).toBe(true);
+    const source = {
+      runId: 1,
+      replacementId: 2,
+      tick: 25,
+      revision: 3,
+      telemetry: new Ecosystem(DEFAULTS, false).telemetrySnapshot(),
+    };
+    controller.update({
+      status: 'accepted',
+      runId: 1,
+      replacementId: 2,
+      currentTick: 26,
+      currentRevision: 4,
+      source,
+    });
+    controller.render();
+    expect(get('telemetry-plots').textContent).toContain('boundary after this observation is 30');
+    const replaced = vi.spyOn(get('telemetry-plots'), 'replaceChildren');
+    controller.update({
+      status: 'accepted',
+      runId: 1,
+      replacementId: 2,
+      currentTick: 61,
+      currentRevision: 5,
+      source,
+    });
+    controller.render();
+    expect(get('telemetry-plots').textContent).toContain('reached/passed boundary 30');
+    expect(get('telemetry-summary').textContent).toContain(
+      'source observed at tick 25 (revision 3)',
+    );
+    expect(get('telemetry-summary').textContent).toContain('World tick 61 (revision 5)');
+    expect(replaced).not.toHaveBeenCalled();
+  });
+  it('retains focused pin through failed adoption and same-tick progress, resetting once only on successful replacement', () => {
+    const world = new Ecosystem(DEFAULTS, false);
+    advance(world, 60);
+    const source = {
+      runId: 1,
+      replacementId: 2,
+      tick: 60,
+      revision: 3,
+      telemetry: world.telemetrySnapshot(),
+    };
+    controller.update({
+      status: 'accepted',
+      runId: 1,
+      replacementId: 2,
+      currentTick: 60,
+      currentRevision: 3,
+      source,
+    });
+    controller.render();
+    choose('telemetry-sample', '30');
+    const select = get<HTMLSelectElement>('telemetry-sample');
+    select.focus();
+    const options = vi.spyOn(select, 'replaceChildren'),
+      plots = vi.spyOn(get('telemetry-plots'), 'replaceChildren');
+    controller.update({ status: 'pending', commandId: 9 });
+    controller.update({
+      status: 'accepted',
+      runId: 2,
+      replacementId: 2,
+      currentTick: 61,
+      currentRevision: 5,
+      source: { ...source, runId: 2 },
+    });
+    controller.render();
+    expect(select.value).toBe('30');
+    expect(document.activeElement).toBe(select);
+    expect(options).not.toHaveBeenCalled();
+    expect(plots).not.toHaveBeenCalled();
+    expect(get('telemetry-details').textContent).toContain('Selected sample at tick 30');
+    controller.update({
+      status: 'accepted',
+      runId: 3,
+      replacementId: 9,
+      currentTick: 60,
+      currentRevision: 6,
+      source: { ...source, runId: 3, replacementId: 9, revision: 6 },
+    });
+    controller.render();
+    expect(select.value).toBe('latest');
+    expect(document.activeElement).toBe(select);
+    expect(options).toHaveBeenCalledTimes(1);
+    expect(get('telemetry-details').textContent).toContain('Selected sample at tick 60');
+  });
   it('shows no synthetic initial point and defers hidden sources until reveal', () => {
     const world = new Ecosystem(),
       before = world.save();

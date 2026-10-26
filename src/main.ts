@@ -273,18 +273,14 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     }
     let payload = entry.payload;
     if (payload.type === 'cancel-target' && entry.cancelTicket) {
-      if (entry.cancelTicket.wireId === null) {
-        notice('The queued target was cancelled before posting.');
-        pump();
-        return;
-      }
-      payload.targetId = entry.cancelTicket.wireId;
+      payload.targetId = entry.cancelTicket.wireId!;
     }
     wireId = increment(wireId);
     if (entry.targetTicket) entry.targetTicket.wireId = wireId;
     if (payload.type === 'start' || payload.type === 'load') {
       runId = increment(runId);
       establishedRun = null;
+      pendingFrame = null;
       telemetry.update({ status: 'pending', commandId: wireId });
       if (payload.type === 'start') {
         payload.display = { ...desiredView };
@@ -343,6 +339,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       if (payload.type === 'run-to') {
         targetTicket = { wireId: null };
         entry.targetTicket = targetTicket;
+        get<HTMLButtonElement>('cancel-target').disabled = false;
       }
       if (payload.type === 'cancel-target' && targetTicket) entry.cancelTicket = targetTicket;
       if (payload.type === 'settings')
@@ -429,6 +426,8 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     viewIntent = null;
     establishedRun = null;
     pendingFrame = null;
+    targetTicket = undefined;
+    get<HTMLButtonElement>('cancel-target').disabled = true;
     text('pause', '▶ Resume');
     get<HTMLButtonElement>('step').disabled = true;
     text('run-state', 'STOPPED');
@@ -920,7 +919,12 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     )
       get('inspector').innerHTML =
         `${organismHtml(selected, next)}<p class="muted">Observed at tick ${s.tick}.</p>`;
-    if (displayOnly || !s.population || previousPopulation === 0 || updates % 12 === 1) {
+    if (
+      displayOnly ||
+      (!s.population && previousPopulation !== 0) ||
+      (previousPopulation === 0 && s.population > 0) ||
+      updates % 12 === 1
+    ) {
       const list = get('lineages');
       list.replaceChildren();
       for (const species of s.top) {
@@ -949,15 +953,16 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     if (!latestState || differentRun || observation.revision > latestState.revision) {
       if (!differentRun && latestState && observation.replacementId !== latestState.replacementId)
         return;
-      renderObservation(observation.world, observation.selected, true);
+      renderObservation(
+        observation.world,
+        observation.selected,
+        differentRun || observation.playback.paused,
+      );
       latestState = observation;
       renderSettings(observation.settings);
       renderPlayback(observation.playback);
       get<HTMLSelectElement>('speed').value = String(pendingSpeed?.value ?? observation.speed);
       const active = observation.target;
-      get<HTMLButtonElement>('cancel-target').disabled =
-        !targetTicket &&
-        (!active || (active.status !== 'running' && active.status !== 'suspended'));
       const progress = get<HTMLProgressElement>('target-progress');
       progress.hidden = !active;
       if (active) {
@@ -984,6 +989,9 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     }
     const current = latestState;
     if (!current || observation.replacementId !== current.replacementId) return;
+    get<HTMLButtonElement>('cancel-target').disabled =
+      !targetTicket &&
+      (!current.target || !['running', 'suspended'].includes(current.target.status));
     if (
       source &&
       source.revision <= current.revision &&
@@ -1073,6 +1081,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     }
     const current = completion.generation === generation && data.runId === runId;
     if (current) {
+      if (completion.targetTicket === targetTicket) targetTicket = undefined;
       for (const key of ['mutation', 'nutrients', 'climate'] as const)
         if (pendingSettings[key] && pendingSettings[key]!.ticket <= completion.ticket)
           delete pendingSettings[key];
@@ -1099,7 +1108,6 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
           establishedRun = runId;
           if (data.type !== 'error') {
             stopped = false;
-            targetTicket = undefined;
             updates = 0;
           }
         }
