@@ -2,12 +2,76 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { startWorker, type Scope } from '../src/worker';
 import { Ecosystem } from '../src/ecosystem';
 import { DEFAULTS, founder } from '../src/model';
+import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 describe('worker control and persistence', () => {
+  it('plants a decoded blueprint only on explicit command while paused and steps exactly once', () => {
+    const tasks: (() => void)[] = [],
+      scope: Scope = { postMessage: vi.fn(), onmessage: null };
+    startWorker(scope, (callback) => tasks.push(callback));
+    const send = (data: object) => scope.onmessage!({ data } as MessageEvent);
+    const last = () => vi.mocked(scope.postMessage).mock.calls.at(-1)![0];
+    send({ type: 'start', settings: DEFAULTS, runId: 10 });
+    send({ type: 'pause' });
+    tasks.shift()!();
+    send({ type: 'save' });
+    const before = last().text;
+    const genome = {
+      ...founder(2),
+      cells: [
+        { x: 0, y: 0, type: 3 as const },
+        { x: 1, y: 0, type: 4 as const },
+        { x: 2, y: 0, type: 5 as const },
+        { x: 0, y: 1, type: 6 as const },
+        { x: 1, y: 1, type: 7 as const },
+        { x: 2, y: 1, type: 8 as const },
+      ],
+      preference: 0.123456789,
+      tolerance: 0.456789,
+      tempo: 11,
+    };
+    const blueprint = parseBlueprint(
+      serializeBlueprint({ name: 'Shared genome', description: '', genome }),
+    );
+    send({ type: 'save' });
+    expect(last().text).toBe(before);
+    send({ type: 'paint', tool: 'plant', x: 20, y: 20, radius: 0, genome: blueprint.genome });
+    expect(last().runId).toBe(10);
+    expect(last().frame.stats.tick).toBe(0);
+    send({ type: 'inspect', x: 20, y: 20 });
+    expect(last().selected).toMatchObject({
+      id: 2,
+      species: JSON.parse(before).nextSpecies,
+      age: 0,
+      generation: 0,
+      children: 0,
+      ancestry: [],
+      energy: 14,
+      genome,
+    });
+    blueprint.genome.cells[0].type = 8;
+    expect(last().selected.genome).toEqual(genome);
+    send({
+      type: 'paint',
+      tool: 'plant',
+      x: 60,
+      y: 60,
+      radius: 0,
+      genome: { ...genome, tempo: 0 },
+    });
+    send({ type: 'save' });
+    expect(JSON.parse(last().text).organisms).toHaveLength(2);
+    send({ type: 'step' });
+    expect(last().frame.stats.tick).toBe(1);
+    expect(tasks).toHaveLength(0);
+    send({ type: 'snapshot' });
+    expect(last().frame.stats.tick).toBe(1);
+    expect(tasks).toHaveLength(0);
+  });
   it('uses one yielding loop, obeys pause and speed, and processes edits while paused', () => {
     const tasks: (() => void)[] = [],
       scope: Scope = { postMessage: vi.fn(), onmessage: null };

@@ -134,18 +134,24 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     get<HTMLDetailsElement>('specimen-details').open = false;
   }
   function exportBlueprint(genome: Genome, name: string, description: string): void {
+    let content: string;
+    try {
+      content = serializeBlueprint({ name, description, genome });
+    } catch (error) {
+      notice((error as Error).message);
+      return;
+    }
     let url: string | undefined;
     const anchor = document.createElement('a');
     try {
-      const content = serializeBlueprint({ name, description, genome });
       url = URL.createObjectURL(new Blob([content], { type: 'application/json' }));
       anchor.href = url;
       anchor.download = 'evolab-blueprint.json';
       document.body.append(anchor);
       anchor.click();
       notice('Blueprint exported. Import it into the designer to reuse its anatomy and traits.');
-    } catch (error) {
-      notice(error instanceof Error ? error.message : 'Could not download this blueprint.');
+    } catch {
+      notice('Could not download this blueprint. Try exporting again.');
     } finally {
       anchor.remove();
       if (url) {

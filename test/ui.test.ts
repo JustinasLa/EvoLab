@@ -3,6 +3,8 @@ import { mount } from '../src/main';
 import { draw, drawChart, genomeSvg, organismHtml, point, viewport } from '../src/view';
 import { Ecosystem } from '../src/ecosystem';
 import { DEFAULTS, founder, type Frame } from '../src/model';
+import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../src/blueprint';
+import { startWorker, type Scope } from '../src/worker';
 class WorkerStub {
   postMessage = vi.fn();
   terminate = vi.fn();
@@ -392,6 +394,447 @@ describe('ecosystem desk', () => {
     expect(constructor).toHaveBeenCalled();
   });
 });
+describe('standalone blueprint files', () => {
+  const input = () => get<HTMLInputElement>('blueprint-file');
+  const fixture = (name = '  <img onerror=alert(1)> 🌿  ') => ({
+    name,
+    description: '<script>literal only</script>\nSecond line',
+    genome: {
+      ...founder(2),
+      preference: 0.1234567890123456,
+      tolerance: 0.4567890123456789,
+      tempo: 11,
+    },
+  });
+  const flush = async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+  const uploadBlueprint = (file?: { size: number; text: () => Promise<string> }) => {
+    Object.defineProperty(input(), 'files', { configurable: true, value: file ? [file] : [] });
+    input().dispatchEvent(new Event('change'));
+  };
+  const importDraft = async (text = serializeBlueprint(fixture())) => {
+    uploadBlueprint({ size: new TextEncoder().encode(text).length, text: async () => text });
+    await flush();
+  };
+  const blobText = (blob: Blob): Promise<string> =>
+    new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.readAsText(blob);
+    });
+  const exported = async (id = 'export-blueprint') => {
+    click(id);
+    const blob = vi.mocked(URL.createObjectURL).mock.calls.at(-1)![0] as Blob;
+    expect(blob.type).toBe('application/json');
+    return parseBlueprint(await blobText(blob));
+  };
+  const draftState = () => ({
+    name: get<HTMLInputElement>('blueprint-name').value,
+    description: get<HTMLTextAreaElement>('blueprint-description').value,
+    editor: get('editor').innerHTML,
+    preference: get<HTMLInputElement>('preference').value,
+    tool: get('world').dataset.tool,
+    paused: get('run-state').textContent,
+  });
+  beforeEach(() => {
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  });
+
+  it.each([false, true])(
+    'imports only into the designer, preserving exact traits and world commands (paused=%s)',
+    async (paused) => {
+      emit(sample, organism);
+      if (paused) click('pause');
+      click('plant-design');
+      click('ecosystem-tab');
+      const commands = worker.postMessage.mock.calls.length;
+      vi.mocked(get('world').scrollIntoView).mockClear();
+      await importDraft();
+      expect(worker.postMessage).toHaveBeenCalledTimes(commands);
+      expect(get('world').scrollIntoView).not.toHaveBeenCalled();
+      expect(get('world').dataset.tool).toBe('pan');
+      expect(get('organism-panel').hidden).toBe(false);
+      expect(get<HTMLDetailsElement>('specimen-details').open).toBe(false);
+      expect(get('notice').textContent).toBe(
+        'Blueprint loaded into the designer. Place it explicitly to add an organism.',
+      );
+      expect(get('run-state').textContent).toBe(paused ? 'PAUSED' : 'LIVE');
+      expect(await exported()).toMatchObject(fixture());
+      expect(root.querySelector('img, script, [onerror]')).toBeNull();
+      pointer('pointerdown');
+      window.dispatchEvent(new Event('pointerup'));
+      expect(worker.postMessage).toHaveBeenCalledTimes(commands);
+      click('plant-design');
+      pointer('pointerdown');
+      const message = worker.postMessage.mock.calls.at(-1)![0];
+      expect(message).toMatchObject({ type: 'paint', tool: 'plant', genome: fixture().genome });
+      expect(Object.keys(message)).toEqual(['type', 'tool', 'x', 'y', 'radius', 'genome']);
+    },
+  );
+
+  it('isolates inspector exports from the draft and resets metadata deliberately on copies', async () => {
+    await importDraft();
+    const draft = draftState();
+    emit(sample, organism);
+    expect(await exported('export-organism-blueprint')).toEqual({
+      format: 'evolab-organism-blueprint',
+      version: 1,
+      name: 'Bloom',
+      description: '',
+      genome: organism.genome,
+    });
+    expect(draftState()).toEqual(draft);
+    emit(sample, null);
+    expect(root.querySelector('#export-organism-blueprint')).toBeNull();
+    const missing = document.createElement('button');
+    missing.id = 'export-organism-blueprint';
+    root.append(missing);
+    const count = vi.mocked(URL.createObjectURL).mock.calls.length;
+    missing.click();
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(count);
+    missing.remove();
+    emit(sample, organism);
+    click('copy-organism');
+    expect(get<HTMLInputElement>('blueprint-name').value).toBe('Bloom');
+    expect(get<HTMLTextAreaElement>('blueprint-description').value).toBe('');
+    await importDraft();
+    root.querySelector<HTMLButtonElement>('.lineage')!.click();
+    expect(get<HTMLInputElement>('blueprint-name').value).toBe('Bloom');
+    expect(get<HTMLTextAreaElement>('blueprint-description').value).toBe('');
+    await importDraft();
+    set('preference', '0.75');
+    get('editor').querySelector<HTMLButtonElement>('[data-x="0"][data-y="0"]')!.click();
+    expect(get<HTMLInputElement>('blueprint-name').value).toBe(fixture().name);
+    expect(get<HTMLTextAreaElement>('blueprint-description').value).toBe(fixture().description);
+    click('clear-design');
+    expect(await exported()).toMatchObject({
+      name: 'Untitled organism',
+      description: '',
+      genome: founder(0),
+    });
+  });
+
+  it('rejects invalid metadata and anatomy on export without creating a URL', async () => {
+    for (const [id, value] of [
+      ['blueprint-name', ' '],
+      ['blueprint-name', 'n'.repeat(81)],
+      ['blueprint-description', 'd'.repeat(1001)],
+    ]) {
+      await importDraft();
+      set(id, value);
+      click('export-blueprint');
+      expect(URL.createObjectURL).not.toHaveBeenCalled();
+      expect(get('notice').textContent).toContain(id === 'blueprint-name' ? 'name' : 'description');
+    }
+    await importDraft();
+    get('editor').querySelector<HTMLButtonElement>('[data-x="4"][data-y="4"]')!.click();
+    click('export-blueprint');
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(get('notice').textContent).toContain('connected');
+  });
+
+  it('uses fixed safe downloads and cleans anchors and URLs on success and failure', () => {
+    vi.useFakeTimers();
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      expect(this.download).toBe('evolab-blueprint.json');
+      expect(this.href).toBe('blob:world');
+      expect(this.isConnected).toBe(true);
+    });
+    click('export-blueprint');
+    expect(document.querySelector('a[download]')).toBeNull();
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    vi.runAllTimers();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:world');
+    anchorClick.mockImplementation(() => {
+      throw new Error('Download unavailable');
+    });
+    click('export-blueprint');
+    expect(document.querySelector('a[download]')).toBeNull();
+    expect(get('notice').textContent).toBe(
+      'Could not download this blueprint. Try exporting again.',
+    );
+    vi.runAllTimers();
+    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+    anchorClick.mockImplementation(() => {
+      throw 'failed';
+    });
+    click('export-blueprint');
+    expect(get('notice').textContent).toContain('Could not download');
+    vi.runAllTimers();
+    vi.mocked(URL.createObjectURL).mockImplementationOnce(() => {
+      throw new Error('No URL');
+    });
+    click('export-blueprint');
+    expect(document.querySelector('a[download]')).toBeNull();
+    vi.runAllTimers();
+    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(3);
+  });
+
+  it('preserves the entire draft, tool and world on invalid files and read failures', async () => {
+    await importDraft();
+    click('pause');
+    click('plant-design');
+    const before = draftState();
+    const commands = worker.postMessage.mock.calls.length;
+    const invalid = [
+      '{',
+      '{}',
+      'null',
+      JSON.stringify({ ...JSON.parse(serializeBlueprint(fixture())), version: 2 }),
+      JSON.stringify({
+        ...JSON.parse(serializeBlueprint(fixture())),
+        genome: {
+          ...fixture().genome,
+          cells: [
+            { x: 0, y: 0, type: 3 },
+            { x: 2, y: 0, type: 4 },
+          ],
+        },
+      }),
+      JSON.stringify({
+        ...JSON.parse(serializeBlueprint(fixture())),
+        genome: { ...fixture().genome, tempo: 0 },
+      }),
+      JSON.stringify({ ...JSON.parse(serializeBlueprint(fixture())), id: 3 }),
+      '🌿'.repeat(4500),
+    ];
+    for (const text of invalid) {
+      uploadBlueprint({ size: 1, text: async () => text });
+      await flush();
+      expect(draftState()).toEqual(before);
+      expect(get('notice').textContent).not.toContain('loaded');
+    }
+    const read = vi.fn(async () => '');
+    uploadBlueprint({ size: BLUEPRINT_MAX_BYTES + 1, text: read });
+    await flush();
+    expect(read).not.toHaveBeenCalled();
+    expect(get('notice').textContent).toContain('16 KiB');
+    for (const failure of [new Error('secret'.repeat(1000)), 'secret']) {
+      uploadBlueprint({
+        size: 1,
+        text: async () => {
+          throw failure;
+        },
+      });
+      await flush();
+      expect(get('notice').textContent).toBe(
+        'Could not read this blueprint. Choose a readable JSON file.',
+      );
+      expect(draftState()).toEqual(before);
+    }
+    expect(worker.postMessage).toHaveBeenCalledTimes(commands);
+    expect(input().value).toBe('');
+  });
+
+  it('cancels pickers silently and permits repeated same-file imports', async () => {
+    await importDraft();
+    const before = draftState(),
+      notice = get('notice').textContent;
+    uploadBlueprint();
+    Object.defineProperty(input(), 'files', { configurable: true, value: null });
+    input().dispatchEvent(new Event('change'));
+    input().dispatchEvent(new Event('cancel'));
+    const fileClick = vi.spyOn(input(), 'click');
+    click('import-blueprint');
+    expect(fileClick).toHaveBeenCalledOnce();
+    expect(input().value).toBe('');
+    expect(draftState()).toEqual(before);
+    expect(get('notice').textContent).toBe(notice);
+    for (let repeat = 0; repeat < 2; repeat++) {
+      await importDraft();
+      expect(input().value).toBe('');
+      expect(draftState()).toEqual(before);
+    }
+  });
+
+  it('rejects out-of-order reads and prevents old finally handlers clearing a newer selection', async () => {
+    let finishOld!: (value: string) => void, finishNew!: (value: string) => void;
+    uploadBlueprint({
+      size: 1,
+      text: () =>
+        new Promise((resolve) => {
+          finishOld = resolve;
+        }),
+    });
+    uploadBlueprint({
+      size: 1,
+      text: () =>
+        new Promise((resolve) => {
+          finishNew = resolve;
+        }),
+    });
+    let value = 'new selection';
+    Object.defineProperty(input(), 'value', {
+      configurable: true,
+      get: () => value,
+      set: (next) => {
+        value = next;
+      },
+    });
+    finishOld(serializeBlueprint(fixture('old')));
+    await flush();
+    expect(value).toBe('new selection');
+    finishNew(serializeBlueprint(fixture('new')));
+    await flush();
+    expect(get<HTMLInputElement>('blueprint-name').value).toBe('new');
+    expect(value).toBe('');
+    let rejectOld!: (reason: unknown) => void;
+    uploadBlueprint({
+      size: 1,
+      text: () =>
+        new Promise((_, reject) => {
+          rejectOld = reject;
+        }),
+    });
+    await importDraft(serializeBlueprint(fixture('newest')));
+    const notice = get('notice').textContent;
+    rejectOld('stale error');
+    await flush();
+    expect(get<HTMLInputElement>('blueprint-name').value).toBe('newest');
+    expect(get('notice').textContent).toBe(notice);
+  });
+
+  it('keeps the newest successful import when an older success resolves last', async () => {
+    let finish!: (value: string) => void;
+    uploadBlueprint({
+      size: 1,
+      text: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    });
+    await importDraft(serializeBlueprint(fixture('newest success')));
+    const before = draftState(),
+      notice = get('notice').textContent;
+    finish(serializeBlueprint(fixture('old success')));
+    await flush();
+    expect(draftState()).toEqual(before);
+    expect(get('notice').textContent).toBe(notice);
+  });
+
+  it.each([
+    'cell',
+    'preference',
+    'name',
+    'description',
+    'reset-design',
+    'copy',
+    'common',
+    'reseed',
+    'world-load',
+    'picker',
+    'cancel',
+    'dispose',
+  ])('ignores a delayed result and error after %s', async (action) => {
+    emit(sample, organism);
+    let finish!: (value: string) => void, reject!: (reason: unknown) => void;
+    const change = async () => {
+      if (action === 'cell')
+        get('editor').querySelector<HTMLButtonElement>('[data-x="4"][data-y="4"]')!.click();
+      if (action === 'preference') set('preference', '0.75');
+      if (action === 'name') set('blueprint-name', 'edited');
+      if (action === 'description') set('blueprint-description', 'edited');
+      if (action === 'reset-design') click('clear-design');
+      if (action === 'copy') click('copy-organism');
+      if (action === 'common') root.querySelector<HTMLButtonElement>('.lineage')!.click();
+      if (action === 'reseed') click('reset');
+      if (action === 'world-load') {
+        upload({ size: 1, text: async () => 'world' });
+        await flush();
+      }
+      if (action === 'picker') click('import-blueprint');
+      if (action === 'cancel') input().dispatchEvent(new Event('cancel'));
+      if (action === 'dispose') dispose();
+    };
+    uploadBlueprint({
+      size: 1,
+      text: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    });
+    await change();
+    const before = draftState(),
+      notice = get('notice').textContent;
+    finish(serializeBlueprint(fixture('late result')));
+    await flush();
+    expect(draftState()).toEqual(before);
+    expect(get('notice').textContent).toBe(notice);
+    uploadBlueprint({
+      size: 1,
+      text: () =>
+        new Promise((_, fail) => {
+          reject = fail;
+        }),
+    });
+    await change();
+    const errorState = draftState(),
+      errorNotice = get('notice').textContent;
+    reject(new Error('late error'));
+    await flush();
+    expect(draftState()).toEqual(errorState);
+    expect(get('notice').textContent).toBe(errorNotice);
+  });
+
+  it('labels bounded fields and keeps typing and textarea shortcuts out of the world', () => {
+    for (const [id, limit] of [
+      ['blueprint-name', 80],
+      ['blueprint-description', 1000],
+    ] as const) {
+      expect(root.querySelector(`label[for="${id}"]`)).not.toBeNull();
+      expect(get<HTMLInputElement>(id).maxLength).toBe(limit);
+      get(id).dispatchEvent(
+        new KeyboardEvent('keydown', { bubbles: true, code: 'Space', key: ' ' }),
+      );
+      get(id).dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'p' }));
+    }
+    expect(worker.postMessage).toHaveBeenCalledTimes(1);
+    expect(get('world').dataset.tool).toBe('pan');
+  });
+
+  it('keeps complete paused real-worker saves identical until explicit planting and exact Step', async () => {
+    const deferred: (() => void)[] = [],
+      messages: any[] = [];
+    const scope: Scope = {
+      onmessage: null,
+      postMessage: (data) => {
+        messages.push(data);
+        worker.emit(data);
+      },
+    };
+    startWorker(scope, (callback) => deferred.push(callback));
+    const send = (data: object) => scope.onmessage!({ data } as MessageEvent);
+    worker.postMessage.mockImplementation(send);
+    send({ type: 'start', settings: DEFAULTS, runId: 1 });
+    click('pause');
+    deferred.shift()!();
+    const save = () => {
+      send({ type: 'save' });
+      return messages.at(-1).text as string;
+    };
+    const before = save();
+    await importDraft();
+    await exported();
+    expect(save()).toBe(before);
+    expect(deferred).toHaveLength(0);
+    const population = JSON.parse(before).organisms.length;
+    click('plant-design');
+    pointer('pointerdown');
+    window.dispatchEvent(new Event('pointerup'));
+    expect(JSON.parse(save()).organisms).toHaveLength(population + 1);
+    expect(get('run-state').textContent).toBe('PAUSED');
+    click('step');
+    expect(JSON.parse(save()).tick).toBe(JSON.parse(before).tick + 1);
+    expect(get('run-state').textContent).toBe('PAUSED');
+    expect(deferred).toHaveLength(0);
+  });
+});
+
 describe('pixel rendering and view transforms', () => {
   it('draws functional cells, food, temperature, selection and population history', () => {
     const canvas = get<HTMLCanvasElement>('world'),

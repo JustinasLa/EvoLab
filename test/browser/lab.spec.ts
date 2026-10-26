@@ -1,5 +1,14 @@
 import { test, expect } from '@playwright/test';
-import { WIDTH, HEIGHT, type WorldFile } from '../../src/model';
+import {
+  WIDTH,
+  HEIGHT,
+  positions,
+  Random,
+  type WorldFile,
+  type Genome,
+  type CellType,
+} from '../../src/model';
+import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../../src/blueprint';
 test('Even Hub-style cards retain the dark palette and crisp cellular editor', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#population')).not.toHaveText('—');
@@ -137,6 +146,276 @@ async function downloadWorld(page: import('@playwright/test').Page): Promise<Buf
   for await (const chunk of stream) chunks.push(chunk);
   return Buffer.concat(chunks);
 }
+
+async function downloadBlueprint(
+  page: import('@playwright/test').Page,
+  selector = '#export-blueprint',
+) {
+  const pending = page.waitForEvent('download');
+  await page.locator(selector).click();
+  const download = await pending;
+  expect(download.suggestedFilename()).toBe('evolab-blueprint.json');
+  const stream = await download.createReadStream(),
+    chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  const bytes = Buffer.concat(chunks);
+  return { bytes, file: parseBlueprint(bytes.toString('utf8')) };
+}
+
+const sharedGenome = (): Genome => ({
+  cells: [3, 4, 5, 6, 7, 8].map((type, offset) => ({
+    x: (offset % 3) - 1,
+    y: Math.floor(offset / 3),
+    type: type as CellType,
+  })),
+  preference: 0.1234567890123456,
+  tolerance: 0.4567890123456789,
+  tempo: 11,
+});
+
+test('standalone inspector and designer downloads round-trip full traits before explicit paused placement', async ({
+  page,
+}, testInfo) => {
+  const errors: string[] = [],
+    external: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  page.on('request', (request) => {
+    if (!request.url().startsWith('http://127.0.0.1:4173/') && !request.url().startsWith('blob:'))
+      external.push(request.url());
+  });
+  await page.goto('/');
+  await pause(page);
+  const beforeBytes = await downloadWorld(page),
+    before = JSON.parse(beforeBytes.toString()) as WorldFile;
+  const selected = before.organisms[0];
+  await page.getByTitle('Inspect organism (I)').click();
+  const at = await coordinate(page, selected.x, selected.y);
+  await page.mouse.click(at.x, at.y);
+  await expect(page.locator('#inspector')).toContainText(`Organism ${selected.id}`);
+  const inspector = await downloadBlueprint(page, '#export-organism-blueprint');
+  expect(inspector.file.genome).toEqual(selected.genome);
+  expect(Object.keys(inspector.file).sort()).toEqual([
+    'description',
+    'format',
+    'genome',
+    'name',
+    'version',
+  ]);
+  expect(Object.keys(inspector.file.genome).sort()).toEqual([
+    'cells',
+    'preference',
+    'tempo',
+    'tolerance',
+  ]);
+  expect(inspector.file).toMatchObject({
+    format: 'evolab-organism-blueprint',
+    version: 1,
+    description: '',
+  });
+  await page.locator('#blueprint-file').setInputFiles({
+    name: 'inspected.json',
+    mimeType: 'application/json',
+    buffer: inspector.bytes,
+  });
+  await expect(page.locator('#notice')).toContainText('loaded into the designer');
+  const name = '../<img onerror=alert(1)> 🌿',
+    description = '<script>literal only</script>\n' + 'd'.repeat(972);
+  await page.getByLabel('Blueprint name', { exact: true }).fill(name);
+  await page.getByLabel('Description', { exact: true }).fill(description);
+  const customized = await downloadBlueprint(page);
+  expect(customized.file).toMatchObject({ name, description, genome: selected.genome });
+  await page
+    .locator('#blueprint-file')
+    .setInputFiles({ name: 'renamed.json', mimeType: 'text/plain', buffer: customized.bytes });
+  await expect(page.getByLabel('Blueprint name', { exact: true })).toHaveValue(name);
+  await expect(page.getByLabel('Description', { exact: true })).toHaveValue(description);
+  const genome = sharedGenome(),
+    payload = { name, description, genome };
+  const file = {
+    name: 'complete.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(serializeBlueprint(payload)),
+  };
+  for (let repeat = 0; repeat < 2; repeat++) {
+    await page.locator('#blueprint-file').setInputFiles(file);
+    await expect(page.locator('#notice')).toContainText('loaded into the designer');
+    expect((await downloadBlueprint(page)).file).toMatchObject(payload);
+    await expect(page.locator('#blueprint-file')).toHaveValue('');
+  }
+  expect(await page.locator('img, script:not([src]), [onerror]').count()).toBe(0);
+  await expect(page.locator('#world')).toHaveAttribute('data-tool', 'pan');
+  await expect(page.locator('#specimen-details')).not.toHaveAttribute('open');
+  await page.getByLabel('Blueprint name', { exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath('blueprint-designer.png'), fullPage: true });
+  expect(await downloadWorld(page)).toEqual(beforeBytes);
+  const occupied = new Set(before.organisms.flatMap((organism) => positions(organism)));
+  const walls = new Set(before.walls);
+  let location: { x: number; y: number } | undefined;
+  for (let y = 5; y < HEIGHT - 5 && !location; y++)
+    for (let x = 5; x < WIDTH - 5 && !location; x++)
+      if (
+        positions({ genome, x, y, rotation: 0 }).every(
+          (position) => !occupied.has(position) && !walls.has(position),
+        )
+      )
+        location = { x, y };
+  expect(location).toBeDefined();
+  let target = await coordinate(page, location!.x, location!.y);
+  await page.mouse.click(target.x, target.y);
+  expect(await downloadWorld(page)).toEqual(beforeBytes);
+  await page.locator('#plant-design').click();
+  await expect(page.locator('#world')).toBeInViewport();
+  target = await coordinate(page, location!.x, location!.y);
+  await page.mouse.click(target.x, target.y);
+  await expect(page.locator('#population')).toHaveText(String(before.organisms.length + 1));
+  const after = JSON.parse((await downloadWorld(page)).toString()) as WorldFile;
+  const planted = after.organisms.find((organism) => organism.id === before.nextId)!;
+  const direction = new Random(before.random).int(4);
+  expect(planted).toEqual({
+    id: before.nextId,
+    species: before.nextSpecies,
+    ...location!,
+    rotation: 0,
+    direction,
+    age: 0,
+    energy: 14,
+    generation: 0,
+    children: 0,
+    ancestry: [],
+    genome,
+  });
+  expect(after.tick).toBe(before.tick);
+  await page.getByTitle('Inspect organism (I)').click();
+  target = await coordinate(page, location!.x - 1, location!.y);
+  await page.mouse.click(target.x, target.y);
+  await expect(page.locator('#inspector')).toContainText(`Organism ${planted.id}`);
+  expect((await downloadBlueprint(page, '#export-organism-blueprint')).file.genome).toEqual(genome);
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  await page.getByTitle('Advance one tick while paused').click();
+  const stepped = JSON.parse((await downloadWorld(page)).toString()) as WorldFile;
+  expect(stepped.tick).toBe(before.tick + 1);
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  expect(errors).toEqual([]);
+  expect(external).toEqual([]);
+});
+
+test('invalid and cancelled blueprint files preserve paused world and current designer', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await pause(page);
+  const before = await downloadWorld(page);
+  const payload = {
+    name: 'Saved draft',
+    description: 'Keep this\nexact description',
+    genome: sharedGenome(),
+  };
+  const valid = serializeBlueprint(payload),
+    parsed = JSON.parse(valid);
+  await page.locator('#blueprint-file').setInputFiles({
+    name: 'draft.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(valid),
+  });
+  await expect(page.locator('#notice')).toContainText('loaded into the designer');
+  await page.locator('#plant-design').click();
+  const malformed = [
+    '{broken',
+    JSON.stringify({ ...parsed, version: 99 }),
+    JSON.stringify({
+      ...parsed,
+      genome: {
+        ...parsed.genome,
+        cells: [
+          { x: 0, y: 0, type: 3 },
+          { x: 2, y: 0, type: 4 },
+        ],
+      },
+    }),
+    JSON.stringify({
+      ...parsed,
+      genome: {
+        ...parsed.genome,
+        cells: [
+          { x: 0, y: 0, type: 3 },
+          { x: 0, y: 0, type: 4 },
+        ],
+      },
+    }),
+    JSON.stringify({ ...parsed, genome: { ...parsed.genome, preference: 2 } }),
+    JSON.stringify({ ...parsed, id: 27 }),
+    ' '.repeat(BLUEPRINT_MAX_BYTES + 1),
+    '🌿'.repeat(4500),
+  ];
+  for (const text of malformed) {
+    await page
+      .locator('#blueprint-file')
+      .setInputFiles({ name: 'bad.json', mimeType: 'application/json', buffer: Buffer.from(text) });
+    await expect(page.locator('#notice')).not.toContainText('loaded into the designer');
+    await expect(page.getByLabel('Blueprint name', { exact: true })).toHaveValue(payload.name);
+    await expect(page.getByLabel('Description', { exact: true })).toHaveValue(payload.description);
+    await expect(page.locator('#world')).toHaveAttribute('data-tool', 'plant');
+    expect((await downloadBlueprint(page)).file).toMatchObject(payload);
+    expect(await downloadWorld(page)).toEqual(before);
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  }
+  const notice = await page.locator('#notice').textContent();
+  await page.locator('#blueprint-file').setInputFiles([]);
+  await expect(page.locator('#notice')).toHaveText(notice!);
+  expect((await downloadBlueprint(page)).file).toMatchObject(payload);
+  expect(await downloadWorld(page)).toEqual(before);
+});
+
+test('blueprint labels, keyboard focus and multiline fields fit intermediate and narrow layouts', async ({
+  page,
+}, testInfo) => {
+  await page.goto('/');
+  await pause(page);
+  const before = await downloadWorld(page);
+  const name = 'n'.repeat(80),
+    description = 'Description line\n'.repeat(50);
+  await page.getByLabel('Blueprint name', { exact: true }).fill(name);
+  await page.getByLabel('Description', { exact: true }).fill(description);
+  for (const width of [780, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    for (const selector of [
+      '#blueprint-name',
+      '#blueprint-description',
+      '#import-blueprint',
+      '#export-blueprint',
+      '#plant-design',
+    ]) {
+      const element = page.locator(selector);
+      await element.scrollIntoViewIfNeeded();
+      const bounds = await element.boundingBox();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      width,
+    );
+    await page.getByLabel('Blueprint name', { exact: true }).focus();
+    await page.keyboard.press('Tab');
+    await expect(page.getByLabel('Description', { exact: true })).toBeFocused();
+    await expect(page.getByLabel('Description', { exact: true })).toHaveCSS(
+      'outline-style',
+      'solid',
+    );
+    await page.keyboard.press('Tab');
+    await expect(page.locator('#import-blueprint')).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(page.locator('#export-blueprint')).toBeFocused();
+    await page.screenshot({
+      path: testInfo.outputPath(`blueprint-layout-${width}.png`),
+      fullPage: true,
+    });
+  }
+  expect((await downloadBlueprint(page)).file).toMatchObject({ name, description });
+  expect(await downloadWorld(page)).toEqual(before);
+});
 
 test('Pan and Organism are the defaults and dragging changes only the camera', async ({ page }) => {
   const expectDefaults = async (): Promise<void> => {
