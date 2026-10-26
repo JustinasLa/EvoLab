@@ -475,13 +475,109 @@ h2 {
   color: var(--muted);
   font-size: 13px;
 }
-#chart {
-  width: 100%;
-  height: 54px;
+#telemetry {
+  min-width: 0;
+}
+#telemetry h2 {
+  margin-bottom: 12px;
+}
+#telemetry label {
   display: block;
-  margin: 12px 0;
+  margin: 12px 0 6px;
+  font-size: 13px;
+}
+#telemetry select {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  background: #181f1d;
+  color: #e2e8df;
+  border: 1px solid #697563;
+  border-radius: var(--radius);
+  padding: 8px;
+  font: inherit;
+}
+#telemetry select:focus-visible {
+  outline: 2px solid #bde879;
+  outline-offset: 2px;
+}
+#telemetry p,
+.telemetry-legend {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #c3ccbe;
+  overflow-wrap: anywhere;
+}
+#telemetry-status:empty {
+  display: none;
+}
+#telemetry figure {
+  margin: 16px 0;
+  min-width: 0;
+}
+#telemetry figcaption {
+  font-size: 13px;
+  font-weight: bold;
+  margin-bottom: 8px;
+}
+#telemetry svg {
+  display: block;
+  width: 100%;
+  height: 180px;
+  overflow: visible;
   background: #181f1d;
   border-radius: var(--radius);
+}
+#telemetry svg text {
+  fill: #e2e8df;
+  font:
+    12px Arial,
+    Helvetica,
+    sans-serif;
+}
+#telemetry figure:last-child svg[viewBox$='160'] {
+  height: 160px;
+}
+.telemetry-axis {
+  fill: none;
+  stroke: #9eac96;
+}
+.telemetry-selection {
+  fill: none;
+  stroke: #9eac96;
+}
+.telemetry-legend {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+#telemetry table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+#telemetry caption {
+  text-align: left;
+  margin: 12px 0 8px;
+}
+#telemetry th,
+#telemetry td {
+  text-align: left;
+  vertical-align: top;
+  padding: 8px 6px;
+  border-bottom: 1px solid #46503f;
+}
+#telemetry th {
+  font-weight: normal;
+}
+@media (max-width: 780px) {
+  #telemetry select {
+    min-height: 44px;
+  }
 }
 dl {
   margin: 0;

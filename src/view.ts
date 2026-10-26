@@ -119,23 +119,6 @@ export function genomeSvg(genome: Genome, size = 52): string {
     side = Math.max(width, height) + 2;
   return `<svg width="${size}" height="${size}" viewBox="${left - (side - width) / 2} ${top - (side - height) / 2} ${side} ${side}" shape-rendering="crispEdges" aria-hidden="true">${genome.cells.map((c) => `<rect x="${c.x}" y="${c.y}" width=".88" height=".88" fill="${COLORS[c.type]}"/>`).join('')}</svg>`;
 }
-export function drawChart(canvas: HTMLCanvasElement, history: number[]): void {
-  const ctx = canvas.getContext('2d')!;
-  const w = (canvas.width = canvas.clientWidth || 250),
-    h = (canvas.height = 70);
-  ctx.clearRect(0, 0, w, h);
-  const max = Math.max(10, ...history);
-  ctx.beginPath();
-  history.forEach((n, i) => {
-    const x = (i / Math.max(1, history.length - 1)) * w,
-      y = h - 6 - (n / max) * (h - 12);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.strokeStyle = '#7edbaf';
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-}
 export function organismHtml(o: Organism | null, frame: Frame): string {
   if (!o)
     return `<div class="empty-inspector">${genomeSvg(
@@ -204,7 +187,8 @@ export const markup = `
   </section>
   <div class="tabs" role="tablist" aria-label="Simulation panels"><button id="ecosystem-tab" data-tab="ecosystem" role="tab" aria-controls="ecosystem-panel" aria-selected="true">Ecosystem</button><button id="organism-tab" data-tab="organism" role="tab" aria-controls="organism-panel" aria-selected="false">Organism</button></div>
       <div id="ecosystem-panel" class="panel" role="tabpanel" aria-labelledby="ecosystem-tab">
-        <section class="population-section"><div class="section-caption"><h2>Population</h2><span id="generation">GEN 0</span></div><div class="population-number"><strong id="population">—</strong><span id="species-count">— lineages</span></div><canvas id="chart" role="img" aria-label="Recent organism population"></canvas><dl class="vital-stats"><div><dt>Births</dt><dd id="births">0</dd></div><div><dt>Deaths</dt><dd id="deaths">0</dd></div><div><dt>Food</dt><dd id="food-count">0</dd></div></dl></section>
+        <section class="population-section"><div class="section-caption"><h2>Population now</h2><span id="generation">GEN 0</span></div><div class="population-number"><strong id="population">—</strong><span id="species-count">— lineages</span></div><dl class="vital-stats"><div><dt>Lifetime reproductive births</dt><dd id="births">0</dd></div><div><dt>Lifetime deaths (including manual)</dt><dd id="deaths">0</dd></div><div><dt>Food cells now</dt><dd id="food-count">0</dd></div></dl></section>
+        <section id="telemetry" aria-labelledby="telemetry-heading"><h2 id="telemetry-heading">Recorded ecosystem observations</h2><label for="telemetry-view">Telemetry view</label><select id="telemetry-view"><option value="population">Population &amp; events</option><option value="food">Food &amp; body cells</option><option value="adaptation">Thermal adaptation</option></select><label for="telemetry-sample">Recorded sample</label><select id="telemetry-sample" disabled><option value="latest">No recorded samples</option></select><p id="telemetry-summary"></p><p id="telemetry-status" role="status" aria-live="polite"></p><div id="telemetry-plots"></div><div id="telemetry-details"></div></section>
         <section class="lineage-section"><div class="section-caption"><h2>Common bodies</h2><span title="Choose a body to edit its anatomy">Click to edit</span></div><div id="lineages" class="lineages"><p class="muted">Waiting for life…</p></div></section>
         <section class="climate-section"><div class="section-caption"><h2>Climate</h2><button id="thermal" class="secondary" aria-pressed="false">Show temperature</button></div><div class="world-weather"><strong id="weather">Drifting climate</strong><span id="season">Vernal drift</span></div><div class="temperature-key"><span>0°</span><i></i><span>40°</span></div><label class="slider-label" for="climate">Climate pressure<output id="climate-value">80%</output></label><input id="climate" type="range" min="0" max="1" step="0.05" value="0.8"><div class="events"><button data-shock="cold">${icon('M7 0h2v4h2V2h2v2h-2v2H9v1h3V5h2v2h2v2h-2v2h-2V9H9v2h2v2h2v2h-2v-2H9v3H7v-3H5v2H3v-2h2v-2h2V9H4v2H2V9H0V7h2V5h2v2h3V6H5V4H3V2h2v2h2z')}Cold snap</button><button data-shock="heat">${icon('M6 0h4v2H6zM2 2h2v2H2zm10 0h2v2h-2zM4 4h8v8H4zM0 6h2v4H0zm14 0h2v4h-2zM2 12h2v2H2zm10 0h2v2h-2zm-6 2h4v2H6z')}Heatwave</button></div></section>
         <details class="world-settings"><summary>World settings</summary><label class="slider-label" for="mutation">Mutation rate<output id="mutation-value">12%</output></label><input id="mutation" type="range" min="0" max="0.4" step="0.01" value="0.12"><label class="slider-label" for="nutrients">Leaf food chance<output id="nutrients-value">5%</output></label><input id="nutrients" type="range" min="0" max="20" step="1" value="5"><label class="seed-label" for="seed">World seed<input id="seed" type="number" min="0" max="4294967295" step="1" required value="42"></label><button id="reset" class="secondary wide">Reseed world</button></details>

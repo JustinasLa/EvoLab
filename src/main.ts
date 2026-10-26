@@ -5,6 +5,7 @@ import {
   COLORS,
   WIDTH,
   HEIGHT,
+  WORLD_MAX_BYTES,
   clamp,
   founder,
   validGenome,
@@ -16,16 +17,8 @@ import {
   type Tool,
   type CellType,
 } from './model';
-import {
-  draw,
-  drawChart,
-  genomeSvg,
-  markup,
-  organismHtml,
-  point,
-  viewport,
-  type Camera,
-} from './view';
+import { draw, genomeSvg, markup, organismHtml, point, viewport, type Camera } from './view';
+import { createTelemetryView } from './telemetry-view';
 
 export function mount(root: HTMLElement, worker: Worker): () => void {
   root.innerHTML = markup;
@@ -49,8 +42,8 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     dirty = true,
     alive = true,
     animation = 0,
-    updates = 0,
-    history: number[] = [];
+    updates = 0;
+  const telemetry = createTelemetryView(root);
   const text = (id: string, value: string): void => {
     get(id).textContent = value;
   };
@@ -115,7 +108,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     }
     settings = next;
     runId++;
-    history = [];
+    telemetry.reset();
     updates = 0;
     paused = false;
     selected = null;
@@ -297,7 +290,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       file = input.files?.[0];
     if (!file) return;
     try {
-      if (file.size > 2500000) throw new Error('World file exceeds 2.5 MB.');
+      if (file.size > WORLD_MAX_BYTES) throw new Error('World file exceeds 2.5 MB.');
       const text = await file.text();
       if (alive) send({ type: 'load', text, runId: ++runId });
     } catch (error) {
@@ -332,7 +325,6 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   window.addEventListener('keydown', keyboard);
   const resize = (): void => {
     dirty = true;
-    if (frame) drawChart(get('chart'), history);
   };
   window.addEventListener('resize', resize);
   worker.onmessage = ({ data }) => {
@@ -348,6 +340,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       return;
     }
     if (data.type === 'loaded') {
+      telemetry.reset();
       settings = data.settings;
       updates = 0;
       paused = false;
@@ -392,8 +385,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     text('world-count', `${s.population} organism${s.population === 1 ? '' : 's'} · ${lineages}`);
     text('season', s.season);
     text('weather', s.event);
-    history = frame!.telemetry.samples.map((sample) => sample.population);
-    drawChart(get('chart'), history);
+    telemetry.update(frame!, runId);
     if (paused || updates % 4 === 1 || previousSelection !== selected?.id)
       get('inspector').innerHTML = organismHtml(selected, frame!);
     if (updates % 12 === 1) {
@@ -422,6 +414,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     text('run-state', 'STOPPED');
   };
   function render(): void {
+    telemetry.render();
     if (dirty && frame) {
       draw(canvas, buffer, frame, camera, thermal, selected?.id ?? 0);
       dirty = false;
@@ -435,6 +428,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   animation = requestAnimationFrame(render);
   return () => {
     alive = false;
+    telemetry.dispose();
     cancelAnimationFrame(animation);
     worker.terminate();
     window.removeEventListener('keydown', keyboard);
