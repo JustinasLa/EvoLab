@@ -7,7 +7,11 @@ function workerHarness() {
   const tasks: (() => void)[] = [],
     messages: any[] = [],
     scope: Scope = {
-      postMessage: (message) => messages.push(structuredClone(message)),
+      postMessage: (message) => {
+        const previous = messages.findIndex((response) => response.type === message.type);
+        if (previous >= 0) messages.splice(previous, 1);
+        messages.push(structuredClone(message));
+      },
       onmessage: null,
     };
   startWorker(scope, (callback) => tasks.push(callback));
@@ -15,9 +19,10 @@ function workerHarness() {
       scope.onmessage!({ data } as MessageEvent);
       return messages.at(-1);
     },
-    save = (): WorldFile => JSON.parse(send({ type: 'save' }).text),
+    saveText = (): string => send({ type: 'save' }).text,
+    save = (): WorldFile => JSON.parse(saveText()),
     frame = (): Frame => send({ type: 'snapshot' }).frame;
-  return { tasks, messages, send, save, frame };
+  return { tasks, messages, send, saveText, save, frame };
 }
 afterEach(() => {
   vi.restoreAllMocks();
@@ -151,17 +156,22 @@ describe('worker control and persistence', () => {
       expect(harness.frame().telemetry.samples).toEqual([]);
       for (let batch = 1; batch <= 120 / speed; batch++) {
         harness.tasks.shift()!();
+        const emitted = harness.messages.at(-1);
+        expect(emitted).toMatchObject({ type: 'frame', runId: 1 });
+        expect(emitted.frame.stats.tick).toBe(batch * speed);
         for (let tick = 0; tick < speed; tick++) reference.step();
         expect(harness.tasks).toHaveLength(1);
-        expect(harness.save()).toEqual(reference.save());
-        const samples = harness.frame().telemetry.samples;
+        const before = harness.saveText();
+        expect(before).toBe(JSON.stringify(reference.save()));
+        const samples = emitted.frame.telemetry.samples;
         expect(samples.map((sample) => sample.tick)).toEqual(
           Array.from({ length: Math.floor((batch * speed) / 30) }, (_, index) => (index + 1) * 30),
         );
-        const before = harness.save();
         harness.send({ type: 'inspect', x: WIDTH / 2, y: 78 });
         harness.frame();
-        expect(harness.save()).toEqual(before);
+        expect(harness.saveText()).toBe(before);
+        expect(harness.messages).toHaveLength(2);
+        expect(harness.messages.filter((message) => message.type === 'frame')).toHaveLength(1);
       }
       harness.send({ type: 'pause' });
       harness.tasks.shift()!();
