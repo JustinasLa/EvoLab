@@ -428,7 +428,7 @@ export function createLibrary(
     const candidate =
       action.type === 'create' || action.type === 'replace' ? action.candidate : undefined;
     if (candidate) encodeRecord(candidate, 1);
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; ; attempt++) {
       if (disposed || opening || active) throw new LibraryError(disposed ? 'unavailable' : 'busy');
       let id: string;
       try {
@@ -517,7 +517,6 @@ export function createLibrary(
           throw error;
       }
     }
-    throw new LibraryError('collision');
   }
   return {
     open,

@@ -100,6 +100,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   let libraryRequest = 0;
   let libraryWorking: 'refresh' | 'write' | 'load' | undefined;
   let refreshNeeded = false;
+  const rowSignatures = new WeakMap<HTMLElement, string | undefined>();
   let candidate: LibraryCandidate | undefined;
   let candidateRun: number | undefined;
   let dialogIntent:
@@ -134,6 +135,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     status: (message) => {
       cancelDialog('Library connection or operation changed.');
       libraryStatus(message);
+      drainRefresh();
     },
   });
   function updateCapture(): void {
@@ -171,11 +173,14 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     dialogIntent = undefined;
     clearTimeout(dialogTimer);
     get<HTMLDialogElement>('library-dialog').close();
-    if (intent.invoker?.isConnected && !(intent.invoker as HTMLButtonElement).disabled)
-      intent.invoker.focus();
-    else get('library-heading').focus();
+    if (alive) {
+      if (intent.invoker?.isConnected && !(intent.invoker as HTMLButtonElement).disabled)
+        intent.invoker.focus();
+      else get('library-heading').focus();
+    }
     if (intent.type === 'load') cancelReplacement(message);
     libraryStatus(message);
+    drainRefresh();
   }
   function cancelReplacement(message: string): void {
     const previous = replacement;
@@ -215,6 +220,9 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   }
   function libraryBusy(): boolean {
     return !!libraryWorking || library.busy || !!picker || !!blueprintReader || !!dialogIntent;
+  }
+  function drainRefresh(): void {
+    if (alive && refreshNeeded && !libraryBusy()) void refreshLibrary();
   }
   function admitReplacement(kind: 'file' | 'library'): NonNullable<typeof replacement> | undefined {
     if (
@@ -282,8 +290,12 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         item.dataset.key = key;
       }
       const signature = row.kind === 'valid' || row.kind === 'damaged' ? row.token : row.reason;
-      if (item.dataset.signature !== signature) {
-        const button = document.createElement('button');
+      if (rowSignatures.get(item) !== signature) {
+        const button = item.querySelector('button') ?? document.createElement('button');
+        button.replaceChildren();
+        delete button.dataset.libraryId;
+        delete button.dataset.repairIndex;
+        button.disabled = false;
         if (row.kind === 'valid') {
           button.dataset.libraryId = row.id;
           button.innerHTML = genomeSvg(row.blueprint.genome);
@@ -300,10 +312,13 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
           if (row.kind === 'damaged') {
             button.dataset.repairIndex = String(index);
             button.textContent += ' Remove damaged entry…';
-          } else button.disabled = true;
+          } else {
+            if (document.activeElement === button) get('library-heading').focus();
+            button.disabled = true;
+          }
         }
-        item.replaceChildren(button);
-        item.dataset.signature = signature;
+        if (button.parentElement !== item) item.replaceChildren(button);
+        rowSignatures.set(item, signature);
       }
       item
         .querySelector('button')!
@@ -361,6 +376,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       if (request === libraryRequest) {
         libraryWorking = undefined;
         updateCapture();
+        drainRefresh();
       }
     }
   }
@@ -388,12 +404,14 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       'entry' in action ? valid.findIndex((row) => row.id === action.entry.id) : -1;
     try {
       await library.open();
-      if (
-        !alive ||
-        request !== libraryRequest ||
-        (candidateRun !== undefined && candidateRun !== runId)
-      )
+      if (!alive || request !== libraryRequest) return;
+      if (candidateRun !== undefined && candidateRun !== runId) {
+        candidate = undefined;
+        candidateRun = undefined;
+        renderLibrary();
+        libraryStatus('Unsaved capture cancelled: the world changed before storage admission.');
         return;
+      }
       const id = await library.mutate(action);
       if (!alive || request !== libraryRequest) return;
       librarySelected =
@@ -410,6 +428,12 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       libraryWorking = undefined;
       renderLibrary();
       await refreshLibrary('Write committed. Duplicate names are allowed.');
+      if (action.type === 'delete' || action.type === 'repair') {
+        const neighbor = [
+          ...get('library-rows').querySelectorAll<HTMLButtonElement>('button'),
+        ].find((button) => button.dataset.libraryId === librarySelected);
+        (neighbor ?? get('library-heading')).focus();
+      }
     } catch (error) {
       if (alive && request === libraryRequest) {
         libraryWorking = undefined;
@@ -421,6 +445,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       if (request === libraryRequest) {
         libraryWorking = undefined;
         updateCapture();
+        drainRefresh();
       }
     }
   }
@@ -489,21 +514,15 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         libraryStatus(libraryMessage(error));
       }
     } finally {
-      if (request === libraryRequest) libraryWorking = undefined;
+      if (request === libraryRequest) {
+        libraryWorking = undefined;
+        drainRefresh();
+      }
     }
   }
   async function confirmLibrary(): Promise<void> {
     const intent = dialogIntent;
     if (!intent) return;
-    if (
-      intent.selection !== librarySelection ||
-      intent.run !== runId ||
-      (intent.type === 'load' &&
-        (intent.generation !== replacementGeneration || intent.revision !== designRevision))
-    ) {
-      cancelDialog('Confirmation cancelled: the target or design changed.');
-      return;
-    }
     dialogIntent = undefined;
     clearTimeout(dialogTimer);
     get<HTMLDialogElement>('library-dialog').close();
@@ -525,7 +544,10 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
           libraryStatus(libraryMessage(error));
         }
       } finally {
-        if (request === libraryRequest) libraryWorking = undefined;
+        if (request === libraryRequest) {
+          libraryWorking = undefined;
+          drainRefresh();
+        }
       }
     } else if (intent.type === 'repair')
       await writeLibrary({ type: 'repair', entry: intent.entry as LibraryProblem });
@@ -906,7 +928,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   function beginPicker(input: HTMLInputElement, designer: boolean): void {
     if (
       picker ||
-      blueprintReader ||
+      (blueprintReader && (!designer || replacement?.kind !== 'file')) ||
       candidate ||
       (libraryWorking && libraryWorking !== 'load') ||
       (dialogIntent && dialogIntent.type !== 'load')
@@ -936,6 +958,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     if (input === blueprintInput) cancelReplacement('file selection cancelled.');
     input.value = '';
     updateCapture();
+    drainRefresh();
   }
   function readBlueprint(input: HTMLInputElement, designer: boolean): void {
     const choice = picker;
@@ -956,10 +979,6 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     let intent = designer ? (choice ? replacement : admitReplacement('file')) : undefined;
     if ((designer && !intent) || (!designer && (libraryBusy() || candidate))) {
       libraryStatus('Busy: blueprint read not started.');
-      return;
-    }
-    if (blueprintReader) {
-      libraryStatus('Busy: the native reader has not settled.');
       return;
     }
     const request = ++blueprintRequest,
@@ -1018,7 +1037,10 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       }
       reader.onload = reader.onerror = reader.onabort = reader.onloadend = null;
       if (alive && request === blueprintRequest) input.value = '';
-      if (alive) updateCapture();
+      if (alive) {
+        updateCapture();
+        drainRefresh();
+      }
     };
     try {
       reader.readAsText(file);
