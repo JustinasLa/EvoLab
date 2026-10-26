@@ -1,6 +1,7 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { startWorker, type Scope } from '../src/worker';
 import { Ecosystem } from '../src/ecosystem';
+import { legacyV3 } from './fixtures/telemetry';
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
 import {
   DEFAULTS,
@@ -953,17 +954,48 @@ describe('integrated extinction and telemetry', () => {
     expect(harness.tasks).toHaveLength(0);
   });
 
-  it.each([2, 3])(
+  it.each([2, 3, 4])(
     'migrates/restores v%i then preserves terminal and pending history through an empty save continuation',
     (version) => {
       const harness = workerHarness();
       const current = terminalWorld(1, 5, 89);
       const { telemetry: _telemetry, ...legacy } = current;
-      const file = version === 2 ? { ...legacy, version: 2 } : current;
+      const file =
+        version === 2
+          ? { ...legacy, version: 2 as const }
+          : version === 3
+            ? legacyV3(current)
+            : current;
+      expect(file.version).toBe(version);
+      if (file.version === 2) expect(file).not.toHaveProperty('telemetry');
+      else {
+        expect(file.telemetry.version).toBe(version === 3 ? 1 : 2);
+        expect(file.telemetry.samples.map((sample) => sample.tick)).toEqual([30, 60]);
+        expect(file.telemetry.pending.energy.upkeepSpent).toBeGreaterThan(0);
+        if (file.version === 3) {
+          expect(file.telemetry).not.toHaveProperty('adaptationOriginTick');
+          for (const sample of file.telemetry.samples)
+            expect(sample).not.toHaveProperty('adaptation');
+        }
+      }
       harness.send({ type: 'load', runId: 1, text: JSON.stringify(file) });
       const reference = Ecosystem.load(JSON.stringify(file));
-      expect(harness.save()).toEqual(reference.save());
-      expect(harness.save().telemetry.originTick).toBe(version === 2 ? 89 : 0);
+      const imported = harness.save();
+      expect(imported).toEqual(reference.save());
+      expect(imported.telemetry.originTick).toBe(version === 2 ? 89 : 0);
+      expect(imported.telemetry.adaptationOriginTick).toBe(version === 4 ? 0 : 89);
+      if (file.version === 3)
+        expect(imported.telemetry).toEqual({
+          ...file.telemetry,
+          version: 2,
+          adaptationOriginTick: file.tick,
+          samples: file.telemetry.samples.map((sample) => ({ ...sample, adaptation: null })),
+        });
+      if (file.version === 4) {
+        expect(imported).toEqual(file);
+        expect(file.telemetry.adaptationOriginTick).toBe(0);
+        for (const sample of file.telemetry.samples) expect(sample.adaptation).not.toBeNull();
+      }
       harness.advance();
       reference.step();
       const terminal = harness.save();
@@ -974,9 +1006,14 @@ describe('integrated extinction and telemetry', () => {
         tick: 90,
         population: 0,
         deaths: { age: 1 },
+        adaptation: { preferenceBins: Array(10).fill(0), stressedOrganisms: 0 },
       });
+      expect(terminal.telemetry.samples.slice(0, imported.telemetry.samples.length)).toEqual(
+        imported.telemetry.samples,
+      );
+      const terminalText = harness.saveText();
       harness.load(terminal, 2);
-      expect(harness.save()).toEqual(terminal);
+      expect(harness.saveText()).toBe(terminalText);
       expect(harness.last('frame').playback.extinction).toEqual({
         tick: 90,
         cause: 'empty-import',
@@ -990,6 +1027,7 @@ describe('integrated extinction and telemetry', () => {
       expect(harness.save().telemetry.samples.map((sample) => sample.tick)).toEqual(
         version === 2 ? [90, 120, 150, 180] : [30, 60, 90, 120, 150, 180],
       );
+      expect(harness.save().telemetry.adaptationOriginTick).toBe(version === 4 ? 0 : 89);
       expect(harness.last('frame').playback.paused).toBe(true);
     },
   );

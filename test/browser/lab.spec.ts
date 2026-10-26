@@ -18,10 +18,11 @@ import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../../s
 import { writeFile } from 'node:fs/promises';
 import { cpus, platform, totalmem } from 'node:os';
 import { Ecosystem } from '../../src/ecosystem';
+import { advance, legacyV3 } from '../fixtures/telemetry';
 
 declare global {
   interface Window {
-    telemetryEvidence: { frame: Frame | null; points: number[][] };
+    telemetryEvidence: { frame: Frame | null; points: number[][]; loadText: string | null };
     telemetryPerformance: {
       enabled: boolean;
       action: string;
@@ -95,6 +96,156 @@ function telemetryScenario(
   }
   return world.save();
 }
+
+test('literal v3 telemetry migrates through the file input and real worker before measured continuation', async ({
+  page,
+}, testInfo) => {
+  await observeTelemetry(page);
+  const reference = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0, mutation: 0 }, false),
+    genome: Genome = {
+      cells: [{ x: 0, y: 0, type: 7 }],
+      preference: 0.1234567890123456,
+      tolerance: 0.4567890123456789,
+      tempo: 2,
+    };
+  reference.spawn(genome, 20, 20);
+  reference.spawn({ ...genome, preference: 0.9876543210987654, tolerance: 0.3 }, 40, 40);
+  for (const organism of reference.organisms.values()) organism.energy = 8;
+  advance(reference, 65);
+  reference.paint('erase', 20, 20, 0, genome);
+  reference.paint('erase', 40, 40, 0, genome);
+  const fixture = legacyV3(reference.save()),
+    input = Buffer.from(JSON.stringify(fixture)),
+    expected = (): WorldFile => {
+      const saved = reference.save();
+      return {
+        ...saved,
+        telemetry: {
+          ...saved.telemetry,
+          adaptationOriginTick: fixture.tick,
+          samples: saved.telemetry.samples.map((sample) =>
+            sample.tick <= fixture.tick ? { ...sample, adaptation: null } : sample,
+          ),
+        },
+      };
+    };
+  expect(fixture.version).toBe(3);
+  expect(fixture.telemetry.version).toBe(1);
+  expect(fixture.telemetry).not.toHaveProperty('adaptationOriginTick');
+  expect(fixture.telemetry.samples.map((sample) => sample.tick)).toEqual([30, 60]);
+  for (const sample of fixture.telemetry.samples) {
+    expect(sample).not.toHaveProperty('adaptation');
+    expect(sample.meanPreference).toBe(0.5555555550555555);
+    expect(sample.meanTolerance).toBe(0.37839450617283943);
+  }
+  expect(fixture.telemetry.pending.deaths.manual).toBe(2);
+  expect(fixture.telemetry.pending.energy.upkeepSpent).toBeGreaterThan(0);
+  await page.goto('/');
+  await page.locator('#file').setInputFiles({
+    name: 'literal-v3-telemetry-v1.json',
+    mimeType: 'application/json',
+    buffer: input,
+  });
+  await expect(page.locator('#notice')).toContainText('World restored');
+  const workerInput = await page.evaluate(() => window.telemetryEvidence.loadText);
+  expect(Buffer.from(workerInput!)).toEqual(input);
+  expect(JSON.parse(workerInput!)).toMatchObject({ version: 3, telemetry: { version: 1 } });
+  const migratedBytes = await downloadPausedWorld(page),
+    migrated = JSON.parse(migratedBytes.toString()) as WorldFile;
+  expect(migrated).toEqual(expected());
+  expect(migrated.version).toBe(4);
+  expect(migrated.telemetry.version).toBe(2);
+  expect(migrated.telemetry.originTick).toBe(fixture.telemetry.originTick);
+  expect(migrated.telemetry.adaptationOriginTick).toBe(65);
+  expect(migrated.telemetry.pending).toEqual(fixture.telemetry.pending);
+  expect(
+    migrated.telemetry.samples.map(({ adaptation, ...sample }) => {
+      expect(adaptation).toBeNull();
+      return sample;
+    }),
+  ).toEqual(fixture.telemetry.samples);
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  await page.getByLabel('Telemetry view', { exact: true }).selectOption('adaptation');
+  await page.getByLabel('Recorded sample', { exact: true }).selectOption('60');
+  await expect(page.locator('#telemetry-details')).toContainText('not recorded');
+  await expect(page.locator('#telemetry-details')).toContainText('0.5555555550555555');
+  await expect(page.locator('[data-bin]')).toHaveCount(0);
+  await expect(page.locator('[data-series="Outside tolerance"] [data-tick]')).toHaveCount(0);
+  await expect(page.locator('[data-series="Preference"] [data-tick]')).toHaveCount(2);
+  await page.screenshot({ path: testInfo.outputPath('v3-legacy-gaps.png'), fullPage: true });
+  expect(await downloadWorld(page)).toEqual(migratedBytes);
+  await page.getByRole('tab', { name: 'Organism', exact: true }).click();
+  await page.locator('#blueprint-file').setInputFiles({
+    name: 'stationary-observation.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(serializeBlueprint({ name: 'New observation', description: '', genome })),
+  });
+  await expect(page.locator('#notice')).toContainText('Blueprint loaded into the designer');
+  await page.locator('#plant-design').click();
+  const target = await coordinate(page, 80, 80);
+  await page.mouse.click(target.x, target.y);
+  await expect(page.locator('#population')).toHaveText('1');
+  reference.paint('plant', 80, 80, 0, genome);
+  await stepTo(page, 90);
+  advance(reference, 25);
+  const measuredBytes = await downloadPausedWorld(page),
+    measured = JSON.parse(measuredBytes.toString()) as WorldFile;
+  expect(measured).toEqual(expected());
+  expect(measured.telemetry.samples.at(-1)).toMatchObject({
+    fromTick: 60,
+    tick: 90,
+    population: 1,
+    deaths: { manual: 2 },
+    adaptation: { preferenceBins: [0, 1, 0, 0, 0, 0, 0, 0, 0, 0], stressedOrganisms: 0 },
+  });
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  await page.getByLabel('Recorded sample', { exact: true }).selectOption('90');
+  await expect(page.locator('#telemetry-details caption')).toHaveText('Selected sample at tick 90');
+  await expect(page.locator('[data-bin]')).toHaveCount(10);
+  await expect(page.locator('[data-series="Outside tolerance"] [data-tick]')).toHaveCount(1);
+  expect(
+    await page
+      .locator('[data-bin]')
+      .evaluateAll((bars) => bars.map((bar) => Number(bar.getAttribute('data-count')))),
+  ).toEqual(measured.telemetry.samples.at(-1)!.adaptation!.preferenceBins);
+  await page.screenshot({ path: testInfo.outputPath('v3-next-boundary.png'), fullPage: true });
+  expect(await downloadWorld(page)).toEqual(measuredBytes);
+  await importTelemetryWorld(page, measured);
+  const restoredBytes = await downloadPausedWorld(page),
+    restored = JSON.parse(restoredBytes.toString()) as WorldFile;
+  advance(reference, restored.tick - reference.tick);
+  expect(restored).toEqual(expected());
+  expect(restored.telemetry.adaptationOriginTick).toBe(65);
+  expect(await downloadWorld(page)).toEqual(restoredBytes);
+  const boundary = (Math.floor(restored.tick / 30) + 1) * 30;
+  await stepTo(page, boundary);
+  advance(reference, boundary - reference.tick);
+  const continuedBytes = await downloadPausedWorld(page),
+    continued = JSON.parse(continuedBytes.toString()) as WorldFile;
+  expect(continued).toEqual(expected());
+  expect(continued.telemetry.samples.at(-1)!.adaptation).not.toBeNull();
+  expect(await downloadWorld(page)).toEqual(continuedBytes);
+  const evidence = {
+    input: fixture,
+    migrated,
+    measured,
+    restored,
+    continued,
+    inputSHA256: createHash('sha256').update(input).digest('hex'),
+    workerInputSHA256: createHash('sha256').update(workerInput!).digest('hex'),
+    downloadedSHA256: [migratedBytes, measuredBytes, restoredBytes, continuedBytes].map((bytes) =>
+      createHash('sha256').update(bytes).digest('hex'),
+    ),
+  };
+  await testInfo.attach('v3-migration-and-continuation.json', {
+    contentType: 'application/json',
+    body: JSON.stringify(evidence),
+  });
+  await writeFile(
+    testInfo.outputPath('v3-migration-and-continuation.json'),
+    JSON.stringify(evidence),
+  );
+});
 
 for (const state of ['empty', 'single', 'full-ring', 'legacy', 'extinct-paused'] as const) {
   test(`telemetry ${state}: three honest views, accessible keyboard data and unchanged world across approved widths`, async ({
@@ -498,7 +649,7 @@ test('full-ring telemetry retains raw render, selection and resize timings with 
 
 async function observeTelemetry(page: import('@playwright/test').Page): Promise<void> {
   await page.addInitScript(() => {
-    window.telemetryEvidence = { frame: null, points: [] };
+    window.telemetryEvidence = { frame: null, points: [], loadText: null };
     Object.defineProperty(window.telemetryEvidence, 'points', {
       get: () =>
         [...document.querySelectorAll('[data-series="Population"] circle[data-tick]')].map(
@@ -508,6 +659,12 @@ async function observeTelemetry(page: import('@playwright/test').Page): Promise<
     window.Worker = new Proxy(window.Worker, {
       construct(target, args: ConstructorParameters<typeof Worker>, newTarget) {
         const worker: Worker = Reflect.construct(target, args, newTarget);
+        worker.postMessage = new Proxy(worker.postMessage, {
+          apply(postMessage, receiver, messages) {
+            if (messages[0].type === 'load') window.telemetryEvidence.loadText = messages[0].text;
+            return Reflect.apply(postMessage, receiver, messages);
+          },
+        });
         worker.addEventListener('message', ({ data }) => {
           if (data.type === 'frame') window.telemetryEvidence.frame = data.frame;
         });
