@@ -1888,9 +1888,12 @@ test.describe('pause on total extinction', () => {
       settings: { ...before.settings, nutrients: 7, mutation: 0.37, climate: 0.25 },
     };
     const pendingSave = readWorld(page);
-    await page.evaluate('window.recoveryDelivery.release()');
+    const recoveryNotice = await page.evaluate(
+      '(() => { window.recoveryDelivery.release(); return document.getElementById("notice").textContent; })()',
+    );
+    expect(recoveryNotice).toContain('version 2, 3 or 4');
     expect(await pendingSave).toEqual(expected);
-    await expect(page.locator('#notice')).toContainText('version 2, 3 or 4');
+    await expect(page.locator('#notice')).toContainText('World saved');
     await expect(page.locator('#nutrients')).toHaveValue('7');
     await expect(page.locator('#nutrients-value')).toHaveText('7%');
     await expect(page.locator('#mutation-value')).toHaveText('37%');
@@ -1910,6 +1913,7 @@ test.describe('pause on total extinction', () => {
     await testInfo.attach('settings-recovery-evidence', {
       body: JSON.stringify({
         snapshotNutrients: 0,
+        recoveryNotice,
         displayedNutrients: await page.locator('#nutrients').inputValue(),
         retainedTick: before.tick,
         savedSettings: expected.settings,

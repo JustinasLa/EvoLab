@@ -632,6 +632,7 @@ test('ordinary paced render-off throughput remains measured rather than inferred
   await attachEvidence(testInfo, 'ordinary-paced-evidence', {
     ...runtime(),
     browser: browser.version(),
+    project: testInfo.project.name,
     results,
     limitations:
       'No worker wrappers. Page counters and actual Save downloads remain. A 40ms scheduler is timer-limited; no rendering-off speedup is promised.',
@@ -937,6 +938,9 @@ for (const population of [64, 1600]) {
           });
           const saved = await settle(page),
             end = await page.evaluate(() => ({
+              time: performance.now(),
+              state: window.longRun.state!,
+              receipt: window.longRun.receipt!,
               counters: window.longRun.counters!,
               frames: window.longRun.frames,
               metadataBytes: window.longRun.metadataBytes,
@@ -946,6 +950,7 @@ for (const population of [64, 1600]) {
           const reference = Ecosystem.load(JSON.stringify(file));
           for (let tick = reference.tick; tick < saved.tick; tick++) reference.step();
           expect(saved).toEqual(reference.save());
+          expect(end.counters.steps - start.counters.steps).toBe(saved.tick - file.tick);
           expect(end.counters.maxScheduled).toBe(1);
           expect(end.counters.maxDisplay).toBeLessThanOrEqual(1);
           expect(end.counters.maxProgress).toBeLessThanOrEqual(1);
@@ -965,8 +970,9 @@ for (const population of [64, 1600]) {
             end,
             stoppedTick: saved.tick,
             advancedTicks: saved.tick - file.tick,
-            elapsedMs: stopped.time - start.time,
-            actualTicksPerSecond: ((saved.tick - file.tick) * 1000) / (stopped.time - start.time),
+            stopRequestElapsedMs: stopped.time - start.time,
+            elapsedMs: end.time - start.time,
+            actualTicksPerSecond: ((saved.tick - file.tick) * 1000) / (end.time - start.time),
             grids,
             transferred,
             completeSaveSHA256: createHash('sha256').update(JSON.stringify(saved)).digest('hex'),
@@ -981,7 +987,7 @@ for (const population of [64, 1600]) {
           initialSaveSHA256: createHash('sha256').update(JSON.stringify(file)).digest('hex'),
           raw,
           limitations:
-            'Instrumented worker wraps actual completed steps, actual display helper and scheduled callbacks without changing engine behavior. Timings include observation wrappers. Metadata/telemetry JSON byte counts estimate serialization, not structured-clone wire size; raw grid buffers and saved UTF8 text bytes are exact. Programmatic native DOM events keep the canvas visible. Full saves are independently recomputed at actual completed ticks. This is local Chromium emulation, not physical-device or hidden-tab certification.',
+            'Instrumented worker wraps actual completed steps, actual display helper and scheduled callbacks without changing engine behavior. Timings include observation wrappers and actual terminal/Save completion; the stop-request timestamp is recorded separately and never shortens the throughput denominator. Metadata/telemetry JSON byte counts estimate serialization, not structured-clone wire size; raw grid buffers and saved UTF8 text bytes are exact. Programmatic native DOM events keep the canvas visible. Full saves are independently recomputed at actual completed ticks. This is local Chromium emulation, not physical-device or hidden-tab certification.',
         });
       });
     }
