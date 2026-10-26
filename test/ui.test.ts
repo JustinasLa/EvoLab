@@ -704,7 +704,12 @@ describe('display-only retained-world races', () => {
         set('telemetry-sample', '30', 'change');
         get('telemetry-sample').focus();
         expect(document.activeElement).toBe(get('telemetry-sample'));
-        window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+        get('telemetry-sample').dispatchEvent(
+          new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true }),
+        );
+        get('telemetry-view').dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'i', code: 'KeyI', bubbles: true }),
+        );
         paint(0);
         expect(worker.postMessage.mock.calls).toHaveLength(commands);
         const expected = {
