@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { cpus, platform, totalmem } from 'node:os';
 import { Ecosystem } from '../src/ecosystem';
+import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
 import {
   DEFAULTS,
   WIDTH,
@@ -68,6 +69,136 @@ function adjacent(value: number, direction: -1 | 1): number {
   view.setBigUint64(0, view.getBigUint64(0, false) + BigInt(direction), false);
   return view.getFloat64(0, false);
 }
+
+describe('standalone blueprint engine boundaries', () => {
+  const genome = (): Genome => ({
+    cells: [3, 4, 5, 6, 7, 8].map((type, offset) => ({
+      x: (offset % 3) - 1,
+      y: Math.floor(offset / 3) - 1,
+      type: type as CellType,
+    })),
+    preference: 0.1234567890123456,
+    tolerance: 0.4567890123456789,
+    tempo: 11,
+  });
+  const decode = (source: Genome) =>
+    parseBlueprint(
+      serializeBlueprint({
+        name: 'Reusable anatomy',
+        description: '',
+        genome: source,
+      }),
+    ).genome;
+
+  it('leaves full world saves, RNG and subsequent seeded evolution unchanged', () => {
+    const control = new Ecosystem({ ...DEFAULTS, seed: 77 });
+    for (let tick = 0; tick < 200; tick++) control.step();
+    const treatment = Ecosystem.load(JSON.stringify(control.save()));
+    const before = treatment.save();
+    for (const organism of treatment.organisms.values())
+      expect(decode(organism.genome)).toEqual(organism.genome);
+    decode(genome());
+    expect(treatment.save()).toEqual(before);
+    for (let tick = 0; tick < 200; tick++) {
+      control.step();
+      treatment.step();
+    }
+    expect(treatment.save()).toEqual(control.save());
+  });
+
+  it('exports actual evolved heritable traits without age, energy, ancestry or ownership', () => {
+    const world = new Ecosystem(
+      {
+        ...DEFAULTS,
+        seed: 42,
+        climate: 0,
+        nutrients: 20,
+        mutation: 0.4,
+      },
+      false,
+    );
+    world.spawn(single(4), 30, 30);
+    let evolved;
+    for (let tick = 0; tick < 6000 && !evolved; tick++) {
+      world.step();
+      evolved = [...world.organisms.values()].find(
+        (organism) =>
+          organism.generation > 0 &&
+          organism.children > 0 &&
+          organism.age > 0 &&
+          organism.ancestry.length > 0,
+      );
+    }
+    expect(evolved).toBeDefined();
+    const before = world.save();
+    const file = parseBlueprint(
+      serializeBlueprint({ name: 'Evolved', description: '', genome: evolved!.genome }),
+    );
+    expect(file.genome).toEqual(evolved!.genome);
+    expect(Object.keys(file).sort()).toEqual([
+      'description',
+      'format',
+      'genome',
+      'name',
+      'version',
+    ]);
+    expect(world.save()).toEqual(before);
+    file.genome.cells[0].type = file.genome.cells[0].type === 3 ? 4 : 3;
+    expect(world.save()).toEqual(before);
+  });
+
+  it('places detached all-type genomes with fresh identity, lineage and normal initial state', () => {
+    const world = empty();
+    const source = world.spawn(genome(), 30, 30)!;
+    const parsed = decode(source.genome);
+    const nextId = world.nextId,
+      nextSpecies = world.nextSpecies;
+    const expectedRandom = new Random(world.random.state),
+      direction = expectedRandom.int(4);
+    world.paint('plant', WIDTH - 1, HEIGHT - 1, 0, parsed);
+    const placed = world.organisms.get(nextId)!;
+    expect(placed).toEqual({
+      id: nextId,
+      species: nextSpecies,
+      x: WIDTH - 1,
+      y: HEIGHT - 1,
+      rotation: 0,
+      direction,
+      age: 0,
+      energy: 14,
+      generation: 0,
+      children: 0,
+      ancestry: [],
+      genome: genome(),
+    });
+    expect(placed.species).not.toBe(source.species);
+    expect(positions(placed).some((position) => position % WIDTH === 0)).toBe(true);
+    expect(positions(placed).every((position) => world.occupied[position] === placed.id)).toBe(
+      true,
+    );
+    parsed.cells[0].type = 8;
+    expect(placed.genome).toEqual(genome());
+    placed.genome.preference = 0.9;
+    expect(source.genome).toEqual(genome());
+    expect(() => Ecosystem.load(JSON.stringify(world.save()))).not.toThrow();
+  });
+
+  it('retains wall, occupied-footprint and population-cap rejection for imported genomes', () => {
+    const world = empty(),
+      imported = decode(genome());
+    world.walls[index(20, 20)] = 1;
+    world.paint('plant', 20, 20, 0, imported);
+    expect(world.organisms.size).toBe(0);
+    const placed = world.spawn(imported, 40, 40)!;
+    world.paint('plant', 41, 41, 0, imported);
+    expect(world.organisms.size).toBe(1);
+    expect(world.organisms.get(placed.id)).toBe(placed);
+    for (let count = 1; count < LIMIT; count++)
+      expect(world.spawn(single(), count % WIDTH, Math.floor(count / WIDTH))).toBeDefined();
+    world.paint('plant', 100, 100, 0, imported);
+    expect(world.organisms.size).toBe(LIMIT);
+  });
+});
 
 describe('final removal observations', () => {
   it.each([

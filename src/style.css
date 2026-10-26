@@ -76,6 +76,7 @@ a:hover {
 }
 button:focus-visible,
 input:focus-visible,
+textarea:focus-visible,
 select:focus-visible,
 summary:focus-visible,
 a:focus-visible,
@@ -912,6 +913,36 @@ input[type='range'] {
 }
 .designer-section .primary {
   margin-top: 12px;
+}
+.blueprint-fields {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0 12px;
+  min-width: 0;
+}
+.blueprint-fields input,
+.blueprint-fields textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  color: inherit;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+  padding: 8px;
+}
+.blueprint-fields textarea {
+  resize: vertical;
+  overflow-wrap: anywhere;
+}
+.blueprint-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.blueprint-actions button {
+  flex: 1 1 140px;
 }
 footer {
   display: flex;
