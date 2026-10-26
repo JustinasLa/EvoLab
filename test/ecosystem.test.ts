@@ -1196,9 +1196,11 @@ describe('measured thermal adaptation', () => {
     );
   });
 
-  it.each([0, 0.8, 1])(
-    'uses real post-tick anchors and event expiry under climate %s',
-    (climate) => {
+  it.each(
+    [0, 0.8, 1].flatMap((climate) => [30, 31].map((eventUntil) => ({ climate, eventUntil }))),
+  )(
+    'uses real post-tick anchors with climate $climate and event expiry $eventUntil',
+    ({ climate, eventUntil }) => {
       const world = new Ecosystem({ ...DEFAULTS, climate, nutrients: 0, mutation: 0 }, false);
       for (let organism = 0; organism < 80; organism++) {
         const genome = organism % 2 ? founder(1) : single(7, organism / 80);
@@ -1206,12 +1208,18 @@ describe('measured thermal adaptation', () => {
         world.spawn(genome, (organism * 3) % WIDTH, Math.floor((organism * 3) / WIDTH) * 10 + 20);
       }
       world.shock('heat');
-      world.eventUntil = 30;
+      world.eventUntil = eventUntil;
       advance(world, 30);
       const sample = world.save().telemetry.samples[0];
       let expected = 0;
       for (const organism of world.organisms.values()) {
-        const local = temperature(organism.x, organism.y, 30, climate, 0);
+        const local = temperature(
+          organism.x,
+          organism.y,
+          30,
+          climate,
+          30 < eventUntil ? world.eventOffset : 0,
+        );
         if (
           Math.max(0, Math.abs(local - organism.genome.preference) - organism.genome.tolerance) > 0
         )

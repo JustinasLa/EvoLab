@@ -235,14 +235,25 @@ describe('bounded model-dependent telemetry presentation', () => {
     advance(world, 90);
     show(world.frame());
     expect(get('telemetry-plots').querySelector('svg')!.textContent).toContain('999999900');
+    const replace = vi.spyOn(get('telemetry-plots'), 'replaceChildren');
     resize();
     controller.render();
+    expect(replace).not.toHaveBeenCalled();
+    width = 250;
+    resize();
+    resize();
+    controller.render();
+    expect(replace).toHaveBeenCalledTimes(1);
+    expect(get('telemetry-plots').querySelector('svg')!.getAttribute('viewBox')).toBe(
+      '0 0 250 180',
+    );
     choose('telemetry-sample', '999999900');
     advance(world, 30);
     show(world.frame());
     expect(get<HTMLSelectElement>('telemetry-sample').value).toBe('999999900');
     controller.dispose();
     const before = root.innerHTML;
+    width = 200;
     resize();
     controller.update(world.frame(), 3);
     controller.reset();
