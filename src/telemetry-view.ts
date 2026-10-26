@@ -84,7 +84,8 @@ export function createTelemetryView(root: HTMLElement) {
     sampleSelect = get<HTMLSelectElement>('telemetry-sample'),
     plots = get('telemetry-plots'),
     details = get('telemetry-details'),
-    status = get('telemetry-status');
+    status = get('telemetry-status'),
+    summary = get('telemetry-summary');
   let source: AcceptedTelemetrySource | undefined,
     sourceKey = '',
     selectedTick: number | null = null,
@@ -501,8 +502,7 @@ export function createTelemetryView(root: HTMLElement) {
     update(input: TelemetryViewInput): void {
       if (disposed) return;
       if (input.status === 'pending') {
-        get('telemetry-summary').textContent =
-          `Previous accepted world; awaiting validation of command ${input.commandId}.`;
+        summary.textContent = `Previous accepted world; awaiting validation of command ${input.commandId}.`;
         return;
       }
       if (input.status === 'unavailable') {
@@ -512,7 +512,7 @@ export function createTelemetryView(root: HTMLElement) {
         sourceKey = '';
         plots.replaceChildren();
         details.replaceChildren();
-        get('telemetry-summary').textContent = 'No active world; history unknown.';
+        summary.textContent = 'No active world; history unknown.';
         sampleSelect.replaceChildren(new Option('No source received', 'latest'));
         sampleSelect.disabled = true;
         status.textContent = '';
@@ -533,8 +533,7 @@ export function createTelemetryView(root: HTMLElement) {
       currentRevision = input.currentRevision;
       source = input.source ?? undefined;
       if (!source) {
-        get('telemetry-summary').textContent =
-          `World tick ${currentTick} (revision ${currentRevision}). ${emptyText()}`;
+        summary.textContent = `World tick ${currentTick} (revision ${currentRevision}). ${emptyText()}`;
         sampleSelect.replaceChildren(new Option('No source received', 'latest'));
         sampleSelect.disabled = true;
         return;
@@ -544,8 +543,7 @@ export function createTelemetryView(root: HTMLElement) {
         first = samples[0],
         last = samples.at(-1),
         key = `${replacementId}/${telemetry.originTick}/${telemetry.adaptationOriginTick}/${samples.length}/${first?.tick}/${last?.tick}`;
-      get('telemetry-summary').textContent =
-        `World tick ${currentTick} (revision ${currentRevision}); telemetry source observed at tick ${source.tick} (revision ${source.revision}); ${last ? `last received recorded sample tick ${last.tick}; received retained ticks ${first!.tick}–${last.tick}; ${samples.length} of at most ${TELEMETRY_CAPACITY} samples` : emptyText()}. ${source.tick < currentTick || source.revision < currentRevision ? 'Observation/transport lag: later observations may not yet be received. ' : ''}Pending accounting is as of source tick ${source.tick}, revision ${source.revision}. Samples every ${TELEMETRY_INTERVAL_TICKS} completed ticks. No synthetic initial, latest or extinction point.`;
+      summary.textContent = `World tick ${currentTick} (revision ${currentRevision}); telemetry source observed at tick ${source.tick} (revision ${source.revision}); ${last ? `last received recorded sample tick ${last.tick}; received retained ticks ${first!.tick}–${last.tick}; ${samples.length} of at most ${TELEMETRY_CAPACITY} samples` : emptyText()}. ${source.tick < currentTick || source.revision < currentRevision ? 'Observation/transport lag: later observations may not yet be received. ' : ''}Pending accounting is as of source tick ${source.tick}, revision ${source.revision}. Samples every ${TELEMETRY_INTERVAL_TICKS} completed ticks. No synthetic initial, latest or extinction point.`;
       if (!last) {
         const paragraph = plots.querySelector('p');
         if (paragraph) paragraph.textContent = emptyText();

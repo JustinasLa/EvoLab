@@ -1964,7 +1964,14 @@ describe('display-only retained-world races', () => {
       recorded.paint('erase', 40, 40, 0, genome);
     }
     const empty = recorded.frame();
-    for (let update = 0; update < 720; update++) emit(empty);
+    emit(empty);
+    const quietInspector = get('inspector').firstElementChild;
+    const stableTick = get('tick').firstChild;
+    for (let update = 0; update < 720; update++) {
+      emit(empty);
+      expect(get('inspector').firstElementChild).toBe(quietInspector);
+      expect(get('tick').firstChild).toBe(stableTick);
+    }
     expect(chart.paths.at(-1)).toEqual(chart.expected(Array(180).fill(1)));
     const error = {
       type: 'error',

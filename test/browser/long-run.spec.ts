@@ -5,7 +5,17 @@ import { createHash } from 'node:crypto';
 import { cpus, platform, release } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { Ecosystem } from '../../src/ecosystem';
-import { DEFAULTS, WIDTH, founder, type ControlState, type WorldFile } from '../../src/model';
+import {
+  DEFAULTS,
+  WIDTH,
+  HEIGHT,
+  founder,
+  positions,
+  type Genome,
+  type ControlState,
+  type WorldFile,
+} from '../../src/model';
+import { serializeBlueprint } from '../../src/blueprint';
 
 type Counters = {
   steps: number;
@@ -39,6 +49,12 @@ declare global {
       drawnAt: number;
       frameAt: number;
       savedText: string | null;
+      holdFrame?: boolean;
+      holdTerminal?: boolean;
+      holdControl?: boolean;
+      releaseFrame?: (() => void) | null;
+      releaseTerminal?: (() => void) | null;
+      releaseControl?: (() => void) | null;
     };
   }
 }
@@ -163,9 +179,35 @@ async function observe(page: Page, instrument = true): Promise<void> {
           set(next: ((event: MessageEvent) => void) | null) {
             handler = next;
             descriptor.set!.call(worker, (event: MessageEvent) => {
-              next?.(event);
-              if (event.data.type === 'loaded' && !event.data.state.playback.paused)
-                document.getElementById('pause')!.click();
+              const deliver = () => {
+                next?.(event);
+                if (event.data.type === 'loaded' && !event.data.state.playback.paused)
+                  document.getElementById('pause')!.click();
+              };
+              const evidence = window.longRun;
+              if (evidence.holdFrame && event.data.type === 'frame') {
+                evidence.holdFrame = false;
+                evidence.releaseFrame = () => {
+                  evidence.releaseFrame = null;
+                  deliver();
+                };
+              } else if (
+                evidence.holdTerminal &&
+                (event.data.type === 'loaded' ||
+                  (event.data.type === 'error' && event.data.recovery))
+              ) {
+                evidence.holdTerminal = false;
+                evidence.releaseTerminal = () => {
+                  evidence.releaseTerminal = null;
+                  deliver();
+                };
+              } else if (evidence.holdControl && event.data.type === 'control') {
+                evidence.holdControl = false;
+                evidence.releaseControl = () => {
+                  evidence.releaseControl = null;
+                  deliver();
+                };
+              } else deliver();
             });
           },
         });
@@ -203,6 +245,9 @@ async function settle(page: Page): Promise<WorldFile> {
 }
 
 async function load(page: Page, file: WorldFile, render: boolean, speed: number): Promise<void> {
+  await page.waitForFunction(() => window.longRun.state !== null);
+  if (!(await page.evaluate(() => window.longRun.state!.playback.paused)))
+    await control(page, 'pause');
   await page.locator('#file').setInputFiles({
     name: 'bounded-long-run.json',
     mimeType: 'application/json',
@@ -281,6 +326,85 @@ async function control(
     };
   }, inputAt);
 }
+
+test('real admitted plant retains its complete anatomy through a later designer import', async ({
+  page,
+}, testInfo) => {
+  await observe(page);
+  await page.goto('/');
+  const file = fixture(0);
+  await load(page, file, true, 4);
+  const genome: Genome = {
+    cells: [
+      { x: 0, y: 0, type: 3 },
+      { x: 1, y: 0, type: 4 },
+      { x: 0, y: 1, type: 7 },
+    ],
+    preference: 0.725,
+    tolerance: 0.42,
+    tempo: 5,
+  };
+  const replacement = { ...founder(0), preference: 0.15 };
+  await page.locator('#blueprint-file').setInputFiles({
+    name: 'plant-a.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(serializeBlueprint({ name: 'Ordered A', description: '', genome })),
+  });
+  await expect(page.locator('#notice')).toContainText('loaded into the designer');
+  await page.locator('#world').scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => window.longRun.state?.display.visible);
+  await settle(page);
+  await page.evaluate(() => {
+    window.longRun.holdControl = true;
+  });
+  await page.locator('#speed').selectOption('1');
+  await page.waitForFunction(() => !!window.longRun.releaseControl);
+  await page.locator('#plant-design').click();
+  const walls = new Set(file.walls);
+  let location: { x: number; y: number } | null = null;
+  for (let row = 5; row < HEIGHT - 5 && !location; row++)
+    for (let column = 5; column < WIDTH - 5 && !location; column++)
+      if (positions({ genome, x: column, y: row, rotation: 0 }).every((cell) => !walls.has(cell)))
+        location = { x: column, y: row };
+  expect(location).not.toBeNull();
+  await page.locator('#world').scrollIntoViewIfNeeded();
+  const pointer = await page.locator('#world').evaluate((canvas: HTMLCanvasElement, location) => {
+    const rect = canvas.getBoundingClientRect(),
+      scale = Math.min(canvas.clientWidth / 240, canvas.clientHeight / 156);
+    return {
+      x: rect.left + (canvas.clientWidth - 240 * scale) / 2 + (location!.x + 0.5) * scale,
+      y: rect.top + (canvas.clientHeight - 156 * scale) / 2 + (location!.y + 0.5) * scale,
+    };
+  }, location);
+  await page.mouse.click(pointer.x, pointer.y);
+  await page.locator('#blueprint-file').setInputFiles({
+    name: 'designer-b.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      serializeBlueprint({ name: 'Later B', description: '', genome: replacement }),
+    ),
+  });
+  await expect(page.locator('#blueprint-name')).toHaveValue('Later B');
+  await page.evaluate(() => window.longRun.releaseControl!());
+  const saved = await settle(page);
+  const reference = Ecosystem.load(JSON.stringify(file));
+  reference.paint('plant', location!.x, location!.y, 2, genome);
+  expect(saved).toEqual(reference.save());
+  expect(saved.organisms).toHaveLength(1);
+  expect(saved.organisms[0].genome).toEqual(genome);
+  await page.locator('#step').click();
+  reference.step();
+  expect(await settle(page)).toEqual(reference.save());
+  await attachEvidence(testInfo, 'real-admitted-plant-evidence', {
+    ...runtime(),
+    project: testInfo.project.name,
+    genome,
+    replacement,
+    location,
+    savedTick: saved.tick,
+    saveSHA256: createHash('sha256').update(JSON.stringify(saved)).digest('hex'),
+  });
+});
 
 for (const population of [64, 1600]) {
   test(`forty real control barriers population=${population}`, async ({
@@ -512,6 +636,259 @@ test('ordinary paced render-off throughput remains measured rather than inferred
     limitations:
       'No worker wrappers. Page counters and actual Save downloads remain. A 40ms scheduler is timer-limited; no rendering-off speedup is promised.',
   });
+});
+
+test('requested Chromium lifecycle transition records actual visibility and complete ecology', async ({
+  page,
+  browser,
+}, testInfo) => {
+  await observe(page);
+  await page.goto('/');
+  const file = fixture(64);
+  await load(page, file, true, 4);
+  await page.evaluate(() => {
+    document.addEventListener('visibilitychange', (event) => {
+      document.documentElement.dataset.lifecycleVisibility = JSON.stringify({
+        state: document.visibilityState,
+        trusted: event.isTrusted,
+        at: performance.now(),
+      });
+    });
+    document.getElementById('pause')!.click();
+  });
+  await page.waitForFunction(() => window.longRun.state?.rate.status === 'measured');
+  const before = await page.evaluate(() => ({
+    time: performance.now(),
+    state: window.longRun.state,
+  }));
+  const session = await page.context().newCDPSession(page);
+  await session.send('Page.setWebLifecycleState', { state: 'frozen' });
+  const suspended = await session.send('Runtime.evaluate', {
+    expression:
+      'JSON.stringify({visibility:document.visibilityState,event:document.documentElement.dataset.lifecycleVisibility})',
+    returnByValue: true,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 2300));
+  await session.send('Page.setWebLifecycleState', { state: 'active' });
+  await session.send('Page.bringToFront');
+  await page.locator('#world').scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => window.longRun.state?.display.visible);
+  const resumed = await page.evaluate(() => ({
+    time: performance.now(),
+    visibility: document.visibilityState,
+    event: document.documentElement.dataset.lifecycleVisibility,
+    state: window.longRun.state,
+  }));
+  await control(page, 'pause');
+  const saved = await settle(page);
+  const reference = Ecosystem.load(JSON.stringify(file));
+  for (let tick = reference.tick; tick < saved.tick; tick++) reference.step();
+  expect(saved).toEqual(reference.save());
+  expect(resumed.time - before.time).toBeGreaterThanOrEqual(2300);
+  expect(resumed.visibility).toBe('visible');
+  await attachEvidence(testInfo, 'actual-lifecycle-evidence', {
+    ...runtime(),
+    browser: browser.version(),
+    project: testInfo.project.name,
+    before,
+    suspended: JSON.parse(suspended.result.value),
+    resumed,
+    savedTick: saved.tick,
+    completeSaveSHA256: createHash('sha256').update(JSON.stringify(saved)).digest('hex'),
+    limitations:
+      'Chromium CDP frozen/active requests, not synthetic visibility dispatch. Inspect observed visibility/event fields: this headless browser may remain visible and keep its worker running despite the request. Missing events mean no trusted visibility transition was observed. This does not prove physical hidden-tab throttling, suspension, discard or OS sleep; complete elapsed wall time is retained.',
+  });
+  await session.detach();
+});
+
+test('native exact targets, suspended cancellation and render-off editing preserve complete saves', async ({
+  page,
+}, testInfo) => {
+  await observe(page);
+  await page.goto('/');
+  const file = fixture(64);
+  const records: object[] = [];
+  const capture = async (name: string) => {
+    const path = testInfo.outputPath(`${name}.png`);
+    await page.screenshot({ path, fullPage: true });
+    await testInfo.attach(name, { path, contentType: 'image/png' });
+  };
+  for (const speed of [1, 4, 12])
+    for (const render of [true, false]) {
+      await load(page, file, render, speed);
+      await page.locator('#target-tick').fill(String(file.tick + 31));
+      await page.locator('#target-tick').press('Enter');
+      await page.waitForFunction(() => window.longRun.state?.target?.status === 'reached');
+      const saved = await settle(page);
+      const reference = Ecosystem.load(JSON.stringify(file));
+      for (let tick = 0; tick < 31; tick++) reference.step();
+      expect(saved).toEqual(reference.save());
+      expect(saved.tick).toBe(file.tick + 31);
+      records.push({
+        speed,
+        render,
+        tick: saved.tick,
+        saveSHA256: createHash('sha256').update(JSON.stringify(saved)).digest('hex'),
+      });
+      await page.locator('#target-tick').focus();
+      await capture(`target-reached-speed-${speed}-render-${render}`);
+    }
+  await load(page, file, false, 1);
+  await page.locator('#target-tick').fill(String(file.tick + 1000000));
+  await page.locator('#run-to-tick').click();
+  await page.waitForFunction(() => window.longRun.state?.target?.status === 'running');
+  await capture('render-off-target-running');
+  await page.locator('#pause').click();
+  await page.waitForFunction(() => window.longRun.state?.target?.status === 'suspended');
+  const suspended = await settle(page);
+  await capture('target-suspended');
+  await page.locator('#cancel-target').focus();
+  await page.locator('#cancel-target').press('Enter');
+  await page.waitForFunction(() => window.longRun.state?.target?.status === 'cancelled');
+  expect(await settle(page)).toEqual(suspended);
+  await capture('target-cancelled');
+  await page.locator('#step').click();
+  const stepped = await settle(page);
+  const reference = Ecosystem.load(JSON.stringify(file));
+  for (let tick = reference.tick; tick < stepped.tick; tick++) reference.step();
+  expect(stepped.tick).toBe(suspended.tick + 1);
+  expect(stepped).toEqual(reference.save());
+  await capture('render-off-paused-step');
+  await page.locator('#render-habitat').check();
+  await page.locator('#world').scrollIntoViewIfNeeded();
+  await expect(page.locator('#habitat-freshness')).toContainText(
+    `Habitat current at tick ${stepped.tick}`,
+  );
+  expect(await settle(page)).toEqual(stepped);
+  await capture('render-reenabled-current');
+  await page.locator('#file').setInputFiles({
+    name: 'invalid-world.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify({ ...stepped, version: 99 })),
+  });
+  await expect(page.locator('#notice')).toContainText('version 2, 3 or 4');
+  expect(await settle(page)).toEqual(stepped);
+  await capture('retained-world-failed-import');
+  await attachEvidence(testInfo, 'native-target-evidence', {
+    ...runtime(),
+    project: testInfo.project.name,
+    records,
+    suspendedTick: suspended.tick,
+    steppedTick: stepped.tick,
+  });
+});
+
+for (const replacement of ['invalid', 'empty'])
+  for (const frameFirst of [false, true])
+    test(`real held-frame ${replacement} replacement frameFirst=${frameFirst}`, async ({
+      page,
+    }, testInfo) => {
+      await observe(page);
+      await page.goto('/');
+      const file = fixture(64);
+      await load(page, file, true, 4);
+      await page.waitForFunction(() => window.longRun.frameAt > 0 && window.longRun.draws > 0);
+      await page.evaluate(() => {
+        window.longRun.holdFrame = true;
+        document.getElementById('refresh-habitat')!.click();
+      });
+      await page.waitForFunction(() => !!window.longRun.releaseFrame);
+      const before = await page.evaluate(() => ({
+        counters: window.longRun.counters!,
+        draws: window.longRun.draws,
+      }));
+      const empty = new Ecosystem(file.settings, false);
+      for (let tick = 0; tick < file.tick; tick++) empty.step();
+      const candidate = replacement === 'invalid' ? { ...file, version: 99 } : empty.save();
+      await page.evaluate(() => {
+        window.longRun.holdTerminal = true;
+      });
+      await page.locator('#file').setInputFiles({
+        name: 'held-replacement.json',
+        mimeType: 'application/json',
+        buffer: Buffer.from(JSON.stringify(candidate)),
+      });
+      await page.waitForFunction(() => !!window.longRun.releaseTerminal);
+      await page.locator('#world').scrollIntoViewIfNeeded();
+      await page.evaluate((frameFirst) => {
+        if (frameFirst) {
+          window.longRun.releaseFrame!();
+          window.longRun.releaseTerminal!();
+        } else {
+          window.longRun.releaseTerminal!();
+          window.longRun.releaseFrame!();
+        }
+      }, frameFirst);
+      await page.waitForFunction((draws) => window.longRun.draws > draws, before.draws);
+      const expected = replacement === 'invalid' ? file : empty.save();
+      await expect(page.locator('#habitat-freshness')).toContainText(
+        `Habitat current at tick ${expected.tick}`,
+      );
+      const after = await page.evaluate(() => ({
+        counters: window.longRun.counters!,
+        draws: window.longRun.draws,
+      }));
+      expect(after.counters.gridBuilds - before.counters.gridBuilds).toBe(1);
+      expect(after.counters.gridBytes - before.counters.gridBytes).toBe(187200);
+      expect(after.draws - before.draws).toBe(1);
+      expect(after.counters.maxDisplay).toBe(1);
+      expect(await settle(page)).toEqual(expected);
+      await attachEvidence(testInfo, 'real-held-frame-evidence', {
+        ...runtime(),
+        project: testInfo.project.name,
+        replacement,
+        frameFirst,
+        before,
+        after,
+        saveSHA256: createHash('sha256').update(JSON.stringify(expected)).digest('hex'),
+      });
+    });
+
+test('render-off progresses and records history before any habitat is drawn', async ({
+  page,
+}, testInfo) => {
+  await observe(page);
+  await page.addInitScript(() => {
+    window.longRun.holdFrame = true;
+  });
+  await page.goto('/');
+  await page.waitForFunction(() => !!window.longRun.releaseFrame);
+  await control(page, 'pause');
+  await page.locator('#render-habitat').uncheck();
+  const before = await settle(page);
+  const counters = await page.evaluate(() => window.longRun.counters!);
+  await page.locator('#target-tick').fill(String(before.tick + 61));
+  await page.locator('#run-to-tick').click();
+  await page.waitForFunction(() => window.longRun.state?.target?.status === 'reached');
+  const saved = await settle(page);
+  const reference = Ecosystem.load(JSON.stringify(before));
+  for (let tick = 0; tick < 61; tick++) reference.step();
+  expect(saved).toEqual(reference.save());
+  const after = await page.evaluate(() => ({
+    draws: window.longRun.draws,
+    counters: window.longRun.counters!,
+    state: window.longRun.state,
+  }));
+  expect(after.draws).toBe(0);
+  expect(after.counters.gridBuilds).toBe(counters.gridBuilds);
+  expect(after.counters.gridBytes).toBe(counters.gridBytes);
+  await expect(page.locator('#habitat-freshness')).toContainText('habitat tick not received');
+  const path = testInfo.outputPath('no-habitat-render-off.png');
+  await page.screenshot({ path, fullPage: true });
+  await testInfo.attach('no-habitat-render-off', { path, contentType: 'image/png' });
+  await attachEvidence(testInfo, 'no-habitat-evidence', {
+    ...runtime(),
+    project: testInfo.project.name,
+    beforeTick: before.tick,
+    after,
+    savedTick: saved.tick,
+    recordedSamples: saved.telemetry.samples.length,
+    limitations:
+      'The default-on startup frame is held before page consumption and is counted separately; after disabling rendering no additional grids are built or transferred. This is not a claim that default-on startup built no grid.',
+  });
+  await page.evaluate(() => window.longRun.releaseFrame!());
+  expect(await settle(page)).toEqual(saved);
+  expect(await page.evaluate(() => window.longRun.draws)).toBe(0);
 });
 
 for (const population of [64, 1600]) {
