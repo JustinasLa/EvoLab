@@ -7,29 +7,136 @@ import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../src/
 import { startWorker, type Scope } from '../src/worker';
 class WorkerStub {
   playback: PlaybackState = { paused: false, pauseOnExtinction: true, extinction: null };
+  pendingCommand: any;
+  commands = vi.fn((data: any) => {
+    this.pendingCommand = data;
+  });
+  revision = 0;
+  sequence = 0;
+  progressSequence = 0;
+  state: any;
+  display = { epoch: 0, enabled: true, visible: true };
+  fixture: Frame | undefined;
   postMessage = vi.fn((data: any) => {
+    if (data.type === 'flow-ack') return;
+    this.commands(data);
+    if (data.type === 'load' || data.type === 'save') return;
     if (data.type === 'pause' || data.type === 'resume')
-      this.emit({
-        type: 'playback',
-        playback: { ...this.playback, paused: data.type === 'pause' },
-      });
+      this.playback = { ...this.playback, paused: data.type === 'pause' };
+    if (data.type === 'pause-on-extinction')
+      this.playback = { ...this.playback, pauseOnExtinction: data.value };
+    if (data.type === 'display-view') this.display = { ...data.view };
+    if (data.type === 'start') {
+      this.display = { ...data.display };
+      this.fixture = sample;
+    }
+    this.emit({
+      type: 'control',
+      settings:
+        data.type === 'start'
+          ? data.settings
+          : data.type === 'settings'
+            ? { ...this.state.settings, ...data.settings }
+            : this.state?.settings,
+      speed: data.type === 'speed' ? data.value : this.state?.speed,
+    });
   });
   terminate = vi.fn();
-  onmessage: ((e: MessageEvent) => void) | null = null;
+  onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: (() => void) | null = null;
-  emit(data: any, runId?: number): void {
-    if (data.playback) this.playback = data.playback;
-    this.onmessage?.({
-      data: {
-        playback: this.playback,
-        runId:
-          runId ??
-          this.postMessage.mock.calls
-            .filter((c) => ['start', 'load'].includes(c[0].type))
-            .at(-1)?.[0].runId,
-        ...data,
+  emit(fixture: any, run?: number): void {
+    if (fixture.state || fixture.recovery?.state) {
+      this.onmessage?.({ data: fixture } as MessageEvent);
+      return;
+    }
+    const command = this.commands.mock.calls.at(-1)?.[0];
+    const runId = run ?? command?.runId ?? 1;
+    const frame = fixture.frame ?? this.fixture ?? sample;
+    if (fixture.frame) this.fixture = fixture.frame;
+    if (fixture.playback) this.playback = fixture.playback;
+    const state = {
+      replacementId:
+        fixture.type === 'loaded' || command?.type === 'start'
+          ? command.commandId
+          : (this.state?.replacementId ?? 1),
+      revision: ++this.revision,
+      world: { stats: frame.stats, climate: frame.climate, offset: frame.offset },
+      selected: fixture.selected ?? null,
+      settings: fixture.settings ?? this.state?.settings ?? DEFAULTS,
+      speed: fixture.speed ?? this.state?.speed ?? 4,
+      playback: this.playback,
+      target: null,
+      display: this.display,
+      rate: {
+        value: null,
+        elapsedMs: 0,
+        completedTicks: 0,
+        context: 'visible',
+        status: this.playback.paused ? 'paused' : 'warming',
       },
-    } as MessageEvent);
+    };
+    this.state = state;
+    const telemetry = {
+      revision: state.revision,
+      tick: frame.stats.tick,
+      telemetry: frame.telemetry,
+    };
+    let data: any;
+    if (fixture.type === 'frame')
+      data = {
+        type: 'frame',
+        runId,
+        sequence: ++this.sequence,
+        viewEpoch: this.display.epoch,
+        state,
+        frame: { cells: frame.cells, ids: frame.ids, ...state.world },
+        selectedId: state.selected?.id ?? 0,
+      };
+    else if (fixture.type === 'error')
+      data = {
+        type: 'error',
+        runId,
+        commandId: command?.commandId,
+        code: fixture.fatal ? 'fatal' : 'load-failed',
+        message: fixture.message,
+        ...(fixture.fatal ? { fatal: true } : {}),
+        ...(fixture.recovery
+          ? {
+              recovery: {
+                state: {
+                  ...state,
+                  world: {
+                    stats: fixture.recovery.frame.stats,
+                    climate: fixture.recovery.frame.climate,
+                    offset: fixture.recovery.frame.offset,
+                  },
+                  selected: fixture.recovery.selected,
+                  settings: fixture.recovery.settings,
+                  playback: fixture.recovery.playback,
+                },
+                telemetry: { ...telemetry, telemetry: fixture.recovery.frame.telemetry },
+              },
+            }
+          : {}),
+      };
+    else if (fixture.type === 'saved')
+      data = { type: 'saved', runId, commandId: command?.commandId, state, text: fixture.text };
+    else if (fixture.type === 'playback' && !this.pendingCommand)
+      data = { type: 'progress', runId, sequence: ++this.progressSequence, state, telemetry };
+    else
+      data = {
+        type: fixture.type === 'loaded' ? 'loaded' : 'control',
+        runId,
+        commandId: command?.commandId,
+        state,
+        telemetry,
+      };
+    if (data.commandId !== undefined) this.pendingCommand = null;
+    this.onmessage?.({ data } as MessageEvent);
+    if (fixture.type === 'frame')
+      this.onmessage?.({
+        data: { type: 'progress', runId, sequence: ++this.progressSequence, state, telemetry },
+      } as MessageEvent);
   }
 }
 let root: HTMLDivElement, worker: WorkerStub, dispose: () => void, paint: FrameRequestCallback;
@@ -58,23 +165,97 @@ async function loadText(text: string): Promise<void> {
 function realWorker() {
   const tasks: (() => void)[] = [],
     outbox: any[] = [];
+  let commandId = 0,
+    currentRun = 1,
+    time = 0;
+  const identities = new Map<number, number>();
+  const direct = new WeakSet<object>();
   const scope: Scope = {
     onmessage: null,
-    postMessage: (data, transfer = []) => outbox.push(structuredClone(data, { transfer })),
+    postMessage: (data, transfer = []) => {
+      const response: any = structuredClone(data, { transfer });
+      if ('commandId' in response) {
+        const pageId = identities.get(response.commandId);
+        identities.delete(response.commandId);
+        if (pageId !== undefined) response.commandId = pageId;
+        else direct.add(response);
+      }
+      outbox.push(response);
+    },
   };
-  startWorker(scope, (callback) => tasks.push(callback));
-  const command = (data: any) => scope.onmessage!({ data } as MessageEvent);
-  const initial = worker.postMessage.mock.calls[0][0];
-  worker.postMessage.mockImplementation(command);
-  command(initial);
+  startWorker(
+    scope,
+    (callback) => tasks.push(callback),
+    () => time,
+  );
+  const command = (data: any, page = false) => {
+    if (!page && data.type === 'snapshot') {
+      click('refresh-habitat');
+      return;
+    }
+    if (!page && data.type === 'pause-on-extinction') {
+      get<HTMLInputElement>('pause-on-extinction').checked = data.value;
+      get('pause-on-extinction').dispatchEvent(new Event('change'));
+      return;
+    }
+    if (!page && data.type === 'inspect') {
+      root.querySelector<HTMLButtonElement>('[data-tool="inspect"]')!.click();
+      const canvas = get<HTMLCanvasElement>('world'),
+        view = viewport(canvas, { zoom: 1, x: 0, y: 0 });
+      pointer(
+        'pointerdown',
+        view.left + (data.x + 0.5) * view.scale,
+        view.top + (data.y + 0.5) * view.scale,
+      );
+      window.dispatchEvent(new Event('pointerup'));
+      return;
+    }
+    if (data.type === 'flow-ack') {
+      scope.onmessage!({ data } as MessageEvent);
+      return;
+    }
+    if (data.type === 'start' || data.type === 'load') currentRun = data.runId;
+    const identity = ++commandId;
+    if (page) identities.set(identity, data.commandId);
+    scope.onmessage!({
+      data: {
+        ...(data.type === 'snapshot' ? { display: true } : {}),
+        ...data,
+        commandId: identity,
+        runId: data.runId ?? currentRun,
+      },
+    } as MessageEvent);
+  };
+  const initial = worker.commands.mock.calls[0][0];
+  worker.postMessage.mockImplementation((data) => {
+    if (data.type !== 'flow-ack') worker.commands(data);
+    command(data, true);
+  });
+  command(initial, true);
   const deliver = () => {
-    for (const data of outbox.splice(0)) worker.onmessage!({ data } as MessageEvent);
+    let deliveries = 0;
+    while (outbox.length) {
+      if (++deliveries > 100) throw new Error('Unbounded message pump.');
+      const data = outbox.shift()!;
+      if (!direct.has(data)) worker.onmessage!({ data } as MessageEvent);
+    }
   };
   const save = (): WorldFile => {
     command({ type: 'save' });
-    return JSON.parse(outbox.pop().text);
+    const saved = outbox.findLastIndex((data) => data.type === 'saved');
+    return JSON.parse(outbox.splice(saved, 1)[0].text);
   };
-  return { tasks, outbox, command, deliver, save, advance: () => tasks.shift()!() };
+  return {
+    tasks,
+    outbox,
+    command,
+    deliver,
+    save,
+    advance: () => {
+      time += 40;
+      tasks.shift()!();
+    },
+  };
 }
 function nearDeath(): WorldFile {
   const world = new Ecosystem({ ...DEFAULTS, climate: 0, nutrients: 0 }, false);
@@ -205,7 +386,7 @@ describe('ecosystem desk', () => {
     pointer('pointerdown');
     pointer('pointermove', 170, 180);
     window.dispatchEvent(new Event('pointerup'));
-    expect(worker.postMessage).toHaveBeenCalledTimes(1);
+    expect(worker.commands).toHaveBeenCalledTimes(1);
     expect(get<HTMLDetailsElement>('specimen-details').open).toBe(false);
   });
   it('keeps the habitat clear and consolidates the interface in the sidebar', () => {
@@ -238,11 +419,13 @@ describe('ecosystem desk', () => {
     expect(root.querySelector<HTMLDetailsElement>('.legend')!.open).toBe(false);
   });
   it('starts immediately, pauses, single-steps, changes settings live and reseeds', () => {
-    expect(worker.postMessage).toHaveBeenCalledWith({
-      type: 'start',
-      settings: DEFAULTS,
-      runId: 1,
-    });
+    expect(worker.commands).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'start',
+        settings: DEFAULTS,
+        runId: 1,
+      }),
+    );
     paint(0);
     window.dispatchEvent(new Event('resize'));
     click('step');
@@ -250,10 +433,12 @@ describe('ecosystem desk', () => {
     click('pause');
     expect(get<HTMLButtonElement>('step').disabled).toBe(false);
     click('step');
-    expect(worker.postMessage).toHaveBeenLastCalledWith({ type: 'step' });
+    expect(worker.commands).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'step' }));
     click('pause');
     set('speed', '12', 'change');
-    expect(worker.postMessage).toHaveBeenLastCalledWith({ type: 'speed', value: 12 });
+    expect(worker.commands).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'speed', value: 12 }),
+    );
     set('mutation', '.2');
     set('nutrients', '8');
     set('climate', '.5');
@@ -261,13 +446,15 @@ describe('ecosystem desk', () => {
     expect(get('nutrients-value').textContent).toBe('8%');
     expect(get('brush-value').textContent).toBe('5 cells');
     root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
-    expect(worker.postMessage).toHaveBeenLastCalledWith({ type: 'shock', kind: 'heat' });
+    expect(worker.commands).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'shock', kind: 'heat' }),
+    );
     set('seed', '-1');
     click('reset');
     expect(get('notice').textContent).toContain('whole-number');
     set('seed', '99');
     click('reset');
-    expect(worker.postMessage).toHaveBeenLastCalledWith(
+    expect(worker.commands).toHaveBeenLastCalledWith(
       expect.objectContaining({
         type: 'start',
         runId: 2,
@@ -348,7 +535,7 @@ describe('ecosystem desk', () => {
     expect(points(() => emit(ring.frame()))).toHaveLength(180);
     expect(points(() => window.dispatchEvent(new Event('resize')))).toHaveLength(180);
     worker.emit({ type: 'loaded', settings: DEFAULTS });
-    expect(points(() => emit(sample))).toEqual([]);
+    expect(points(() => emit(ring.frame()))).toHaveLength(180);
     click('reset');
     expect(points(() => emit(sample))).toEqual([]);
   });
@@ -360,15 +547,13 @@ describe('ecosystem desk', () => {
     window.dispatchEvent(new Event('pointerup'));
     pointer('pointerdown');
     expect(get<HTMLDetailsElement>('specimen-details').open).toBe(true);
-    expect(worker.postMessage).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: 'inspect' }),
-    );
+    expect(worker.commands).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'inspect' }));
     pointer('pointermove', 155, 155);
     window.dispatchEvent(new Event('pointerup'));
     root.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
     pointer('pointerdown');
     pointer('pointermove', 160, 150);
-    expect(worker.postMessage).toHaveBeenLastCalledWith(
+    expect(worker.commands).toHaveBeenLastCalledWith(
       expect.objectContaining({ type: 'paint', tool: 'food' }),
     );
     window.dispatchEvent(new Event('pointercancel'));
@@ -407,17 +592,19 @@ describe('ecosystem desk', () => {
     expect(get('preference-value').textContent).toBe('30°');
     click('plant-design');
     expect(get('world').dataset.tool).toBe('plant');
-    expect(get('world').scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
+    expect(get('world').scrollIntoView).toHaveBeenCalledWith(
+      expect.objectContaining({ block: 'center' }),
+    );
     pointer('pointerdown');
     pointer('pointermove');
     window.dispatchEvent(new Event('pointerup'));
-    expect(worker.postMessage).toHaveBeenLastCalledWith(
+    expect(worker.commands).toHaveBeenLastCalledWith(
       expect.objectContaining({ type: 'paint', tool: 'plant' }),
     );
     click('clear-design');
     expect(root.querySelectorAll('#editor button')).toHaveLength(81);
   });
-  it('handles keyboard shortcuts, help, errors, and disposal', () => {
+  it('handles keyboard shortcuts, help, errors, and disposal', async () => {
     const key = (key: string, code = key) =>
       window.dispatchEvent(new KeyboardEvent('keydown', { key, code, cancelable: true }));
     key(' ', 'Space');
@@ -437,7 +624,12 @@ describe('ecosystem desk', () => {
     click('close-help');
     key('w');
     expect(get('world').dataset.tool).toBe('wall');
-    worker.emit({ type: 'error', message: 'Bad import' });
+    await loadText('{}');
+    worker.emit({
+      type: 'error',
+      message: 'Bad import',
+      recovery: { frame: sample, selected: null, settings: DEFAULTS, playback: worker.playback },
+    });
     expect(get('notice').textContent).toBe('Bad import');
     worker.emit({ type: 'error', message: 'Failed tick', fatal: true });
     expect(get('run-state').textContent).toBe('STOPPED');
@@ -450,7 +642,7 @@ describe('ecosystem desk', () => {
     vi.useFakeTimers();
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
     click('save');
-    expect(worker.postMessage).toHaveBeenLastCalledWith({ type: 'save' });
+    expect(worker.commands).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'save' }));
     worker.emit({ type: 'saved', text: JSON.stringify(world.save()) });
     expect(URL.createObjectURL).toHaveBeenCalled();
     vi.runAllTimers();
@@ -462,11 +654,13 @@ describe('ecosystem desk', () => {
     upload();
     upload({ size: 100, text: async () => 'world' });
     await vi.waitFor(() =>
-      expect(worker.postMessage).toHaveBeenLastCalledWith({
-        type: 'load',
-        text: 'world',
-        runId: 2,
-      }),
+      expect(worker.commands).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          type: 'load',
+          text: 'world',
+          runId: 2,
+        }),
+      ),
     );
     worker.emit({
       type: 'loaded',
@@ -504,7 +698,7 @@ describe('ecosystem desk', () => {
     dispose();
     finish('world');
     await Promise.resolve();
-    expect(worker.postMessage).toHaveBeenCalledTimes(1);
+    expect(worker.commands).toHaveBeenCalledTimes(1);
   });
   it('boots the app entry point', async () => {
     root.id = 'app';
@@ -573,10 +767,10 @@ describe('standalone blueprint files', () => {
       if (paused) click('pause');
       click('plant-design');
       click('ecosystem-tab');
-      const commands = worker.postMessage.mock.calls.length;
+      const commands = worker.commands.mock.calls.length;
       vi.mocked(get('world').scrollIntoView).mockClear();
       await importDraft();
-      expect(worker.postMessage).toHaveBeenCalledTimes(commands);
+      expect(worker.commands).toHaveBeenCalledTimes(commands);
       expect(get('world').scrollIntoView).not.toHaveBeenCalled();
       expect(get('world').dataset.tool).toBe('pan');
       expect(get('organism-panel').hidden).toBe(false);
@@ -589,12 +783,21 @@ describe('standalone blueprint files', () => {
       expect(root.querySelector('img, script, [onerror]')).toBeNull();
       pointer('pointerdown');
       window.dispatchEvent(new Event('pointerup'));
-      expect(worker.postMessage).toHaveBeenCalledTimes(commands);
+      expect(worker.commands).toHaveBeenCalledTimes(commands);
       click('plant-design');
       pointer('pointerdown');
-      const message = worker.postMessage.mock.calls.at(-1)![0];
+      const message = worker.commands.mock.calls.at(-1)![0];
       expect(message).toMatchObject({ type: 'paint', tool: 'plant', genome: fixture().genome });
-      expect(Object.keys(message)).toEqual(['type', 'tool', 'x', 'y', 'radius', 'genome']);
+      expect(Object.keys(message)).toEqual([
+        'type',
+        'tool',
+        'x',
+        'y',
+        'radius',
+        'genome',
+        'runId',
+        'commandId',
+      ]);
     },
   );
 
@@ -703,7 +906,7 @@ describe('standalone blueprint files', () => {
     click('pause');
     click('plant-design');
     const before = draftState();
-    const commands = worker.postMessage.mock.calls.length;
+    const commands = worker.commands.mock.calls.length;
     const invalid = [
       '{',
       '{}',
@@ -750,7 +953,7 @@ describe('standalone blueprint files', () => {
       );
       expect(draftState()).toEqual(before);
     }
-    expect(worker.postMessage).toHaveBeenCalledTimes(commands);
+    expect(worker.commands).toHaveBeenCalledTimes(commands);
     expect(input().value).toBe('');
   });
 
@@ -867,6 +1070,7 @@ describe('standalone blueprint files', () => {
       if (action === 'common') root.querySelector<HTMLButtonElement>('.lineage')!.click();
       if (action === 'reseed') click('reset');
       if (action === 'world-load') {
+        if (worker.pendingCommand) worker.emit({ type: 'loaded', settings: DEFAULTS });
         upload({ size: 1, text: async () => 'world' });
         await flush();
       }
@@ -916,45 +1120,34 @@ describe('standalone blueprint files', () => {
       );
       get(id).dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'p' }));
     }
-    expect(worker.postMessage).toHaveBeenCalledTimes(1);
+    expect(worker.commands).toHaveBeenCalledTimes(1);
     expect(get('world').dataset.tool).toBe('pan');
   });
 
   it('keeps complete paused real-worker saves identical until explicit planting and exact Step', async () => {
-    const deferred: (() => void)[] = [],
-      messages: any[] = [];
-    const scope: Scope = {
-      onmessage: null,
-      postMessage: (data) => {
-        messages.push(data);
-        worker.emit(data);
-      },
-    };
-    startWorker(scope, (callback) => deferred.push(callback));
-    const send = (data: object) => scope.onmessage!({ data } as MessageEvent);
-    worker.postMessage.mockImplementation(send);
-    send({ type: 'start', settings: DEFAULTS, runId: 1 });
+    const harness = realWorker();
+    harness.deliver();
     click('pause');
-    deferred.shift()!();
-    const save = () => {
-      send({ type: 'save' });
-      return messages.at(-1).text as string;
-    };
+    harness.deliver();
+    harness.advance();
+    const save = () => JSON.stringify(harness.save());
     const before = save();
     await importDraft();
     await exported();
     expect(save()).toBe(before);
-    expect(deferred).toHaveLength(0);
+    expect(harness.tasks).toHaveLength(0);
     const population = JSON.parse(before).organisms.length;
     click('plant-design');
     pointer('pointerdown');
     window.dispatchEvent(new Event('pointerup'));
+    harness.deliver();
     expect(JSON.parse(save()).organisms).toHaveLength(population + 1);
     expect(get('run-state').textContent).toBe('PAUSED');
     click('step');
+    harness.deliver();
     expect(JSON.parse(save()).tick).toBe(JSON.parse(before).tick + 1);
     expect(get('run-state').textContent).toBe('PAUSED');
-    expect(deferred).toHaveLength(0);
+    expect(harness.tasks).toHaveLength(0);
   });
 });
 
@@ -963,8 +1156,10 @@ describe('authoritative playback presentation', () => {
     expect(get<HTMLInputElement>('pause-on-extinction').checked).toBe(true);
     expect(get('extinction-summary').hidden).toBe(true);
     expect(get('extinction-help').textContent).toBe('On by default; applies to this tab.');
-    expect(worker.postMessage).toHaveBeenCalledTimes(1);
-    worker.postMessage.mockImplementation(() => {});
+    expect(worker.commands).toHaveBeenCalledTimes(1);
+    worker.postMessage.mockImplementation((data) => {
+      if (data.type !== 'flow-ack') worker.commands(data);
+    });
     click('pause');
     expect(get('run-state').textContent).toBe('LIVE');
     worker.emit({
@@ -973,11 +1168,13 @@ describe('authoritative playback presentation', () => {
     });
     expect(get('run-state').textContent).toBe('PAUSED');
     click('pause-on-extinction');
-    expect(worker.postMessage).toHaveBeenLastCalledWith({
-      type: 'pause-on-extinction',
-      runId: 1,
-      value: false,
-    });
+    expect(worker.commands).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: 'pause-on-extinction',
+        runId: 1,
+        value: false,
+      }),
+    );
     worker.emit({
       type: 'playback',
       playback: { paused: true, pauseOnExtinction: false, extinction: null },
@@ -985,7 +1182,7 @@ describe('authoritative playback presentation', () => {
     expect(get<HTMLButtonElement>('step').disabled).toBe(false);
     expect(get('run-state').textContent).toBe('PAUSED');
     click('pause');
-    expect(worker.postMessage).toHaveBeenLastCalledWith({ type: 'resume' });
+    expect(worker.commands).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'resume' }));
     expect(get('run-state').textContent).toBe('PAUSED');
     worker.emit({
       type: 'playback',
@@ -1021,15 +1218,18 @@ describe('authoritative playback presentation', () => {
       expect(get('inspector').textContent).toContain('Click any organism');
       expect(get('lineages').textContent).toContain('quiet');
       const summary = get('extinction-summary').textContent;
-      worker.postMessage.mockImplementation(() => {});
+      worker.postMessage.mockImplementation((data) => {
+        if (data.type !== 'flow-ack') worker.commands(data);
+      });
       click('pause');
       expect(get('notice').textContent).toContain(
         'Place an organism, or turn off Pause on extinction and press Resume.',
       );
       expect(get('run-state').textContent).toBe('PAUSED');
       worker.emit({ type: 'playback', playback });
+      const beforeNotice = get('notice').textContent;
       worker.emit({ type: 'error', message: 'Rejected file' });
-      expect(get('notice').textContent).toBe('Rejected file');
+      expect(get('notice').textContent).toBe(beforeNotice);
       expect(get('extinction-summary').textContent).toBe(summary);
       click('save');
       click('help');
@@ -1054,12 +1254,13 @@ describe('authoritative playback presentation', () => {
     },
   );
 
-  it('renders empty successful loads as paused before the ecological frame and shows intentional running accurately', () => {
+  it('renders empty successful loads as paused before the ecological frame and shows intentional running accurately', async () => {
     const playback = {
       paused: true,
       pauseOnExtinction: true,
       extinction: { tick: 71, cause: 'empty-import' },
     };
+    await loadText('{}');
     worker.emit({ type: 'loaded', settings: DEFAULTS, playback });
     expect(get('run-state').textContent).toBe('PAUSED');
     expect(get<HTMLButtonElement>('step').disabled).toBe(false);
@@ -1126,11 +1327,11 @@ describe('display-only retained-world races', () => {
         const summary = get('extinction-summary').textContent;
         const steps = vi.spyOn(Ecosystem.prototype, 'step');
         await loadText('{}');
-        expect(harness.outbox).toHaveLength(1);
-        expect(harness.outbox[0]).toMatchObject({
+        expect(harness.outbox.filter((data) => data.type === 'error')).toHaveLength(1);
+        expect(harness.outbox.find((data) => data.type === 'error')).toMatchObject({
           type: 'error',
           runId: 3,
-          recovery: { settings: { nutrients: 0 } },
+          recovery: { state: { settings: { nutrients: 0 } } },
         });
         const paths = chart.paths.length;
         if (multiple) {
@@ -1140,7 +1341,7 @@ describe('display-only retained-world races', () => {
         }
         set('nutrients', '7');
         click('ecosystem-tab');
-        const commands = worker.postMessage.mock.calls.length;
+        const commands = worker.commands.mock.calls.length;
         set('telemetry-view', 'population', 'change');
         set('telemetry-sample', '30', 'change');
         get('telemetry-sample').focus();
@@ -1152,7 +1353,7 @@ describe('display-only retained-world races', () => {
           new KeyboardEvent('keydown', { key: 'i', code: 'KeyI', bubbles: true }),
         );
         paint(0);
-        expect(worker.postMessage.mock.calls).toHaveLength(commands);
+        expect(worker.commands.mock.calls).toHaveLength(commands);
         const expected = {
           ...before,
           settings: {
@@ -1161,7 +1362,7 @@ describe('display-only retained-world races', () => {
             nutrients: 7,
           },
         };
-        expect(harness.save()).toEqual(expected);
+        expect(harness.save()).toEqual(before);
         harness.deliver();
         expect(get<HTMLInputElement>('nutrients').value).toBe('7');
         expect(get('nutrients-value').textContent).toBe('7%');
@@ -1194,7 +1395,7 @@ describe('display-only retained-world races', () => {
         harness.deliver();
         expect(chart.paths.at(-1)).toEqual(chart.expected(history));
         click('reset');
-        const started = worker.postMessage.mock.calls.at(-1)![0];
+        const started = worker.commands.mock.calls.at(-1)![0];
         expect(started).toMatchObject({ type: 'start', settings: expected.settings, runId: 4 });
         expect(harness.save()).toEqual(new Ecosystem(expected.settings).save());
         expect(harness.tasks).toHaveLength(1);
@@ -1225,7 +1426,7 @@ describe('display-only retained-world races', () => {
     expect(get('climate-value').textContent).toBe('25%');
     expect(harness.save()).toEqual({ ...imported, settings: expected });
     click('reset');
-    expect(worker.postMessage.mock.calls.at(-1)![0]).toMatchObject({ settings: expected });
+    expect(worker.commands.mock.calls.at(-1)![0]).toMatchObject({ settings: expected });
     harness.deliver();
     await loadText(JSON.stringify(imported));
     harness.deliver();
@@ -1240,7 +1441,7 @@ describe('display-only retained-world races', () => {
       const harness = realWorker();
       harness.deliver();
       await loadText('{}');
-      const recovery = harness.outbox.splice(0)[0];
+      const recovery = harness.outbox.find((data) => data.type === 'error');
       set('nutrients', '7');
       if (boundary === 'reset') click('reset');
       else if (boundary === 'load') await loadText(JSON.stringify(nearDeath()));
@@ -1290,17 +1491,18 @@ describe('display-only retained-world races', () => {
           if (scenario === 'enable-empty')
             harness.command({ type: 'pause-on-extinction', runId: 2, value: true });
         }
+        const held = [...harness.outbox];
+        harness.deliver();
         const before = harness.save();
         const pending = harness.tasks.length;
-        const held = harness.outbox.splice(0);
-        const beforeDisplay = root.innerHTML;
         const paths = chart.paths.length;
         await loadText('{}');
+        const beforeDisplay = root.innerHTML;
         for (const data of held) worker.onmessage!({ data } as MessageEvent);
         expect(root.innerHTML).toBe(beforeDisplay);
         expect(chart.paths).toHaveLength(paths);
-        expect(harness.outbox).toHaveLength(1);
-        const recovery = harness.outbox[0];
+        expect(harness.outbox.filter((data) => data.type === 'error')).toHaveLength(1);
+        const recovery = harness.outbox.find((data) => data.type === 'error');
         expect(recovery).toMatchObject({ type: 'error', runId: 3 });
         harness.deliver();
         expect(get('notice').textContent).toContain('Not a valid EvoLab ecosystem');
@@ -1308,7 +1510,7 @@ describe('display-only retained-world races', () => {
         expect(get('tick').textContent).toBe(`TICK ${before.tick}`);
         expect(get<HTMLInputElement>('seed').value).toBe(String(before.settings.seed));
         expect(get('nutrients-value').textContent).toBe(`${before.settings.nutrients}%`);
-        const playback = recovery.recovery.playback;
+        const playback = recovery.recovery.state.playback;
         expect(get('run-state').textContent).toBe(playback.paused ? 'PAUSED' : 'LIVE');
         expect(get('pause').textContent).toContain(playback.paused ? 'Resume' : 'Pause');
         expect(root.classList.contains('paused')).toBe(playback.paused);
@@ -1327,7 +1529,7 @@ describe('display-only retained-world races', () => {
         }
         expect(harness.save()).toEqual(before);
         expect(harness.tasks).toHaveLength(pending);
-        expect(chart.paths).toHaveLength(paths + 1);
+        expect(chart.paths).toHaveLength(paths);
         window.dispatchEvent(new Event('resize'));
         expect(chart.paths.at(-1)).toEqual(chart.expected(history));
         harness.command({ type: 'snapshot' });
@@ -1388,9 +1590,9 @@ describe('display-only retained-world races', () => {
       harness.deliver();
       const before = root.innerHTML;
       for (const data of [
-        recovery,
-        { type: 'loaded', runId: 2, settings: DEFAULTS, playback: recovery.recovery.playback },
-        { type: 'playback', runId: 2, playback: recovery.recovery.playback },
+        { ...recovery, commandId: 0 },
+        { type: 'loaded', runId: 2, state: recovery.recovery.state },
+        { type: 'control', runId: 2, state: recovery.recovery.state },
         { type: 'frame', runId: 2, ...recovery.recovery },
       ])
         worker.onmessage!({ data } as MessageEvent);
@@ -1404,7 +1606,7 @@ describe('display-only retained-world races', () => {
 
   it('does not advance the response ID for local size/read failures', async () => {
     emit();
-    const count = worker.postMessage.mock.calls.length;
+    const count = worker.commands.mock.calls.length;
     upload({ size: 2500001, text: async () => '{}' });
     await Promise.resolve();
     expect(get('notice').textContent).toContain('2.5 MB');
@@ -1416,7 +1618,7 @@ describe('display-only retained-world races', () => {
     });
     await Promise.resolve();
     expect(get('notice').textContent).toBe('File read failed');
-    expect(worker.postMessage).toHaveBeenCalledTimes(count);
+    expect(worker.commands).toHaveBeenCalledTimes(count);
     const next = world.frame();
     next.stats.tick = 123;
     worker.emit({ type: 'frame', frame: next, selected: null }, 1);
@@ -1426,9 +1628,9 @@ describe('display-only retained-world races', () => {
   it('never treats validation recovery as permission to clear a fatal STOPPED display', () => {
     emit();
     worker.emit({ type: 'error', message: 'Tick failed', fatal: true });
-    const commands = worker.postMessage.mock.calls.length;
+    const commands = worker.commands.mock.calls.length;
     click('pause');
-    expect(worker.postMessage).toHaveBeenCalledTimes(commands);
+    expect(worker.commands).toHaveBeenCalledTimes(commands);
     worker.emit({
       type: 'playback',
       playback: { paused: false, pauseOnExtinction: false, extinction: null },
@@ -1446,7 +1648,7 @@ describe('display-only retained-world races', () => {
     expect(get('run-state').textContent).toBe('STOPPED');
     expect(get<HTMLButtonElement>('step').disabled).toBe(true);
     expect(get<HTMLInputElement>('seed').value).toBe('42');
-    expect(get('notice').textContent).toBe('Invalid world');
+    expect(get('notice').textContent).toBe('Tick failed');
   });
 });
 describe('pixel rendering and view transforms', () => {

@@ -15,8 +15,26 @@ function choose(id: string, value: string) {
   controller.render();
 }
 function show(frame: Frame, run = 1) {
-  controller.update(frame, run);
+  update(frame, run);
   controller.render();
+}
+let revision = 0;
+function update(frame: Frame, run = 1): void {
+  revision++;
+  controller.update({
+    status: 'accepted',
+    runId: run,
+    replacementId: run,
+    currentTick: frame.stats.tick,
+    currentRevision: revision,
+    source: {
+      runId: run,
+      replacementId: run,
+      revision,
+      tick: frame.stats.tick,
+      telemetry: frame.telemetry,
+    },
+  });
 }
 function legacy(world: Ecosystem): WorldFileV3 {
   const saved = world.save(),
@@ -65,8 +83,10 @@ describe('bounded model-dependent telemetry presentation', () => {
     expect(get('telemetry-plots').children).toHaveLength(0);
     width = 220;
     controller.render();
-    expect(get('telemetry-plots').textContent).toContain('No recorded samples yet');
-    expect(get('telemetry-plots').textContent).toContain('completed tick 30');
+    expect(get('telemetry-plots').textContent).toContain(
+      'Received history was empty at source tick',
+    );
+    expect(get('telemetry-plots').textContent).toContain('observation is 30');
     expect(get('telemetry-plots').querySelector('svg')).toBeNull();
     expect(get<HTMLSelectElement>('telemetry-sample').disabled).toBe(true);
     expect(world.save()).toEqual(before);
@@ -182,13 +202,13 @@ describe('bounded model-dependent telemetry presentation', () => {
     expect(document.activeElement).toBe(select);
     replace.mockClear();
     for (let repeat = 0; repeat < 40; repeat++) {
-      controller.update(world.frame(), 1);
+      update(world.frame(), 1);
       controller.render();
     }
     expect(replace).not.toHaveBeenCalled();
     advance(world, 30);
-    controller.update(world.frame(), 1);
-    controller.update(world.frame(), 1);
+    update(world.frame(), 1);
+    update(world.frame(), 1);
     controller.render();
     expect(replace).toHaveBeenCalledTimes(1);
     expect(select.value).toBe('60');
@@ -207,10 +227,10 @@ describe('bounded model-dependent telemetry presentation', () => {
     );
     choose('telemetry-sample', 'latest');
     expect(get('telemetry-details').textContent).toContain('Selected sample at tick 5430');
-    controller.update(world.frame(), 2);
+    update(world.frame(), 2);
     controller.render();
     expect(get('telemetry-details').textContent).toContain('Selected sample at tick 5430');
-    controller.reset();
+    controller.update({ status: 'unavailable' });
     expect(select.value).toBe('latest');
     expect(get<HTMLSelectElement>('telemetry-view').value).toBe('food');
   });
@@ -255,8 +275,8 @@ describe('bounded model-dependent telemetry presentation', () => {
     const before = root.innerHTML;
     width = 200;
     resize();
-    controller.update(world.frame(), 3);
-    controller.reset();
+    update(world.frame(), 3);
+    controller.update({ status: 'unavailable' });
     controller.render();
     expect(root.innerHTML).toBe(before);
     expect(disconnect).toHaveBeenCalled();

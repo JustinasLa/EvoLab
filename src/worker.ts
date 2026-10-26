@@ -9,6 +9,7 @@ import {
   index,
   observedSettings,
   observedOrganism,
+  nextSessionId,
   type Settings,
   type Speed,
   type DisplayView,
@@ -36,7 +37,7 @@ export function startWorker(
     queued = false,
     failed = false;
   let speed: Speed = 4,
-    runId = 0,
+    runId = -1,
     selected = 0,
     commandId = 0,
     replacementId = 0,
@@ -61,11 +62,7 @@ export function startWorker(
   let endpoints: { time: number; ticks: number }[] = [],
     completedTicks = 0;
   let gap: TickRate | null = null;
-  const next = (value: number): number => {
-    if (value >= Number.MAX_SAFE_INTEGER)
-      throw new Error('Session counter exhausted. Restart the worker.');
-    return value + 1;
-  };
+  const next = nextSessionId;
   const context = (): 'visible' | 'hidden' => (view.visible ? 'visible' : 'hidden');
   function resetRate(): void {
     endpoints = paused || failed ? [] : [{ time: now(), ticks: completedTicks }];
@@ -224,18 +221,23 @@ export function startWorker(
       }
       resetRate();
     }
-    scope.postMessage({
-      type: 'error',
-      runId: responseRun,
-      ...(responseCommand === undefined ? {} : { commandId: responseCommand }),
-      code,
-      message: (error instanceof Error ? error.message : String(error)).slice(0, 1000),
-      ...(fatal
-        ? { fatal: true as const }
-        : world && !failed && responseRun === runId
-          ? { recovery: { state: state(), telemetry: telemetry() } }
-          : {}),
-    });
+    try {
+      scope.postMessage({
+        type: 'error',
+        runId: responseRun,
+        ...(responseCommand === undefined ? {} : { commandId: responseCommand }),
+        code,
+        message: (error instanceof Error ? error.message : String(error)).slice(0, 1000),
+        ...(fatal
+          ? { fatal: true as const }
+          : world && !failed && responseRun === runId
+            ? { recovery: { state: state(), telemetry: telemetry() } }
+            : {}),
+      });
+    } catch (failure) {
+      if (fatal) throw failure;
+      report(failure, 'fatal', responseRun, responseCommand);
+    }
   }
   function queue(): void {
     if (alive && world && !paused && !failed && !queued) {
@@ -304,7 +306,7 @@ export function startWorker(
       return;
     }
     if (
-      !integer(data.runId, 1, Number.MAX_SAFE_INTEGER) ||
+      !integer(data.runId, 0, Number.MAX_SAFE_INTEGER) ||
       !integer(data.commandId, 1, Number.MAX_SAFE_INTEGER) ||
       typeof data.type !== 'string'
     )
@@ -412,13 +414,16 @@ export function startWorker(
             reconcile(world.organisms.size);
             resetRate();
             break;
-          case 'step':
+          case 'step': {
             if (!paused) throw new Error('Pause before stepping.');
+            const population = world.organisms.size;
+            errorCode = 'fatal';
             world.step();
-            reconcile(world.organisms.size);
+            reconcile(population);
             interactive = view.visible;
             exactTelemetry = true;
             break;
+          }
           case 'run-to':
             errorCode = 'invalid-target';
             if (!integer(data.targetTick, 0, 1e9))

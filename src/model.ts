@@ -160,6 +160,11 @@ export interface RetainedWorldState {
   telemetry: TelemetrySnapshot;
 }
 export type Speed = 1 | 4 | 12;
+export function nextSessionId(value: number): number {
+  if (value >= Number.MAX_SAFE_INTEGER)
+    throw new Error('Session counter exhausted. Restart the worker.');
+  return value + 1;
+}
 export type WorldPresentation = Pick<Frame, 'stats' | 'climate' | 'offset'>;
 export type HabitatFrame = Pick<Frame, 'cells' | 'ids' | 'stats' | 'climate' | 'offset'>;
 export interface DisplayView {

@@ -14,6 +14,7 @@ import {
   integer,
   observedGenome,
   observedSettings,
+  nextSessionId,
   type HabitatFrame,
   type WorldPresentation,
   type CommandPayload,
@@ -218,11 +219,12 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     pendingExtinction: { ticket: number; value: boolean } | null = null;
   let waitingFile: { file: File; request: number; generation: number; run: number } | null = null;
   function increment(value: number): number {
-    if (value >= Number.MAX_SAFE_INTEGER) {
+    try {
+      return nextSessionId(value);
+    } catch (error) {
       stop();
-      throw new Error('Session counter exhausted. Reload the page.');
+      throw error;
     }
-    return value + 1;
   }
   function releaseDiscard(): void {
     if (
@@ -423,9 +425,14 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   function stop(): void {
     stopped = true;
     paused = true;
+    pending.length = 0;
+    viewIntent = null;
+    establishedRun = null;
+    pendingFrame = null;
     text('pause', '▶ Resume');
     get<HTMLButtonElement>('step').disabled = true;
     text('run-state', 'STOPPED');
+    text('tick-rate', 'Measured ticks/s: — · paused/stopped');
     root.classList.add('paused');
   }
   const tab = (name: string): void => {
@@ -1128,7 +1135,13 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   };
   function render(): void {
     telemetry.render();
-    if (dirty && desiredView.visible && (pendingFrame || frame)) {
+    if (
+      dirty &&
+      !stopped &&
+      establishedRun === runId &&
+      desiredView.visible &&
+      (pendingFrame || frame)
+    ) {
       if (pendingFrame) {
         frame = pendingFrame.frame;
         displayedRevision = pendingFrame.state.revision;

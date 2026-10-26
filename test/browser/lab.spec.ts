@@ -13,6 +13,8 @@ import {
   type CellType,
   type Frame,
   type LegacyWorldFile,
+  type ControlState,
+  type AcceptedTelemetrySource,
 } from '../../src/model';
 import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../../src/blueprint';
 import { writeFile } from 'node:fs/promises';
@@ -22,7 +24,12 @@ import { advance, legacyV3 } from '../fixtures/telemetry';
 
 declare global {
   interface Window {
-    telemetryEvidence: { frame: Frame | null; points: number[][]; loadText: string | null };
+    telemetryEvidence: {
+      current: ControlState | null;
+      source: AcceptedTelemetrySource | null;
+      points: number[][];
+      loadText: string | null;
+    };
     telemetryPerformance: {
       enabled: boolean;
       action: string;
@@ -654,7 +661,25 @@ test('full-ring telemetry retains raw render, selection and resize timings with 
 
 async function observeTelemetry(page: import('@playwright/test').Page): Promise<void> {
   await page.addInitScript(() => {
-    window.telemetryEvidence = { frame: null, points: [], loadText: null };
+    window.telemetryEvidence = { current: null, source: null, points: [], loadText: null };
+    let runId = 0,
+      established = false;
+    let posted: { commandId: number; runId: number; type: string } | null = null;
+    const accept = (
+      state: ControlState,
+      source?: { revision: number; tick: number; telemetry: Frame['telemetry'] },
+    ) => {
+      const evidence = window.telemetryEvidence;
+      if (!evidence.current || state.revision > evidence.current.revision) evidence.current = state;
+      const current = evidence.current;
+      if (
+        source &&
+        source.revision <= current.revision &&
+        source.tick <= current.world.stats.tick &&
+        (!evidence.source || source.revision > evidence.source.revision)
+      )
+        evidence.source = { ...source, runId, replacementId: current.replacementId };
+    };
     Object.defineProperty(window.telemetryEvidence, 'points', {
       get: () =>
         [...document.querySelectorAll('[data-series="Population"] circle[data-tick]')].map(
@@ -666,12 +691,37 @@ async function observeTelemetry(page: import('@playwright/test').Page): Promise<
         const worker: Worker = Reflect.construct(target, args, newTarget);
         worker.postMessage = new Proxy(worker.postMessage, {
           apply(postMessage, receiver, messages) {
-            if (messages[0].type === 'load') window.telemetryEvidence.loadText = messages[0].text;
+            const command = messages[0];
+            if (command.type !== 'flow-ack')
+              posted = { commandId: command.commandId, runId: command.runId, type: command.type };
+            if (command.type === 'load') window.telemetryEvidence.loadText = command.text;
+            if (command.type === 'start' || command.type === 'load') {
+              runId = command.runId;
+              established = false;
+            }
             return Reflect.apply(postMessage, receiver, messages);
           },
         });
         worker.addEventListener('message', ({ data }) => {
-          if (data.type === 'frame') window.telemetryEvidence.frame = data.frame;
+          if (data.runId !== runId) return;
+          if (data.type === 'frame' || data.type === 'progress') {
+            if (established) accept(data.state, data.telemetry);
+            return;
+          }
+          if (!posted || data.commandId !== posted.commandId || data.runId !== posted.runId) return;
+          const command = posted;
+          posted = null;
+          const state = data.type === 'error' ? data.recovery?.state : data.state;
+          const source = data.type === 'error' ? data.recovery?.telemetry : data.telemetry;
+          if (!state) return;
+          if (command.type === 'start' || command.type === 'load') {
+            established = true;
+            const previous = window.telemetryEvidence.current;
+            window.telemetryEvidence.current = null;
+            if (previous?.replacementId !== state.replacementId)
+              window.telemetryEvidence.source = null;
+          }
+          if (established) accept(state, source);
         });
         return worker;
       },
@@ -683,8 +733,8 @@ async function telemetryFrame(
   page: import('@playwright/test').Page,
 ): Promise<Pick<Frame, 'stats' | 'telemetry'>> {
   return page.evaluate(() => {
-    const { stats, telemetry } = window.telemetryEvidence.frame!;
-    return { stats, telemetry };
+    const { current, source } = window.telemetryEvidence;
+    return { stats: current!.world.stats, telemetry: source!.telemetry };
   });
 }
 
@@ -699,7 +749,7 @@ async function expectPopulationChart(
         const svg = document.querySelector('#telemetry-plots svg') as SVGSVGElement | null;
         if (!svg) return values.length === 0;
         const width = svg.viewBox.baseVal.width,
-          samples = window.telemetryEvidence.frame!.telemetry.samples,
+          samples = window.telemetryEvidence.source!.telemetry.samples,
           start = samples.length === 1 ? samples[0].fromTick : samples[0].tick,
           end = samples.at(-1)!.tick;
         const expected = values.map((population, position) => [
@@ -2029,7 +2079,7 @@ test('restores real worker telemetry, renders its population projection and down
       before.samples.map((sample) => sample.population),
     );
     const rendered = await page.evaluate(() => ({
-      telemetry: window.telemetryEvidence.frame!.telemetry,
+      telemetry: window.telemetryEvidence.source!.telemetry,
       points: window.telemetryEvidence.points,
       width: (document.querySelector('#telemetry-plots svg') as SVGSVGElement).viewBox.baseVal
         .width,
