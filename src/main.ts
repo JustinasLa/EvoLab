@@ -245,6 +245,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     .querySelectorAll<HTMLButtonElement>('[data-tab]')
     .forEach((b) => b.addEventListener('click', () => tab(b.dataset.tab!)));
   get('pause').addEventListener('click', () => {
+    if (stopped) return;
     if (paused && !frame?.stats.population && get<HTMLInputElement>('pause-on-extinction').checked)
       notice('Place an organism, or turn off Pause on extinction and press Resume.');
     send({ type: paused ? 'resume' : 'pause' });

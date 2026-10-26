@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
-import { WIDTH, HEIGHT, type WorldFile } from '../../src/model';
+import { writeFile } from 'node:fs/promises';
+import { WIDTH, HEIGHT, index, type WorldFile } from '../../src/model';
+import { Ecosystem } from '../../src/ecosystem';
 test('Even Hub-style cards retain the dark palette and crisp cellular editor', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#population')).not.toHaveText('—');
@@ -137,6 +139,332 @@ async function downloadWorld(page: import('@playwright/test').Page): Promise<Buf
   for await (const chunk of stream) chunks.push(chunk);
   return Buffer.concat(chunks);
 }
+async function readWorld(page: import('@playwright/test').Page): Promise<WorldFile> {
+  return JSON.parse((await downloadWorld(page)).toString());
+}
+async function importWorld(page: import('@playwright/test').Page, world: WorldFile): Promise<void> {
+  await page.locator('#file').setInputFiles({
+    name: 'world.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(world)),
+  });
+}
+async function extinctionFixture(
+  page: import('@playwright/test').Page,
+  cause: 'age' | 'energy' | 'empty' | 'living',
+  offset = 1,
+): Promise<WorldFile> {
+  const world = await readWorld(page);
+  world.settings = { ...world.settings, climate: 0, nutrients: 0 };
+  world.tick = 417;
+  world.food = [index(5, 5)];
+  world.walls = [index(6, 6)];
+  world.eventUntil = 0;
+  world.eventOffset = 0;
+  world.organisms =
+    cause === 'empty'
+      ? []
+      : [
+          {
+            ...world.organisms[0],
+            x: 120,
+            y: 78,
+            rotation: 0,
+            age: cause === 'age' ? 976 - offset : 0,
+            energy: cause === 'energy' ? 0.001 : 10,
+            genome: { cells: [{ x: 0, y: 0, type: 3 }], preference: 0.5, tolerance: 0.3, tempo: 2 },
+          },
+        ];
+  return world;
+}
+async function paintCell(
+  page: import('@playwright/test').Page,
+  tool: string,
+  x: number,
+  y: number,
+): Promise<void> {
+  await page.locator(`button[data-tool="${tool}"]`).click();
+  const at = await coordinate(page, x, y);
+  await page.mouse.click(at.x, at.y);
+}
+async function expectPausedWorld(
+  page: import('@playwright/test').Page,
+  tick: number,
+): Promise<void> {
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  await expect(page.locator('#pause')).toContainText('Resume');
+  await expect(page.locator('#step')).toBeEnabled();
+  await expect(page.locator('#tick')).toHaveText(`TICK ${tick.toLocaleString()}`);
+}
+
+test.describe('pause on total extinction', () => {
+  for (const speed of [1, 4, 12]) {
+    test(`default ON stops at the first extinct logical tick at ${speed}×`, async ({ page }) => {
+      const errors: string[] = [],
+        external: string[] = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      page.on('request', (request) => {
+        if (
+          !request.url().startsWith('http://127.0.0.1:4173') &&
+          !request.url().startsWith('data:')
+        )
+          external.push(request.url());
+      });
+      await page.goto('/');
+      await expect(page.locator('#pause-on-extinction')).toBeChecked();
+      await pause(page);
+      const offset = speed === 1 ? 1 : 2;
+      const fixture = await extinctionFixture(page, 'age', offset);
+      const expected = Ecosystem.load(JSON.stringify(fixture));
+      for (let step = 0; step < offset; step++) expected.step();
+      await page.locator('#speed').selectOption(String(speed));
+      await importWorld(page, fixture);
+      await expectPausedWorld(page, fixture.tick + offset);
+      await expect(page.locator('#population')).toHaveText('0');
+      await expect(page.locator('#extinction-summary')).toContainText(
+        `total extinction at tick ${fixture.tick + offset}`,
+      );
+      await expect(page.locator('#extinction-summary')).toContainText('Last removal: age limit.');
+      await expect(page.locator('#extinction-summary')).toHaveAttribute('aria-live', 'polite');
+      await expect(page.locator('#lineages')).toContainText('quiet');
+      expect(await readWorld(page)).toEqual(expected.save());
+      await page.waitForTimeout(200);
+      expect(await readWorld(page)).toEqual(expected.save());
+      await page.locator('#pause').click();
+      await expectPausedWorld(page, fixture.tick + offset);
+      await expect(page.locator('#notice')).toContainText(
+        'Place an organism, or turn off Pause on extinction and press Resume.',
+      );
+      expect(errors).toEqual([]);
+      expect(external).toEqual([]);
+    });
+  }
+
+  test('energy exhaustion, invalid import and the multiline summary remain honest at desktop and narrow widths', async ({
+    page,
+  }, testInfo) => {
+    await page.goto('/');
+    await pause(page);
+    const fixture = await extinctionFixture(page, 'energy');
+    await page.locator('#speed').selectOption('12');
+    await importWorld(page, fixture);
+    await expectPausedWorld(page, 418);
+    await expect(page.locator('#extinction-summary')).toContainText('energy exhaustion');
+    const saved = await readWorld(page);
+    await importWorld(page, { ...saved, version: 99 } as unknown as WorldFile);
+    await expect(page.locator('#notice')).toContainText('Not a valid EvoLab ecosystem');
+    await expectPausedWorld(page, saved.tick);
+    await expect(page.locator('#population')).toHaveText('0');
+    await expect(page.locator('#pause-on-extinction')).toBeChecked();
+    await expect(page.locator('#inspector')).toContainText('Click any organism');
+    await expect(page.locator('#lineages')).toContainText('quiet');
+    expect(await readWorld(page)).toEqual(saved);
+    await page.waitForTimeout(200);
+    expect(await readWorld(page)).toEqual(saved);
+    const measurements: unknown[] = [];
+    for (const width of [360, 390, 1280]) {
+      await page.setViewportSize({ width, height: 800 });
+      await page.locator('#speed').focus();
+      await page.keyboard.press('Tab');
+      await expect(page.locator('#pause-on-extinction')).toBeFocused();
+      const geometry = await page.evaluate(() => {
+        const summary = document.querySelector<HTMLElement>('#extinction-summary')!;
+        const label = document.querySelector<HTMLElement>('.extinction-preference')!;
+        const habitat = document.querySelector('#world')!.getBoundingClientRect();
+        const header = document.querySelector('.topbar')!.getBoundingClientRect();
+        return {
+          width: innerWidth,
+          documentWidth: document.documentElement.scrollWidth,
+          summaryWidth: summary.clientWidth,
+          summaryContentWidth: summary.scrollWidth,
+          summaryHeight: summary.getBoundingClientRect().height,
+          labelHeight: label.getBoundingClientRect().height,
+          summaryOutsideHabitat: header.left >= habitat.right || header.top >= habitat.bottom,
+          focusOutline: getComputedStyle(document.querySelector('#pause-on-extinction')!)
+            .outlineStyle,
+        };
+      });
+      expect(geometry.documentWidth).toBeLessThanOrEqual(width);
+      expect(geometry.summaryContentWidth).toBeLessThanOrEqual(geometry.summaryWidth);
+      expect(geometry.labelHeight).toBeGreaterThanOrEqual(44);
+      expect(geometry.summaryOutsideHabitat).toBe(true);
+      expect(geometry.focusOutline).toBe('solid');
+      measurements.push(geometry);
+      for (const panel of ['ecosystem', 'organism']) {
+        await page.locator(`#${panel}-tab`).click();
+        await expect(page.locator('#pause-on-extinction')).toBeVisible();
+        await expect(page.locator('#extinction-summary')).toBeVisible();
+      }
+    }
+    const measurementsPath = testInfo.outputPath('extinction-layout.json');
+    await writeFile(measurementsPath, JSON.stringify(measurements, null, 2));
+    await testInfo.attach('extinction-layout', {
+      path: measurementsPath,
+      contentType: 'application/json',
+    });
+    if (testInfo.project.name === 'mobile') await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('#pause-on-extinction').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath('extinction-summary.png') });
+    await page.getByRole('button', { name: 'Help', exact: true }).click();
+    await expect(page.locator('#help-dialog')).toContainText('reloading restores ON');
+    await expect(page.locator('#help-dialog')).toContainText(
+      'display refresh adds no chart samples',
+    );
+    await page.getByRole('button', { name: 'Close help' }).click();
+  });
+
+  test('empty imports preserve the world and allow exact Step, view changes, editing and placement without auto-resume', async ({
+    page,
+  }) => {
+    await page.goto('/');
+    await pause(page);
+    const fixture = await extinctionFixture(page, 'empty');
+    await importWorld(page, fixture);
+    await expectPausedWorld(page, 417);
+    await expect(page.locator('#extinction-summary')).toContainText(
+      'Original extinction cause unavailable',
+    );
+    expect(await readWorld(page)).toEqual(Ecosystem.load(JSON.stringify(fixture)).save());
+    await page.locator('#zoom-in').click();
+    await page.locator('#zoom-out').click();
+    await page.locator('#fit').click();
+    await paintCell(page, 'inspect', 40, 40);
+    await expect(page.locator('#inspector')).toContainText('Click any organism');
+    await page.locator('button[data-tool="pan"]').click();
+    const at = await coordinate(page, 120, 78);
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.down();
+    await page.mouse.move(at.x + 18, at.y + 12);
+    await page.mouse.up();
+    await page.locator('#fit').click();
+    expect(await readWorld(page)).toEqual(Ecosystem.load(JSON.stringify(fixture)).save());
+    await page.locator('#brush').evaluate((input: HTMLInputElement) => {
+      input.value = '0';
+      input.dispatchEvent(new Event('input'));
+    });
+    await paintCell(page, 'food', 20, 20);
+    await paintCell(page, 'wall', 25, 25);
+    const edited = await readWorld(page);
+    expect(edited.tick).toBe(417);
+    expect(edited.food).toContain(index(20, 20));
+    expect(edited.walls).toContain(index(25, 25));
+    await page.locator('#step').click();
+    await expectPausedWorld(page, 418);
+    const stepped = Ecosystem.load(JSON.stringify(edited));
+    stepped.step();
+    expect(await readWorld(page)).toEqual(stepped.save());
+    await expect(page.locator('#extinction-summary')).toContainText('tick 417');
+    await paintCell(page, 'plant', 120, 78);
+    await expect(page.locator('#population')).toHaveText('1');
+    await expect(page.locator('#extinction-summary')).toBeHidden();
+    await expectPausedWorld(page, 418);
+    const planted = await readWorld(page);
+    await page.waitForTimeout(200);
+    expect(await readWorld(page)).toEqual(planted);
+    await page.locator('#pause').click();
+    await expect(page.locator('#run-state')).toHaveText('LIVE');
+    await expect(page.locator('#tick')).not.toHaveText('TICK 418');
+  });
+
+  for (const alreadyPaused of [true, false]) {
+    test(`default ON manual last erase retains its command tick while previously ${alreadyPaused ? 'paused' : 'running'}`, async ({
+      page,
+    }) => {
+      await page.goto('/');
+      await pause(page);
+      const fixture = await extinctionFixture(page, 'living');
+      await page.locator('#speed').selectOption('1');
+      await importWorld(page, fixture);
+      await expect(page.locator('#notice')).toContainText('World restored');
+      if (alreadyPaused) await pause(page);
+      await expect(page.locator('#pause-on-extinction')).toBeChecked();
+      await page.locator('#brush').evaluate((input: HTMLInputElement) => {
+        input.value = '0';
+        input.dispatchEvent(new Event('input'));
+      });
+      await paintCell(page, 'erase', 120, 78);
+      await expect(page.locator('#run-state')).toHaveText('PAUSED');
+      await expect(page.locator('#population')).toHaveText('0');
+      const saved = await readWorld(page);
+      await expectPausedWorld(page, saved.tick);
+      await expect(page.locator('#extinction-summary')).toContainText(
+        `total extinction at tick ${saved.tick}`,
+      );
+      await expect(page.locator('#extinction-summary')).toContainText('manual erasure');
+      expect(saved.deaths).toBe(fixture.deaths + 1);
+      expect(saved.food).toEqual(fixture.food);
+      expect(saved.walls).toEqual(fixture.walls);
+      await page.waitForTimeout(200);
+      expect(await readWorld(page)).toEqual(saved);
+    });
+  }
+
+  test('failed load retains manually paused selection and chosen OFF without advancing or resuming', async ({
+    page,
+  }) => {
+    await page.goto('/');
+    await pause(page);
+    const fixture = await extinctionFixture(page, 'living');
+    await importWorld(page, fixture);
+    await expect(page.locator('#notice')).toContainText('World restored');
+    await pause(page);
+    await paintCell(page, 'inspect', 120, 78);
+    await expect(page.locator('#inspector')).toContainText(`Organism ${fixture.organisms[0].id}`);
+    await page.locator('#pause-on-extinction').uncheck();
+    const saved = await readWorld(page);
+    const invalid = structuredClone(saved);
+    invalid.organisms.push({ ...invalid.organisms[0], id: invalid.nextId++ });
+    await importWorld(page, invalid);
+    await expect(page.locator('#notice')).toContainText('Invalid or overlapping organism');
+    await expectPausedWorld(page, saved.tick);
+    await expect(page.locator('#pause-on-extinction')).not.toBeChecked();
+    await expect(page.locator('#inspector')).toContainText(`Organism ${fixture.organisms[0].id}`);
+    await expect(page.locator('#extinction-summary')).toBeHidden();
+    expect(await readWorld(page)).toEqual(saved);
+    await page.waitForTimeout(200);
+    expect(await readWorld(page)).toEqual(saved);
+  });
+
+  test('OFF never resumes implicitly, survives replacement, and reload restores ON', async ({
+    page,
+  }) => {
+    await page.goto('/');
+    await pause(page);
+    const fixture = await extinctionFixture(page, 'empty');
+    await importWorld(page, fixture);
+    await expectPausedWorld(page, 417);
+    await page.locator('#pause-on-extinction').uncheck();
+    await page.waitForTimeout(200);
+    await expectPausedWorld(page, 417);
+    expect(await readWorld(page)).toEqual(Ecosystem.load(JSON.stringify(fixture)).save());
+    await importWorld(page, { ...fixture, version: 99 } as unknown as WorldFile);
+    await expect(page.locator('#notice')).toContainText('Not a valid EvoLab ecosystem');
+    await expectPausedWorld(page, 417);
+    await expect(page.locator('#pause-on-extinction')).not.toBeChecked();
+    await page.locator('#pause').click();
+    await expect(page.locator('#run-state')).toHaveText('LIVE');
+    await expect(page.locator('#tick')).not.toHaveText('TICK 417');
+    await expect(page.locator('#population')).toHaveText('0');
+    await expect(page.locator('#extinction-summary')).toContainText('Empty world running');
+    await pause(page);
+    await page.locator('#ecosystem-tab').click();
+    await page.getByText('World settings', { exact: true }).click();
+    await page.locator('#reset').click();
+    await expect(page.locator('#pause-on-extinction')).not.toBeChecked();
+    await expect(page.locator('#population')).toHaveText('1');
+    await importWorld(page, fixture);
+    await expect(page.locator('#notice')).toContainText('World restored');
+    await expect(page.locator('#pause-on-extinction')).not.toBeChecked();
+    await expect(page.locator('#run-state')).toHaveText('LIVE');
+    await expect(page.locator('#tick')).not.toHaveText('TICK 417');
+    await expect(page.locator('#population')).toHaveText('0');
+    await page.reload();
+    await expect(page.locator('#pause-on-extinction')).toBeChecked();
+    await expect(page.locator('#extinction-summary')).toBeHidden();
+    await expect(page.locator('#world')).toHaveAttribute('data-tool', 'pan');
+    await expect(page.locator('#organism-tab')).toHaveAttribute('aria-selected', 'true');
+  });
+});
 
 test('Pan and Organism are the defaults and dragging changes only the camera', async ({ page }) => {
   const expectDefaults = async (): Promise<void> => {
