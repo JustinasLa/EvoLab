@@ -2,15 +2,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount } from '../src/main';
 import { draw, drawChart, genomeSvg, organismHtml, point, viewport } from '../src/view';
 import { Ecosystem } from '../src/ecosystem';
-import { DEFAULTS, founder, type Frame } from '../src/model';
+import { DEFAULTS, founder, type Frame, type PlaybackState } from '../src/model';
+import { startWorker, type Scope } from '../src/worker';
 class WorkerStub {
-  postMessage = vi.fn();
+  playback: PlaybackState = { paused: false, pauseOnExtinction: true, extinction: null };
+  postMessage = vi.fn((data: any) => {
+    if (data.type === 'pause' || data.type === 'resume')
+      this.emit({
+        type: 'playback',
+        playback: { ...this.playback, paused: data.type === 'pause' },
+      });
+  });
   terminate = vi.fn();
   onmessage: ((e: MessageEvent) => void) | null = null;
   onerror: (() => void) | null = null;
-  emit(data: object, runId?: number): void {
+  emit(data: any, runId?: number): void {
+    if (data.playback) this.playback = data.playback;
     this.onmessage?.({
       data: {
+        playback: this.playback,
         runId:
           runId ??
           this.postMessage.mock.calls

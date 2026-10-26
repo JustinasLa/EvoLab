@@ -21,6 +21,8 @@ import {
   type Frame,
   type Species,
   type Tool,
+  type DeathCause,
+  type DeathRecord,
 } from './model';
 const DIRECTIONS = [
   [1, 0],
@@ -42,6 +44,7 @@ export class Ecosystem {
   nextSpecies = 5;
   eventUntil = 0;
   eventOffset = 0;
+  lastDeath: DeathRecord | null = null;
   constructor(settings: Settings = DEFAULTS, seed = true) {
     this.settings = { ...settings };
     this.random = new Random(settings.seed);
@@ -106,13 +109,14 @@ export class Ecosystem {
     }
     return o;
   }
-  kill(o: Organism): void {
+  kill(o: Organism, cause: DeathCause): void {
     for (const i of positions(o)) {
       this.occupied[i] = 0;
       this.food[i] = 1;
     }
     this.organisms.delete(o.id);
     this.deaths++;
+    this.lastDeath = { tick: this.tick, cause };
   }
   move(o: Organism, dx: number, dy: number, rotation = o.rotation): boolean {
     const target = {
@@ -207,7 +211,7 @@ export class Ecosystem {
         o.energy -= 0.03;
       }
       if (o.energy <= 0 || o.age > 900 + o.genome.cells.length * 75) {
-        this.kill(o);
+        this.kill(o, o.energy <= 0 ? 'energy' : 'age');
         continue;
       }
       if (
@@ -263,7 +267,7 @@ export class Ecosystem {
           }
         }
     for (const id of victims) {
-      this.kill(this.organisms.get(id)!);
+      this.kill(this.organisms.get(id)!, 'manual-erasure');
     }
     if (tool === 'erase')
       for (let dy = -radius; dy <= radius; dy++)

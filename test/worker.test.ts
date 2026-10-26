@@ -17,7 +17,7 @@ describe('worker control and persistence', () => {
     send({ type: 'snapshot' });
     send({ type: 'resume' });
     tasks.shift()!();
-    expect(scope.postMessage).not.toHaveBeenCalled();
+    expect(last()).toMatchObject({ type: 'playback', playback: { pauseOnExtinction: true } });
     send({ type: 'start', settings: {}, runId: 1 });
     expect(last().type).toBe('error');
     send({ type: 'start', settings: DEFAULTS, runId: 1 });
@@ -96,9 +96,10 @@ describe('worker control and persistence', () => {
       throw 'unreadable';
     });
     send({ type: 'load', text: 'x', runId: 5 });
-    expect(scope.postMessage).toHaveBeenLastCalledWith(
-      expect.objectContaining({ message: 'unreadable' }),
-    );
+    expect(vi.mocked(scope.postMessage).mock.calls.at(-1)![0]).toMatchObject({
+      message: 'unreadable',
+      recovery: { playback: { paused: true } },
+    });
   });
   it('boots automatically in a worker context', async () => {
     vi.stubGlobal('document', undefined);
