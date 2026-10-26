@@ -645,14 +645,14 @@ describe('display-only retained-world races', () => {
         if (multiple) {
           set('nutrients', '3');
           set('mutation', '0.37');
-          set('climate', '0.24');
+          set('climate', '0.25');
         }
         set('nutrients', '7');
         const expected = {
           ...before,
           settings: {
             ...before.settings,
-            ...(multiple ? { mutation: 0.37, climate: 0.24 } : {}),
+            ...(multiple ? { mutation: 0.37, climate: 0.25 } : {}),
             nutrients: 7,
           },
         };
@@ -702,20 +702,20 @@ describe('display-only retained-world races', () => {
   it('uses successful-load settings as the base beneath newer edits and clears patches for later loads', async () => {
     const harness = realWorker();
     harness.deliver();
-    set('mutation', '0.91');
+    set('mutation', '0.31');
     const imported = nearDeath();
     imported.settings.seed = 123;
     await loadText(JSON.stringify(imported));
     set('nutrients', '3');
     set('nutrients', '7');
-    set('climate', '0.24');
+    set('climate', '0.25');
     harness.deliver();
-    const expected = { ...imported.settings, nutrients: 7, climate: 0.24 };
+    const expected = { ...imported.settings, nutrients: 7, climate: 0.25 };
     expect(get<HTMLInputElement>('seed').value).toBe('123');
     expect(get('world-label').textContent).toBe('WORLD 0123');
     expect(get<HTMLInputElement>('mutation').value).toBe(String(imported.settings.mutation));
     expect(get('nutrients-value').textContent).toBe('7%');
-    expect(get('climate-value').textContent).toBe('24%');
+    expect(get('climate-value').textContent).toBe('25%');
     expect(harness.save()).toEqual({ ...imported, settings: expected });
     click('reset');
     expect(worker.postMessage.mock.calls.at(-1)![0]).toMatchObject({ settings: expected });

@@ -455,11 +455,11 @@ test.describe('pause on total extinction', () => {
     await page.getByText('World settings', { exact: true }).click();
     await page.locator('#nutrients').fill('3');
     await page.locator('#mutation').fill('0.37');
-    await page.locator('#climate').fill('0.24');
+    await page.locator('#climate').fill('0.25');
     await page.locator('#nutrients').fill('7');
     const expected = {
       ...before,
-      settings: { ...before.settings, nutrients: 7, mutation: 0.37, climate: 0.24 },
+      settings: { ...before.settings, nutrients: 7, mutation: 0.37, climate: 0.25 },
     };
     expect(await readWorld(page)).toEqual(expected);
     await page.evaluate('window.recoveryDelivery.release()');
@@ -467,7 +467,7 @@ test.describe('pause on total extinction', () => {
     await expect(page.locator('#nutrients')).toHaveValue('7');
     await expect(page.locator('#nutrients-value')).toHaveText('7%');
     await expect(page.locator('#mutation-value')).toHaveText('37%');
-    await expect(page.locator('#climate-value')).toHaveText('24%');
+    await expect(page.locator('#climate-value')).toHaveText('25%');
     await expectPausedWorld(page, fixture.tick);
     await expect(page.locator('#extinction-summary')).toHaveText(summary!);
     expect(await readWorld(page)).toEqual(expected);
