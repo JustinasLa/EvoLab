@@ -115,6 +115,32 @@ export interface TelemetryState {
   samples: TelemetrySample[];
   pending: TelemetryFlow & { fromTick: number };
 }
+export interface DeathRecord {
+  tick: number;
+  cause: DeathCause;
+}
+export type ExtinctionCause = DeathCause | 'empty-import';
+export interface ExtinctionSummary {
+  tick: number;
+  cause: ExtinctionCause;
+}
+export interface PlaybackState {
+  paused: boolean;
+  pauseOnExtinction: boolean;
+  extinction: ExtinctionSummary | null;
+}
+export interface RetainedWorldState {
+  frame: Frame;
+  selected: Organism | null;
+  settings: Settings;
+  playback: PlaybackState;
+}
+export interface LoadFailureResponse {
+  type: 'error';
+  runId: number;
+  message: string;
+  recovery: RetainedWorldState;
+}
 export interface WorldFile {
   version: 3;
   telemetry: TelemetryState;
