@@ -415,6 +415,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     const focusOwner = document.activeElement;
     const request = ++libraryRequest;
     let followup = request;
+    let selection = librarySelection;
     const valid = librarySnapshot.rows.filter((row): row is LibraryEntry => row.kind === 'valid');
     const deletedIndex =
       'entry' in action ? valid.findIndex((row) => row.id === action.entry.id) : -1;
@@ -430,13 +431,15 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       }
       const id = await library.mutate(action);
       if (!alive || request !== libraryRequest) return;
-      librarySelected =
-        action.type === 'delete'
-          ? (valid[deletedIndex + 1] ?? valid[deletedIndex - 1])?.id
-          : action.type === 'repair'
-            ? librarySelected
-            : id;
-      librarySelection++;
+      if (selection === librarySelection) {
+        librarySelected =
+          action.type === 'delete'
+            ? (valid[deletedIndex + 1] ?? valid[deletedIndex - 1])?.id
+            : action.type === 'repair'
+              ? librarySelected
+              : id;
+        selection = ++librarySelection;
+      }
       if (action.type === 'create' || action.type === 'replace') {
         candidate = undefined;
         candidateRun = undefined;
@@ -446,7 +449,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       const refresh = refreshLibrary('Write committed. Duplicate names are allowed.');
       followup = libraryRequest;
       await refresh;
-      if (!alive || followup !== libraryRequest) return;
+      if (!alive || followup !== libraryRequest || selection !== librarySelection) return;
       if (
         (action.type === 'delete' || action.type === 'repair') &&
         (document.activeElement === focusOwner || document.activeElement === document.body)
@@ -473,7 +476,9 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         drainRefresh();
       }
     }
-    return alive && followup === libraryRequest ? followup : undefined;
+    return alive && followup === libraryRequest && selection === librarySelection
+      ? followup
+      : undefined;
   }
   function showLibraryDialog(
     type: NonNullable<typeof dialogIntent>['type'],

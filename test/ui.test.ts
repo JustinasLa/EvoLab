@@ -236,6 +236,7 @@ describe('explicit bounded local library', () => {
   let storage: ReturnType<typeof libraryHarness>;
   const first = '00000000-0000-4000-8000-000000000001';
   const second = '00000000-0000-4000-8000-000000000002';
+  const third = '00000000-0000-4000-8000-000000000003';
   const draft = (name = '<literal> name', tick?: number) =>
     libraryCandidate(
       founder(2),
@@ -836,6 +837,86 @@ describe('explicit bounded local library', () => {
     await flush();
     expect(document.activeElement).toBe(get('library-heading'));
   });
+
+  it.each(
+    (['create', 'duplicate', 'rename', 'replace', 'delete', 'repair'] as const).flatMap((action) =>
+      (['write', 'refresh'] as const).map((phase) => ({ action, phase })),
+    ),
+  )(
+    'preserves newer explicit selection during $action $phase completion',
+    async ({ action, phase }) => {
+      const source = draft('target', 42);
+      const original = encodeRecord(source, 1);
+      const expected = new Map([
+        [
+          first,
+          action === 'repair' ? JSON.stringify({ ...JSON.parse(original), revision: 0 }) : original,
+        ],
+        [second, encodeRecord(draft('neighbor'), 1)],
+        [third, encodeRecord(draft('newer explicit selection'), 1)],
+      ]);
+      for (const [id, value] of expected) storage.values.set(id, value);
+      await open();
+      if (action === 'create')
+        await uploadLocal(serializeBlueprint(draft('created').blueprint), true);
+      else if (action === 'replace')
+        await uploadLocal(serializeBlueprint(draft('replacement').blueprint));
+      if (action === 'repair')
+        root.querySelector<HTMLButtonElement>(`[data-repair-id="${first}"]`)!.click();
+      else if (action === 'rename' || action === 'replace' || action === 'delete') {
+        click(`library-${action}`);
+        if (action === 'rename') set('library-rename-name', 'renamed');
+      }
+      storage.faults.completionStall = phase === 'write' ? 'readwrite' : 'readonly';
+      click(
+        action === 'create'
+          ? 'library-save'
+          : action === 'duplicate'
+            ? 'library-duplicate'
+            : 'library-confirm',
+      );
+      await flush();
+      const owner = storage.current;
+      if (action === 'create' || action === 'duplicate') {
+        const id = [...storage.values.keys()].find((id) => !expected.has(String(id)));
+        expect(id).toBeTypeOf('string');
+        expected.set(
+          String(id),
+          encodeRecord(
+            action === 'duplicate' ? source : { blueprint: draft('created').blueprint },
+            1,
+          ),
+        );
+      } else if (action === 'delete' || action === 'repair') expected.delete(first);
+      else
+        expected.set(
+          first,
+          encodeRecord(
+            action === 'rename'
+              ? { ...source, blueprint: { ...source.blueprint, name: 'renamed' } }
+              : { blueprint: draft('replacement').blueprint },
+            2,
+          ),
+        );
+      expect([...storage.values]).toEqual([...expected]);
+      select(third);
+      expect(get('library-selection').textContent).toContain('newer explicit selection');
+      document.body.tabIndex = -1;
+      document.body.focus();
+      document.body.removeAttribute('tabindex');
+      delete storage.faults.completionStall;
+      owner.releaseCompletion();
+      await flush();
+      expect([...storage.values]).toEqual([...expected]);
+      expect(get('library-selection').textContent).toContain('newer explicit selection');
+      expect(root.querySelector(`[data-library-id="${third}"]`)!.getAttribute('aria-pressed')).toBe(
+        'true',
+      );
+      expect(document.activeElement).toBe(document.body);
+      expect(get('library-count').textContent).toContain(`${expected.size} / 100`);
+      expect(get('library-status').textContent).toContain('Write committed');
+    },
+  );
 
   it('retains an aborting native reader without queuing a rejected replacement or another deadline', async () => {
     vi.useFakeTimers();

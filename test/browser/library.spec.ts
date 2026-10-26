@@ -7,6 +7,7 @@ import { encodeRecord, libraryCandidate, LIBRARY_DATABASE } from '../../src/libr
 
 const first = '00000000-0000-4000-8000-000000000001';
 const second = '00000000-0000-4000-8000-000000000002';
+const third = '00000000-0000-4000-8000-000000000003';
 const candidate = (name = '  <literal> 🌿  ') =>
   libraryCandidate(
     {
@@ -652,6 +653,135 @@ for (const phase of ['initial', 'final']) {
       }),
     });
   });
+}
+
+for (const action of ['create', 'duplicate', 'rename', 'replace', 'delete', 'repair']) {
+  for (const phase of ['write', 'refresh']) {
+    test(`native newer row selection survives ${action} ${phase} completion`, async ({
+      page,
+    }, info) => {
+      const errors: string[] = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      await deliveryProbe(page);
+      const before = await fixture(page);
+      const source = candidate('target');
+      const original = encodeRecord(source, 1);
+      const expected: [string, string][] = [
+        [
+          first,
+          action === 'repair' ? JSON.stringify({ ...JSON.parse(original), revision: 0 }) : original,
+        ],
+        [second, encodeRecord(candidate('neighbor'), 1)],
+        [third, encodeRecord(candidate('newer explicit selection'), 1)],
+      ];
+      await database(page, expected);
+      await openLibrary(page);
+      if (action === 'create' || action === 'replace') {
+        await page
+          .locator(action === 'create' ? '#blueprint-file' : '#library-file')
+          .setInputFiles({
+            name: 'blueprint.json',
+            mimeType: 'application/json',
+            buffer: Buffer.from(
+              serializeBlueprint(
+                candidate(action === 'create' ? 'created' : 'replacement').blueprint,
+              ),
+            ),
+          });
+        if (action === 'create')
+          await expect(page.locator('#blueprint-name')).toHaveValue('created');
+        else await expect(page.locator('#library-candidate')).toBeVisible();
+      }
+      if (action === 'repair') await page.locator(`[data-repair-id="${first}"]`).click();
+      else if (action === 'rename' || action === 'replace' || action === 'delete') {
+        await page.locator(`#library-${action}`).click();
+        if (action === 'rename') await page.locator('#library-rename-name').fill('renamed');
+      }
+      await page.evaluate((phase) => {
+        (window as any).libraryProbe.holdDatabaseMode =
+          phase === 'write' ? 'readwrite' : 'readonly';
+      }, phase);
+      await page
+        .locator(
+          action === 'create'
+            ? '#library-save'
+            : action === 'duplicate'
+              ? '#library-duplicate'
+              : '#library-confirm',
+        )
+        .click();
+      await expect
+        .poll(() => page.evaluate(() => (window as any).libraryProbe.heldDatabase.length))
+        .toBe(1);
+      if (phase === 'refresh')
+        await expect(page.locator('#library-status')).toContainText('Write committed');
+      await page.locator(`[data-library-id="${third}"]`).click();
+      await expect(page.locator('#library-selection')).toContainText('newer explicit selection');
+      await page.evaluate(() => {
+        document.body.tabIndex = -1;
+        document.body.focus();
+        document.body.removeAttribute('tabindex');
+      });
+      await releaseDatabase(page);
+      await expect(page.locator('#capture-selected')).toHaveAttribute('aria-disabled', 'false');
+      await expect(page.locator('#library-status')).toContainText('Write committed');
+      await expect(page.locator('#library-selection')).toContainText('newer explicit selection');
+      await expect(page.locator(`[data-library-id="${third}"]`)).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      );
+      expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+      const stored = await database(page);
+      if (action === 'create' || action === 'duplicate') {
+        const id = stored.find(([id]) => !expected.some(([original]) => id === original))?.[0];
+        expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+        expected.push([
+          id!,
+          encodeRecord(
+            action === 'duplicate' ? source : { blueprint: candidate('created').blueprint },
+            1,
+          ),
+        ]);
+      } else if (action === 'delete' || action === 'repair') expected.shift();
+      else
+        expected[0] = [
+          first,
+          encodeRecord(
+            action === 'rename'
+              ? { ...source, blueprint: { ...source.blueprint, name: 'renamed' } }
+              : { blueprint: candidate('replacement').blueprint },
+            2,
+          ),
+        ];
+      expected.sort(([left], [right]) => left.localeCompare(right));
+      expect(stored).toEqual(expected);
+      await expect(page.locator('#library-count')).toContainText(`${expected.length} / 100`);
+      if (
+        (action === 'delete' && phase === 'write') ||
+        (action === 'rename' && phase === 'refresh')
+      )
+        await page.screenshot({
+          path: info.outputPath(`library-${action}-${phase}-newer-selection.png`),
+          fullPage: true,
+        });
+      expect(await pausedSave(page)).toEqual(before);
+      expect(errors).toEqual([]);
+      await info.attach(`native-${action}-${phase}-newer-selection.json`, {
+        contentType: 'application/json',
+        body: JSON.stringify({
+          action,
+          phase,
+          selectedFullId: third,
+          nativeCompletionDeliveryHeld: true,
+          selectedAfterAdmissionAndBeforeDelivery: true,
+          noOldFocusRecovery: true,
+          exactCommittedRows: stored,
+          pageErrors: errors,
+          ecologicalSha256: createHash('sha256').update(before).digest('hex'),
+        }),
+      });
+    });
+  }
 }
 
 for (const action of ['delete', 'repair']) {
