@@ -615,6 +615,145 @@ describe('authoritative playback presentation', () => {
 
 describe('display-only retained-world races', () => {
   for (const cadence of [4, 12]) {
+    it.each([false, true])(
+      `preserves post-snapshot settings edits (multiple: %s) on delayed recovery at update ${cadence}`,
+      async (multiple) => {
+        const chart = chartRecorder();
+        const harness = realWorker();
+        harness.deliver();
+        await loadText(JSON.stringify(nearDeath()));
+        harness.deliver();
+        harness.advance();
+        harness.deliver();
+        for (let update = 2; update < cadence; update++) {
+          harness.command({ type: 'snapshot' });
+          harness.deliver();
+        }
+        const history = [1, ...Array(cadence / 4 - 1).fill(0)];
+        expect(chart.paths.at(-1)).toEqual(chart.expected(history));
+        const before = harness.save();
+        const summary = get('extinction-summary').textContent;
+        const steps = vi.spyOn(Ecosystem.prototype, 'step');
+        await loadText('{}');
+        expect(harness.outbox).toHaveLength(1);
+        expect(harness.outbox[0]).toMatchObject({
+          type: 'error',
+          runId: 3,
+          recovery: { settings: { nutrients: 0 } },
+        });
+        const paths = chart.paths.length;
+        if (multiple) {
+          set('nutrients', '3');
+          set('mutation', '0.37');
+          set('climate', '0.24');
+        }
+        set('nutrients', '7');
+        const expected = {
+          ...before,
+          settings: {
+            ...before.settings,
+            ...(multiple ? { mutation: 0.37, climate: 0.24 } : {}),
+            nutrients: 7,
+          },
+        };
+        expect(harness.save()).toEqual(expected);
+        harness.deliver();
+        expect(get<HTMLInputElement>('nutrients').value).toBe('7');
+        expect(get('nutrients-value').textContent).toBe('7%');
+        expect(get<HTMLInputElement>('mutation').value).toBe(String(expected.settings.mutation));
+        expect(get('mutation-value').textContent).toBe(
+          `${Math.round(expected.settings.mutation * 100)}%`,
+        );
+        expect(get<HTMLInputElement>('climate').value).toBe(String(expected.settings.climate));
+        expect(get('climate-value').textContent).toBe(
+          `${Math.round(expected.settings.climate * 100)}%`,
+        );
+        expect(get('notice').textContent).toContain('Not a valid EvoLab ecosystem');
+        expect(get('extinction-summary').textContent).toBe(summary);
+        expect(get('run-state').textContent).toBe('PAUSED');
+        expect(get<HTMLInputElement>('pause-on-extinction').checked).toBe(true);
+        expect(get<HTMLButtonElement>('step').disabled).toBe(false);
+        expect(get('population').textContent).toBe('0');
+        expect(get('tick').textContent).toBe(`TICK ${before.tick}`);
+        expect(get('inspector').textContent).toContain('Click any organism');
+        expect(get('lineages').textContent).toContain('quiet');
+        expect(harness.save()).toEqual(expected);
+        expect(harness.tasks).toHaveLength(0);
+        expect(steps).not.toHaveBeenCalled();
+        expect(chart.paths).toHaveLength(paths);
+        window.dispatchEvent(new Event('resize'));
+        expect(chart.paths.at(-1)).toEqual(chart.expected(history));
+        harness.command({ type: 'snapshot' });
+        harness.deliver();
+        expect(chart.paths.at(-1)).toEqual(chart.expected([...history, 0]));
+        click('reset');
+        const started = worker.postMessage.mock.calls.at(-1)![0];
+        expect(started).toMatchObject({ type: 'start', settings: expected.settings, runId: 4 });
+        expect(harness.save()).toEqual(new Ecosystem(expected.settings).save());
+        expect(harness.tasks).toHaveLength(1);
+        harness.deliver();
+        expect(get('nutrients-value').textContent).toBe('7%');
+        expect(get('extinction-summary').hidden).toBe(true);
+        expect(steps).not.toHaveBeenCalled();
+      },
+    );
+  }
+
+  it('uses successful-load settings as the base beneath newer edits and clears patches for later loads', async () => {
+    const harness = realWorker();
+    harness.deliver();
+    set('mutation', '0.91');
+    const imported = nearDeath();
+    imported.settings.seed = 123;
+    await loadText(JSON.stringify(imported));
+    set('nutrients', '3');
+    set('nutrients', '7');
+    set('climate', '0.24');
+    harness.deliver();
+    const expected = { ...imported.settings, nutrients: 7, climate: 0.24 };
+    expect(get<HTMLInputElement>('seed').value).toBe('123');
+    expect(get('world-label').textContent).toBe('WORLD 0123');
+    expect(get<HTMLInputElement>('mutation').value).toBe(String(imported.settings.mutation));
+    expect(get('nutrients-value').textContent).toBe('7%');
+    expect(get('climate-value').textContent).toBe('24%');
+    expect(harness.save()).toEqual({ ...imported, settings: expected });
+    click('reset');
+    expect(worker.postMessage.mock.calls.at(-1)![0]).toMatchObject({ settings: expected });
+    harness.deliver();
+    await loadText(JSON.stringify(imported));
+    harness.deliver();
+    expect(get('nutrients-value').textContent).toBe('0%');
+    expect(get('climate-value').textContent).toBe('0%');
+    expect(harness.save()).toEqual(imported);
+  });
+
+  it.each(['reset', 'load', 'dispose'])(
+    'rejects delayed recovery with newer settings after %s without leaking pending edits',
+    async (boundary) => {
+      const harness = realWorker();
+      harness.deliver();
+      await loadText('{}');
+      const recovery = harness.outbox.splice(0)[0];
+      set('nutrients', '7');
+      if (boundary === 'reset') click('reset');
+      else if (boundary === 'load') await loadText(JSON.stringify(nearDeath()));
+      else dispose();
+      harness.deliver();
+      const before = root.innerHTML;
+      worker.onmessage!({ data: recovery } as MessageEvent);
+      expect(root.innerHTML).toBe(before);
+      if (boundary === 'dispose') return;
+      const expected = boundary === 'reset' ? 7 : 0;
+      expect(get('nutrients-value').textContent).toBe(`${expected}%`);
+      expect(harness.save().settings.nutrients).toBe(expected);
+      await loadText('{}');
+      harness.deliver();
+      expect(get('nutrients-value').textContent).toBe(`${expected}%`);
+      expect(harness.save().settings.nutrients).toBe(expected);
+    },
+  );
+
+  for (const cadence of [4, 12]) {
     it.each(['terminal', 'selected-pause', 'off-paused', 'enable-empty', 'off-running'])(
       `resyncs delayed %s at update ${cadence} without sampling or cadence changes`,
       async (scenario) => {

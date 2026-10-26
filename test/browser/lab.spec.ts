@@ -425,6 +425,72 @@ test.describe('pause on total extinction', () => {
     expect(await readWorld(page)).toEqual(saved);
   });
 
+  test('late failed-load recovery keeps newer settings aligned with saves and reseeding', async ({
+    page,
+  }, testInfo) => {
+    await page.addInitScript(() => {
+      const delivery = { nutrients: null as number | null, release: () => {} };
+      Object.assign(window, { recoveryDelivery: delivery });
+      window.Worker = class extends Worker {
+        set onmessage(handler: ((this: Worker, event: MessageEvent) => void) | null) {
+          super.onmessage = (event) => {
+            if (event.data.type === 'error' && event.data.recovery) {
+              delivery.nutrients = event.data.recovery.settings.nutrients;
+              delivery.release = () => handler?.call(this, event);
+            } else handler?.call(this, event);
+          };
+        }
+      };
+    });
+    await page.goto('/');
+    await pause(page);
+    const fixture = await extinctionFixture(page, 'empty');
+    await importWorld(page, fixture);
+    await expectPausedWorld(page, fixture.tick);
+    const before = await readWorld(page);
+    const summary = await page.locator('#extinction-summary').textContent();
+    await importWorld(page, { ...fixture, version: 99 } as unknown as WorldFile);
+    await expect.poll(() => page.evaluate('window.recoveryDelivery.nutrients')).toBe(0);
+    await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+    await page.getByText('World settings', { exact: true }).click();
+    await page.locator('#nutrients').fill('3');
+    await page.locator('#mutation').fill('0.37');
+    await page.locator('#climate').fill('0.24');
+    await page.locator('#nutrients').fill('7');
+    const expected = {
+      ...before,
+      settings: { ...before.settings, nutrients: 7, mutation: 0.37, climate: 0.24 },
+    };
+    expect(await readWorld(page)).toEqual(expected);
+    await page.evaluate('window.recoveryDelivery.release()');
+    await expect(page.locator('#notice')).toContainText('version 2');
+    await expect(page.locator('#nutrients')).toHaveValue('7');
+    await expect(page.locator('#nutrients-value')).toHaveText('7%');
+    await expect(page.locator('#mutation-value')).toHaveText('37%');
+    await expect(page.locator('#climate-value')).toHaveText('24%');
+    await expectPausedWorld(page, fixture.tick);
+    await expect(page.locator('#extinction-summary')).toHaveText(summary!);
+    expect(await readWorld(page)).toEqual(expected);
+    await page.waitForTimeout(200);
+    expect(await readWorld(page)).toEqual(expected);
+    await page.getByRole('button', { name: 'Reseed world' }).click();
+    await pause(page);
+    const reseeded = await readWorld(page);
+    expect(reseeded.settings).toEqual(expected.settings);
+    await expect(page.locator('#nutrients-value')).toHaveText('7%');
+    await testInfo.attach('settings-recovery-evidence', {
+      body: JSON.stringify({
+        snapshotNutrients: 0,
+        displayedNutrients: await page.locator('#nutrients').inputValue(),
+        retainedTick: before.tick,
+        savedSettings: expected.settings,
+        reseededSettings: reseeded.settings,
+        pausedWorldUnchangedExceptSettings: true,
+      }),
+      contentType: 'application/json',
+    });
+  });
+
   test('OFF never resumes implicitly, survives replacement, and reload restores ON', async ({
     page,
   }) => {

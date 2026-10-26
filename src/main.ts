@@ -34,6 +34,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   const canvas = get<HTMLCanvasElement>('world'),
     buffer = document.createElement('canvas');
   const camera: Camera = { zoom: 1, x: 0, y: 0 };
+  let settingsEdits: Partial<Settings> = {};
   let settings = { ...DEFAULTS },
     runId = 0,
     paused = false,
@@ -84,7 +85,8 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     );
   }
   function renderSettings(next: Settings): void {
-    settings = next;
+    settings = { ...next, ...settingsEdits };
+    settingsEdits = {};
     for (const id of ['seed', 'mutation', 'nutrients', 'climate'] as const)
       get<HTMLInputElement>(id).value = String(settings[id]);
     text('mutation-value', `${Math.round(settings.mutation * 100)}%`);
@@ -158,6 +160,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       return;
     }
     settings = next;
+    settingsEdits = {};
     runId++;
     history = [];
     updates = 0;
@@ -272,6 +275,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   for (const id of ['mutation', 'nutrients', 'climate'] as const)
     get(id).addEventListener('input', () => {
       settings[id] = Number(get<HTMLInputElement>(id).value);
+      settingsEdits[id] = settings[id];
       text(
         `${id}-value`,
         id === 'nutrients' ? `${settings[id]}%` : `${Math.round(settings[id] * 100)}%`,
@@ -349,7 +353,10 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     try {
       if (file.size > 2500000) throw new Error('World file exceeds 2.5 MB.');
       const text = await file.text();
-      if (alive) send({ type: 'load', text, runId: ++runId });
+      if (alive) {
+        settingsEdits = {};
+        send({ type: 'load', text, runId: ++runId });
+      }
     } catch (error) {
       if (alive) notice(error instanceof Error ? error.message : 'Could not read this world.');
     } finally {
