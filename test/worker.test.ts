@@ -1,6 +1,7 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { startWorker, type Scope } from '../src/worker';
 import { Ecosystem } from '../src/ecosystem';
+import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
 import {
   DEFAULTS,
   WIDTH,
@@ -33,12 +34,25 @@ function terminalWorld(offset = 1, energy = 5, atTick = 71): WorldFile {
 function workerHarness() {
   const tasks: (() => void)[] = [],
     messages: any[] = [],
-    transfers: Transferable[][] = [];
+    seenTransfers = new WeakSet<object>(),
+    transferStats = { batches: 0, buffers: 0, duplicates: 0, detached: 0 };
+  let responseCount = 0;
   const scope: Scope = {
     onmessage: null,
     postMessage(data, transfer = []) {
-      transfers.push(transfer);
-      messages.push(structuredClone(data, { transfer }));
+      if (transfer.length) transferStats.batches++;
+      for (const buffer of transfer) {
+        transferStats.buffers++;
+        if (seenTransfers.has(buffer)) transferStats.duplicates++;
+        seenTransfers.add(buffer);
+      }
+      const response = structuredClone(data, { transfer });
+      for (const buffer of transfer)
+        if ((buffer as ArrayBuffer).byteLength === 0) transferStats.detached++;
+      responseCount++;
+      const previous = messages.findIndex((message) => message.type === data.type);
+      if (previous >= 0) messages.splice(previous, 1);
+      messages.push(response);
     },
   };
   startWorker(scope, (callback) => tasks.push(callback));
@@ -47,15 +61,28 @@ function workerHarness() {
     return messages.at(-1);
   };
   const last = (type = 'frame') => messages.filter((message) => message.type === type).at(-1);
-  const save = (): WorldFile => {
-    send({ type: 'save' });
-    return JSON.parse(last('saved').text);
-  };
+  const saveText = (): string => send({ type: 'save' }).text;
+  const save = (): WorldFile => JSON.parse(saveText());
   const advance = () => tasks.shift()!();
   const load = (file: WorldFile, runId = 1) =>
     send({ type: 'load', runId, text: JSON.stringify(file) });
   const frame = (): Frame => send({ type: 'snapshot' }).frame;
-  return { scope, tasks, messages, transfers, send, last, save, advance, load, frame };
+  return {
+    scope,
+    tasks,
+    messages,
+    transferStats,
+    send,
+    last,
+    saveText,
+    save,
+    advance,
+    load,
+    frame,
+    get responseCount() {
+      return responseCount;
+    },
+  };
 }
 afterEach(() => {
   vi.restoreAllMocks();
@@ -63,6 +90,180 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe('worker control and persistence', () => {
+  it('keeps boundary extinction pending through blueprint revival and exact paused continuation', () => {
+    const reference = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0, mutation: 0 }, false),
+      genome = { ...founder(0), cells: [{ x: 0, y: 0, type: 7 as const }] };
+    reference.spawn(genome, 40, 40);
+    for (let tick = 0; tick < 90; tick++) reference.step();
+    const harness = workerHarness();
+    harness.load(reference.save(), 10);
+    harness.send({ type: 'pause' });
+    harness.advance();
+    harness.send({ type: 'paint', tool: 'erase', x: 40, y: 40, radius: 0, genome });
+    reference.paint('erase', 40, 40, 0, genome);
+    const extinct = harness.saveText();
+    expect(extinct).toBe(JSON.stringify(reference.save()));
+    expect(harness.last().playback).toEqual({
+      paused: true,
+      pauseOnExtinction: true,
+      extinction: { tick: 90, cause: 'manual' },
+    });
+    expect(harness.last().frame.telemetry.samples.at(-1)).toMatchObject({
+      tick: 90,
+      population: 1,
+    });
+    expect(reference.save().telemetry.pending.deaths.manual).toBe(1);
+    harness.send({ type: 'inspect', x: 40, y: 40 });
+    harness.frame();
+    harness.send({ type: 'resume' });
+    expect(harness.tasks).toHaveLength(0);
+    expect(harness.saveText()).toBe(extinct);
+    const blueprint = parseBlueprint(
+      serializeBlueprint({ name: 'Revival', description: '', genome }),
+    );
+    harness.send({
+      type: 'paint',
+      tool: 'plant',
+      x: 80,
+      y: 80,
+      radius: 0,
+      genome: blueprint.genome,
+    });
+    reference.paint('plant', 80, 80, 0, blueprint.genome);
+    expect(harness.last().playback).toEqual({
+      paused: true,
+      pauseOnExtinction: true,
+      extinction: null,
+    });
+    expect(harness.saveText()).toBe(JSON.stringify(reference.save()));
+    for (let tick = 91; tick <= 120; tick++) {
+      harness.send({ type: 'step' });
+      reference.step();
+      expect(harness.saveText()).toBe(JSON.stringify(reference.save()));
+      expect(harness.tasks).toHaveLength(0);
+    }
+    expect(harness.last().frame.telemetry.samples.at(-1)).toMatchObject({
+      tick: 120,
+      population: 1,
+      deaths: { manual: 1 },
+      births: 0,
+    });
+    expect(harness.last().playback.paused).toBe(true);
+  });
+
+  it('retains recorded telemetry through blueprint placement and exact save/load continuation', () => {
+    const reference = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0, mutation: 0 }, false),
+      genome = { ...founder(0), cells: [{ x: 0, y: 0, type: 7 as const }] };
+    reference.spawn(genome, 20, 20);
+    reference.spawn(genome, 40, 40);
+    for (let tick = 0; tick < 65; tick++) reference.step();
+    reference.paint('erase', 20, 20, 0, genome);
+    const harness = workerHarness();
+    harness.send({ type: 'load', runId: 10, text: JSON.stringify(reference.save()) });
+    harness.send({ type: 'pause' });
+    harness.tasks.shift()!();
+    const before = harness.save(),
+      blueprint = parseBlueprint(
+        serializeBlueprint({ name: 'Retained history', description: '', genome }),
+      );
+    expect(before.telemetry.samples.map((sample) => sample.tick)).toEqual([30, 60]);
+    expect(before.telemetry.pending.deaths.manual).toBe(1);
+    expect(before.telemetry.pending.energy.upkeepSpent).toBeGreaterThan(0);
+    expect(harness.save()).toEqual(before);
+    harness.send({
+      type: 'paint',
+      tool: 'plant',
+      x: 80,
+      y: 80,
+      radius: 0,
+      genome: blueprint.genome,
+    });
+    reference.paint('plant', 80, 80, 0, blueprint.genome);
+    const placed = harness.save();
+    expect(placed).toEqual(reference.save());
+    expect(placed.tick).toBe(before.tick);
+    expect(placed.births).toBe(before.births);
+    expect(placed.telemetry).toEqual(before.telemetry);
+    expect(placed.organisms).toHaveLength(before.organisms.length + 1);
+    expect(harness.tasks).toHaveLength(0);
+    harness.send({ type: 'load', runId: 11, text: JSON.stringify(placed) });
+    harness.send({ type: 'pause' });
+    harness.tasks.shift()!();
+    expect(harness.save()).toEqual(placed);
+    for (let tick = 66; tick <= 95; tick++) {
+      harness.send({ type: 'step' });
+      reference.step();
+      expect(harness.frame().stats.tick).toBe(tick);
+      expect(harness.save()).toEqual(reference.save());
+      expect(harness.tasks).toHaveLength(0);
+    }
+    expect(harness.frame().telemetry.samples.map((sample) => sample.tick)).toEqual([30, 60, 90]);
+    expect(harness.frame().telemetry.samples.at(-1)!.births).toBe(0);
+    expect(harness.frame().telemetry.samples.at(-1)!.deaths.manual).toBe(1);
+  });
+  it('plants a decoded blueprint only on explicit command while paused and steps exactly once', () => {
+    const tasks: (() => void)[] = [],
+      scope: Scope = { postMessage: vi.fn(), onmessage: null };
+    startWorker(scope, (callback) => tasks.push(callback));
+    const send = (data: object) => scope.onmessage!({ data } as MessageEvent);
+    const last = () => vi.mocked(scope.postMessage).mock.calls.at(-1)![0];
+    send({ type: 'start', settings: DEFAULTS, runId: 10 });
+    send({ type: 'pause' });
+    tasks.shift()!();
+    send({ type: 'save' });
+    const before = last().text;
+    const genome = {
+      ...founder(2),
+      cells: [
+        { x: 0, y: 0, type: 3 as const },
+        { x: 1, y: 0, type: 4 as const },
+        { x: 2, y: 0, type: 5 as const },
+        { x: 0, y: 1, type: 6 as const },
+        { x: 1, y: 1, type: 7 as const },
+        { x: 2, y: 1, type: 8 as const },
+      ],
+      preference: 0.123456789,
+      tolerance: 0.456789,
+      tempo: 11,
+    };
+    const blueprint = parseBlueprint(
+      serializeBlueprint({ name: 'Shared genome', description: '', genome }),
+    );
+    send({ type: 'save' });
+    expect(last().text).toBe(before);
+    send({ type: 'paint', tool: 'plant', x: 20, y: 20, radius: 0, genome: blueprint.genome });
+    expect(last().runId).toBe(10);
+    expect(last().frame.stats.tick).toBe(0);
+    send({ type: 'inspect', x: 20, y: 20 });
+    expect(last().selected).toMatchObject({
+      id: 2,
+      species: JSON.parse(before).nextSpecies,
+      age: 0,
+      generation: 0,
+      children: 0,
+      ancestry: [],
+      energy: 14,
+      genome,
+    });
+    blueprint.genome.cells[0].type = 8;
+    expect(last().selected.genome).toEqual(genome);
+    send({
+      type: 'paint',
+      tool: 'plant',
+      x: 60,
+      y: 60,
+      radius: 0,
+      genome: { ...genome, tempo: 0 },
+    });
+    send({ type: 'save' });
+    expect(JSON.parse(last().text).organisms).toHaveLength(2);
+    send({ type: 'step' });
+    expect(last().frame.stats.tick).toBe(1);
+    expect(tasks).toHaveLength(0);
+    send({ type: 'snapshot' });
+    expect(last().frame.stats.tick).toBe(1);
+    expect(tasks).toHaveLength(0);
+  });
   it.each([1, 4, 12])(
     'collects tick-aligned history across actual yielding %ix batches',
     (speed) => {
@@ -76,17 +277,22 @@ describe('worker control and persistence', () => {
       expect(harness.frame().telemetry.samples).toEqual([]);
       for (let batch = 1; batch <= 120 / speed; batch++) {
         harness.tasks.shift()!();
+        const emitted = harness.messages.at(-1);
+        expect(emitted).toMatchObject({ type: 'frame', runId: 1 });
+        expect(emitted.frame.stats.tick).toBe(batch * speed);
         for (let tick = 0; tick < speed; tick++) reference.step();
         expect(harness.tasks).toHaveLength(1);
-        expect(harness.save()).toEqual(reference.save());
-        const samples = harness.frame().telemetry.samples;
+        const before = harness.saveText();
+        expect(before).toBe(JSON.stringify(reference.save()));
+        const samples = emitted.frame.telemetry.samples;
         expect(samples.map((sample) => sample.tick)).toEqual(
           Array.from({ length: Math.floor((batch * speed) / 30) }, (_, index) => (index + 1) * 30),
         );
-        const before = harness.save();
         harness.send({ type: 'inspect', x: WIDTH / 2, y: 78 });
         harness.frame();
-        expect(harness.save()).toEqual(before);
+        expect(harness.saveText()).toBe(before);
+        expect(harness.messages).toHaveLength(3);
+        expect(harness.messages.filter((message) => message.type === 'frame')).toHaveLength(1);
       }
       harness.send({ type: 'pause' });
       harness.tasks.shift()!();
@@ -561,9 +767,9 @@ describe('authoritative extinction playback', () => {
     const harness = workerHarness();
     harness.load(terminalWorld());
     for (const value of ['true', 1, null, undefined, {}, []]) {
-      const count = harness.messages.length;
+      const count = harness.responseCount;
       harness.send({ type: 'pause-on-extinction', runId: 1, value });
-      expect(harness.messages).toHaveLength(count);
+      expect(harness.responseCount).toBe(count);
     }
     harness.send({ type: 'pause-on-extinction', runId: 0, value: false });
     expect(harness.last().playback.pauseOnExtinction).toBe(true);
@@ -768,9 +974,9 @@ describe('failed-load retained-world recovery', () => {
     const record = structuredClone(retained.lastDeath);
     const before = harness.save();
     const held = harness.last();
-    const count = harness.messages.length;
+    const count = harness.responseCount;
     harness.send({ type: 'load', runId: 2, text: '{}' });
-    expect(harness.messages).toHaveLength(count + 1);
+    expect(harness.responseCount).toBe(count + 1);
     const recovery = harness.last('error');
     expect(recovery).toMatchObject({
       type: 'error',
@@ -790,9 +996,10 @@ describe('failed-load retained-world recovery', () => {
     expect(harness.tasks).toHaveLength(0);
     for (let repeat = 0; repeat < 2; repeat++)
       harness.send({ type: 'load', runId: 3 + repeat, text: 'not json' });
-    const transferred = harness.transfers.filter((buffers) => buffers.length);
-    expect(new Set(transferred.flat()).size).toBe(transferred.length * 2);
-    for (const buffer of transferred.flat()) expect((buffer as ArrayBuffer).byteLength).toBe(0);
+    expect(harness.transferStats.batches).toBeGreaterThan(0);
+    expect(harness.transferStats.buffers).toBe(harness.transferStats.batches * 2);
+    expect(harness.transferStats.duplicates).toBe(0);
+    expect(harness.transferStats.detached).toBe(harness.transferStats.buffers);
     expect(harness.save()).toEqual(before);
     harness.load(terminalWorld(12), 5);
     expect(harness.last().playback.extinction).toBeNull();
@@ -864,9 +1071,9 @@ describe('failed-load retained-world recovery', () => {
       JSON.stringify(invalidLast),
       JSON.stringify(invalidTerrain),
     ]) {
-      const count = harness.messages.length;
+      const count = harness.responseCount;
       harness.send({ type: 'load', runId: ++runId, text });
-      expect(harness.messages).toHaveLength(count + 1);
+      expect(harness.responseCount).toBe(count + 1);
       expect(harness.last('error')).toMatchObject({
         runId,
         recovery: {

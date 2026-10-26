@@ -7,6 +7,7 @@ import {
   HEIGHT,
   clamp,
   founder,
+  speciesName,
   validGenome,
   validSettings,
   type Frame,
@@ -27,6 +28,12 @@ import {
   viewport,
   type Camera,
 } from './view';
+import {
+  BLUEPRINT_DEFAULT_NAME,
+  BLUEPRINT_MAX_BYTES,
+  parseBlueprint,
+  serializeBlueprint,
+} from './blueprint';
 
 export function mount(root: HTMLElement, worker: Worker): () => void {
   root.innerHTML = markup;
@@ -46,6 +53,10 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     selected: Organism | null = null,
     blueprint = founder(0),
     cellType: CellType = 4;
+  let blueprintName = BLUEPRINT_DEFAULT_NAME,
+    blueprintDescription = '',
+    designRevision = 0,
+    blueprintRequest = 0;
   let dragging = false,
     lastX = 0,
     lastY = 0,
@@ -151,6 +162,49 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       }
     get<HTMLInputElement>('preference').value = String(blueprint.preference);
     text('preference-value', `${Math.round(blueprint.preference * 40)}°`);
+    get<HTMLInputElement>('blueprint-name').value = blueprintName;
+    get<HTMLTextAreaElement>('blueprint-description').value = blueprintDescription;
+    text(
+      'design-note',
+      validGenome(blueprint)
+        ? `${blueprint.cells.length} connected cells. Ready to place.`
+        : 'Use 1–16 cells, connected edge to edge.',
+    );
+  }
+  function copyDesign(genome: Genome): void {
+    designRevision++;
+    blueprint = structuredClone(genome);
+    blueprintName = speciesName(genome);
+    blueprintDescription = '';
+    editor();
+    get<HTMLDetailsElement>('specimen-details').open = false;
+  }
+  function exportBlueprint(genome: Genome, name: string, description: string): void {
+    let content: string;
+    try {
+      content = serializeBlueprint({ name, description, genome });
+    } catch (error) {
+      notice((error as Error).message);
+      return;
+    }
+    let url: string | undefined;
+    const anchor = document.createElement('a');
+    try {
+      url = URL.createObjectURL(new Blob([content], { type: 'application/json' }));
+      anchor.href = url;
+      anchor.download = 'evolab-blueprint.json';
+      document.body.append(anchor);
+      anchor.click();
+      notice('Blueprint exported. Import it into the designer to reuse its anatomy and traits.');
+    } catch {
+      notice('Could not download this blueprint. Try exporting again.');
+    } finally {
+      anchor.remove();
+      if (url) {
+        const downloadUrl = url;
+        setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+      }
+    }
   }
   function reset(): void {
     const seed = Number(get<HTMLInputElement>('seed').value),
@@ -287,6 +341,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     text('brush-value', `${brush} cells`);
   });
   get('preference').addEventListener('input', () => {
+    designRevision++;
     blueprint.preference = Number(get<HTMLInputElement>('preference').value);
     text('preference-value', `${Math.round(blueprint.preference * 40)}°`);
   });
@@ -308,6 +363,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   get('editor').addEventListener('click', (event) => {
     const b = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-x]');
     if (!b) return;
+    designRevision++;
     const x = Number(b.dataset.x),
       y = Number(b.dataset.y),
       existing = blueprint.cells.findIndex((c) => c.x === x && c.y === y);
@@ -316,16 +372,68 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     else if (existing >= 0) blueprint.cells[existing].type = cellType;
     else blueprint.cells.push({ x, y, type: cellType });
     editor();
-    text(
-      'design-note',
-      validGenome(blueprint)
-        ? `${blueprint.cells.length} connected cells. Ready to place.`
-        : 'Use 1–16 cells, connected edge to edge.',
-    );
   });
   get('clear-design').addEventListener('click', () => {
+    designRevision++;
     blueprint = founder(0);
+    blueprintName = BLUEPRINT_DEFAULT_NAME;
+    blueprintDescription = '';
     editor();
+  });
+  get('blueprint-name').addEventListener('input', () => {
+    designRevision++;
+    blueprintName = get<HTMLInputElement>('blueprint-name').value;
+  });
+  get('blueprint-description').addEventListener('input', () => {
+    designRevision++;
+    blueprintDescription = get<HTMLTextAreaElement>('blueprint-description').value;
+  });
+  get('export-blueprint').addEventListener('click', () =>
+    exportBlueprint(blueprint, blueprintName, blueprintDescription),
+  );
+  const blueprintInput = get<HTMLInputElement>('blueprint-file');
+  get('import-blueprint').addEventListener('click', () => {
+    blueprintRequest++;
+    blueprintInput.value = '';
+    blueprintInput.click();
+  });
+  blueprintInput.addEventListener('cancel', () => {
+    blueprintRequest++;
+    blueprintInput.value = '';
+  });
+  blueprintInput.addEventListener('change', async () => {
+    const request = ++blueprintRequest,
+      revision = designRevision,
+      worldRun = runId,
+      file = blueprintInput.files?.[0];
+    if (!file) return;
+    const current = (): boolean =>
+      alive && request === blueprintRequest && revision === designRevision && worldRun === runId;
+    try {
+      if (file.size > BLUEPRINT_MAX_BYTES)
+        throw new Error('Blueprint files must be 16 KiB or smaller.');
+      let content: string;
+      try {
+        content = await file.text();
+      } catch {
+        throw new Error('Could not read this blueprint. Choose a readable JSON file.');
+      }
+      if (!current()) return;
+      const imported = parseBlueprint(content);
+      blueprint = imported.genome;
+      blueprintName = imported.name;
+      blueprintDescription = imported.description;
+      designRevision++;
+      editor();
+      get<HTMLDetailsElement>('specimen-details').open = false;
+      tab('organism');
+      choose('pan');
+      notice('Blueprint loaded into the designer. Place it explicitly to add an organism.');
+    } catch (error) {
+      if (current()) notice((error as Error).message);
+    } finally {
+      if (request === blueprintRequest) blueprintInput.value = '';
+    }
   });
   get('plant-design').addEventListener('click', () => {
     choose('plant');
@@ -336,11 +444,11 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   });
   root.addEventListener('click', (event) => {
     if ((event.target as HTMLElement).closest('#copy-organism') && selected) {
-      blueprint = structuredClone(selected.genome);
-      editor();
-      get<HTMLDetailsElement>('specimen-details').open = false;
+      copyDesign(selected.genome);
       notice('Anatomy copied. Edit it, then place it in the world.');
     }
+    if ((event.target as HTMLElement).closest('#export-organism-blueprint') && selected)
+      exportBlueprint(selected.genome, speciesName(selected.genome), '');
   });
   get('help').addEventListener('click', () => get<HTMLDialogElement>('help-dialog').showModal());
   get('close-help').addEventListener('click', () => get<HTMLDialogElement>('help-dialog').close());
@@ -430,9 +538,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         b.title = 'Copy this lineage into the organism designer';
         b.innerHTML = `${genomeSvg(species.genome, 56)}<span><strong>${species.name} <small>#${species.id}</small></strong><i><b style="width:${(species.count / Math.max(1, s.population)) * 100}%"></b></i></span><em>${species.count}</em>`;
         b.addEventListener('click', () => {
-          blueprint = structuredClone(species.genome);
-          editor();
-          get<HTMLDetailsElement>('specimen-details').open = false;
+          copyDesign(species.genome);
           tab('organism');
         });
         list.append(b);
