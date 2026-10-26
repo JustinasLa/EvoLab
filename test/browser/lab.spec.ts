@@ -48,6 +48,24 @@ async function telemetryFrame(
   });
 }
 
+async function expectPopulationChart(
+  page: import('@playwright/test').Page,
+  populations: number[],
+): Promise<void> {
+  await expect
+    .poll(() =>
+      page.evaluate((values) => {
+        const width = (document.querySelector('#chart') as HTMLCanvasElement).width;
+        const expected = values.map((population, sample) => [
+          (sample / Math.max(1, values.length - 1)) * width,
+          64 - (population / Math.max(10, ...values)) * 58,
+        ]);
+        return JSON.stringify(window.telemetryEvidence.points) === JSON.stringify(expected);
+      }, populations),
+    )
+    .toBe(true);
+}
+
 async function importTelemetryWorld(
   page: import('@playwright/test').Page,
   world: object,
@@ -523,7 +541,8 @@ test.describe('pause on total extinction', () => {
     await expectPausedWorld(page, fixture.tick);
     const before = await readWorld(page);
     const summary = await page.locator('#extinction-summary').textContent();
-    const points = await page.evaluate(() => window.telemetryEvidence.points);
+    const populations = before.telemetry.samples.map((sample) => sample.population);
+    await expectPopulationChart(page, populations);
     expect(before.telemetry.samples).toHaveLength(13);
     await importWorld(page, { ...fixture, version: 99 } as unknown as WorldFile);
     await expect.poll(() => page.evaluate('window.recoveryDelivery.nutrients')).toBe(0);
@@ -546,7 +565,7 @@ test.describe('pause on total extinction', () => {
     await expect(page.locator('#climate-value')).toHaveText('25%');
     await expectPausedWorld(page, fixture.tick);
     await expect(page.locator('#extinction-summary')).toHaveText(summary!);
-    expect(await page.evaluate(() => window.telemetryEvidence.points)).toEqual(points);
+    await expectPopulationChart(page, populations);
     expect((await telemetryFrame(page)).telemetry).toEqual(before.telemetry);
     expect(await readWorld(page)).toEqual(expected);
     await page.waitForTimeout(200);
@@ -648,12 +667,13 @@ for (const terminalTick of [90, 91]) {
       expect(terminal.telemetry.samples.at(-1)!.population).toBe(terminalTick === 90 ? 0 : 1);
       expect(terminal.telemetry.pending.deaths[cause]).toBe(terminalTick === 90 ? 0 : 1);
       await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
-      const points = await page.evaluate(() => window.telemetryEvidence.points);
-      expect(points).toHaveLength(3);
+      const populations = terminal.telemetry.samples.map((sample) => sample.population);
+      expect(populations).toHaveLength(3);
+      await expectPopulationChart(page, populations);
       await importWorld(page, { ...terminal, version: 99 } as unknown as WorldFile);
       await expect(page.locator('#notice')).toContainText('version 2 or 3');
       expect(await readWorld(page)).toEqual(terminal);
-      expect(await page.evaluate(() => window.telemetryEvidence.points)).toEqual(points);
+      await expectPopulationChart(page, populations);
       await page.waitForTimeout(160);
       expect(await readWorld(page)).toEqual(terminal);
       await testInfo.attach(`terminal-${cause}-${terminalTick}`, {
