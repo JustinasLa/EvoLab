@@ -457,7 +457,6 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     }
     if (data.type === 'loaded') {
       settings = data.settings;
-      history = [];
       updates = 0;
       paused = false;
       text('pause', 'Ⅱ Pause');
@@ -501,11 +500,8 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     text('world-count', `${s.population} organism${s.population === 1 ? '' : 's'} · ${lineages}`);
     text('season', s.season);
     text('weather', s.event);
-    if (updates % 4 === 1) {
-      history.push(s.population);
-      history = history.slice(-180);
-      drawChart(get('chart'), history);
-    }
+    history = frame!.telemetry.samples.map((sample) => sample.population);
+    drawChart(get('chart'), history);
     if (paused || updates % 4 === 1 || previousSelection !== selected?.id)
       get('inspector').innerHTML = organismHtml(selected, frame!);
     if (updates % 12 === 1) {
