@@ -82,9 +82,10 @@ function nearDeath(): WorldFile {
     40,
     40,
   )!;
+  organism.energy = 10;
+  for (let tick = 0; tick < 71; tick++) world.step();
   organism.age = 975;
   organism.energy = 5;
-  world.tick = 71;
   world.food[5] = 1;
   world.walls[6] = 1;
   return world.save();
@@ -301,6 +302,52 @@ describe('ecosystem desk', () => {
     emit();
     expect(get('tick').textContent).toBe(before);
   });
+  it('projects only accepted worker history through repeated frames, resize, load, errors and reset', () => {
+    const chart = get<HTMLCanvasElement>('chart'),
+      context = {
+        clearRect: vi.fn(),
+        beginPath: vi.fn(),
+        moveTo: vi.fn(),
+        lineTo: vi.fn(),
+        stroke: vi.fn(),
+      };
+    vi.spyOn(chart, 'getContext').mockReturnValue(context as unknown as CanvasRenderingContext2D);
+    const points = (action: () => void) => {
+      context.moveTo.mockClear();
+      context.lineTo.mockClear();
+      action();
+      return [...context.moveTo.mock.calls, ...context.lineTo.mock.calls];
+    };
+    const observed = new Ecosystem();
+    expect(points(() => emit(observed.frame()))).toEqual([]);
+    for (let tick = 0; tick < 30; tick++) observed.step();
+    const one = points(() => emit(observed.frame()));
+    expect(one).toHaveLength(1);
+    observed.paint('plant', 40, 40, 0, founder(0));
+    const edited = observed.frame();
+    expect(edited.stats.population).toBe(2);
+    for (let inspection = 0; inspection < 20; inspection++)
+      expect(points(() => emit(edited, [...observed.organisms.values()][0]))).toEqual(one);
+    expect(get('population').textContent).toBe('2');
+    expect(points(() => window.dispatchEvent(new Event('resize')))).toEqual(one);
+    for (let tick = 0; tick < 30; tick++) observed.step();
+    const two = points(() => emit(observed.frame()));
+    expect(two).toHaveLength(2);
+    expect(points(() => worker.emit({ type: 'frame', frame: sample }, 0))).toEqual([]);
+    expect(points(() => window.dispatchEvent(new Event('resize')))).toEqual(two);
+    worker.emit({ type: 'error', message: 'Invalid ecosystem telemetry.' });
+    expect(points(() => window.dispatchEvent(new Event('resize')))).toEqual(two);
+    worker.emit({ type: 'loaded', settings: DEFAULTS });
+    expect(points(() => emit(observed.frame()))).toEqual(two);
+    const ring = new Ecosystem(DEFAULTS, false);
+    for (let tick = 0; tick < 5430; tick++) ring.step();
+    expect(points(() => emit(ring.frame()))).toHaveLength(180);
+    expect(points(() => window.dispatchEvent(new Event('resize')))).toHaveLength(180);
+    worker.emit({ type: 'loaded', settings: DEFAULTS });
+    expect(points(() => emit(sample))).toEqual([]);
+    click('reset');
+    expect(points(() => emit(sample))).toEqual([]);
+  });
   it('paints, inspects, pans and zooms without confusing coordinate systems', () => {
     emit();
     root.querySelector<HTMLButtonElement>('[data-tool="inspect"]')!.click();
@@ -503,7 +550,7 @@ describe('authoritative playback presentation', () => {
     expect(get('run-state').textContent).toBe('LIVE');
   });
 
-  it.each(['energy', 'age', 'manual-erasure', 'empty-import'] as const)(
+  it.each(['energy', 'age', 'manual', 'empty-import'] as const)(
     'renders honest %s summary separately from notices and preserves paused tools',
     (cause) => {
       emit(sample, organism);
@@ -523,7 +570,7 @@ describe('authoritative playback presentation', () => {
         {
           energy: 'energy exhaustion',
           age: 'age limit',
-          'manual-erasure': 'manual erasure',
+          manual: 'manual erasure',
           'empty-import': 'Original extinction cause unavailable',
         }[cause],
       );
@@ -629,7 +676,7 @@ describe('display-only retained-world races', () => {
           harness.command({ type: 'snapshot' });
           harness.deliver();
         }
-        const history = [1, ...Array(cadence / 4 - 1).fill(0)];
+        const history = harness.save().telemetry.samples.map((sample) => sample.population);
         expect(chart.paths.at(-1)).toEqual(chart.expected(history));
         const before = harness.save();
         const summary = get('extinction-summary').textContent;
@@ -680,12 +727,12 @@ describe('display-only retained-world races', () => {
         expect(harness.save()).toEqual(expected);
         expect(harness.tasks).toHaveLength(0);
         expect(steps).not.toHaveBeenCalled();
-        expect(chart.paths).toHaveLength(paths);
+        expect(chart.paths).toHaveLength(paths + 1);
         window.dispatchEvent(new Event('resize'));
         expect(chart.paths.at(-1)).toEqual(chart.expected(history));
         harness.command({ type: 'snapshot' });
         harness.deliver();
-        expect(chart.paths.at(-1)).toEqual(chart.expected([...history, 0]));
+        expect(chart.paths.at(-1)).toEqual(chart.expected(history));
         click('reset');
         const started = worker.postMessage.mock.calls.at(-1)![0];
         expect(started).toMatchObject({ type: 'start', settings: expected.settings, runId: 4 });
@@ -768,7 +815,7 @@ describe('display-only retained-world races', () => {
           harness.command({ type: 'snapshot' });
           harness.deliver();
         }
-        const history = Array(cadence / 4).fill(1);
+        const history = harness.save().telemetry.samples.map((sample) => sample.population);
         expect(chart.paths.at(-1)).toEqual(chart.expected(history));
         expect(get('inspector').textContent).toContain('Organism 1');
         if (scenario === 'selected-pause') {
@@ -820,12 +867,12 @@ describe('display-only retained-world races', () => {
         }
         expect(harness.save()).toEqual(before);
         expect(harness.tasks).toHaveLength(pending);
-        expect(chart.paths).toHaveLength(paths);
+        expect(chart.paths).toHaveLength(paths + 1);
         window.dispatchEvent(new Event('resize'));
         expect(chart.paths.at(-1)).toEqual(chart.expected(history));
         harness.command({ type: 'snapshot' });
         harness.deliver();
-        expect(chart.paths.at(-1)).toEqual(chart.expected([...history, before.organisms.length]));
+        expect(chart.paths.at(-1)).toEqual(chart.expected(history));
         expect(get('notice').textContent).toContain('Not a valid EvoLab ecosystem');
       },
     );
@@ -833,9 +880,16 @@ describe('display-only retained-world races', () => {
 
   it('does not prune, clear or fabricate bounded chart history on display recovery', () => {
     const chart = chartRecorder();
-    for (let update = 0; update < 720; update++) emit();
+    const recorded = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0 }, false);
+    const genome = { ...founder(0), cells: [{ x: 0, y: 0, type: 7 as const }] };
+    for (let interval = 0; interval < 181; interval++) {
+      recorded.paint('plant', 40, 40, 0, genome);
+      for (let tick = 0; tick < 30; tick++) recorded.step();
+      recorded.paint('erase', 40, 40, 0, genome);
+    }
+    const empty = recorded.frame();
+    for (let update = 0; update < 720; update++) emit(empty);
     expect(chart.paths.at(-1)).toEqual(chart.expected(Array(180).fill(1)));
-    const empty = new Ecosystem(DEFAULTS, false).frame();
     const error = {
       type: 'error',
       message: 'Invalid terrain',
@@ -854,6 +908,9 @@ describe('display-only retained-world races', () => {
     window.dispatchEvent(new Event('resize'));
     expect(chart.paths.at(-1)).toEqual(chart.expected(Array(180).fill(1)));
     emit(empty);
+    expect(chart.paths.at(-1)).toEqual(chart.expected(Array(180).fill(1)));
+    for (let tick = 0; tick < 30; tick++) recorded.step();
+    emit(recorded.frame());
     expect(chart.paths.at(-1)).toEqual(chart.expected([...Array(179).fill(1), 0]));
   });
 

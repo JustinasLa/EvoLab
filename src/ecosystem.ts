@@ -3,6 +3,8 @@ import {
   WIDTH,
   HEIGHT,
   LIMIT,
+  TELEMETRY_INTERVAL_TICKS,
+  TELEMETRY_CAPACITY,
   Random,
   index,
   positions,
@@ -21,8 +23,13 @@ import {
   type Frame,
   type Species,
   type Tool,
-  type DeathCause,
   type DeathRecord,
+  type LegacyWorldFile,
+  type DeathCause,
+  type EnergyLedger,
+  type TelemetryFlow,
+  type TelemetrySample,
+  type TelemetryState,
 } from './model';
 const DIRECTIONS = [
   [1, 0],
@@ -30,6 +37,161 @@ const DIRECTIONS = [
   [-1, 0],
   [0, -1],
 ];
+function emptyFlow(): TelemetryFlow {
+  return {
+    births: 0,
+    deaths: { age: 0, energy: 0, manual: 0 },
+    energy: {
+      leavesGained: 0,
+      mouthsGained: 0,
+      movementSpent: 0,
+      upkeepSpent: 0,
+      climateUpkeepSpent: 0,
+      reproductionSpent: 0,
+      offspringGranted: 0,
+      stingsGained: 0,
+      stingsDrained: 0,
+    },
+  };
+}
+function emptyTelemetry(tick: number): TelemetryState {
+  return {
+    version: 1,
+    intervalTicks: TELEMETRY_INTERVAL_TICKS,
+    originTick: tick,
+    samples: [],
+    pending: { ...emptyFlow(), fromTick: tick },
+  };
+}
+function traitBits(value: number, view: DataView): bigint {
+  view.setFloat64(0, value === 0 ? 0 : value, false);
+  return view.getBigUint64(0, false);
+}
+function traitUnits(bits: bigint): bigint {
+  const exponent = (bits >> 52n) & 0x7ffn;
+  const fraction = bits & ((1n << 52n) - 1n);
+  return exponent === 0n ? fraction : ((1n << 52n) + fraction) << (exponent - 1n);
+}
+function traitMean(
+  sum: bigint,
+  population: number,
+  minimum: number,
+  maximum: number,
+  view: DataView,
+): number | null {
+  if (population === 0) return null;
+  const count = BigInt(population);
+  let low = traitBits(minimum, view),
+    high = traitBits(maximum, view),
+    lower = low;
+  while (low <= high) {
+    const middle = (low + high) >> 1n;
+    if (traitUnits(middle) * count <= sum) {
+      lower = middle;
+      low = middle + 1n;
+    } else high = middle - 1n;
+  }
+  if (traitUnits(lower) * count !== sum) {
+    const midpoint = count * (traitUnits(lower) + traitUnits(lower + 1n));
+    if (2n * sum > midpoint || (2n * sum === midpoint && (lower & 1n) !== 0n)) lower++;
+  }
+  view.setBigUint64(0, lower, false);
+  return view.getFloat64(0, false);
+}
+function exactKeys(value: unknown, keys: string[]): value is Record<string, unknown> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === keys.length &&
+    keys.every((key) => Object.hasOwn(value, key))
+  );
+}
+function validFlow(value: Record<string, unknown>): boolean {
+  const deaths = value.deaths,
+    energy = value.energy;
+  return (
+    integer(value.births, 0, 1e9) &&
+    exactKeys(deaths, ['age', 'energy', 'manual']) &&
+    Object.values(deaths).every((count) => integer(count, 0, 1e9)) &&
+    exactKeys(energy, Object.keys(emptyFlow().energy)) &&
+    Object.values(energy).every((amount) => finite(amount, 0, 1e9)) &&
+    (energy.climateUpkeepSpent as number) <= (energy.upkeepSpent as number) + 1e-6 &&
+    (energy.offspringGranted as number) <= (energy.reproductionSpent as number) + 1e-6
+  );
+}
+function validTelemetry(
+  value: unknown,
+  tick: number,
+  births: number,
+  deaths: number,
+): value is TelemetryState {
+  if (
+    !exactKeys(value, ['version', 'intervalTicks', 'originTick', 'samples', 'pending']) ||
+    value.version !== 1 ||
+    value.intervalTicks !== TELEMETRY_INTERVAL_TICKS ||
+    !integer(value.originTick, 0, tick) ||
+    !Array.isArray(value.samples)
+  )
+    return false;
+  const boundary = Math.floor(tick / TELEMETRY_INTERVAL_TICKS),
+    elapsed = boundary - Math.floor(value.originTick / TELEMETRY_INTERVAL_TICKS),
+    length = Math.min(TELEMETRY_CAPACITY, elapsed),
+    pendingStart = elapsed ? boundary * TELEMETRY_INTERVAL_TICKS : value.originTick;
+  if (
+    value.samples.length !== length ||
+    !exactKeys(value.pending, ['births', 'deaths', 'energy', 'fromTick']) ||
+    value.pending.fromTick !== pendingStart ||
+    !validFlow(value.pending)
+  )
+    return false;
+  let countedBirths = value.pending.births as number,
+    countedDeaths = Object.values(value.pending.deaths as Record<string, number>).reduce(
+      (total, count) => total + count,
+      0,
+    );
+  for (const [sampleIndex, sample] of value.samples.entries()) {
+    const sampleTick = (boundary - length + sampleIndex + 1) * TELEMETRY_INTERVAL_TICKS;
+    if (
+      !exactKeys(sample, [
+        'births',
+        'deaths',
+        'energy',
+        'fromTick',
+        'tick',
+        'population',
+        'food',
+        'cellCounts',
+        'meanPreference',
+        'meanTolerance',
+      ]) ||
+      sample.tick !== sampleTick ||
+      sample.fromTick !== Math.max(value.originTick, sampleTick - TELEMETRY_INTERVAL_TICKS) ||
+      !validFlow(sample) ||
+      !integer(sample.population, 0, LIMIT) ||
+      !integer(sample.food, 0, WIDTH * HEIGHT) ||
+      !Array.isArray(sample.cellCounts) ||
+      sample.cellCounts.length !== 6 ||
+      !sample.cellCounts.every((count) => integer(count, 0, LIMIT * 16))
+    )
+      return false;
+    const cells = sample.cellCounts.reduce((total, count: number) => total + count, 0);
+    if (
+      cells < sample.population ||
+      cells > sample.population * 16 ||
+      (sample.population === 0
+        ? sample.meanPreference !== null || sample.meanTolerance !== null
+        : !finite(sample.meanPreference, 0, 1) || !finite(sample.meanTolerance, 0.12, 0.6))
+    )
+      return false;
+    countedBirths += sample.births as number;
+    countedDeaths += Object.values(sample.deaths as Record<string, number>).reduce(
+      (total, count) => total + count,
+      0,
+    );
+  }
+  return countedBirths <= births && countedDeaths <= deaths;
+}
 export class Ecosystem {
   random: Random;
   settings: Settings;
@@ -45,10 +207,46 @@ export class Ecosystem {
   eventUntil = 0;
   eventOffset = 0;
   lastDeath: DeathRecord | null = null;
-  constructor(settings: Settings = DEFAULTS, seed = true) {
+  private telemetry = emptyTelemetry(0);
+  private readonly recording: boolean;
+  constructor(settings: Settings = DEFAULTS, seed = true, options: { telemetry?: boolean } = {}) {
+    this.recording = options.telemetry !== false;
     this.settings = { ...settings };
     this.random = new Random(settings.seed);
     if (seed) this.seed();
+  }
+  private recordEnergy(field: keyof EnergyLedger, amount: number): void {
+    if (this.recording) this.telemetry.pending.energy[field] += amount;
+  }
+  private observe(): void {
+    if (!this.recording || this.tick % TELEMETRY_INTERVAL_TICKS !== 0) return;
+    const view = new DataView(new ArrayBuffer(8)),
+      cellCounts: TelemetrySample['cellCounts'] = [0, 0, 0, 0, 0, 0];
+    let preference = 0n,
+      tolerance = 0n;
+    for (const organism of this.organisms.values()) {
+      const genome = organism.genome;
+      if (!finite(genome.preference, 0, 1) || !finite(genome.tolerance, 0.12, 0.6))
+        throw new Error('Invalid telemetry source trait.');
+      preference += traitUnits(traitBits(genome.preference, view));
+      tolerance += traitUnits(traitBits(genome.tolerance, view));
+      for (const cell of genome.cells) cellCounts[cell.type - 3]++;
+    }
+    const sample: TelemetrySample = {
+      ...this.telemetry.pending,
+      tick: this.tick,
+      population: this.organisms.size,
+      food: this.food.reduce((total, value) => total + (value ? 1 : 0), 0),
+      cellCounts,
+      meanPreference: traitMean(preference, this.organisms.size, 0, 1, view),
+      meanTolerance: traitMean(tolerance, this.organisms.size, 0.12, 0.6, view),
+    };
+    if (this.telemetry.samples.length === TELEMETRY_CAPACITY) this.telemetry.samples.shift();
+    this.telemetry.samples.push(sample);
+    this.telemetry.pending = { ...emptyFlow(), fromTick: this.tick };
+  }
+  private telemetrySnapshot(): TelemetryState {
+    return this.recording ? structuredClone(this.telemetry) : emptyTelemetry(this.tick);
   }
   seed(): void {
     // Porous mineral ridges partition habitats without sealing them off.
@@ -117,6 +315,7 @@ export class Ecosystem {
     this.organisms.delete(o.id);
     this.deaths++;
     this.lastDeath = { tick: this.tick, cause };
+    if (this.recording) this.telemetry.pending.deaths[cause]++;
   }
   move(o: Organism, dx: number, dy: number, rotation = o.rotation): boolean {
     const target = {
@@ -149,7 +348,13 @@ export class Ecosystem {
       );
       const stress = Math.max(0, Math.abs(temp - o.genome.preference) - o.genome.tolerance);
       const upkeep = 0.012 + Math.max(0, o.genome.tolerance - 0.2) * 0.025;
+      let before = o.energy;
       o.energy -= (upkeep + stress * 0.2) * o.genome.cells.length;
+      this.recordEnergy('upkeepSpent', before - o.energy);
+      this.recordEnergy(
+        'climateUpkeepSpent',
+        (Math.max(0, o.genome.tolerance - 0.2) * 0.025 + stress * 0.2) * o.genome.cells.length,
+      );
       const places = positions(o);
       for (let c = 0; c < o.genome.cells.length; c++) {
         const type = o.genome.cells[c].type,
@@ -157,7 +362,9 @@ export class Ecosystem {
           x = p % WIDTH,
           y = Math.floor(p / WIDTH);
         if (type === 4) {
+          before = o.energy;
           o.energy += 0.04 * daylight * (1 - stress);
+          this.recordEnergy('leavesGained', o.energy - before);
           if (this.random.next() < (this.settings.nutrients / 100) * daylight * (1 - stress)) {
             const [dx, dy] = DIRECTIONS[this.random.int(4)],
               n = index(x + dx, y + dy);
@@ -169,14 +376,20 @@ export class Ecosystem {
             const n = index(x + dx, y + dy);
             if (type === 3 && this.food[n]) {
               this.food[n] = 0;
+              before = o.energy;
               o.energy += 2.2;
+              this.recordEnergy('mouthsGained', o.energy - before);
             }
             const victim = this.organisms.get(this.occupied[n]);
             if (type === 6 && victim && victim.id !== o.id && o.age % 4 === 0) {
               const cell = positions(victim).indexOf(n);
               if (victim.genome.cells[cell].type !== 7) {
+                const victimBefore = victim.energy;
                 victim.energy -= 2.5;
+                this.recordEnergy('stingsDrained', victimBefore - victim.energy);
+                before = o.energy;
                 o.energy += 0.65;
+                this.recordEnergy('stingsGained', o.energy - before);
               }
             }
           }
@@ -208,7 +421,9 @@ export class Ecosystem {
           o.direction = this.random.int(4);
           this.move(o, 0, 0, (o.rotation + 1) % 4);
         }
+        before = o.energy;
         o.energy -= 0.03;
+        this.recordEnergy('movementSpent', before - o.energy);
       }
       if (o.energy <= 0 || o.age > 900 + o.genome.cells.length * 75) {
         this.kill(o, o.energy <= 0 ? 'energy' : 'age');
@@ -236,14 +451,19 @@ export class Ecosystem {
           if (child) {
             if (changed) this.nextSpecies++;
             child.energy = genome.cells.length * 1.5 + 3;
+            before = o.energy;
             o.energy -= child.energy + 2;
+            this.recordEnergy('reproductionSpent', before - o.energy);
+            this.recordEnergy('offspringGranted', child.energy);
             o.children++;
             this.births++;
+            if (this.recording) this.telemetry.pending.births++;
             break;
           }
         }
       }
     }
+    this.observe();
   }
   paint(tool: Tool, x: number, y: number, radius: number, genome: Genome): void {
     if (tool === 'plant') {
@@ -267,7 +487,7 @@ export class Ecosystem {
           }
         }
     for (const id of victims) {
-      this.kill(this.organisms.get(id)!, 'manual-erasure');
+      this.kill(this.organisms.get(id)!, 'manual');
     }
     if (tool === 'erase')
       for (let dy = -radius; dy <= radius; dy++)
@@ -311,6 +531,7 @@ export class Ecosystem {
       ids,
       offset: this.tick < this.eventUntil ? this.eventOffset : 0,
       climate: this.settings.climate,
+      telemetry: this.telemetrySnapshot(),
       stats: {
         tick: this.tick,
         population: this.organisms.size,
@@ -332,7 +553,8 @@ export class Ecosystem {
   }
   save(): WorldFile {
     return {
-      version: 2,
+      version: 3,
+      telemetry: this.telemetrySnapshot(),
       settings: { ...this.settings },
       random: this.random.state,
       tick: this.tick,
@@ -349,10 +571,12 @@ export class Ecosystem {
   }
   static load(text: string): Ecosystem {
     if (text.length > 2500000) throw new Error('World file exceeds 2.5 MB.');
-    const f = JSON.parse(text) as WorldFile;
+    const parsed: unknown = JSON.parse(text);
+    const f = parsed as WorldFile | LegacyWorldFile;
     if (
       !f ||
-      f.version !== 2 ||
+      typeof f !== 'object' ||
+      (f.version !== 2 && f.version !== 3) ||
       !validSettings(f.settings) ||
       !integer(f.random, -2147483648, 4294967295) ||
       !integer(f.tick, 0, 1e9) ||
@@ -365,7 +589,9 @@ export class Ecosystem {
       !Array.isArray(f.organisms) ||
       f.organisms.length > LIMIT
     )
-      throw new Error('Not a valid EvoLab ecosystem (version 2).');
+      throw new Error('Not a valid EvoLab ecosystem (version 2 or 3).');
+    if (f.version === 3 && !validTelemetry(f.telemetry, f.tick, f.births, f.deaths))
+      throw new Error('Invalid ecosystem telemetry.');
     const world = new Ecosystem(f.settings, false);
     for (const [field, array] of [
       ['food', world.food],
@@ -418,6 +644,7 @@ export class Ecosystem {
       eventOffset: f.eventOffset,
     });
     world.random.state = f.random;
+    world.telemetry = f.version === 2 ? emptyTelemetry(f.tick) : structuredClone(f.telemetry);
     return world;
   }
 }

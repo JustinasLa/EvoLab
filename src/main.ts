@@ -76,7 +76,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     const cause = {
       energy: 'Last removal: energy exhaustion. World preserved.',
       age: 'Last removal: age limit. World preserved.',
-      'manual-erasure': 'Last removal: manual erasure. World preserved.',
+      manual: 'Last removal: manual erasure. World preserved.',
       'empty-import': 'Original extinction cause unavailable. World preserved.',
     }[summary.cause];
     text(
@@ -411,11 +411,8 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     text('world-count', `${s.population} organism${s.population === 1 ? '' : 's'} · ${lineages}`);
     text('season', s.season);
     text('weather', s.event);
-    if (!displayOnly && updates % 4 === 1) {
-      history.push(s.population);
-      history = history.slice(-180);
-      drawChart(get('chart'), history);
-    }
+    history = frame.telemetry.samples.map((sample) => sample.population);
+    drawChart(get('chart'), history);
     if (
       displayOnly ||
       paused ||
