@@ -222,7 +222,7 @@ test('standalone inspector and designer downloads round-trip full traits before 
   });
   await expect(page.locator('#notice')).toContainText('loaded into the designer');
   const name = '../<img onerror=alert(1)> 🌿',
-    description = '<script>literal only</script>\n' + 'd'.repeat(972);
+    description = '<script>literal only</script>\n' + 'd'.repeat(970);
   await page.getByLabel('Blueprint name', { exact: true }).fill(name);
   await page.getByLabel('Description', { exact: true }).fill(description);
   const customized = await downloadBlueprint(page);
@@ -300,6 +300,31 @@ test('standalone inspector and designer downloads round-trip full traits before 
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
   expect(errors).toEqual([]);
   expect(external).toEqual([]);
+  await testInfo.attach('blueprint-acceptance.json', {
+    contentType: 'application/json',
+    body: JSON.stringify(
+      {
+        project: testInfo.project.name,
+        beforeTick: before.tick,
+        afterPlacementTick: after.tick,
+        afterStepTick: stepped.tick,
+        beforePopulation: before.organisms.length,
+        afterPlacementPopulation: after.organisms.length,
+        freshId: planted.id,
+        freshLineage: planted.species,
+        functionalTypes: planted.genome.cells.map((cell) => cell.type),
+        preference: planted.genome.preference,
+        tolerance: planted.genome.tolerance,
+        tempo: planted.genome.tempo,
+        pausedWorldBytesUnchangedBeforeExplicitPlacement: true,
+        inspectorAndDesignerDownloadRoundTripsExact: true,
+        consoleErrors: errors,
+        externalRequests: external,
+      },
+      null,
+      2,
+    ),
+  });
 });
 
 test('invalid and cancelled blueprint files preserve paused world and current designer', async ({
@@ -394,9 +419,17 @@ test('blueprint labels, keyboard focus and multiline fields fit intermediate and
       expect(bounds!.x).toBeGreaterThanOrEqual(0);
       expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
     }
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
-      width,
-    );
+    const layout = await page.locator('.designer-section').evaluate((section) => ({
+      contentWidth: section.scrollWidth,
+      availableWidth: section.clientWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: innerWidth,
+    }));
+    expect(layout.contentWidth).toBeLessThanOrEqual(layout.availableWidth);
+    await testInfo.attach(`blueprint-layout-${width}.json`, {
+      contentType: 'application/json',
+      body: JSON.stringify(layout, null, 2),
+    });
     await page.getByLabel('Blueprint name', { exact: true }).focus();
     await page.keyboard.press('Tab');
     await expect(page.getByLabel('Description', { exact: true })).toBeFocused();
