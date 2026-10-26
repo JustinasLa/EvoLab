@@ -172,7 +172,9 @@ test('literal v3 telemetry migrates through the file input and real worker befor
   await expect(page.locator('[data-bin]')).toHaveCount(0);
   await expect(page.locator('[data-series="Outside tolerance"] [data-tick]')).toHaveCount(0);
   await expect(page.locator('[data-series="Preference"] [data-tick]')).toHaveCount(2);
-  await page.screenshot({ path: testInfo.outputPath('v3-legacy-gaps.png'), fullPage: true });
+  await page
+    .locator('#telemetry-details')
+    .screenshot({ path: testInfo.outputPath('v3-legacy-gaps.png') });
   expect(await downloadWorld(page)).toEqual(migratedBytes);
   await page.getByRole('tab', { name: 'Organism', exact: true }).click();
   await page.locator('#blueprint-file').setInputFiles({
@@ -208,7 +210,10 @@ test('literal v3 telemetry migrates through the file input and real worker befor
       .locator('[data-bin]')
       .evaluateAll((bars) => bars.map((bar) => Number(bar.getAttribute('data-count')))),
   ).toEqual(measured.telemetry.samples.at(-1)!.adaptation!.preferenceBins);
-  await page.screenshot({ path: testInfo.outputPath('v3-next-boundary.png'), fullPage: true });
+  await page
+    .locator('#telemetry-plots figure')
+    .last()
+    .screenshot({ path: testInfo.outputPath('v3-next-boundary.png') });
   expect(await downloadWorld(page)).toEqual(measuredBytes);
   await importTelemetryWorld(page, measured);
   const restoredBytes = await downloadPausedWorld(page),
