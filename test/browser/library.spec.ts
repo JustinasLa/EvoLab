@@ -272,7 +272,7 @@ test('future native database declarations remain read-only and never offer damag
   );
   await page.locator('#local-library > summary').click();
   await expect(page.locator('#library-status')).toContainText('schema is unsupported');
-  await expect(page.locator('[data-repair-index]')).toHaveCount(0);
+  await expect(page.locator('[data-repair-id]')).toHaveCount(0);
   await page.locator('#library-save').click();
   await expect(page.locator('#library-status')).toContainText('schema is unsupported');
   await expect(page.locator('#library-candidate')).toBeVisible();
@@ -628,8 +628,8 @@ test('native overlapping two-page cap, full-string CAS and repair eligibility ra
   for (const replacement of replacements) {
     await database(page, [[first, damaged]], true);
     await page.locator('#library-refresh').click();
-    await expect(page.locator('[data-repair-index]')).toHaveCount(1);
-    await page.locator('[data-repair-index]').click();
+    await expect(page.locator('[data-repair-id]')).toHaveCount(1);
+    await page.locator('[data-repair-id]').click();
     await database(other, [[first, replacement]]);
     await page.locator('#library-confirm').click();
     await expect(page.locator('#library-status')).toContainText('changed or disappeared');
@@ -638,8 +638,8 @@ test('native overlapping two-page cap, full-string CAS and repair eligibility ra
   await database(page, [[first, damaged]], true);
   for (const tab of [page, other]) {
     await tab.locator('#library-refresh').click();
-    await expect(tab.locator('[data-repair-index]')).toHaveCount(1);
-    await tab.locator('[data-repair-index]').click();
+    await expect(tab.locator('[data-repair-id]')).toHaveCount(1);
+    await tab.locator('[data-repair-id]').click();
   }
   await Promise.all([
     page.locator('#library-confirm').click(),
@@ -657,6 +657,55 @@ test('native overlapping two-page cap, full-string CAS and repair eligibility ra
     }),
   });
   await other.close();
+});
+
+test('native damaged repair retains its full UUID across preceding row insertion and removal', async ({
+  page,
+}, info) => {
+  const before = await fixture(page);
+  const third = '00000000-0000-4000-8000-000000000003';
+  const valid = encodeRecord(candidate('valid neighbor'), 1);
+  const damaged = encodeRecord(candidate('damaged target'), 1).replace(
+    '"revision":1',
+    '"revision":0',
+  );
+  const neighbor = encodeRecord(candidate('damaged neighbor'), 1).replace(
+    '"revision":1',
+    '"revision":-1',
+  );
+  await openLibrary(page);
+  const evidence = [];
+  for (const change of ['insertion', 'removal', 'sole damaged row']) {
+    const rows: [string, unknown][] = [[second, damaged]];
+    if (change !== 'sole damaged row') rows.push([third, neighbor]);
+    if (change !== 'insertion') rows.push([first, valid]);
+    await database(page, rows, true);
+    await page.locator('#library-refresh').click();
+    const target = page.locator(`[data-repair-id="${second}"]`);
+    await expect(target).toBeEnabled();
+    const handle = await target.elementHandle();
+    const changed = rows.filter(([id]) => id !== first);
+    if (change === 'insertion') changed.push([first, valid]);
+    await database(page, changed, true);
+    await page.locator('#library-refresh').click();
+    await expect(page.locator('#library-count')).toContainText(`${changed.length} / 100`);
+    expect(await target.evaluate((node, previous) => node === previous, handle)).toBe(true);
+    await target.click();
+    await expect(page.locator('#library-dialog-description')).toContainText(`Local ID ${second}.`);
+    await expect(page.locator('#library-dialog-description')).not.toContainText(third);
+    await page.locator('#library-confirm').click();
+    await expect(page.locator('#library-status')).toContainText('committed');
+    const survivors = changed
+      .filter(([id]) => id !== second)
+      .sort(([left], [right]) => left.localeCompare(right));
+    expect(await database(page)).toEqual(survivors);
+    evidence.push({ change, confirmedFullId: second, survivors });
+  }
+  expect(await pausedSave(page)).toEqual(before);
+  await info.attach('native-stable-repair-identity.json', {
+    contentType: 'application/json',
+    body: JSON.stringify(evidence),
+  });
 });
 
 test('native Enter and Space capture preserve focus through live frames and bounded reflow', async ({

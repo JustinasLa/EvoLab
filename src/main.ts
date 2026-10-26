@@ -307,7 +307,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         const button = item.querySelector('button') ?? document.createElement('button');
         button.replaceChildren();
         delete button.dataset.libraryId;
-        delete button.dataset.repairIndex;
+        delete button.dataset.repairId;
         button.disabled = false;
         if (row.kind === 'valid') {
           button.dataset.libraryId = row.id;
@@ -323,7 +323,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         } else {
           button.textContent = `${row.kind}: ${row.reason} ${row.id ?? `Slot ${index + 1}`}`;
           if (row.kind === 'damaged') {
-            button.dataset.repairIndex = String(index);
+            button.dataset.repairId = row.id;
             button.textContent += ' Remove damaged entry…';
           } else {
             if (document.activeElement === button) get('library-heading').focus();
@@ -1151,11 +1151,12 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       librarySelected = button.dataset.libraryId;
       librarySelection++;
       renderLibrary();
-    } else if (button.dataset.repairIndex !== undefined && !libraryBusy())
-      showLibraryDialog(
-        'repair',
-        librarySnapshot.rows[Number(button.dataset.repairIndex)] as LibraryProblem,
+    } else if (button.dataset.repairId && !libraryBusy()) {
+      const entry = librarySnapshot.rows.find(
+        (row) => row.kind === 'damaged' && row.id === button.dataset.repairId,
       );
+      if (entry) showLibraryDialog('repair', entry);
+    }
   });
   listen(get('library-cancel'), 'click', () => cancelDialog('Confirmation cancelled.'));
   listen(get('library-dialog'), 'cancel', (event) => {

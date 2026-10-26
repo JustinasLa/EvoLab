@@ -418,8 +418,8 @@ describe('explicit bounded local library', () => {
     storage.values.set('uninspectable', { payload: true });
     await open();
     expect(get('library-count').textContent).toContain('3 / 100');
-    expect(root.querySelector<HTMLButtonElement>('[data-repair-index="0"]')).not.toBeNull();
-    root.querySelector<HTMLButtonElement>('[data-repair-index="0"]')!.click();
+    expect(root.querySelector<HTMLButtonElement>(`[data-repair-id="${first}"]`)).not.toBeNull();
+    root.querySelector<HTMLButtonElement>(`[data-repair-id="${first}"]`)!.click();
     storage.values.set(first, encodeRecord(draft('repaired elsewhere'), 1));
     click('library-confirm');
     await flush();
@@ -427,7 +427,7 @@ describe('explicit bounded local library', () => {
     storage.values.set(first, bad);
     click('library-refresh');
     await flush();
-    root.querySelector<HTMLButtonElement>('[data-repair-index="0"]')!.click();
+    root.querySelector<HTMLButtonElement>(`[data-repair-id="${first}"]`)!.click();
     click('library-confirm');
     await flush();
     expect(storage.values.has(first)).toBe(false);
@@ -435,6 +435,39 @@ describe('explicit bounded local library', () => {
     for (const button of root.querySelectorAll<HTMLButtonElement>('#library-rows button'))
       expect(button.disabled).toBe(true);
   });
+
+  it.each(['insertion', 'removal', 'sole damaged row'])(
+    'repairs the stable full UUID after %s before an unchanged damaged row',
+    async (change) => {
+      const third = '00000000-0000-4000-8000-000000000003';
+      const valid = encodeRecord(draft('valid neighbor'), 1);
+      const damaged = encodeRecord(draft('damaged target'), 1).replace(
+        '"revision":1',
+        '"revision":0',
+      );
+      const neighbor = encodeRecord(draft('damaged neighbor'), 1).replace(
+        '"revision":1',
+        '"revision":-1',
+      );
+      storage.values.set(second, damaged);
+      if (change !== 'sole damaged row') storage.values.set(third, neighbor);
+      if (change !== 'insertion') storage.values.set(first, valid);
+      await open();
+      const button = root.querySelector<HTMLButtonElement>(`[data-repair-id="${second}"]`)!;
+      if (change === 'insertion') storage.values.set(first, valid);
+      else storage.values.delete(first);
+      click('library-refresh');
+      await flush();
+      expect(root.querySelector(`[data-repair-id="${second}"]`)).toBe(button);
+      const survivors = [...storage.values].filter(([id]) => id !== second);
+      button.click();
+      expect(get('library-dialog-description').textContent).toContain(`Local ID ${second}.`);
+      expect(get('library-dialog-description').textContent).not.toContain(third);
+      click('library-confirm');
+      await flush();
+      expect([...storage.values]).toEqual(survivors);
+    },
+  );
 
   it('retains an unsaved candidate on quota/full/error and distinguishes committed refresh failure', async () => {
     await open();
