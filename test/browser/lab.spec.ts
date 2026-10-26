@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { writeFile } from 'node:fs/promises';
 import { Ecosystem } from '../../src/ecosystem';
 import { DEFAULTS, type Frame, type LegacyWorldFile } from '../../src/model';
 
@@ -12,8 +13,8 @@ async function observeTelemetry(page: import('@playwright/test').Page): Promise<
   await page.addInitScript(() => {
     window.telemetryEvidence = { frame: null, points: [] };
     window.Worker = new Proxy(window.Worker, {
-      construct(target, args: ConstructorParameters<typeof Worker>) {
-        const worker = new target(...args);
+      construct(target, args: ConstructorParameters<typeof Worker>, newTarget) {
+        const worker: Worker = Reflect.construct(target, args, newTarget);
         worker.addEventListener('message', ({ data }) => {
           if (data.type === 'frame') window.telemetryEvidence.frame = data.frame;
         });
@@ -47,14 +48,36 @@ async function telemetryFrame(
   });
 }
 
-async function importWorld(page: import('@playwright/test').Page, world: object): Promise<void> {
+async function expectPopulationChart(
+  page: import('@playwright/test').Page,
+  populations: number[],
+): Promise<void> {
+  await expect
+    .poll(() =>
+      page.evaluate((values) => {
+        const width = (document.querySelector('#chart') as HTMLCanvasElement).width;
+        const expected = values.map((population, sample) => [
+          (sample / Math.max(1, values.length - 1)) * width,
+          64 - (population / Math.max(10, ...values)) * 58,
+        ]);
+        return JSON.stringify(window.telemetryEvidence.points) === JSON.stringify(expected);
+      }, populations),
+    )
+    .toBe(true);
+}
+
+async function importTelemetryWorld(
+  page: import('@playwright/test').Page,
+  world: object,
+): Promise<void> {
   await page.locator('#file').setInputFiles({
     name: 'telemetry-world.json',
     mimeType: 'application/json',
     buffer: Buffer.from(JSON.stringify(world)),
   });
   await expect(page.locator('#notice')).toContainText('World restored');
-  await pause(page);
+  if (await page.getByRole('button', { name: 'Ⅱ Pause', exact: true }).isVisible())
+    await pause(page);
 }
 
 async function stepTo(page: import('@playwright/test').Page, target: number): Promise<void> {
@@ -66,7 +89,7 @@ async function stepTo(page: import('@playwright/test').Page, target: number): Pr
     await expect(page.locator('#tick')).toHaveText(`TICK ${tick.toLocaleString('en-US')}`);
   }
 }
-import { WIDTH, HEIGHT, type WorldFile } from '../../src/model';
+import { WIDTH, HEIGHT, index, type WorldFile } from '../../src/model';
 test('Even Hub-style cards retain the dark palette and crisp cellular editor', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#population')).not.toHaveText('—');
@@ -204,6 +227,488 @@ async function downloadWorld(page: import('@playwright/test').Page): Promise<Buf
   for await (const chunk of stream) chunks.push(chunk);
   return Buffer.concat(chunks);
 }
+async function readWorld(page: import('@playwright/test').Page): Promise<WorldFile> {
+  return JSON.parse((await downloadWorld(page)).toString());
+}
+async function importWorld(page: import('@playwright/test').Page, world: WorldFile): Promise<void> {
+  await page.locator('#file').setInputFiles({
+    name: 'world.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(world)),
+  });
+}
+async function extinctionFixture(
+  page: import('@playwright/test').Page,
+  cause: 'age' | 'energy' | 'empty' | 'living',
+  offset = 1,
+): Promise<WorldFile> {
+  const world = await readWorld(page);
+  world.settings = { ...world.settings, climate: 0, nutrients: 0 };
+  world.tick = 417;
+  const history = new Ecosystem(world.settings, false);
+  for (let tick = 0; tick < world.tick; tick++) history.step();
+  world.telemetry = history.save().telemetry;
+  world.food = [index(5, 5)];
+  world.walls = [index(6, 6)];
+  world.eventUntil = 0;
+  world.eventOffset = 0;
+  world.organisms =
+    cause === 'empty'
+      ? []
+      : [
+          {
+            ...world.organisms[0],
+            x: 120,
+            y: 78,
+            rotation: 0,
+            age: cause === 'age' ? 976 - offset : 0,
+            energy: cause === 'energy' ? 0.001 : 10,
+            genome: { cells: [{ x: 0, y: 0, type: 3 }], preference: 0.5, tolerance: 0.3, tempo: 2 },
+          },
+        ];
+  return world;
+}
+async function paintCell(
+  page: import('@playwright/test').Page,
+  tool: string,
+  x: number,
+  y: number,
+): Promise<void> {
+  await page.locator(`button[data-tool="${tool}"]`).click();
+  const at = await coordinate(page, x, y);
+  await page.mouse.click(at.x, at.y);
+}
+async function expectPausedWorld(
+  page: import('@playwright/test').Page,
+  tick: number,
+): Promise<void> {
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  await expect(page.locator('#pause')).toContainText('Resume');
+  await expect(page.locator('#step')).toBeEnabled();
+  await expect(page.locator('#tick')).toHaveText(`TICK ${tick.toLocaleString()}`);
+}
+
+test.describe('pause on total extinction', () => {
+  for (const speed of [1, 4, 12]) {
+    test(`default ON stops at the first extinct logical tick at ${speed}×`, async ({ page }) => {
+      const errors: string[] = [],
+        external: string[] = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      page.on('request', (request) => {
+        if (
+          !request.url().startsWith('http://127.0.0.1:4173') &&
+          !request.url().startsWith('data:')
+        )
+          external.push(request.url());
+      });
+      await page.goto('/');
+      await expect(page.locator('#pause-on-extinction')).toBeChecked();
+      await pause(page);
+      const offset = speed === 1 ? 1 : 2;
+      const fixture = await extinctionFixture(page, 'age', offset);
+      const expected = Ecosystem.load(JSON.stringify(fixture));
+      for (let step = 0; step < offset; step++) expected.step();
+      await page.locator('#speed').selectOption(String(speed));
+      await importWorld(page, fixture);
+      await expectPausedWorld(page, fixture.tick + offset);
+      await expect(page.locator('#population')).toHaveText('0');
+      await expect(page.locator('#extinction-summary')).toContainText(
+        `total extinction at tick ${fixture.tick + offset}`,
+      );
+      await expect(page.locator('#extinction-summary')).toContainText('Last removal: age limit.');
+      await expect(page.locator('#extinction-summary')).toHaveAttribute('aria-live', 'polite');
+      await expect(page.locator('#lineages')).toContainText('quiet');
+      expect(await readWorld(page)).toEqual(expected.save());
+      await page.waitForTimeout(200);
+      expect(await readWorld(page)).toEqual(expected.save());
+      await page.locator('#pause').click();
+      await expectPausedWorld(page, fixture.tick + offset);
+      await expect(page.locator('#notice')).toContainText(
+        'Place an organism, or turn off Pause on extinction and press Resume.',
+      );
+      expect(errors).toEqual([]);
+      expect(external).toEqual([]);
+    });
+  }
+
+  test('energy exhaustion, invalid import and the multiline summary remain honest at desktop and narrow widths', async ({
+    page,
+  }, testInfo) => {
+    await page.goto('/');
+    await pause(page);
+    const fixture = await extinctionFixture(page, 'energy');
+    await page.locator('#speed').selectOption('12');
+    await importWorld(page, fixture);
+    await expectPausedWorld(page, 418);
+    await expect(page.locator('#extinction-summary')).toContainText('energy exhaustion');
+    const saved = await readWorld(page);
+    await importWorld(page, { ...saved, version: 99 } as unknown as WorldFile);
+    await expect(page.locator('#notice')).toContainText('Not a valid EvoLab ecosystem');
+    await expectPausedWorld(page, saved.tick);
+    await expect(page.locator('#population')).toHaveText('0');
+    await expect(page.locator('#pause-on-extinction')).toBeChecked();
+    await expect(page.locator('#inspector')).toContainText('Click any organism');
+    await expect(page.locator('#lineages')).toContainText('quiet');
+    expect(await readWorld(page)).toEqual(saved);
+    await page.waitForTimeout(200);
+    expect(await readWorld(page)).toEqual(saved);
+    const measurements: unknown[] = [];
+    for (const width of [360, 390, 1280]) {
+      await page.setViewportSize({ width, height: 800 });
+      await page.locator('#speed').focus();
+      await page.keyboard.press('Tab');
+      await expect(page.locator('#pause-on-extinction')).toBeFocused();
+      const geometry = await page.evaluate(() => {
+        const summary = document.querySelector<HTMLElement>('#extinction-summary')!;
+        const label = document.querySelector<HTMLElement>('.extinction-preference')!;
+        const habitat = document.querySelector('#world')!.getBoundingClientRect();
+        const header = document.querySelector('.topbar')!.getBoundingClientRect();
+        return {
+          width: innerWidth,
+          documentWidth: document.documentElement.scrollWidth,
+          summaryWidth: summary.clientWidth,
+          summaryContentWidth: summary.scrollWidth,
+          summaryHeight: summary.getBoundingClientRect().height,
+          labelHeight: label.getBoundingClientRect().height,
+          summaryOutsideHabitat: header.left >= habitat.right || header.top >= habitat.bottom,
+          focusOutline: getComputedStyle(document.querySelector('#pause-on-extinction')!)
+            .outlineStyle,
+        };
+      });
+      expect(geometry.documentWidth).toBeLessThanOrEqual(width);
+      expect(geometry.summaryContentWidth).toBeLessThanOrEqual(geometry.summaryWidth);
+      expect(geometry.labelHeight).toBeGreaterThanOrEqual(44);
+      expect(geometry.summaryOutsideHabitat).toBe(true);
+      expect(geometry.focusOutline).toBe('solid');
+      measurements.push(geometry);
+      for (const panel of ['ecosystem', 'organism']) {
+        await page.locator(`#${panel}-tab`).click();
+        await expect(page.locator('#pause-on-extinction')).toBeVisible();
+        await expect(page.locator('#extinction-summary')).toBeVisible();
+      }
+    }
+    const measurementsPath = testInfo.outputPath('extinction-layout.json');
+    await writeFile(measurementsPath, JSON.stringify(measurements, null, 2));
+    await testInfo.attach('extinction-layout', {
+      path: measurementsPath,
+      contentType: 'application/json',
+    });
+    if (testInfo.project.name === 'mobile') await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('#pause-on-extinction').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath('extinction-summary.png') });
+    await page.getByRole('button', { name: 'Help', exact: true }).click();
+    await expect(page.locator('#help-dialog')).toContainText('reloading restores ON');
+    await expect(page.locator('#help-dialog')).toContainText(
+      'display refresh adds no chart samples',
+    );
+    await page.getByRole('button', { name: 'Close help' }).click();
+  });
+
+  test('empty imports preserve the world and allow exact Step, view changes, editing and placement without auto-resume', async ({
+    page,
+  }) => {
+    await page.goto('/');
+    await pause(page);
+    const fixture = await extinctionFixture(page, 'empty');
+    await importWorld(page, fixture);
+    await expectPausedWorld(page, 417);
+    await expect(page.locator('#extinction-summary')).toContainText(
+      'Original extinction cause unavailable',
+    );
+    expect(await readWorld(page)).toEqual(Ecosystem.load(JSON.stringify(fixture)).save());
+    await page.locator('#zoom-in').click();
+    await page.locator('#zoom-out').click();
+    await page.locator('#fit').click();
+    await paintCell(page, 'inspect', 40, 40);
+    await expect(page.locator('#inspector')).toContainText('Click any organism');
+    await page.locator('button[data-tool="pan"]').click();
+    const at = await coordinate(page, 120, 78);
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.down();
+    await page.mouse.move(at.x + 18, at.y + 12);
+    await page.mouse.up();
+    await page.locator('#fit').click();
+    expect(await readWorld(page)).toEqual(Ecosystem.load(JSON.stringify(fixture)).save());
+    await page.locator('#brush').evaluate((input: HTMLInputElement) => {
+      input.value = '0';
+      input.dispatchEvent(new Event('input'));
+    });
+    await paintCell(page, 'food', 20, 20);
+    await paintCell(page, 'wall', 25, 25);
+    const edited = await readWorld(page);
+    expect(edited.tick).toBe(417);
+    expect(edited.food).toContain(index(20, 20));
+    expect(edited.walls).toContain(index(25, 25));
+    await page.locator('#step').click();
+    await expectPausedWorld(page, 418);
+    const stepped = Ecosystem.load(JSON.stringify(edited));
+    stepped.step();
+    expect(await readWorld(page)).toEqual(stepped.save());
+    await expect(page.locator('#extinction-summary')).toContainText('tick 417');
+    await paintCell(page, 'plant', 120, 78);
+    await expect(page.locator('#population')).toHaveText('1');
+    await expect(page.locator('#extinction-summary')).toBeHidden();
+    await expectPausedWorld(page, 418);
+    const planted = await readWorld(page);
+    await page.waitForTimeout(200);
+    expect(await readWorld(page)).toEqual(planted);
+    await page.locator('#pause').click();
+    await expect(page.locator('#run-state')).toHaveText('LIVE');
+    await expect(page.locator('#tick')).not.toHaveText('TICK 418');
+  });
+
+  for (const alreadyPaused of [true, false]) {
+    test(`default ON manual last erase retains its command tick while previously ${alreadyPaused ? 'paused' : 'running'}`, async ({
+      page,
+    }) => {
+      await page.goto('/');
+      await pause(page);
+      const fixture = await extinctionFixture(page, 'living');
+      await page.locator('#speed').selectOption('1');
+      await importWorld(page, fixture);
+      await expect(page.locator('#notice')).toContainText('World restored');
+      if (alreadyPaused) await pause(page);
+      await expect(page.locator('#pause-on-extinction')).toBeChecked();
+      await page.locator('#brush').evaluate((input: HTMLInputElement) => {
+        input.value = '0';
+        input.dispatchEvent(new Event('input'));
+      });
+      await paintCell(page, 'erase', 120, 78);
+      await expect(page.locator('#run-state')).toHaveText('PAUSED');
+      await expect(page.locator('#population')).toHaveText('0');
+      const saved = await readWorld(page);
+      await expectPausedWorld(page, saved.tick);
+      await expect(page.locator('#extinction-summary')).toContainText(
+        `total extinction at tick ${saved.tick}`,
+      );
+      await expect(page.locator('#extinction-summary')).toContainText('manual erasure');
+      expect(saved.deaths).toBe(fixture.deaths + 1);
+      expect(saved.food).toEqual(fixture.food);
+      expect(saved.walls).toEqual(fixture.walls);
+      await page.waitForTimeout(200);
+      expect(await readWorld(page)).toEqual(saved);
+    });
+  }
+
+  test('failed load retains manually paused selection and chosen OFF without advancing or resuming', async ({
+    page,
+  }) => {
+    await page.goto('/');
+    await pause(page);
+    const fixture = await extinctionFixture(page, 'living');
+    await importWorld(page, fixture);
+    await expect(page.locator('#notice')).toContainText('World restored');
+    await pause(page);
+    await paintCell(page, 'inspect', 120, 78);
+    await expect(page.locator('#inspector')).toContainText(`Organism ${fixture.organisms[0].id}`);
+    await page.locator('#pause-on-extinction').uncheck();
+    const saved = await readWorld(page);
+    const invalid = structuredClone(saved);
+    invalid.organisms.push({ ...invalid.organisms[0], id: invalid.nextId++ });
+    await importWorld(page, invalid);
+    await expect(page.locator('#notice')).toContainText('Invalid or overlapping organism');
+    await expectPausedWorld(page, saved.tick);
+    await expect(page.locator('#pause-on-extinction')).not.toBeChecked();
+    await expect(page.locator('#inspector')).toContainText(`Organism ${fixture.organisms[0].id}`);
+    await expect(page.locator('#extinction-summary')).toBeHidden();
+    expect(await readWorld(page)).toEqual(saved);
+    await page.waitForTimeout(200);
+    expect(await readWorld(page)).toEqual(saved);
+  });
+
+  test('late failed-load recovery keeps newer settings aligned with saves and reseeding', async ({
+    page,
+  }, testInfo) => {
+    await observeTelemetry(page);
+    await page.addInitScript(() => {
+      const delivery = { nutrients: null as number | null, release: () => {} };
+      Object.assign(window, { recoveryDelivery: delivery });
+      window.Worker = class extends Worker {
+        set onmessage(handler: ((this: Worker, event: MessageEvent) => void) | null) {
+          super.onmessage = (event) => {
+            if (event.data.type === 'error' && event.data.recovery) {
+              delivery.nutrients = event.data.recovery.settings.nutrients;
+              delivery.release = () => handler?.call(this, event);
+            } else handler?.call(this, event);
+          };
+        }
+      };
+    });
+    await page.goto('/');
+    await pause(page);
+    const fixture = await extinctionFixture(page, 'empty');
+    await importWorld(page, fixture);
+    await expectPausedWorld(page, fixture.tick);
+    const before = await readWorld(page);
+    const summary = await page.locator('#extinction-summary').textContent();
+    const populations = before.telemetry.samples.map((sample) => sample.population);
+    await expectPopulationChart(page, populations);
+    expect(before.telemetry.samples).toHaveLength(13);
+    await importWorld(page, { ...fixture, version: 99 } as unknown as WorldFile);
+    await expect.poll(() => page.evaluate('window.recoveryDelivery.nutrients')).toBe(0);
+    await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+    await page.getByText('World settings', { exact: true }).click();
+    await page.locator('#nutrients').fill('3');
+    await page.locator('#mutation').fill('0.37');
+    await page.locator('#climate').fill('0.25');
+    await page.locator('#nutrients').fill('7');
+    const expected = {
+      ...before,
+      settings: { ...before.settings, nutrients: 7, mutation: 0.37, climate: 0.25 },
+    };
+    expect(await readWorld(page)).toEqual(expected);
+    await page.evaluate('window.recoveryDelivery.release()');
+    await expect(page.locator('#notice')).toContainText('version 2 or 3');
+    await expect(page.locator('#nutrients')).toHaveValue('7');
+    await expect(page.locator('#nutrients-value')).toHaveText('7%');
+    await expect(page.locator('#mutation-value')).toHaveText('37%');
+    await expect(page.locator('#climate-value')).toHaveText('25%');
+    await expectPausedWorld(page, fixture.tick);
+    await expect(page.locator('#extinction-summary')).toHaveText(summary!);
+    await expectPopulationChart(page, populations);
+    expect((await telemetryFrame(page)).telemetry).toEqual(before.telemetry);
+    expect(await readWorld(page)).toEqual(expected);
+    await page.waitForTimeout(200);
+    expect(await readWorld(page)).toEqual(expected);
+    await page.getByRole('button', { name: 'Reseed world' }).click();
+    await pause(page);
+    const reseeded = await readWorld(page);
+    expect(reseeded.settings).toEqual(expected.settings);
+    await expect(page.locator('#nutrients-value')).toHaveText('7%');
+    await testInfo.attach('settings-recovery-evidence', {
+      body: JSON.stringify({
+        snapshotNutrients: 0,
+        displayedNutrients: await page.locator('#nutrients').inputValue(),
+        retainedTick: before.tick,
+        savedSettings: expected.settings,
+        reseededSettings: reseeded.settings,
+        pausedWorldUnchangedExceptSettings: true,
+        telemetryUnchanged: true,
+        historyTicks: before.telemetry.samples.map((sample) => sample.tick),
+        pending: before.telemetry.pending,
+      }),
+      contentType: 'application/json',
+    });
+  });
+
+  test('OFF never resumes implicitly, survives replacement, and reload restores ON', async ({
+    page,
+  }) => {
+    await page.goto('/');
+    await pause(page);
+    const fixture = await extinctionFixture(page, 'empty');
+    await importWorld(page, fixture);
+    await expectPausedWorld(page, 417);
+    await page.locator('#pause-on-extinction').uncheck();
+    await page.waitForTimeout(200);
+    await expectPausedWorld(page, 417);
+    expect(await readWorld(page)).toEqual(Ecosystem.load(JSON.stringify(fixture)).save());
+    await importWorld(page, { ...fixture, version: 99 } as unknown as WorldFile);
+    await expect(page.locator('#notice')).toContainText('Not a valid EvoLab ecosystem');
+    await expectPausedWorld(page, 417);
+    await expect(page.locator('#pause-on-extinction')).not.toBeChecked();
+    await page.locator('#pause').click();
+    await expect(page.locator('#run-state')).toHaveText('LIVE');
+    await expect(page.locator('#tick')).not.toHaveText('TICK 417');
+    await expect(page.locator('#population')).toHaveText('0');
+    await expect(page.locator('#extinction-summary')).toContainText('Empty world running');
+    await pause(page);
+    await page.locator('#ecosystem-tab').click();
+    await page.getByText('World settings', { exact: true }).click();
+    await page.locator('#reset').click();
+    await expect(page.locator('#pause-on-extinction')).not.toBeChecked();
+    await expect(page.locator('#population')).toHaveText('1');
+    await importWorld(page, fixture);
+    await expect(page.locator('#notice')).toContainText('World restored');
+    await expect(page.locator('#pause-on-extinction')).not.toBeChecked();
+    await expect(page.locator('#run-state')).toHaveText('LIVE');
+    await expect(page.locator('#tick')).not.toHaveText('TICK 417');
+    await expect(page.locator('#population')).toHaveText('0');
+    await page.reload();
+    await expect(page.locator('#pause-on-extinction')).toBeChecked();
+    await expect(page.locator('#extinction-summary')).toBeHidden();
+    await expect(page.locator('#world')).toHaveAttribute('data-tool', 'pan');
+    await expect(page.locator('#organism-tab')).toHaveAttribute('aria-selected', 'true');
+  });
+});
+
+for (const terminalTick of [90, 91]) {
+  for (const cause of ['age', 'energy'] as const) {
+    test(`integrated ${cause} extinction at tick ${terminalTick} retains exact cadence and save continuation`, async ({
+      page,
+    }, testInfo) => {
+      await observeTelemetry(page);
+      await page.goto('/');
+      await pause(page);
+      const reference = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0 }, false);
+      const organism = reference.spawn(
+        {
+          cells: [{ x: 0, y: 0, type: 3 }],
+          preference: 0.5,
+          tolerance: 0.3,
+          tempo: 2,
+        },
+        40,
+        40,
+      )!;
+      organism.energy = 10;
+      for (let tick = 0; tick < terminalTick - 1; tick++) reference.step();
+      organism.age = cause === 'age' ? 975 : 0;
+      organism.energy = cause === 'energy' ? 0.001 : 5;
+      const fixture = reference.save();
+      await page.locator('#speed').selectOption('12');
+      await importWorld(page, fixture);
+      await expectPausedWorld(page, terminalTick);
+      reference.step();
+      const terminal = await readWorld(page);
+      expect(terminal).toEqual(reference.save());
+      expect((await telemetryFrame(page)).telemetry).toEqual(terminal.telemetry);
+      expect(terminal.telemetry.samples.map((sample) => sample.tick)).toEqual([30, 60, 90]);
+      expect(terminal.telemetry.samples.at(-1)!.population).toBe(terminalTick === 90 ? 0 : 1);
+      expect(terminal.telemetry.pending.deaths[cause]).toBe(terminalTick === 90 ? 0 : 1);
+      await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+      const populations = terminal.telemetry.samples.map((sample) => sample.population);
+      expect(populations).toHaveLength(3);
+      await expectPopulationChart(page, populations);
+      await importWorld(page, { ...terminal, version: 99 } as unknown as WorldFile);
+      await expect(page.locator('#notice')).toContainText('version 2 or 3');
+      expect(await readWorld(page)).toEqual(terminal);
+      await expectPopulationChart(page, populations);
+      await page.waitForTimeout(160);
+      expect(await readWorld(page)).toEqual(terminal);
+      await testInfo.attach(`terminal-${cause}-${terminalTick}`, {
+        body: JSON.stringify({
+          tick: terminal.tick,
+          cause,
+          telemetry: terminal.telemetry,
+          savedWorldMatchesRealEngine: true,
+          failedLoadPreservedHistory: true,
+          noSyntheticSample: true,
+        }),
+        contentType: 'application/json',
+      });
+      await testInfo.attach(`terminal-${cause}-${terminalTick}-screen`, {
+        body: await page.screenshot({ fullPage: true }),
+        contentType: 'image/png',
+      });
+      await importWorld(page, terminal);
+      await expectPausedWorld(page, terminalTick);
+      await expect(page.locator('#extinction-summary')).toContainText(
+        'Original extinction cause unavailable',
+      );
+      expect(await readWorld(page)).toEqual(terminal);
+      await stepTo(page, 120);
+      for (let tick = terminalTick; tick < 120; tick++) reference.step();
+      expect(await readWorld(page)).toEqual(reference.save());
+      expect((await telemetryFrame(page)).telemetry.samples.at(-1)).toMatchObject({
+        tick: 120,
+        population: 0,
+        deaths: { [cause]: terminalTick === 90 ? 0 : 1 },
+      });
+      await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    });
+  }
+}
 
 test('restores real worker telemetry, renders its population projection and downloads unchanged paused history', async ({
   page,
@@ -225,7 +730,7 @@ test('restores real worker telemetry, renders its population projection and down
   await page.goto('/');
   await expect(page.locator('#population')).not.toHaveText('—');
   await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
-  await importWorld(page, fixture);
+  await importTelemetryWorld(page, fixture);
   let frame = await telemetryFrame(page);
   expect(frame.stats.tick).toBeGreaterThanOrEqual(fixture.tick);
   for (let tick = fixture.tick; tick < frame.stats.tick; tick++) reference.step();
@@ -305,7 +810,7 @@ test('legacy history begins empty, only exact Step 29→30 samples, and corrupt 
   await page.goto('/');
   await expect(page.locator('#population')).not.toHaveText('—');
   await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
-  await importWorld(page, legacy);
+  await importTelemetryWorld(page, legacy);
   expect((await telemetryFrame(page)).telemetry).toMatchObject({ originTick: 0, samples: [] });
   expect(await page.evaluate(() => window.telemetryEvidence.points)).toEqual([]);
   await stepTo(page, 29);
@@ -353,7 +858,7 @@ test('restores the full 180-sample ring in the existing chart across desktop/mob
   await page.goto('/');
   await expect(page.locator('#population')).not.toHaveText('—');
   await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
-  await importWorld(page, fixture);
+  await importTelemetryWorld(page, fixture);
   const frame = await telemetryFrame(page);
   for (let tick = fixture.tick; tick < frame.stats.tick; tick++) reference.step();
   expect(frame.telemetry).toEqual(reference.save().telemetry);

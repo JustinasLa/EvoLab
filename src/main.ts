@@ -15,6 +15,7 @@ import {
   type Settings,
   type Tool,
   type CellType,
+  type PlaybackState,
 } from './model';
 import {
   draw,
@@ -33,9 +34,11 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   const canvas = get<HTMLCanvasElement>('world'),
     buffer = document.createElement('canvas');
   const camera: Camera = { zoom: 1, x: 0, y: 0 };
+  let settingsEdits: Partial<Settings> = {};
   let settings = { ...DEFAULTS },
     runId = 0,
     paused = false,
+    stopped = false,
     thermal = false,
     tool: Tool = 'pan',
     brush = 2;
@@ -56,6 +59,49 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   };
   const notice = (message: string): void => text('notice', message);
   const send = (data: object): void => worker.postMessage(data);
+  function renderPlayback(playback: PlaybackState): void {
+    if (stopped) return;
+    paused = playback.paused;
+    get<HTMLInputElement>('pause-on-extinction').checked = playback.pauseOnExtinction;
+    text('pause', paused ? '▶ Resume' : 'Ⅱ Pause');
+    get<HTMLButtonElement>('step').disabled = !paused;
+    text('run-state', paused ? 'PAUSED' : 'LIVE');
+    root.classList.toggle('paused', paused);
+    const summary = playback.extinction;
+    get('extinction-summary').hidden = !summary;
+    if (!summary) {
+      text('extinction-summary', '');
+      return;
+    }
+    const cause = {
+      energy: 'Last removal: energy exhaustion. World preserved.',
+      age: 'Last removal: age limit. World preserved.',
+      manual: 'Last removal: manual erasure. World preserved.',
+      'empty-import': 'Original extinction cause unavailable. World preserved.',
+    }[summary.cause];
+    text(
+      'extinction-summary',
+      `${paused ? 'Paused' : 'Empty world running'} · ${summary.cause === 'empty-import' ? 'imported empty world' : 'total extinction'} at tick ${summary.tick.toLocaleString()}. ${cause}${!paused ? ' Pause on extinction is off.' : ''}`,
+    );
+  }
+  function renderSettings(next: Settings): void {
+    settings = { ...next, ...settingsEdits };
+    settingsEdits = {};
+    for (const id of ['seed', 'mutation', 'nutrients', 'climate'] as const)
+      get<HTMLInputElement>(id).value = String(settings[id]);
+    text('mutation-value', `${Math.round(settings.mutation * 100)}%`);
+    text('climate-value', `${Math.round(settings.climate * 100)}%`);
+    text('nutrients-value', `${settings.nutrients}%`);
+    text('world-label', `WORLD ${String(settings.seed).padStart(4, '0')}`);
+  }
+  function stop(): void {
+    stopped = true;
+    paused = true;
+    text('pause', '▶ Resume');
+    get<HTMLButtonElement>('step').disabled = true;
+    text('run-state', 'STOPPED');
+    root.classList.add('paused');
+  }
   const tab = (name: string): void => {
     root
       .querySelectorAll<HTMLButtonElement>('[data-tab]')
@@ -114,17 +160,19 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       return;
     }
     settings = next;
+    settingsEdits = {};
     runId++;
     history = [];
     updates = 0;
-    paused = false;
+    stopped = false;
     selected = null;
     frame = undefined;
     notice('');
-    text('pause', 'Ⅱ Pause');
-    get<HTMLButtonElement>('step').disabled = true;
-    text('run-state', 'LIVE');
-    root.classList.remove('paused');
+    renderPlayback({
+      paused: false,
+      pauseOnExtinction: get<HTMLInputElement>('pause-on-extinction').checked,
+      extinction: null,
+    });
     text('world-label', `WORLD ${String(seed).padStart(4, '0')}`);
     send({ type: 'start', settings, runId });
   }
@@ -200,13 +248,18 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     .querySelectorAll<HTMLButtonElement>('[data-tab]')
     .forEach((b) => b.addEventListener('click', () => tab(b.dataset.tab!)));
   get('pause').addEventListener('click', () => {
-    paused = !paused;
-    send({ type: paused ? 'pause' : 'resume' });
-    text('pause', paused ? '▶ Resume' : 'Ⅱ Pause');
-    get<HTMLButtonElement>('step').disabled = !paused;
-    text('run-state', paused ? 'PAUSED' : 'LIVE');
-    root.classList.toggle('paused', paused);
+    if (stopped) return;
+    if (paused && !frame?.stats.population && get<HTMLInputElement>('pause-on-extinction').checked)
+      notice('Place an organism, or turn off Pause on extinction and press Resume.');
+    send({ type: paused ? 'resume' : 'pause' });
   });
+  get('pause-on-extinction').addEventListener('change', () =>
+    send({
+      type: 'pause-on-extinction',
+      runId,
+      value: get<HTMLInputElement>('pause-on-extinction').checked,
+    }),
+  );
   get('step').addEventListener('click', () => {
     send({ type: 'step' });
   });
@@ -222,6 +275,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   for (const id of ['mutation', 'nutrients', 'climate'] as const)
     get(id).addEventListener('input', () => {
       settings[id] = Number(get<HTMLInputElement>(id).value);
+      settingsEdits[id] = settings[id];
       text(
         `${id}-value`,
         id === 'nutrients' ? `${settings[id]}%` : `${Math.round(settings[id] * 100)}%`,
@@ -299,7 +353,10 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     try {
       if (file.size > 2500000) throw new Error('World file exceeds 2.5 MB.');
       const text = await file.text();
-      if (alive) send({ type: 'load', text, runId: ++runId });
+      if (alive) {
+        settingsEdits = {};
+        send({ type: 'load', text, runId: ++runId });
+      }
     } catch (error) {
       if (alive) notice(error instanceof Error ? error.message : 'Could not read this world.');
     } finally {
@@ -335,52 +392,14 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     if (frame) drawChart(get('chart'), history);
   };
   window.addEventListener('resize', resize);
-  worker.onmessage = ({ data }) => {
-    if (!alive || data.runId !== runId) return;
-    if (data.type === 'error') {
-      notice(data.message);
-      if (data.fatal) {
-        paused = true;
-        text('pause', '▶ Resume');
-        get<HTMLButtonElement>('step').disabled = true;
-        text('run-state', 'STOPPED');
-      }
-      return;
-    }
-    if (data.type === 'loaded') {
-      settings = data.settings;
-      updates = 0;
-      paused = false;
-      text('pause', 'Ⅱ Pause');
-      get<HTMLButtonElement>('step').disabled = true;
-      text('run-state', 'LIVE');
-      root.classList.remove('paused');
-      for (const id of ['seed', 'mutation', 'nutrients', 'climate'] as const)
-        get<HTMLInputElement>(id).value = String(settings[id]);
-      text('mutation-value', `${Math.round(settings.mutation * 100)}%`);
-      text('climate-value', `${Math.round(settings.climate * 100)}%`);
-      text('nutrients-value', `${settings.nutrients}%`);
-      text('world-label', `WORLD ${String(settings.seed).padStart(4, '0')}`);
-      notice('World restored. Its evolution continues from the saved state.');
-      return;
-    }
-    if (data.type === 'saved') {
-      const url = URL.createObjectURL(new Blob([data.text], { type: 'application/json' })),
-        a = document.createElement('a');
-      a.href = url;
-      a.download = `evolab-world-${settings.seed}.json`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      notice('World saved, including every organism and its ancestry.');
-      return;
-    }
-    if (data.type !== 'frame') return;
+  function renderFrame(next: Frame, selection: Organism | null, displayOnly = false): void {
     const previousSelection = selected?.id;
-    frame = data.frame;
-    selected = data.selected;
+    const previousPopulation = frame?.stats.population;
+    frame = next;
+    selected = selection;
     dirty = true;
-    updates++;
-    const s = frame!.stats;
+    if (!displayOnly) updates++;
+    const s = frame.stats;
     const lineages = `${s.species} lineage${s.species === 1 ? '' : 's'}`;
     text('population', s.population.toLocaleString());
     text('species-count', lineages);
@@ -392,11 +411,17 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     text('world-count', `${s.population} organism${s.population === 1 ? '' : 's'} · ${lineages}`);
     text('season', s.season);
     text('weather', s.event);
-    history = frame!.telemetry.samples.map((sample) => sample.population);
+    history = frame.telemetry.samples.map((sample) => sample.population);
     drawChart(get('chart'), history);
-    if (paused || updates % 4 === 1 || previousSelection !== selected?.id)
-      get('inspector').innerHTML = organismHtml(selected, frame!);
-    if (updates % 12 === 1) {
+    if (
+      displayOnly ||
+      paused ||
+      !s.population ||
+      updates % 4 === 1 ||
+      previousSelection !== selected?.id
+    )
+      get('inspector').innerHTML = organismHtml(selected, frame);
+    if (displayOnly || !s.population || previousPopulation === 0 || updates % 12 === 1) {
       const list = get('lineages');
       list.replaceChildren();
       for (const species of s.top) {
@@ -416,10 +441,50 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         list.innerHTML =
           '<p class="muted">This world is quiet. Plant a new organism or reseed.</p>';
     }
+  }
+  worker.onmessage = ({ data }) => {
+    if (!alive || data.runId !== runId) return;
+    if (data.type === 'error') {
+      if (data.fatal) stop();
+      else if (data.recovery && !stopped) {
+        renderSettings(data.recovery.settings);
+        renderPlayback(data.recovery.playback);
+        renderFrame(data.recovery.frame, data.recovery.selected, true);
+      }
+      notice(data.message);
+      return;
+    }
+    if (data.type === 'playback') {
+      renderPlayback(data.playback);
+      return;
+    }
+    if (data.type === 'loaded') {
+      stopped = false;
+      renderSettings(data.settings);
+      history = [];
+      updates = 0;
+      renderPlayback(data.playback);
+      notice('World restored. Playback follows Pause on extinction.');
+      return;
+    }
+    if (data.type === 'saved') {
+      const url = URL.createObjectURL(new Blob([data.text], { type: 'application/json' })),
+        a = document.createElement('a');
+      a.href = url;
+      a.download = `evolab-world-${settings.seed}.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      notice('World saved, including every organism and its ancestry.');
+      return;
+    }
+    if (data.type !== 'frame') return;
+    renderPlayback(data.playback);
+    renderFrame(data.frame, data.selected);
   };
   worker.onerror = () => {
+    if (!alive) return;
     notice('The ecosystem worker stopped. Reload the page to restart.');
-    text('run-state', 'STOPPED');
+    stop();
   };
   function render(): void {
     if (dirty && frame) {

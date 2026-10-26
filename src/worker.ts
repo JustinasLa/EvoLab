@@ -1,5 +1,14 @@
 import { Ecosystem } from './ecosystem';
-import { DEFAULTS, validSettings, validGenome, integer, index, type Settings } from './model';
+import {
+  validSettings,
+  validGenome,
+  integer,
+  index,
+  type Settings,
+  type PlaybackState,
+  type ExtinctionSummary,
+  type LoadFailureResponse,
+} from './model';
 
 export interface Scope {
   postMessage: (data: any, transfer?: Transferable[]) => void;
@@ -16,11 +25,42 @@ export function startWorker(
     speed = 4,
     runId = 0,
     selected = 0;
+  let pauseOnExtinction = true,
+    extinction: ExtinctionSummary | null = null;
+  const playback = (): PlaybackState => ({
+    paused,
+    pauseOnExtinction,
+    extinction: extinction ? { ...extinction } : null,
+  });
+  const acknowledge = (): void =>
+    scope.postMessage({ type: 'playback', runId, playback: playback() });
+  function reconcile(previousPopulation: number): void {
+    if (!world) return;
+    if (world.organisms.size) extinction = null;
+    else {
+      if (previousPopulation && world.lastDeath) extinction = { ...world.lastDeath };
+      if (pauseOnExtinction) paused = true;
+    }
+  }
+  function report(error: unknown, fatal = false): void {
+    scope.postMessage({
+      type: 'error',
+      runId,
+      message: error instanceof Error ? error.message : String(error),
+      ...(fatal ? { fatal: true } : {}),
+    });
+  }
   function send(): void {
     if (!world) return;
     const frame = world.frame();
     scope.postMessage(
-      { type: 'frame', runId, frame, selected: world.organisms.get(selected) ?? null },
+      {
+        type: 'frame',
+        runId,
+        frame,
+        selected: world.organisms.get(selected) ?? null,
+        playback: playback(),
+      },
       [frame.cells.buffer, frame.ids.buffer],
     );
   }
@@ -34,17 +74,19 @@ export function startWorker(
     queued = false;
     if (!world || paused) return;
     try {
-      for (let i = 0; i < speed; i++) world.step();
+      reconcile(world.organisms.size);
+      if (paused) return;
+      for (let step = 0; step < speed; step++) {
+        const population = world.organisms.size;
+        world.step();
+        reconcile(population);
+        if (paused) break;
+      }
       send();
-      queue();
+      if (!paused) queue();
     } catch (error) {
       paused = true;
-      scope.postMessage({
-        type: 'error',
-        runId,
-        message: error instanceof Error ? error.message : String(error),
-        fatal: true,
-      });
+      report(error, true);
     }
   }
   scope.onmessage = ({ data }) => {
@@ -55,21 +97,64 @@ export function startWorker(
         runId = data.runId;
         paused = false;
         selected = 0;
+        extinction = null;
         send();
         queue();
       } else if (data.type === 'load') {
         runId = data.runId;
-        const restored = Ecosystem.load(data.text);
+        let restored: Ecosystem;
+        try {
+          restored = Ecosystem.load(data.text);
+        } catch (error) {
+          if (!world) report(error);
+          else {
+            try {
+              const frame = world.frame();
+              const response: LoadFailureResponse = {
+                type: 'error',
+                runId,
+                message: error instanceof Error ? error.message : String(error),
+                recovery: {
+                  frame,
+                  selected: world.organisms.get(selected) ?? null,
+                  settings: { ...world.settings },
+                  playback: playback(),
+                },
+              };
+              scope.postMessage(response, [frame.cells.buffer, frame.ids.buffer]);
+            } catch (failure) {
+              paused = true;
+              report(failure, true);
+            }
+          }
+          return;
+        }
         world = restored;
         paused = false;
         selected = 0;
-        scope.postMessage({ type: 'loaded', runId, settings: world.settings });
+        extinction = world.organisms.size ? null : { tick: world.tick, cause: 'empty-import' };
+        reconcile(world.organisms.size);
+        scope.postMessage({
+          type: 'loaded',
+          runId,
+          settings: world.settings,
+          playback: playback(),
+        });
         send();
-        queue();
-      } else if (data.type === 'pause') paused = true;
-      else if (data.type === 'resume') {
+        if (!paused) queue();
+      } else if (data.type === 'pause') {
+        paused = true;
+        acknowledge();
+      } else if (data.type === 'resume') {
         paused = false;
-        queue();
+        reconcile(world?.organisms.size ?? 0);
+        acknowledge();
+        if (!paused) queue();
+      } else if (data.type === 'pause-on-extinction') {
+        if (data.runId !== runId || typeof data.value !== 'boolean') return;
+        pauseOnExtinction = data.value;
+        reconcile(world?.organisms.size ?? 0);
+        acknowledge();
       } else if (data.type === 'speed') {
         if ([1, 4, 12].includes(data.value)) speed = data.value;
       } else if (data.type === 'settings' && world) {
@@ -84,7 +169,9 @@ export function startWorker(
         integer(data.radius, 0, 8) &&
         validGenome(data.genome)
       ) {
+        const population = world.organisms.size;
         world.paint(data.tool, data.x, data.y, data.radius, data.genome);
+        reconcile(population);
         send();
       } else if (data.type === 'inspect' && world) {
         selected = world.occupied[index(data.x, data.y)];
@@ -95,15 +182,13 @@ export function startWorker(
       } else if (data.type === 'save' && world)
         scope.postMessage({ type: 'saved', runId, text: JSON.stringify(world.save()) });
       else if (data.type === 'step' && world && paused) {
+        const population = world.organisms.size;
         world.step();
+        reconcile(population);
         send();
       } else if (data.type === 'snapshot') send();
     } catch (error) {
-      scope.postMessage({
-        type: 'error',
-        runId,
-        message: error instanceof Error ? error.message : String(error),
-      });
+      report(error);
     }
   };
 }

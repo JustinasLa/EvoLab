@@ -52,6 +52,68 @@ function adjacent(value: number, direction: -1 | 1): number {
   return view.getFloat64(0, false);
 }
 
+describe('final removal observations', () => {
+  it.each([
+    { age: 0, energy: 0.001, cause: 'energy' },
+    { age: 975, energy: 5, cause: 'age' },
+    { age: 975, energy: 0.001, cause: 'energy' },
+  ])(
+    'records $cause at the actual removal tick without changing death effects',
+    ({ age, energy, cause }) => {
+      const world = empty();
+      advance(world, 81);
+      const organism = world.spawn(single(), 40, 40)!;
+      Object.assign(organism, { age, energy });
+      const random = world.random.state;
+      world.step();
+      expect(world.lastDeath).toEqual({ tick: 82, cause });
+      expect(world.deaths).toBe(1);
+      expect(world.organisms.size).toBe(0);
+      expect(world.occupied.some(Boolean)).toBe(false);
+      expect(world.food[index(40, 40)]).toBe(1);
+      expect(world.random.state).toBe(random);
+      const saved = world.save();
+      world.frame();
+      expect(world.save()).toEqual(saved);
+      expect(saved).not.toHaveProperty('lastDeath');
+      expect(Ecosystem.load(JSON.stringify(saved)).lastDeath).toBeNull();
+    },
+  );
+
+  it('records the actual last removal in iteration order, not an aggregate cause', () => {
+    const world = empty();
+    world.spawn(single(), 20, 20)!.age = 975;
+    world.spawn(single(), 50, 50)!.energy = 0.001;
+    world.step();
+    expect(world.deaths).toBe(2);
+    expect(world.lastDeath).toEqual({ tick: 1, cause: 'energy' });
+  });
+
+  it('records manual erasure at the same tick with wrapped rotated body food intact outside the brush', () => {
+    const world = empty();
+    const organism = world.spawn(founder(0), 0, 0, 1, undefined, 1)!;
+    const body = positions(organism);
+    world.tick = 53;
+    world.food[index(8, 8)] = 1;
+    world.walls[index(9, 9)] = 1;
+    const random = world.random.state;
+    world.paint('erase', 0, 0, 0, single());
+    expect(world.lastDeath).toEqual({ tick: 53, cause: 'manual' });
+    expect(world.deaths).toBe(1);
+    expect(world.organisms.size).toBe(0);
+    for (const position of body) {
+      expect(world.occupied[position]).toBe(0);
+      expect(world.food[position]).toBe(position === index(0, 0) ? 0 : 1);
+    }
+    expect(world.food[index(8, 8)]).toBe(1);
+    expect(world.walls[index(9, 9)]).toBe(1);
+    expect(world.random.state).toBe(random);
+    const saved = world.save();
+    expect(world.lastDeath).toEqual({ tick: 53, cause: 'manual' });
+    expect(world.save()).toEqual(saved);
+  });
+});
+
 describe('genomes and coordinates', () => {
   it('has bounded deterministic randomness, toroidal coordinates, and rotated anatomy', () => {
     const a = new Random(42),
