@@ -405,7 +405,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     get<HTMLDetailsElement>('local-library').open = true;
     renderLibrary();
   }
-  async function writeLibrary(action: LibraryMutation): Promise<void> {
+  async function writeLibrary(action: LibraryMutation): Promise<number | undefined> {
     if (!alive || libraryBusy()) {
       libraryStatus('Library busy. Action not started.');
       return;
@@ -414,6 +414,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     updateCapture();
     const focusOwner = document.activeElement;
     const request = ++libraryRequest;
+    let followup = request;
     const valid = librarySnapshot.rows.filter((row): row is LibraryEntry => row.kind === 'valid');
     const deletedIndex =
       'entry' in action ? valid.findIndex((row) => row.id === action.entry.id) : -1;
@@ -442,7 +443,10 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       }
       libraryWorking = undefined;
       renderLibrary();
-      await refreshLibrary('Write committed. Duplicate names are allowed.');
+      const refresh = refreshLibrary('Write committed. Duplicate names are allowed.');
+      followup = libraryRequest;
+      await refresh;
+      if (!alive || followup !== libraryRequest) return;
       if (
         (action.type === 'delete' || action.type === 'repair') &&
         (document.activeElement === focusOwner || document.activeElement === document.body)
@@ -456,8 +460,11 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       if (alive && request === libraryRequest) {
         libraryWorking = undefined;
         libraryStatus(libraryMessage(error));
-        if (error instanceof LibraryError && error.code === 'conflict')
-          await refreshLibrary(`${error.message} `);
+        if (error instanceof LibraryError && error.code === 'conflict') {
+          const refresh = refreshLibrary(`${error.message} `);
+          followup = libraryRequest;
+          await refresh;
+        }
       }
     } finally {
       if (request === libraryRequest) {
@@ -466,6 +473,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         drainRefresh();
       }
     }
+    return alive && followup === libraryRequest ? followup : undefined;
   }
   function showLibraryDialog(
     type: NonNullable<typeof dialogIntent>['type'],
@@ -541,6 +549,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   async function confirmLibrary(): Promise<void> {
     const intent = dialogIntent;
     if (!intent) return;
+    let request: number | undefined;
     dialogIntent = undefined;
     clearTimeout(dialogTimer);
     get<HTMLDialogElement>('library-dialog').close();
@@ -548,7 +557,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       const owner = replacement?.kind === 'library' ? replacement : undefined;
       if (!owner || !replacementCurrent(owner, intent.generation)) return;
       libraryWorking = 'load';
-      const request = ++libraryRequest;
+      request = ++libraryRequest;
       try {
         const current = await library.read(intent.entry as LibraryEntry);
         if (replacementCurrent(owner)) {
@@ -569,22 +578,22 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         }
       }
     } else if (intent.type === 'repair')
-      await writeLibrary({ type: 'repair', entry: intent.entry as LibraryProblem });
+      request = await writeLibrary({ type: 'repair', entry: intent.entry as LibraryProblem });
     else if (intent.type === 'replace')
-      await writeLibrary({
+      request = await writeLibrary({
         type: 'replace',
         entry: intent.entry as LibraryEntry,
         candidate: intent.candidate!,
       });
     else if (intent.type === 'rename')
-      await writeLibrary({
+      request = await writeLibrary({
         type: 'rename',
         entry: intent.entry as LibraryEntry,
         name: get<HTMLInputElement>('library-rename-name').value,
       });
-    else await writeLibrary({ type: 'delete', entry: intent.entry as LibraryEntry });
-    if (alive && !dialogIntent && document.activeElement === document.body)
-      get('library-heading').focus();
+    else request = await writeLibrary({ type: 'delete', entry: intent.entry as LibraryEntry });
+    if (!alive || request !== libraryRequest) return;
+    if (!dialogIntent && document.activeElement === document.body) get('library-heading').focus();
     updateCapture();
   }
   function exportLibrary(value: LibraryCandidate): void {

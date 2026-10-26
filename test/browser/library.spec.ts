@@ -119,6 +119,7 @@ async function deliveryProbe(page: Page) {
       holdWorker: '',
       heldWorker: [] as { worker: Worker; event: MessageEvent }[],
       holdDatabase: false,
+      holdDatabaseMode: '' as '' | IDBTransactionMode,
       heldDatabase: [] as (() => void)[],
       databaseTransactions: 0,
       holdOpen: false,
@@ -142,7 +143,7 @@ async function deliveryProbe(page: Page) {
       state.databaseTransactions++;
       const transaction = nativeTransaction.apply(this, args);
       transaction.addEventListener('complete', (event) => {
-        if (!state.holdDatabase) return;
+        if (!state.holdDatabase && state.holdDatabaseMode !== transaction.mode) return;
         event.stopImmediatePropagation();
         if (!state.heldDatabase.length) {
           const callback = transaction.oncomplete;
@@ -181,6 +182,7 @@ async function releaseDatabase(page: Page) {
   await page.evaluate(() => {
     const state = (window as any).libraryProbe;
     state.holdDatabase = false;
+    state.holdDatabaseMode = '';
     for (const callback of state.heldDatabase.splice(0)) callback();
   });
 }
@@ -647,6 +649,64 @@ for (const phase of ['initial', 'final']) {
         designerSha256Unchanged: createHash('sha256').update(design).digest('hex'),
         ecologicalSha256Unchanged: createHash('sha256').update(before).digest('hex'),
         newExplicitLoadAfterTerminalSettlementSucceeded: true,
+      }),
+    });
+  });
+}
+
+for (const action of ['delete', 'repair']) {
+  test(`native ${action} postcommit refresh supersession suppresses older focus recovery`, async ({
+    page,
+  }, info) => {
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await deliveryProbe(page);
+    const before = await fixture(page);
+    const original = encodeRecord(candidate('target'), 1);
+    const neighbor = encodeRecord(candidate('neighbor'), 1);
+    await database(page, [
+      [
+        first,
+        action === 'repair' ? JSON.stringify({ ...JSON.parse(original), revision: 0 }) : original,
+      ],
+      [second, neighbor],
+    ]);
+    await openLibrary(page);
+    await page
+      .locator(action === 'repair' ? `[data-repair-id="${first}"]` : '#library-delete')
+      .click();
+    await page.evaluate(() => {
+      (window as any).libraryProbe.holdDatabaseMode = 'readonly';
+    });
+    await page.locator('#library-confirm').click();
+    await expect
+      .poll(() => page.evaluate(() => (window as any).libraryProbe.heldDatabase.length))
+      .toBe(1);
+    await expect(page.locator('#library-status')).toContainText('Write committed');
+    await page.locator('#library-refresh').click();
+    await page.evaluate(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+      document.body.removeAttribute('tabindex');
+    });
+    await releaseDatabase(page);
+    await expect(page.locator('#library-status')).toContainText('Library refreshed');
+    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+    expect(await database(page)).toEqual([[second, neighbor]]);
+    expect(await pausedSave(page)).toEqual(before);
+    expect(errors).toEqual([]);
+    await info.attach(`native-${action}-postcommit-refresh-supersession.json`, {
+      contentType: 'application/json',
+      body: JSON.stringify({
+        action,
+        completedWriteAndDelayedReadonlyRefresh: true,
+        newerRefreshOwnsFollowup: true,
+        noOldFocusRecovery: true,
+        exactSurvivingRows: [[second, neighbor]],
+        pageErrors: errors,
+        disposalAndSameRootRemountEvidence:
+          'Separate UI storage-event harness, not this native case',
+        ecologicalSha256: createHash('sha256').update(before).digest('hex'),
       }),
     });
   });

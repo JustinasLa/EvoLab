@@ -689,6 +689,63 @@ describe('explicit bounded local library', () => {
     expect(document.activeElement).toBe(focus);
   });
 
+  it.each(
+    (['delete', 'repair'] as const).flatMap((action) =>
+      (['clear', 'remount', 'supersede'] as const).map((boundary) => ({ action, boundary })),
+    ),
+  )(
+    'suppresses old $action followups across postcommit refresh $boundary',
+    async ({ action, boundary }) => {
+      const original = encodeRecord(draft('target'), 1);
+      const neighbor = encodeRecord(draft('neighbor'), 1);
+      storage.values.set(
+        first,
+        action === 'repair' ? JSON.stringify({ ...JSON.parse(original), revision: 0 }) : original,
+      );
+      storage.values.set(second, neighbor);
+      await open();
+      if (action === 'repair')
+        root.querySelector<HTMLButtonElement>(`[data-repair-id="${first}"]`)!.click();
+      else click('library-delete');
+      storage.faults.completionStall = 'readonly';
+      click('library-confirm');
+      await flush();
+      expect([...storage.values]).toEqual([[second, neighbor]]);
+      expect(get('library-status').textContent).toContain('Write committed');
+      const owner = storage.current;
+      const oldCapture = get('capture-selected');
+      if (boundary === 'supersede') click('library-refresh');
+      else {
+        dispose();
+        root.replaceChildren();
+        if (boundary === 'remount') {
+          worker = new WorkerStub();
+          dispose = mount(root, worker as unknown as Worker);
+        }
+      }
+      document.body.tabIndex = -1;
+      document.body.focus();
+      document.body.removeAttribute('tabindex');
+      expect(document.activeElement).toBe(document.body);
+      const before = root.innerHTML;
+      const queries = vi.spyOn(root, 'querySelector');
+      const captureEffects = vi.spyOn(oldCapture, 'setAttribute');
+      delete storage.faults.completionStall;
+      owner.releaseCompletion();
+      await flush();
+      expect([...storage.values]).toEqual([[second, neighbor]]);
+      expect(document.activeElement).toBe(document.body);
+      if (boundary !== 'supersede') {
+        expect(root.innerHTML).toBe(before);
+        expect(queries).not.toHaveBeenCalled();
+        expect(captureEffects).not.toHaveBeenCalled();
+      } else {
+        expect(get('library-status').textContent).toContain('Library refreshed');
+        expect(root.querySelector(`[data-library-id="${second}"]`)).not.toBeNull();
+      }
+    },
+  );
+
   it('keeps timed-out native ownership, refuses busy replacement, and reports terminal connection state', async () => {
     vi.useFakeTimers();
     storage.values.set(first, encodeRecord(draft(), 1));
