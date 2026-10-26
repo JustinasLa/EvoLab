@@ -944,6 +944,62 @@ input[type='range'] {
 .blueprint-actions button {
   flex: 1 1 140px;
 }
+#local-library,
+#library-dialog {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.library-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.library-actions button {
+  flex: 1 1 120px;
+  min-width: 44px;
+  min-height: 44px;
+  white-space: normal;
+}
+#capture-selected {
+  min-height: 44px;
+  width: 100%;
+  margin-top: 12px;
+}
+#library-rows {
+  padding: 0;
+  list-style: none;
+}
+#library-rows li {
+  margin: 8px 0;
+}
+#library-rows button {
+  width: 100%;
+  min-height: 44px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+#library-rows [aria-pressed='true'] {
+  border-color: var(--accent);
+}
+#library-rows svg {
+  width: 52px;
+  height: 52px;
+}
+#library-rows small {
+  display: block;
+}
+#library-status,
+#library-dialog-status {
+  color: var(--accent);
+  font-size: 13px;
+}
+#library-rename-name {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px;
+}
 footer {
   display: flex;
   flex-direction: column;
