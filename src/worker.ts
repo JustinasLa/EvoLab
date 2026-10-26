@@ -1,5 +1,6 @@
 import { Ecosystem } from './ecosystem';
 import {
+  WORLD_MAX_BYTES,
   validSettings,
   validGenome,
   integer,
@@ -179,9 +180,12 @@ export function startWorker(
       } else if (data.type === 'shock' && world && ['cold', 'heat'].includes(data.kind)) {
         world.shock(data.kind);
         send();
-      } else if (data.type === 'save' && world)
-        scope.postMessage({ type: 'saved', runId, text: JSON.stringify(world.save()) });
-      else if (data.type === 'step' && world && paused) {
+      } else if (data.type === 'save' && world) {
+        const text = JSON.stringify(world.save());
+        if (new TextEncoder().encode(text).byteLength > WORLD_MAX_BYTES)
+          throw new Error('World file exceeds 2.5 MB. World preserved; no download created.');
+        scope.postMessage({ type: 'saved', runId, text });
+      } else if (data.type === 'step' && world && paused) {
         const population = world.organisms.size;
         world.step();
         reconcile(population);

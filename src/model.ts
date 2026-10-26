@@ -3,6 +3,24 @@ export const HEIGHT = 156;
 export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
+export const WORLD_MAX_BYTES = 2_500_000;
+export const PREFERENCE_ENDPOINTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1] as const;
+export type PreferenceBins = [
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+];
+export interface AdaptationObservation {
+  preferenceBins: PreferenceBins;
+  stressedOrganisms: number;
+}
 export const COLORS = [
   '#090f16',
   '#284b3b',
@@ -99,7 +117,7 @@ export interface TelemetryFlow {
   deaths: DeathCounts;
   energy: EnergyLedger;
 }
-export interface TelemetrySample extends TelemetryFlow {
+export interface TelemetrySampleV1 extends TelemetryFlow {
   fromTick: number;
   tick: number;
   population: number;
@@ -108,12 +126,20 @@ export interface TelemetrySample extends TelemetryFlow {
   meanPreference: TraitMean;
   meanTolerance: TraitMean;
 }
-export interface TelemetryState {
+export interface TelemetrySample extends TelemetrySampleV1 {
+  adaptation: AdaptationObservation | null;
+}
+export interface TelemetryStateV1 {
   version: 1;
   intervalTicks: 30;
   originTick: number;
-  samples: TelemetrySample[];
+  samples: TelemetrySampleV1[];
   pending: TelemetryFlow & { fromTick: number };
+}
+export interface TelemetryState extends Omit<TelemetryStateV1, 'version' | 'samples'> {
+  version: 2;
+  adaptationOriginTick: number;
+  samples: TelemetrySample[];
 }
 export interface DeathRecord {
   tick: number;
@@ -142,7 +168,7 @@ export interface LoadFailureResponse {
   recovery: RetainedWorldState;
 }
 export interface WorldFile {
-  version: 3;
+  version: 4;
   telemetry: TelemetryState;
   settings: Settings;
   random: number;
@@ -157,6 +183,10 @@ export interface WorldFile {
   walls: number[];
   organisms: Organism[];
 }
+export type WorldFileV3 = Omit<WorldFile, 'version' | 'telemetry'> & {
+  version: 3;
+  telemetry: TelemetryStateV1;
+};
 export type LegacyWorldFile = Omit<WorldFile, 'version' | 'telemetry'> & { version: 2 };
 export const clamp = (v: number, min: number, max: number): number =>
   Math.max(min, Math.min(max, v));

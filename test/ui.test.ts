@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount } from '../src/main';
-import { draw, drawChart, genomeSvg, organismHtml, point, viewport } from '../src/view';
+import { draw, genomeSvg, organismHtml, point, viewport } from '../src/view';
 import { Ecosystem } from '../src/ecosystem';
 import { DEFAULTS, founder, type Frame, type PlaybackState, type WorldFile } from '../src/model';
 import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../src/blueprint';
@@ -93,30 +93,40 @@ function nearDeath(): WorldFile {
 }
 function chartRecorder() {
   const paths: number[][][] = [];
-  let points: number[][] = [];
-  const chart = {
-    clearRect: vi.fn(),
-    beginPath: () => {
-      points = [];
-    },
-    moveTo: (x: number, y: number) => points.push([x, y]),
-    lineTo: (x: number, y: number) => points.push([x, y]),
-    stroke: () => paths.push(points),
-  };
-  const original = get<HTMLCanvasElement>('world').getContext('2d');
-  vi.mocked(HTMLCanvasElement.prototype.getContext).mockImplementation(function (
-    this: HTMLCanvasElement,
-  ) {
-    return this.id === 'chart' ? (chart as unknown as CanvasRenderingContext2D) : original;
-  });
-  const expected = (populations: number[]) =>
-    populations.map((population, index) => [
-      (index / Math.max(1, populations.length - 1)) * 250,
-      64 - (population / Math.max(10, ...populations)) * 58,
+  const replaced = vi.spyOn(get('telemetry-plots'), 'replaceChildren');
+  let renders = 0;
+  const read = () =>
+    [...root.querySelectorAll('[data-series="Population"] [data-tick]')].map((mark) => [
+      Number(mark.getAttribute('data-tick')),
+      Number(mark.getAttribute('data-value')),
     ]);
-  return { paths, expected };
+  return {
+    get paths() {
+      paint(0);
+      if (renders !== replaced.mock.calls.length) {
+        paths.push(read());
+        renders = replaced.mock.calls.length;
+      }
+      return paths;
+    },
+    expected(populations: number[]) {
+      const first = read()[0]?.[0] ?? 30;
+      return populations.map((population, position) => [first + position * 30, population]);
+    },
+  };
 }
 beforeEach(() => {
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+    width: 250,
+    height: 180,
+    x: 0,
+    y: 0,
+    top: 0,
+    left: 0,
+    bottom: 180,
+    right: 250,
+    toJSON: () => ({}),
+  });
   const ctx = new Proxy(
     { createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }) },
     {
@@ -304,20 +314,13 @@ describe('ecosystem desk', () => {
     expect(get('tick').textContent).toBe(before);
   });
   it('projects only accepted worker history through repeated frames, resize, load, errors and reset', () => {
-    const chart = get<HTMLCanvasElement>('chart'),
-      context = {
-        clearRect: vi.fn(),
-        beginPath: vi.fn(),
-        moveTo: vi.fn(),
-        lineTo: vi.fn(),
-        stroke: vi.fn(),
-      };
-    vi.spyOn(chart, 'getContext').mockReturnValue(context as unknown as CanvasRenderingContext2D);
     const points = (action: () => void) => {
-      context.moveTo.mockClear();
-      context.lineTo.mockClear();
       action();
-      return [...context.moveTo.mock.calls, ...context.lineTo.mock.calls];
+      paint(0);
+      return [...root.querySelectorAll('[data-series="Population"] [data-tick]')].map((mark) => [
+        Number(mark.getAttribute('data-tick')),
+        Number(mark.getAttribute('data-value')),
+      ]);
     };
     const observed = new Ecosystem();
     expect(points(() => emit(observed.frame()))).toEqual([]);
@@ -334,7 +337,7 @@ describe('ecosystem desk', () => {
     for (let tick = 0; tick < 30; tick++) observed.step();
     const two = points(() => emit(observed.frame()));
     expect(two).toHaveLength(2);
-    expect(points(() => worker.emit({ type: 'frame', frame: sample }, 0))).toEqual([]);
+    expect(points(() => worker.emit({ type: 'frame', frame: sample }, 0))).toEqual(two);
     expect(points(() => window.dispatchEvent(new Event('resize')))).toEqual(two);
     worker.emit({ type: 'error', message: 'Invalid ecosystem telemetry.' });
     expect(points(() => window.dispatchEvent(new Event('resize')))).toEqual(two);
@@ -1136,6 +1139,20 @@ describe('display-only retained-world races', () => {
           set('climate', '0.25');
         }
         set('nutrients', '7');
+        click('ecosystem-tab');
+        const commands = worker.postMessage.mock.calls.length;
+        set('telemetry-view', 'population', 'change');
+        set('telemetry-sample', '30', 'change');
+        get('telemetry-sample').focus();
+        expect(document.activeElement).toBe(get('telemetry-sample'));
+        get('telemetry-sample').dispatchEvent(
+          new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true }),
+        );
+        get('telemetry-view').dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'i', code: 'KeyI', bubbles: true }),
+        );
+        paint(0);
+        expect(worker.postMessage.mock.calls).toHaveLength(commands);
         const expected = {
           ...before,
           settings: {
@@ -1168,6 +1185,8 @@ describe('display-only retained-world races', () => {
         expect(harness.save()).toEqual(expected);
         expect(harness.tasks).toHaveLength(0);
         expect(steps).not.toHaveBeenCalled();
+        expect(get<HTMLSelectElement>('telemetry-sample').value).toBe('30');
+        expect(document.activeElement).toBe(get('telemetry-sample'));
         expect(chart.paths).toHaveLength(paths + 1);
         window.dispatchEvent(new Event('resize'));
         expect(chart.paths.at(-1)).toEqual(chart.expected(history));
@@ -1444,8 +1463,6 @@ describe('pixel rendering and view transforms', () => {
     Object.defineProperty(canvas, 'clientHeight', { value: 400 });
     Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 0 });
     draw(canvas, buffer, sample, camera, false, 0);
-    drawChart(canvas, [0, 10, 20]);
-    drawChart(canvas, []);
     expect(genomeSvg(founder(0))).toContain('svg');
     expect(organismHtml(null, sample)).toContain('Click any');
     expect(organismHtml(organism, sample)).toContain('Preferred');

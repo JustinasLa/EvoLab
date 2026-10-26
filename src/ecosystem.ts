@@ -5,6 +5,8 @@ import {
   LIMIT,
   TELEMETRY_INTERVAL_TICKS,
   TELEMETRY_CAPACITY,
+  WORLD_MAX_BYTES,
+  PREFERENCE_ENDPOINTS,
   Random,
   index,
   positions,
@@ -25,6 +27,8 @@ import {
   type Tool,
   type DeathRecord,
   type LegacyWorldFile,
+  type WorldFileV3,
+  type PreferenceBins,
   type DeathCause,
   type EnergyLedger,
   type TelemetryFlow,
@@ -56,9 +60,10 @@ function emptyFlow(): TelemetryFlow {
 }
 function emptyTelemetry(tick: number): TelemetryState {
   return {
-    version: 1,
+    version: 2,
     intervalTicks: TELEMETRY_INTERVAL_TICKS,
     originTick: tick,
+    adaptationOriginTick: tick,
     samples: [],
     pending: { ...emptyFlow(), fromTick: tick },
   };
@@ -125,13 +130,22 @@ function validTelemetry(
   tick: number,
   births: number,
   deaths: number,
-): value is TelemetryState {
+  version: 1 | 2,
+): boolean {
   if (
-    !exactKeys(value, ['version', 'intervalTicks', 'originTick', 'samples', 'pending']) ||
-    value.version !== 1 ||
+    !exactKeys(value, [
+      'version',
+      'intervalTicks',
+      'originTick',
+      'samples',
+      'pending',
+      ...(version === 2 ? ['adaptationOriginTick'] : []),
+    ]) ||
+    value.version !== version ||
     value.intervalTicks !== TELEMETRY_INTERVAL_TICKS ||
     !integer(value.originTick, 0, tick) ||
-    !Array.isArray(value.samples)
+    !Array.isArray(value.samples) ||
+    (version === 2 && !integer(value.adaptationOriginTick, value.originTick as number, tick))
   )
     return false;
   const boundary = Math.floor(tick / TELEMETRY_INTERVAL_TICKS),
@@ -164,6 +178,7 @@ function validTelemetry(
         'cellCounts',
         'meanPreference',
         'meanTolerance',
+        ...(version === 2 ? ['adaptation'] : []),
       ]) ||
       sample.tick !== sampleTick ||
       sample.fromTick !== Math.max(value.originTick, sampleTick - TELEMETRY_INTERVAL_TICKS) ||
@@ -175,6 +190,21 @@ function validTelemetry(
       !sample.cellCounts.every((count) => integer(count, 0, LIMIT * 16))
     )
       return false;
+    if (version === 2) {
+      const adaptation = sample.adaptation;
+      if (sampleTick <= (value.adaptationOriginTick as number)) {
+        if (adaptation !== null) return false;
+      } else if (
+        !exactKeys(adaptation, ['preferenceBins', 'stressedOrganisms']) ||
+        !Array.isArray(adaptation.preferenceBins) ||
+        adaptation.preferenceBins.length !== 10 ||
+        !Array.from(adaptation.preferenceBins).every((count) => integer(count, 0, LIMIT)) ||
+        adaptation.preferenceBins.reduce((total, count: number) => total + count, 0) !==
+          sample.population ||
+        !integer(adaptation.stressedOrganisms, 0, sample.population)
+      )
+        return false;
+    }
     const cells = sample.cellCounts.reduce((total, count: number) => total + count, 0);
     if (
       cells < sample.population ||
@@ -221,15 +251,29 @@ export class Ecosystem {
   private observe(): void {
     if (!this.recording || this.tick % TELEMETRY_INTERVAL_TICKS !== 0) return;
     const view = new DataView(new ArrayBuffer(8)),
+      preferenceBins: PreferenceBins = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       cellCounts: TelemetrySample['cellCounts'] = [0, 0, 0, 0, 0, 0];
     let preference = 0n,
-      tolerance = 0n;
+      tolerance = 0n,
+      stressedOrganisms = 0;
     for (const organism of this.organisms.values()) {
       const genome = organism.genome;
       if (!finite(genome.preference, 0, 1) || !finite(genome.tolerance, 0.12, 0.6))
         throw new Error('Invalid telemetry source trait.');
       preference += traitUnits(traitBits(genome.preference, view));
       tolerance += traitUnits(traitBits(genome.tolerance, view));
+      let bin = 0;
+      while (bin < 9 && genome.preference >= PREFERENCE_ENDPOINTS[bin]) bin++;
+      preferenceBins[bin]++;
+      const local = temperature(
+        organism.x,
+        organism.y,
+        this.tick,
+        this.settings.climate,
+        this.tick < this.eventUntil ? this.eventOffset : 0,
+      );
+      if (Math.max(0, Math.abs(local - genome.preference) - genome.tolerance) > 0)
+        stressedOrganisms++;
       for (const cell of genome.cells) cellCounts[cell.type - 3]++;
     }
     const sample: TelemetrySample = {
@@ -240,6 +284,7 @@ export class Ecosystem {
       cellCounts,
       meanPreference: traitMean(preference, this.organisms.size, 0, 1, view),
       meanTolerance: traitMean(tolerance, this.organisms.size, 0.12, 0.6, view),
+      adaptation: { preferenceBins, stressedOrganisms },
     };
     if (this.telemetry.samples.length === TELEMETRY_CAPACITY) this.telemetry.samples.shift();
     this.telemetry.samples.push(sample);
@@ -553,7 +598,7 @@ export class Ecosystem {
   }
   save(): WorldFile {
     return {
-      version: 3,
+      version: 4,
       telemetry: this.telemetrySnapshot(),
       settings: { ...this.settings },
       random: this.random.state,
@@ -570,13 +615,17 @@ export class Ecosystem {
     };
   }
   static load(text: string): Ecosystem {
-    if (text.length > 2500000) throw new Error('World file exceeds 2.5 MB.');
+    if (
+      text.length > WORLD_MAX_BYTES ||
+      new TextEncoder().encode(text).byteLength > WORLD_MAX_BYTES
+    )
+      throw new Error('World file exceeds 2.5 MB.');
     const parsed: unknown = JSON.parse(text);
-    const f = parsed as WorldFile | LegacyWorldFile;
+    const f = parsed as WorldFile | WorldFileV3 | LegacyWorldFile;
     if (
       !f ||
       typeof f !== 'object' ||
-      (f.version !== 2 && f.version !== 3) ||
+      (f.version !== 2 && f.version !== 3 && f.version !== 4) ||
       !validSettings(f.settings) ||
       !integer(f.random, -2147483648, 4294967295) ||
       !integer(f.tick, 0, 1e9) ||
@@ -589,8 +638,11 @@ export class Ecosystem {
       !Array.isArray(f.organisms) ||
       f.organisms.length > LIMIT
     )
-      throw new Error('Not a valid EvoLab ecosystem (version 2 or 3).');
-    if (f.version === 3 && !validTelemetry(f.telemetry, f.tick, f.births, f.deaths))
+      throw new Error('Not a valid EvoLab ecosystem (version 2, 3 or 4).');
+    if (
+      f.version !== 2 &&
+      !validTelemetry(f.telemetry, f.tick, f.births, f.deaths, f.version === 3 ? 1 : 2)
+    )
       throw new Error('Invalid ecosystem telemetry.');
     const world = new Ecosystem(f.settings, false);
     for (const [field, array] of [
@@ -644,7 +696,20 @@ export class Ecosystem {
       eventOffset: f.eventOffset,
     });
     world.random.state = f.random;
-    world.telemetry = f.version === 2 ? emptyTelemetry(f.tick) : structuredClone(f.telemetry);
+    world.telemetry =
+      f.version === 2
+        ? emptyTelemetry(f.tick)
+        : f.version === 3
+          ? {
+              ...structuredClone(f.telemetry),
+              version: 2,
+              adaptationOriginTick: f.tick,
+              samples: f.telemetry.samples.map((sample) => ({
+                ...structuredClone(sample),
+                adaptation: null,
+              })),
+            }
+          : structuredClone(f.telemetry);
     return world;
   }
 }
