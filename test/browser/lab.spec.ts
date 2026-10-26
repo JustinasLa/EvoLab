@@ -13,8 +13,8 @@ async function observeTelemetry(page: import('@playwright/test').Page): Promise<
   await page.addInitScript(() => {
     window.telemetryEvidence = { frame: null, points: [] };
     window.Worker = new Proxy(window.Worker, {
-      construct(target, args: ConstructorParameters<typeof Worker>) {
-        const worker = new target(...args);
+      construct(target, args: ConstructorParameters<typeof Worker>, newTarget) {
+        const worker: Worker = Reflect.construct(target, args, newTarget);
         worker.addEventListener('message', ({ data }) => {
           if (data.type === 'frame') window.telemetryEvidence.frame = data.frame;
         });
@@ -539,7 +539,7 @@ test.describe('pause on total extinction', () => {
     };
     expect(await readWorld(page)).toEqual(expected);
     await page.evaluate('window.recoveryDelivery.release()');
-    await expect(page.locator('#notice')).toContainText('version 3');
+    await expect(page.locator('#notice')).toContainText('version 2 or 3');
     await expect(page.locator('#nutrients')).toHaveValue('7');
     await expect(page.locator('#nutrients-value')).toHaveText('7%');
     await expect(page.locator('#mutation-value')).toHaveText('37%');
@@ -651,7 +651,7 @@ for (const terminalTick of [90, 91]) {
       const points = await page.evaluate(() => window.telemetryEvidence.points);
       expect(points).toHaveLength(3);
       await importWorld(page, { ...terminal, version: 99 } as unknown as WorldFile);
-      await expect(page.locator('#notice')).toContainText('version 3');
+      await expect(page.locator('#notice')).toContainText('version 2 or 3');
       expect(await readWorld(page)).toEqual(terminal);
       expect(await page.evaluate(() => window.telemetryEvidence.points)).toEqual(points);
       await page.waitForTimeout(160);
