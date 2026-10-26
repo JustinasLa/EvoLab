@@ -656,8 +656,10 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     root.classList.add('paused');
   }
   const tab = (name: string): void => {
-    if (name !== 'organism')
+    if (name !== 'organism') {
       cancelDialog('Confirmation cancelled: the library is no longer visible.');
+      if (replacement?.kind === 'library') cancelReplacement('the library is no longer visible.');
+    }
     root
       .querySelectorAll<HTMLButtonElement>('[data-tab]')
       .forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === name)));

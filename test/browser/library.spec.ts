@@ -120,6 +120,7 @@ async function deliveryProbe(page: Page) {
       heldWorker: [] as { worker: Worker; event: MessageEvent }[],
       holdDatabase: false,
       heldDatabase: [] as (() => void)[],
+      databaseTransactions: 0,
       holdOpen: false,
       heldOpen: [] as (() => void)[],
       openCalls: 0,
@@ -138,6 +139,7 @@ async function deliveryProbe(page: Page) {
     });
     const nativeTransaction = IDBDatabase.prototype.transaction;
     IDBDatabase.prototype.transaction = function (...args: Parameters<typeof nativeTransaction>) {
+      state.databaseTransactions++;
       const transaction = nativeTransaction.apply(this, args);
       transaction.addEventListener('complete', (event) => {
         if (!state.holdDatabase) return;
@@ -570,6 +572,85 @@ test('native read completion cannot resurrect an older designer replacement afte
     }),
   });
 });
+
+for (const phase of ['initial', 'final']) {
+  test(`Organism departure cancels the ${phase} native library read without releasing its pending owner or stealing focus`, async ({
+    page,
+  }, info) => {
+    await deliveryProbe(page);
+    const before = await fixture(page);
+    await database(page, [[first, encodeRecord(candidate('must not publish'), 1)]]);
+    await openLibrary(page);
+    await page.locator('#blueprint-name').fill('retained designer');
+    await page.locator('#blueprint-description').fill('retained description');
+    const design = await download(page, '#export-blueprint');
+    if (phase === 'final') {
+      await page.locator('#library-load').click();
+      await expect(page.locator('#library-dialog')).toBeVisible();
+    }
+    await page.evaluate(() => {
+      (window as any).libraryProbe.holdDatabase = true;
+    });
+    await page.locator(phase === 'initial' ? '#library-load' : '#library-confirm').click();
+    await expect
+      .poll(() => page.evaluate(() => (window as any).libraryProbe.heldDatabase.length))
+      .toBe(1);
+    const transactions = await page.evaluate(
+      () => (window as any).libraryProbe.databaseTransactions,
+    );
+    const ecosystem = page.locator('[data-tab="ecosystem"]');
+    await ecosystem.click();
+    await ecosystem.focus();
+    await expect(page.locator('#library-status')).toContainText('Load into designer cancelled');
+    await expect(page.locator('#library-status')).toContainText('no longer visible');
+    const cancelled = await page.locator('#library-status').textContent();
+    await page.locator('#library-refresh').evaluate((button: HTMLButtonElement) => button.click());
+    expect(await page.evaluate(() => (window as any).libraryProbe.databaseTransactions)).toBe(
+      transactions,
+    );
+    expect(await page.evaluate(() => (window as any).libraryProbe.heldDatabase.length)).toBe(1);
+    await releaseDatabase(page);
+    await expect(page.locator('#library-dialog')).toBeHidden();
+    await expect(page.locator('#blueprint-name')).toHaveValue('retained designer');
+    await expect(page.locator('#blueprint-description')).toHaveValue('retained description');
+    await expect(page.locator('#ecosystem-panel')).toBeVisible();
+    await expect(page.locator('#organism-panel')).toBeHidden();
+    await expect(page.locator('button[data-tool="inspect"]')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await expect(ecosystem).toBeFocused();
+    await expect(page.locator('#library-status')).toHaveText(cancelled!);
+    expect(await page.evaluate(() => (window as any).libraryProbe.databaseTransactions)).toBe(
+      transactions,
+    );
+    await page.screenshot({
+      path: info.outputPath(`library-${phase}-read-tab-cancel.png`),
+      fullPage: true,
+    });
+    expect(await pausedSave(page)).toEqual(before);
+    await page.locator('[data-tab="organism"]').click();
+    expect(await download(page, '#export-blueprint')).toEqual(design);
+    await page.locator('#library-load').click();
+    await expect(page.locator('#library-dialog')).toBeVisible();
+    await page.locator('#library-confirm').click();
+    await expect(page.locator('#blueprint-name')).toHaveValue('must not publish');
+    await info.attach(`native-${phase}-read-tab-cancellation.json`, {
+      contentType: 'application/json',
+      body: JSON.stringify({
+        phase,
+        fullId: first,
+        cancelled,
+        nativeOwnerHeldUntilTerminalCallback: true,
+        transactionsBeforeAndAfterCancellation: transactions,
+        noModalReopenOrPanelReturnOrToolChangeOrFocusTheft: true,
+        designerSha256Unchanged: createHash('sha256').update(design).digest('hex'),
+        ecologicalSha256Unchanged: createHash('sha256').update(before).digest('hex'),
+        newExplicitLoadAfterTerminalSettlementSucceeded: true,
+      }),
+    });
+  });
+}
 
 test('native committed-but-late completion and late open retain ownership until actual terminal callbacks', async ({
   page,

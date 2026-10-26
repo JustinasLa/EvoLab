@@ -370,6 +370,58 @@ describe('explicit bounded local library', () => {
     expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
   });
 
+  it.each(['initial', 'final'])(
+    'cancels a library load on Organism departure during the %s read without releasing its native owner early',
+    async (phase) => {
+      storage.values.set(first, encodeRecord(draft('must not publish'), 1));
+      await open();
+      set('blueprint-name', 'retained designer');
+      set('blueprint-description', 'retained description');
+      root.querySelector<HTMLButtonElement>('button[data-tool="inspect"]')!.click();
+      const design = get('editor').innerHTML;
+      if (phase === 'final') {
+        click('library-load');
+        await flush();
+        expect(get<HTMLDialogElement>('library-dialog').open).toBe(true);
+      }
+      storage.faults.txStall = true;
+      storage.faults.abortThrow = true;
+      click(phase === 'initial' ? 'library-load' : 'library-confirm');
+      await flush();
+      const owner = storage.current;
+      const transactions = storage.connection.transaction.mock.calls.length;
+      const ecosystem = root.querySelector<HTMLButtonElement>('[data-tab="ecosystem"]')!;
+      ecosystem.focus();
+      ecosystem.click();
+      expect(get('library-status').textContent).toContain('Load into designer cancelled');
+      expect(get('library-status').textContent).toContain('no longer visible');
+      const cancelled = get('library-status').textContent;
+      expect(owner.native.abort).toHaveBeenCalledOnce();
+      expect(owner.native.oncomplete).toBeTypeOf('function');
+      click('library-refresh');
+      await flush();
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+      expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
+      delete storage.faults.txStall;
+      delete storage.faults.abortThrow;
+      owner.complete();
+      await flush();
+      expect(owner.native.oncomplete).toBeNull();
+      expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
+      expect(get<HTMLInputElement>('blueprint-name').value).toBe('retained designer');
+      expect(get<HTMLInputElement>('blueprint-description').value).toBe('retained description');
+      expect(get('editor').innerHTML).toBe(design);
+      expect(get('ecosystem-panel').hidden).toBe(false);
+      expect(get('organism-panel').hidden).toBe(true);
+      expect(root.querySelector('button[data-tool="inspect"]')!.getAttribute('aria-pressed')).toBe(
+        'true',
+      );
+      expect(document.activeElement).toBe(ecosystem);
+      expect(get('library-status').textContent).toBe(cancelled);
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+    },
+  );
+
   it('captures genuine observed ticks without mutating the world and preserves focus across frames', async () => {
     const capture = get<HTMLButtonElement>('capture-selected');
     get<HTMLDetailsElement>('specimen-details').open = true;
