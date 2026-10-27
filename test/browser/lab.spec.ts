@@ -1488,6 +1488,9 @@ for (const version of [2, 3, 4, 5] as const) {
           const layout = await page.locator('#telemetry').evaluate((section) => ({
             nodes: section.querySelectorAll('*').length,
             fits: document.documentElement.scrollWidth <= innerWidth,
+            stripHeights: [...section.querySelectorAll('.telemetry-manual-strip')].map(
+              (strip) => strip.getBoundingClientRect().height,
+            ),
             densities: [...section.querySelectorAll('.telemetry-manual-strip')].map((strip) =>
               [...strip.querySelectorAll('.telemetry-manual-density')].map((mark) =>
                 Number(mark.getAttribute('data-count')),
@@ -1497,6 +1500,7 @@ for (const version of [2, 3, 4, 5] as const) {
           expect(layout.nodes).toBeLessThan(2000);
           expect(layout.fits).toBe(true);
           expect(layout.densities.length).toBeGreaterThan(0);
+          expect(layout.stripHeights.every((height) => height === 48)).toBe(true);
           for (const density of layout.densities) expect(density).toEqual([128]);
           layouts.push({ width, view, ...layout });
         }
