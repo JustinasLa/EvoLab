@@ -1139,13 +1139,11 @@ for (const designer of [false, true]) {
       state.pending = undefined;
     });
     const retry = serializeBlueprint(candidate('explicit retry').blueprint);
-    await page
-      .locator(input)
-      .setInputFiles({
-        name: 'retry.json',
-        mimeType: 'application/json',
-        buffer: Buffer.from(retry),
-      });
+    await page.locator(input).setInputFiles({
+      name: 'retry.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(retry),
+    });
     await expect
       .poll(() => page.evaluate(() => !!(window as any).readerProbe.pending?.terminal))
       .toBe(true);
