@@ -184,7 +184,7 @@ export const markup = `
   <p id="render-pending" class="muted"></p>
   <div class="target-controls"><label for="target-tick">Absolute target tick<input id="target-tick" type="number" min="0" max="1000000000" step="1" required aria-describedby="target-help"></label><button id="run-to-tick" class="secondary">Run to tick</button><button id="cancel-target" class="secondary" disabled>Cancel target</button></div>
   <p id="target-help" class="muted">Accelerated complete ticks, yielding in bounded batches. Pause suspends; Cancel pauses and discards the target.</p>
-  <progress id="target-progress" aria-label="Actual target progress" hidden></progress><p id="target-status" role="status" aria-live="polite"></p>
+  <progress id="target-progress" aria-label="Actual target progress" hidden></progress><p id="target-details"></p><p id="target-status" role="status" aria-live="polite"></p>
   <p id="tick-rate" class="muted">Measured ticks/s: measuring…</p><p id="habitat-freshness">No habitat received.</p>
   </header>
   <div class="panel-scroll">

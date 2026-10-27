@@ -199,6 +199,8 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     acceptedRun = 0,
     latestTelemetry: AcceptedTelemetrySource | null = null;
   let targetTicket: TargetTicket | undefined;
+  let targetPresentationReplacement: number | undefined,
+    targetTransition = '';
   let establishedRun: number | null = null,
     discardFenceEpoch = 0,
     displayWatermark = 0,
@@ -344,6 +346,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       if (payload.type === 'run-to') {
         targetTicket = { wireId: null };
         entry.targetTicket = targetTicket;
+        text('target-status', 'Target request pending acknowledgement.');
         get<HTMLButtonElement>('cancel-target').disabled = false;
       }
       if (payload.type === 'cancel-target' && targetTicket) entry.cancelTicket = targetTicket;
@@ -671,8 +674,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       text('target-status', 'Choose an absolute whole tick from 0 to 1000000000.');
       return;
     }
-    if (send({ type: 'run-to', targetTick: Number(input.value) }))
-      text('target-status', 'Target request pending acknowledgement.');
+    send({ type: 'run-to', targetTick: Number(input.value) });
   };
   get('run-to-tick').addEventListener('click', runToTick);
   get('target-tick').addEventListener('keydown', (event) => {
@@ -949,6 +951,37 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
           '<p class="muted">This world is quiet. Plant a new organism or reseed.</p>';
     }
   }
+  function renderTarget(observation: ControlState): void {
+    const replacement = targetPresentationReplacement !== observation.replacementId;
+    targetPresentationReplacement = observation.replacementId;
+    const active = observation.target;
+    const progress = get<HTMLProgressElement>('target-progress');
+    progress.hidden = !active;
+    if (active) {
+      progress.max = Math.max(1, active.targetTick - active.fromTick);
+      progress.value = Math.max(
+        0,
+        Math.min(progress.max, observation.world.stats.tick - active.fromTick),
+      );
+      if (active.targetTick === active.fromTick) progress.value = progress.max;
+      const message = `Tick ${observation.world.stats.tick} / absolute target ${active.targetTick}; ${Math.max(0, active.targetTick - observation.world.stats.tick)} remaining · ${active.status}`;
+      text('target-details', message);
+      progress.setAttribute('aria-valuetext', message);
+      const transition = `${observation.replacementId}:${active.id}:${active.status}`;
+      if (!targetTicket && transition !== targetTransition) {
+        targetTransition = transition;
+        text('target-status', `Absolute target ${active.targetTick} ${active.status}.`);
+      }
+    } else {
+      text('target-details', '');
+      progress.removeAttribute('aria-valuetext');
+      progress.removeAttribute('value');
+      if (replacement) {
+        targetTransition = '';
+        if (!targetTicket) text('target-status', '');
+      }
+    }
+  }
   function accept(observation: ControlState, source?: TelemetrySnapshot): void {
     if (stopped || establishedRun !== runId) return;
     const differentRun = acceptedRun !== runId;
@@ -968,20 +1001,6 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       renderSettings(observation.settings);
       renderPlayback(observation.playback);
       get<HTMLSelectElement>('speed').value = String(pendingSpeed?.value ?? observation.speed);
-      const active = observation.target;
-      const progress = get<HTMLProgressElement>('target-progress');
-      progress.hidden = !active;
-      if (active) {
-        progress.max = Math.max(1, active.targetTick - active.fromTick);
-        progress.value = Math.max(
-          0,
-          Math.min(progress.max, observation.world.stats.tick - active.fromTick),
-        );
-        if (active.targetTick === active.fromTick) progress.value = progress.max;
-        const message = `Tick ${observation.world.stats.tick} / absolute target ${active.targetTick}; ${Math.max(0, active.targetTick - observation.world.stats.tick)} remaining · ${active.status}`;
-        text('target-status', message);
-        progress.setAttribute('aria-valuetext', message);
-      }
       const measured = observation.rate;
       text(
         'tick-rate',
@@ -995,6 +1014,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     }
     const current = latestState;
     if (!current || observation.replacementId !== current.replacementId) return;
+    renderTarget(current);
     get<HTMLButtonElement>('cancel-target').disabled =
       !targetTicket &&
       (!current.target || !['running', 'suspended'].includes(current.target.status));
@@ -1126,8 +1146,10 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         stop();
         telemetry.update({ status: 'unavailable' });
       }
-      if (data.type === 'error') notice(data.message);
-      else if (data.type === 'loaded')
+      if (data.type === 'error') {
+        notice(data.message);
+        if (completion.type === 'run-to' && !targetTicket) text('target-status', data.message);
+      } else if (data.type === 'loaded')
         notice('World restored. Playback follows Pause on extinction.');
     }
     if (data.type === 'saved') {

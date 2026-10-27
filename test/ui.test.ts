@@ -498,6 +498,118 @@ describe('owned command admission and real-worker interleavings', () => {
     expect(get('target-status').textContent).toContain('reached');
     expect(get<HTMLProgressElement>('target-progress').value).toBe(1);
   });
+  it('reconciles unchanged target rejection revisions and clears successful replacement presentation', async () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    click('step');
+    harness.deliver();
+    set('target-tick', '0');
+    click('run-to-tick');
+    harness.deliver();
+    expect(get('target-status').textContent).toContain('already passed');
+    set('target-tick', '120');
+    click('run-to-tick');
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    set('target-tick', '150');
+    click('run-to-tick');
+    harness.deliver();
+    expect(get('target-status').textContent).toContain('Cancel the active target');
+    expect(get('target-details').textContent).toContain('suspended');
+    const details = get('target-details').textContent;
+    await loadText('{}');
+    harness.deliver();
+    expect(get('target-details').textContent).toBe(details);
+    expect(get('target-progress').hidden).toBe(false);
+    for (const replace of ['load', 'reset']) {
+      if (replace === 'load') await loadText(JSON.stringify(new Ecosystem(DEFAULTS).save()));
+      else click('reset');
+      harness.deliver();
+      expect(get('target-status').textContent).toBe('');
+      expect(get('target-details').textContent).toBe('');
+      expect(get('target-progress').getAttribute('aria-valuetext')).toBeNull();
+      expect(get('target-progress').hidden).toBe(true);
+      click('pause');
+      harness.deliver();
+      set('target-tick', String(harness.save().tick));
+      click('run-to-tick');
+      harness.deliver();
+      expect(get('target-status').textContent).toContain('reached');
+    }
+  });
+  it('keeps a newer queued target request pending until its own correlated rejection', () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    set('target-tick', '120');
+    click('run-to-tick');
+    set('target-tick', '150');
+    click('run-to-tick');
+    const older = harness.outbox.splice(
+      harness.outbox.findIndex((data) => data.type === 'control'),
+      1,
+    )[0];
+    worker.onmessage!({ data: older } as MessageEvent);
+    expect(get('target-status').textContent).toContain('pending acknowledgement');
+    harness.deliver();
+    expect(get('target-status').textContent).toContain('Cancel the active target');
+    expect(get('target-details').textContent).toContain('absolute target 120');
+  });
+  it('announces target transitions once without announcing advancing numerical progress or moving focus', async () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    const status = get('target-status'),
+      announcements = vi.spyOn(status, 'textContent', 'set');
+    get('target-tick').focus();
+    set('target-tick', '120');
+    click('run-to-tick');
+    harness.deliver();
+    const node = status.firstChild;
+    const previousDetails = get('target-progress').getAttribute('aria-valuetext');
+    for (let batch = 0; batch < 3; batch++) {
+      harness.advance();
+      harness.deliver();
+    }
+    expect(status.firstChild).toBe(node);
+    expect(get('target-progress').getAttribute('aria-valuetext')).not.toBe(previousDetails);
+    expect(
+      announcements.mock.calls.filter(([text]) => String(text).endsWith('running.')),
+    ).toHaveLength(1);
+    click('pause');
+    harness.deliver();
+    expect(
+      announcements.mock.calls.filter(([text]) => String(text).endsWith('suspended.')),
+    ).toHaveLength(1);
+    click('cancel-target');
+    harness.deliver();
+    expect(
+      announcements.mock.calls.filter(([text]) => String(text).endsWith('cancelled.')),
+    ).toHaveLength(1);
+    set('target-tick', String(harness.save().tick));
+    click('run-to-tick');
+    harness.deliver();
+    expect(
+      announcements.mock.calls.filter(([text]) => String(text).endsWith('reached.')),
+    ).toHaveLength(1);
+    await loadText(JSON.stringify(nearDeath()));
+    harness.deliver();
+    set('target-tick', '1000');
+    click('run-to-tick');
+    harness.deliver();
+    for (let batch = 0; batch < 10 && harness.tasks.length; batch++) {
+      harness.advance();
+      harness.deliver();
+    }
+    expect(
+      announcements.mock.calls.filter(([text]) => String(text).endsWith('extinct.')),
+    ).toHaveLength(1);
+    expect(document.activeElement).toBe(get('target-tick'));
+    expect(get('target-details').hasAttribute('aria-live')).toBe(false);
+  });
   it('preserves admitted plant A after designer edits, Clear, successful import B and later invalidity', async () => {
     const harness = realWorker(true);
     harness.deliver();
