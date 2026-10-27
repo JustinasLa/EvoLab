@@ -8,6 +8,7 @@ import {
   type Download,
 } from '@playwright/test';
 import { writeFile, rename } from 'node:fs/promises';
+import { readFileSync, statSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { cpus, platform, release } from 'node:os';
@@ -121,6 +122,56 @@ type BrowserFixture = {
 declare global {
   interface Window {
     fortyFixture: BrowserFixture;
+  }
+}
+
+function sourceProvenance() {
+  const checkoutHead = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const eventPath = process.env.GITHUB_EVENT_PATH;
+  if (eventPath) {
+    try {
+      if (statSync(eventPath).size <= 1024 * 1024) {
+        const event = JSON.parse(readFileSync(eventPath, 'utf8'));
+        const head = event.pull_request?.head?.sha,
+          base = event.pull_request?.base?.sha;
+        if (
+          typeof head === 'string' &&
+          typeof base === 'string' &&
+          /^[0-9a-f]{40}$/.test(head) &&
+          /^[0-9a-f]{40}$/.test(base)
+        )
+          return {
+            head,
+            base,
+            checkoutHead,
+            provenance:
+              'GitHub pull_request event head/base; hashes are from the actual checkout tree, which may be a shallow merge checkout. The parent gate must reconcile current remote head/base.',
+          };
+      }
+    } catch {
+      /* Unavailable event metadata is not a fabricated base attestation. */
+    }
+  }
+  try {
+    const base = execFileSync('git', ['merge-base', 'HEAD', 'origin/main'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+    return {
+      head: checkoutHead,
+      base,
+      checkoutHead,
+      provenance:
+        'Local merge-base HEAD origin/main; current remote base is reconciled separately.',
+    };
+  } catch {
+    return {
+      head: checkoutHead,
+      base: null,
+      checkoutHead,
+      provenance:
+        'Base unavailable in this checkout; no event base or local origin/main ancestry proof. This is not a current-base attestation.',
+    };
   }
 }
 
@@ -433,15 +484,13 @@ export async function runFortyControls(options: {
     originalError: string | undefined,
     cleanupMs = 0;
   let counters: unknown, measured: unknown, acceptedElapsedMs: number | undefined;
-  const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  const base = execFileSync('git', ['merge-base', 'HEAD', 'origin/main'], {
-    encoding: 'utf8',
-  }).trim();
+  const provenance = sourceProvenance();
+  const { head, base, checkoutHead } = provenance;
   const sourceHashes = Object.fromEntries(
     ['test/browser/long-run.spec.ts', 'test/browser/forty-control-fixture.ts'].map((path) => [
       path,
       createHash('sha256')
-        .update(execFileSync('git', ['show', `HEAD:${path}`]))
+        .update(execFileSync('git', ['show', `${checkoutHead}:${path}`]))
         .digest('hex'),
     ]),
   );
@@ -464,6 +513,7 @@ export async function runFortyControls(options: {
     originalError,
     head,
     base,
+    sourceProvenance: provenance,
     sourceHashes,
     population,
     project: testInfo.project.name,
