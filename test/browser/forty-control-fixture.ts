@@ -275,8 +275,9 @@ class Fence {
     this.reason = error;
     clearTimeout(this.timer);
     this.abort.abort(error);
-    for (const stream of this.streams)
-      stream.destroy(error instanceof Error ? error : new Error(String(error)));
+    // Abort owns the original error. A stream may not yet have its reader's
+    // error listener, so terminal cleanup must not emit a second error event.
+    for (const stream of this.streams) stream.destroy();
   }
   own<T>(promise: Promise<T>): Promise<T> {
     this.owned.add(promise);
