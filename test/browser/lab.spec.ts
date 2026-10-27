@@ -3083,7 +3083,7 @@ test.describe('pause on total extinction', () => {
     const expected = reference.save();
     await expect(page.getByRole('button', { name: 'Save world' })).toBeDisabled();
     await page.evaluate('window.recoveryDelivery.release()');
-    await expect(page.locator('#notice')).toContainText('version 2, 3, 4 or 5');
+    await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5 or 6');
     await expect(page.locator('#nutrients')).toHaveValue('7');
     await expect(page.locator('#nutrients-value')).toHaveText('7%');
     await expect(page.locator('#mutation-value')).toHaveText('37%');
@@ -3196,7 +3196,7 @@ for (const terminalTick of [90, 91]) {
       expect(populations).toHaveLength(3);
       await expectPopulationChart(page, populations);
       await importWorld(page, { ...terminal, version: 99 } as unknown as WorldFile);
-      await expect(page.locator('#notice')).toContainText('version 2, 3, 4 or 5');
+      await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5 or 6');
       expect(await readWorld(page)).toEqual(terminal);
       await expectPopulationChart(page, populations);
       await page.waitForTimeout(160);
