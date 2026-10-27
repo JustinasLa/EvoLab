@@ -474,10 +474,12 @@ test('real admitted plant retains its complete anatomy through a later designer 
   });
   await expect(page.locator('#blueprint-name')).toHaveValue('Later B');
   await page.evaluate(() => window.longRun.releaseControl!());
-  const saved = await settle(page);
+  const download = await downloadWorld(page),
+    saved = download.world;
   const reference = Ecosystem.load(JSON.stringify(file));
   reference.paint('plant', location!.x, location!.y, 2, genome);
   expect(saved).toEqual(reference.save());
+  expect(download.raw.equals(Buffer.from(JSON.stringify(reference.save())))).toBe(true);
   expect(saved.organisms).toHaveLength(1);
   expect(saved.organisms[0].genome).toEqual(genome);
   await page.locator('#step').click();
@@ -490,7 +492,8 @@ test('real admitted plant retains its complete anatomy through a later designer 
     replacement,
     location,
     savedTick: saved.tick,
-    saveSHA256: createHash('sha256').update(JSON.stringify(saved)).digest('hex'),
+    saveSHA256: createHash('sha256').update(download.raw).digest('hex'),
+    rawSaveBytes: download.raw.byteLength,
   });
 });
 
@@ -526,7 +529,8 @@ for (const population of [64, 1600]) {
         await page.waitForFunction(() => window.longRun.state?.display.visible);
       }
       const record = await control(page, kind);
-      const saved = await settle(page);
+      const download = await downloadWorld(page),
+        saved = download.world;
       const savedAt = await page.evaluate(() => performance.now());
       if (kind !== 'speed') expect(saved.tick).toBe(record.receipt.state.world.stats.tick);
       if (interaction >= 0) {
@@ -543,7 +547,8 @@ for (const population of [64, 1600]) {
           renderedProgressMs: record.renderedAt - record.inputAt,
           savedAt,
           savedTick: saved.tick,
-          savedSHA256: createHash('sha256').update(JSON.stringify(saved)).digest('hex'),
+          savedSHA256: createHash('sha256').update(download.raw).digest('hex'),
+          rawSaveBytes: download.raw.byteLength,
         });
       }
       if (kind === 'pause') {
@@ -769,10 +774,12 @@ test('requested Chromium lifecycle transition records actual visibility and comp
     state: window.longRun.state,
   }));
   await control(page, 'pause');
-  const saved = await settle(page);
+  const download = await downloadWorld(page),
+    saved = download.world;
   const reference = Ecosystem.load(JSON.stringify(file));
   for (let tick = reference.tick; tick < saved.tick; tick++) reference.step();
   expect(saved).toEqual(reference.save());
+  expect(download.raw.equals(Buffer.from(JSON.stringify(reference.save())))).toBe(true);
   expect(resumed.time - before.time).toBeGreaterThanOrEqual(2300);
   expect(resumed.visibility).toBe('visible');
   await attachEvidence(testInfo, 'actual-lifecycle-evidence', {
@@ -783,7 +790,8 @@ test('requested Chromium lifecycle transition records actual visibility and comp
     suspended: JSON.parse(suspended.result.value),
     resumed,
     savedTick: saved.tick,
-    completeSaveSHA256: createHash('sha256').update(JSON.stringify(saved)).digest('hex'),
+    completeSaveSHA256: createHash('sha256').update(download.raw).digest('hex'),
+    rawSaveBytes: download.raw.byteLength,
     limitations:
       'Chromium CDP frozen/active requests, not synthetic visibility dispatch. Inspect observed visibility/event fields: this headless browser may remain visible and keep its worker running despite the request. Missing events mean no trusted visibility transition was observed. This does not prove physical hidden-tab throttling, suspension, discard or OS sleep; complete elapsed wall time is retained.',
   });
@@ -925,7 +933,9 @@ for (const replacement of ['invalid', 'empty'])
       expect(after.counters.gridBytes - before.counters.gridBytes).toBe(187200);
       expect(after.draws - before.draws).toBe(1);
       expect(after.counters.maxDisplay).toBe(1);
-      expect(await settle(page)).toEqual(expected);
+      const download = await downloadWorld(page);
+      expect(download.world).toEqual(expected);
+      expect(download.raw.equals(Buffer.from(JSON.stringify(expected)))).toBe(true);
       await attachEvidence(testInfo, 'real-held-frame-evidence', {
         ...runtime(),
         project: testInfo.project.name,
@@ -933,7 +943,8 @@ for (const replacement of ['invalid', 'empty'])
         frameFirst,
         before,
         after,
-        saveSHA256: createHash('sha256').update(JSON.stringify(expected)).digest('hex'),
+        saveSHA256: createHash('sha256').update(download.raw).digest('hex'),
+        rawSaveBytes: download.raw.byteLength,
       });
     });
 
