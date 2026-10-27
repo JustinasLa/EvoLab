@@ -4,6 +4,7 @@ import { parse } from '@babel/parser';
 import { createHash } from 'node:crypto';
 import { cpus, platform, release } from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { build } from 'vite';
 import { Ecosystem } from '../../src/ecosystem';
 import {
   DEFAULTS,
@@ -16,6 +17,20 @@ import {
   type WorldFile,
 } from '../../src/model';
 import { serializeBlueprint } from '../../src/blueprint';
+
+let referenceSource: string;
+test.beforeAll(async () => {
+  const output = await build({
+    configFile: false,
+    logLevel: 'silent',
+    build: {
+      write: false,
+      minify: false,
+      lib: { entry: 'src/ecosystem.ts', formats: ['es'] },
+    },
+  });
+  referenceSource = [output].flat()[0].output.find((asset) => asset.type === 'chunk')!.code;
+});
 
 type Counters = {
   steps: number;
@@ -103,6 +118,9 @@ ${instrumented}`;
 }
 
 async function observe(page: Page, instrument = true): Promise<void> {
+  await page.route('**/__reference-engine.js', (route) =>
+    route.fulfill({ contentType: 'application/javascript', body: referenceSource }),
+  );
   if (instrument)
     await page.route('**/worker-*.js', async (route) => {
       const response = await route.fetch();
@@ -235,13 +253,47 @@ function fixture(population: number): WorldFile {
   return world.save();
 }
 
-async function settle(page: Page): Promise<WorldFile> {
+async function downloadWorld(page: Page): Promise<{ world: WorldFile; raw: Buffer }> {
   const download = page.waitForEvent('download');
   await page.locator('#save').click();
   const stream = await (await download).createReadStream();
   const chunks: Buffer[] = [];
   for await (const chunk of stream!) chunks.push(Buffer.from(chunk));
-  return JSON.parse(Buffer.concat(chunks).toString());
+  const raw = Buffer.concat(chunks);
+  return { world: JSON.parse(raw.toString()), raw };
+}
+
+async function settle(page: Page): Promise<WorldFile> {
+  return (await downloadWorld(page)).world;
+}
+
+async function exactReference(page: Page, file: WorldFile, tick: number): Promise<string> {
+  return page.evaluate(
+    async ({ file, tick }) => {
+      const modulePath = '/__reference-engine.js';
+      const { Ecosystem } = await import(modulePath);
+      const reference = Ecosystem.load(JSON.stringify(file));
+      while (reference.tick < tick) reference.step();
+      return JSON.stringify(reference.save());
+    },
+    { file, tick },
+  );
+}
+
+async function expectExactDownload(
+  page: Page,
+  file: WorldFile,
+  download: { world: WorldFile; raw: Buffer },
+): Promise<void> {
+  const reference = await exactReference(page, file, download.world.tick);
+  expect(download.world).toEqual(JSON.parse(reference));
+  expect(download.raw.equals(Buffer.from(reference))).toBe(true);
+}
+
+async function attachRawSave(testInfo: TestInfo, name: string, raw: Buffer): Promise<void> {
+  const path = testInfo.outputPath(`${name}.json`);
+  await writeFile(path, raw);
+  await testInfo.attach(name, { path, contentType: 'application/json' });
 }
 
 async function load(page: Page, file: WorldFile, render: boolean, speed: number): Promise<void> {
@@ -709,6 +761,7 @@ test('native exact targets, suspended cancellation and render-off editing preser
   await page.goto('/');
   const file = fixture(64);
   const records: object[] = [];
+  let renderedSave: Buffer | undefined;
   const capture = async (name: string) => {
     const path = testInfo.outputPath(`${name}.png`);
     await page.screenshot({ path, fullPage: true });
@@ -720,16 +773,19 @@ test('native exact targets, suspended cancellation and render-off editing preser
       await page.locator('#target-tick').fill(String(file.tick + 31));
       await page.locator('#target-tick').press('Enter');
       await page.waitForFunction(() => window.longRun.state?.target?.status === 'reached');
-      const saved = await settle(page);
-      const reference = Ecosystem.load(JSON.stringify(file));
-      for (let tick = 0; tick < 31; tick++) reference.step();
-      expect(saved).toEqual(reference.save());
+      const download = await downloadWorld(page),
+        saved = download.world;
+      await expectExactDownload(page, file, download);
+      if (render) renderedSave = download.raw;
+      else expect(download.raw.equals(renderedSave!)).toBe(true);
+      await attachRawSave(testInfo, `exact-target-${speed}-${render}`, download.raw);
       expect(saved.tick).toBe(file.tick + 31);
       records.push({
         speed,
         render,
         tick: saved.tick,
-        saveSHA256: createHash('sha256').update(JSON.stringify(saved)).digest('hex'),
+        saveSHA256: createHash('sha256').update(download.raw).digest('hex'),
+        rawSaveBytes: download.raw.byteLength,
       });
       await page.locator('#target-tick').focus();
       await capture(`target-reached-speed-${speed}-render-${render}`);
@@ -892,6 +948,30 @@ test('render-off progresses and records history before any habitat is drawn', as
   expect(await page.evaluate(() => window.longRun.draws)).toBe(0);
 });
 
+test('actual worker matches independent browser ecology and raw on/off bytes across tick7803', async ({
+  page,
+}, testInfo) => {
+  await observe(page);
+  await page.goto('/');
+  const file = fixture(64),
+    rendered = new Map<number, Buffer>();
+  for (const render of [true, false]) {
+    await load(page, file, render, 4);
+    await page.locator('#target-tick').fill('7802');
+    await page.locator('#run-to-tick').click();
+    await page.waitForFunction(() => window.longRun.state?.target?.status === 'reached');
+    for (const tick of [7802, 7803]) {
+      if (tick === 7803) await page.locator('#step').click();
+      const download = await downloadWorld(page);
+      expect(download.world.tick).toBe(tick);
+      await expectExactDownload(page, file, download);
+      if (render) rendered.set(tick, download.raw);
+      else expect(download.raw.equals(rendered.get(tick)!)).toBe(true);
+      await attachRawSave(testInfo, `runtime-${tick}-${render}`, download.raw);
+    }
+  }
+});
+
 for (const population of [64, 1600]) {
   for (const speed of [1, 4, 12])
     for (const repetition of [0, 1, 2]) {
@@ -936,7 +1016,8 @@ for (const population of [64, 1600]) {
               document.getElementById('cancel-target')!.click();
             return { time: performance.now(), state };
           });
-          const saved = await settle(page),
+          const download = await downloadWorld(page),
+            saved = download.world,
             end = await page.evaluate(() => ({
               time: performance.now(),
               state: window.longRun.state!,
@@ -947,9 +1028,13 @@ for (const population of [64, 1600]) {
               telemetryJSONBytes: window.longRun.telemetryJSONBytes,
               saveTextBytes: window.longRun.saveTextBytes,
             }));
-          const reference = Ecosystem.load(JSON.stringify(file));
-          for (let tick = reference.tick; tick < saved.tick; tick++) reference.step();
-          expect(saved).toEqual(reference.save());
+          await expectExactDownload(page, file, download);
+          if (repetition === 0)
+            await attachRawSave(
+              testInfo,
+              `throughput-${population}-${speed}-${render}`,
+              download.raw,
+            );
           expect(end.counters.steps - start.counters.steps).toBe(saved.tick - file.tick);
           expect(end.counters.maxScheduled).toBe(1);
           expect(end.counters.maxDisplay).toBeLessThanOrEqual(1);
@@ -975,7 +1060,8 @@ for (const population of [64, 1600]) {
             actualTicksPerSecond: ((saved.tick - file.tick) * 1000) / (end.time - start.time),
             grids,
             transferred,
-            completeSaveSHA256: createHash('sha256').update(JSON.stringify(saved)).digest('hex'),
+            completeSaveSHA256: createHash('sha256').update(download.raw).digest('hex'),
+            rawSaveBytes: download.raw.byteLength,
           });
         }
         await attachEvidence(testInfo, 'paired-advancing-evidence', {
