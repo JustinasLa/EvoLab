@@ -12,7 +12,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { cpus, platform, release } from 'node:os';
 import type { Readable } from 'node:stream';
-import type { ControlState, WorldFile } from '../../src/model';
+import type { ControlState, WorldFile, WorkerCommand } from '../../src/model';
 
 const TOTAL_MS = 120000;
 const WINDOW_MS = 30000;
@@ -170,8 +170,10 @@ function installBrowserFixture(epoch: string): void {
       state.workerIds.push(workerId);
       if (state.workerIds.length !== 1) state.violation = 'Unexpected extra application Worker.';
       const nativePost = worker.postMessage;
-      worker.postMessage = function (...messages: Parameters<typeof nativePost>) {
-        const data = messages[0];
+      worker.postMessage = function (
+        ...messages: [message: unknown, options?: Transferable[] | StructuredSerializeOptions]
+      ) {
+        const data = messages[0] as WorkerCommand;
         if (data.type !== 'flow-ack') {
           // This check is at the actual transport dispatch, including automatic
           // view/load/Pause continuations outside a runner evaluate closure.
@@ -443,6 +445,8 @@ export async function runFortyControls(options: {
       acceptanceMs: TOTAL_MS,
       windowMs: WINDOW_MS,
       acceptanceElapsedMs: acceptedElapsedMs ?? performance.now() - fence.startedAt,
+      finalMeasuredEndpoint:
+        'forty-framework-timing.json acceptanceElapsedMs includes the final evidence write, attachment, browser fence invalidation and assertions',
       windows,
     },
     framework: {
@@ -787,7 +791,7 @@ export async function runFortyControls(options: {
     } catch (error) {
       // Retained chunks may be serialized only by the outer failure path, after
       // invalidation. Never finish an interrupted stream as acceptance evidence.
-      if (!op.rawPath && chunks.length) {
+      if (chunks.length && op.status !== 'raw-complete' && op.status !== 'parsed') {
         op.rawBytes = chunks.reduce((n, c) => n + c.length, 0);
         partialBuffers.set(op.id, Buffer.concat(chunks));
       }
@@ -1151,17 +1155,17 @@ export async function runFortyControls(options: {
       expect(distribution(revealLatencies).p95).toBeLessThan(250);
     }
     await checkpoint();
+    fence.check();
+    acceptedElapsedMs = performance.now() - fence.startedAt;
+    expect(acceptedElapsedMs).toBeLessThanOrEqual(TOTAL_MS);
+    status = 'complete';
+    await checkpoint();
     await fence.wait(() =>
       testInfo.attach('forty-control-evidence', {
         path: evidencePath,
         contentType: 'application/json',
       }),
     );
-    fence.check();
-    acceptedElapsedMs = performance.now() - fence.startedAt;
-    expect(acceptedElapsedMs).toBeLessThanOrEqual(TOTAL_MS);
-    status = 'complete';
-    await checkpoint();
     await fence.wait(() =>
       page.evaluate((epoch) => {
         const f = window.fortyFixture;
@@ -1177,6 +1181,7 @@ export async function runFortyControls(options: {
     fence.finish();
   } catch (error) {
     fence.invalidate(error); // Synchronous before any cleanup await.
+    status = 'incomplete';
     originalError = error instanceof Error ? (error.stack ?? error.message) : String(error);
     if (activeOperation && activeOperation.status !== 'checked') {
       activeOperation.status = 'failed/interrupted';
