@@ -1,5 +1,6 @@
 import { test, expect, type Page, type TestInfo } from '@playwright/test';
-import { writeFile } from 'node:fs/promises';
+import { writeFile, readdir } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { parse } from '@babel/parser';
 import { createHash } from 'node:crypto';
 import { cpus, platform, release } from 'node:os';
@@ -18,7 +19,8 @@ import {
 } from '../../src/model';
 import { serializeBlueprint } from '../../src/blueprint';
 
-let referenceSource: string;
+const referenceAssets = new Map<string, string>();
+let workerAsset: string, styleAsset: string;
 test.beforeAll(async () => {
   const output = await build({
     configFile: false,
@@ -26,10 +28,22 @@ test.beforeAll(async () => {
     build: {
       write: false,
       minify: false,
-      lib: { entry: 'src/ecosystem.ts', formats: ['es'] },
+      lib: {
+        entry: {
+          engine: resolve('src/ecosystem.ts'),
+          controller: resolve('src/main.ts'),
+          worker: resolve('src/worker.ts'),
+        },
+        formats: ['es'],
+        fileName: (_format, entry) => `${entry}.js`,
+      },
     },
   });
-  referenceSource = [output].flat()[0].output.find((asset) => asset.type === 'chunk')!.code;
+  for (const asset of [output].flat()[0].output)
+    if (asset.type === 'chunk') referenceAssets.set(asset.fileName, asset.code);
+  const assets = await readdir('dist/assets');
+  workerAsset = assets.find((name) => /^worker-.*\.js$/.test(name))!;
+  styleAsset = assets.find((name) => /^index-.*\.css$/.test(name))!;
 });
 
 type Counters = {
@@ -70,6 +84,9 @@ declare global {
       releaseFrame?: (() => void) | null;
       releaseTerminal?: (() => void) | null;
       releaseControl?: (() => void) | null;
+      omitSources?: boolean;
+      holdSourceAt?: number;
+      releaseSource?: (() => void) | null;
     };
   }
 }
@@ -118,9 +135,13 @@ ${instrumented}`;
 }
 
 async function observe(page: Page, instrument = true): Promise<void> {
-  await page.route('**/__reference-engine.js', (route) =>
-    route.fulfill({ contentType: 'application/javascript', body: referenceSource }),
-  );
+  await page.route('**/__reference/**', (route) => {
+    const path = new URL(route.request().url()).pathname.split('/__reference/')[1];
+    return route.fulfill({
+      contentType: 'application/javascript',
+      body: referenceAssets.get(path)!,
+    });
+  });
   if (instrument)
     await page.route('**/worker-*.js', async (route) => {
       const response = await route.fetch();
@@ -197,12 +218,27 @@ async function observe(page: Page, instrument = true): Promise<void> {
           set(next: ((event: MessageEvent) => void) | null) {
             handler = next;
             descriptor.set!.call(worker, (event: MessageEvent) => {
-              const deliver = () => {
-                next?.(event);
-                if (event.data.type === 'loaded' && !event.data.state.playback.paused)
+              const deliver = (delivery = event) => {
+                next?.(delivery);
+                if (delivery.data.type === 'loaded' && !delivery.data.state.playback.paused)
                   document.getElementById('pause')!.click();
               };
               const evidence = window.longRun;
+              if (evidence.omitSources && event.data.telemetry) {
+                if (
+                  event.data.type === 'progress' &&
+                  event.data.telemetry.tick === evidence.holdSourceAt &&
+                  !evidence.releaseSource
+                ) {
+                  evidence.releaseSource = () => {
+                    evidence.releaseSource = null;
+                    next?.(event);
+                  };
+                }
+                const { telemetry: _source, ...progress } = event.data;
+                deliver(new MessageEvent('message', { data: progress }));
+                return;
+              }
               if (evidence.holdFrame && event.data.type === 'frame') {
                 evidence.holdFrame = false;
                 evidence.releaseFrame = () => {
@@ -270,7 +306,7 @@ async function settle(page: Page): Promise<WorldFile> {
 async function exactReference(page: Page, file: WorldFile, tick: number): Promise<string> {
   return page.evaluate(
     async ({ file, tick }) => {
-      const modulePath = '/__reference-engine.js';
+      const modulePath = '/__reference/engine.js';
       const { Ecosystem } = await import(modulePath);
       const reference = Ecosystem.load(JSON.stringify(file));
       while (reference.tick < tick) reference.step();
@@ -946,6 +982,199 @@ test('render-off progresses and records history before any habitat is drawn', as
   await page.evaluate(() => window.longRun.releaseFrame!());
   expect(await settle(page)).toEqual(saved);
   expect(await page.evaluate(() => window.longRun.draws)).toBe(0);
+});
+
+test('browser-runtime real worker preserves every batch, inspection and snapshots for120ticks at all speeds', async ({
+  page,
+}, testInfo) => {
+  await observe(page, false);
+  await page.goto('/');
+  const results = await page.evaluate(async (file) => {
+    const enginePath = '/__reference/engine.js',
+      workerPath = '/__reference/worker.js';
+    const { Ecosystem } = await import(enginePath);
+    const { startWorker } = await import(workerPath);
+    const records = [],
+      rendered = new Map<number, string>();
+    for (const render of [true, false])
+      for (const speed of [1, 4, 12]) {
+        const tasks: (() => void)[] = [],
+          outbox: any[] = [];
+        let commandId = 0,
+          clock = 0,
+          state: any,
+          text = '',
+          callbacks = 0,
+          inspections = 0,
+          snapshots = 0;
+        const scope: any = {
+          onmessage: null,
+          postMessage(data: any, transfer: Transferable[] = []) {
+            outbox.push(structuredClone(data, { transfer }));
+          },
+        };
+        const dispose = startWorker(
+          scope,
+          (callback: () => void) => tasks.push(callback),
+          () => clock,
+        );
+        const send = (data: any) =>
+          scope.onmessage({
+            data: { ...data, commandId: ++commandId, runId: data.type === 'start' ? 1 : 2 },
+          });
+        const drain = () => {
+          while (outbox.length) {
+            const response = outbox.shift();
+            if (response.type === 'error') throw new Error(response.message);
+            if (response.state) state = response.state;
+            if (response.type === 'saved') text = response.text;
+            if (response.type === 'frame' || response.type === 'progress')
+              scope.onmessage({
+                data: {
+                  type: 'flow-ack',
+                  channel: response.type === 'frame' ? 'display' : 'progress',
+                  runId: response.runId,
+                  sequence: response.sequence,
+                },
+              });
+          }
+          if (tasks.length > 1) throw new Error('More than one scheduled callback');
+        };
+        send({
+          type: 'start',
+          settings: file.settings,
+          display: { epoch: 0, enabled: render, visible: true },
+        });
+        drain();
+        send({ type: 'load', text: JSON.stringify(file) });
+        drain();
+        send({ type: 'speed', value: speed });
+        drain();
+        send({ type: 'run-to', targetTick: file.tick + 120 });
+        drain();
+        const reference = Ecosystem.load(JSON.stringify(file));
+        while (reference.tick < file.tick + 120) {
+          const previous = reference.tick;
+          clock += 40;
+          tasks.shift()!();
+          callbacks++;
+          drain();
+          send({ type: 'inspect', x: 5, y: 5 });
+          inspections++;
+          drain();
+          while (reference.tick < state.world.stats.tick) reference.step();
+          if (reference.tick <= previous || reference.tick - previous > speed)
+            throw new Error('Invalid complete batch');
+          send({ type: 'snapshot', display: true });
+          snapshots++;
+          drain();
+          send({ type: 'save' });
+          drain();
+          const expected = JSON.stringify(reference.save());
+          if (text !== expected)
+            throw new Error(`Exact full serialization diverged at${reference.tick}`);
+        }
+        if (state.target.status !== 'reached') throw new Error('Target did not finish exactly');
+        if (render) rendered.set(speed, text);
+        else if (rendered.get(speed) !== text)
+          throw new Error('Rendering changed exact serialized ecology');
+        records.push({
+          render,
+          speed,
+          callbacks,
+          inspections,
+          snapshots,
+          tick: reference.tick,
+          rawSaveBytes: new TextEncoder().encode(text).byteLength,
+        });
+        dispose();
+      }
+    return records;
+  }, fixture(64));
+  await attachEvidence(testInfo, 'browser-every-batch-evidence', {
+    ...runtime(),
+    project: testInfo.project.name,
+    results,
+    method:
+      'Actual startWorker and independent Ecosystem in matching browser runtime with deterministic scheduler/clock and detached structured-clone transport. Every completed batch across120ticks at1/4/12 includes real inspect AND display snapshot then exact full serialized Save. Explicit snapshot grids are deliberate and separate from zero-automatic-grid startup acceptance.',
+  });
+});
+
+test('true render-off startup independently accepts held source30 after progress65 with zero grids', async ({
+  page,
+}, testInfo) => {
+  await observe(page);
+  await page.route('**/__off-start', (route) =>
+    route.fulfill({
+      contentType: 'text/html',
+      body: `<link rel="stylesheet" href="/assets/${styleAsset}"><div id="off-root"></div><script type="module">import {mount} from '/__reference/controller.js';window.offDispose=mount(document.getElementById('off-root'),new Worker('/assets/${workerAsset}',{type:'module'}),false);</script>`,
+    }),
+  );
+  await page.addInitScript(() => {
+    window.longRun.omitSources = true;
+    window.longRun.holdSourceAt = 30;
+  });
+  await page.goto('/__off-start');
+  const file = new Ecosystem(DEFAULTS).save();
+  await load(page, file, false, 1);
+  await expect(page.locator('#render-habitat')).not.toBeChecked();
+  await expect(page.locator('#telemetry-summary')).toContainText('history not yet known');
+  const runTo = async (tick: number) => {
+    await page.evaluate((tick) => {
+      document.querySelector<HTMLInputElement>('#target-tick')!.value = String(tick);
+      document.getElementById('run-to-tick')!.click();
+    }, tick);
+    await page.waitForFunction(
+      (tick) =>
+        window.longRun.state?.target?.targetTick === tick &&
+        window.longRun.state.target.status === 'reached' &&
+        window.longRun.state.world.stats.tick === tick,
+      tick,
+    );
+  };
+  await runTo(30);
+  await page.waitForFunction(() => !!window.longRun.releaseSource);
+  await runTo(65);
+  await expect(page.locator('#tick')).toHaveText('TICK 65');
+  await expect(page.locator('#telemetry-summary')).toContainText('history not yet known');
+  await page.evaluate(() => window.longRun.releaseSource!());
+  await expect(page.locator('#telemetry-summary')).toContainText('World tick 65');
+  await expect(page.locator('#telemetry-summary')).toContainText('source observed at tick 30');
+  await expect(page.locator('#telemetry-summary')).toContainText(
+    'last received recorded sample tick 30',
+  );
+  await page.evaluate(() => {
+    window.longRun.omitSources = false;
+  });
+  await runTo(90);
+  const download = await downloadWorld(page);
+  await expectExactDownload(page, file, download);
+  expect(download.world.telemetry.samples.map((sample) => sample.tick)).toEqual([30, 60, 90]);
+  await page.locator('#ecosystem-tab').click();
+  await expect(page.locator('#telemetry-summary')).toContainText('source observed at tick 90');
+  await expect(page.locator('#telemetry-summary')).toContainText(
+    'last received recorded sample tick 90',
+  );
+  await expect(page.locator('#telemetry-details')).toContainText('Sample tick90');
+  const evidence = await page.evaluate(() => ({
+    frames: window.longRun.frames,
+    draws: window.longRun.draws,
+    counters: window.longRun.counters,
+    summary: document.getElementById('telemetry-summary')!.textContent,
+  }));
+  expect(evidence.frames).toBe(0);
+  expect(evidence.draws).toBe(0);
+  expect(evidence.counters!.gridBuilds).toBe(0);
+  expect(evidence.counters!.gridBytes).toBe(0);
+  expect(evidence.counters!.transfers).toBe(0);
+  await attachRawSave(testInfo, 'off-start-world', download.raw);
+  await attachEvidence(testInfo, 'independent-source-evidence', {
+    ...runtime(),
+    project: testInfo.project.name,
+    ...evidence,
+    rawSaveSHA256: createHash('sha256').update(download.raw).digest('hex'),
+    oneHeldActualSource: true,
+  });
 });
 
 test('actual worker matches independent browser ecology and raw on/off bytes across tick7803', async ({
