@@ -1024,13 +1024,16 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     }
     const request = ++blueprintRequest,
       worldRun = runId;
+    let publishable = true;
     const current = (): boolean =>
+      publishable &&
       alive &&
       request === blueprintRequest &&
       worldRun === runId &&
       (!designer || (!!intent && replacementCurrent(intent)));
     const failed = (message: string): void => {
       if (!current()) return;
+      publishable = false;
       if (designer) {
         text('designer-file-status', message);
         notice(message);
@@ -1046,7 +1049,6 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     blueprintReader = reader;
     fileTimer = setTimeout(() => {
       failed('Blueprint read timed out. The native reader must settle before another read.');
-      if (current()) cancelReplacement('read timed out.');
       reader.abort();
     }, 10000);
     reader.onload = () => {
@@ -1063,6 +1065,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
             'Imported an unsaved blueprint. Add as new, or explicitly replace the selected ID.',
           );
         }
+        publishable = false;
       } catch (error) {
         failed((error as Error).message);
       }
@@ -1072,6 +1075,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       if (current()) failed('Blueprint read cancelled.');
     };
     reader.onloadend = () => {
+      publishable = false;
       if (blueprintReader === reader) {
         blueprintReader = undefined;
         clearTimeout(fileTimer);

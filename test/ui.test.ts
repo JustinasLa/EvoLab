@@ -1014,6 +1014,81 @@ describe('explicit bounded local library', () => {
     expect(get<HTMLDialogElement>('library-dialog').open).toBe(true);
   });
 
+  it.each([false, true])(
+    'revokes timed-out file publication for designer=%s while retaining and releasing only its own native reader',
+    async (designer) => {
+      vi.useFakeTimers();
+      const original = encodeRecord(draft('stored'), 1);
+      storage.values.set(first, original);
+      await open();
+      set('blueprint-name', 'retained designer');
+      const design = get('editor').innerHTML;
+      const commands = worker.postMessage.mock.calls.length;
+      const readers: FileReader[] = [];
+      const reads = vi.spyOn(FileReader.prototype, 'readAsText').mockImplementation(function (
+        this: FileReader,
+      ) {
+        readers.push(this);
+      });
+      const abort = vi.spyOn(FileReader.prototype, 'abort').mockImplementation(() => {});
+      const expired = serializeBlueprint(draft('expired candidate').blueprint);
+      const input = get<HTMLInputElement>(designer ? 'blueprint-file' : 'library-file');
+      await uploadLocal(expired, designer);
+      expect(reads).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(10000);
+      const statusId = designer ? 'designer-file-status' : 'library-status';
+      const timeout = get(statusId).textContent;
+      expect(timeout).toContain('timed out');
+      expect(abort).toHaveBeenCalledOnce();
+      const reader = readers[0];
+      const oldTerminal = reader.onloadend!;
+      Object.defineProperty(reader, 'result', { value: expired });
+      reader.dispatchEvent(new ProgressEvent('load'));
+      await flush();
+      expect(get(statusId).textContent).toBe(timeout);
+      expect(get('library-candidate').hidden).toBe(true);
+      reader.dispatchEvent(new ProgressEvent('abort'));
+      reader.dispatchEvent(new ProgressEvent('error'));
+      await flush();
+      expect(get(statusId).textContent).toBe(timeout);
+      expect(get('library-candidate').hidden).toBe(true);
+      expect(get<HTMLInputElement>('blueprint-name').value).toBe('retained designer');
+      expect(get('editor').innerHTML).toBe(design);
+      expect([...storage.values]).toEqual([[first, original]]);
+      await uploadLocal(expired, !designer);
+      expect(reads).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+      reader.dispatchEvent(new ProgressEvent('loadend'));
+      await flush();
+      expect(reader.onload).toBeNull();
+      const retry = serializeBlueprint(draft('explicit retry').blueprint);
+      await uploadLocal(retry, designer);
+      expect(reads).toHaveBeenCalledTimes(2);
+      const clearInput = vi.spyOn(input, 'value', 'set');
+      const timers = vi.getTimerCount();
+      oldTerminal.call(reader, new ProgressEvent('loadend'));
+      expect(clearInput).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(timers);
+      await uploadLocal(expired, !designer);
+      expect(reads).toHaveBeenCalledTimes(2);
+      Object.defineProperty(readers[1], 'result', { value: retry });
+      readers[1].dispatchEvent(new ProgressEvent('load'));
+      readers[1].dispatchEvent(new ProgressEvent('loadend'));
+      await flush();
+      expect(input.value).toBe('');
+      expect(get<HTMLInputElement>('blueprint-name').value).toBe(
+        designer ? 'explicit retry' : 'retained designer',
+      );
+      expect(get('library-candidate').hidden).toBe(designer);
+      if (!designer) {
+        expect(get('library-candidate-name').textContent).toBe('explicit retry');
+        expect(get('library-status').textContent).toContain('Imported an unsaved blueprint');
+      } else expect(get(statusId).textContent).toContain('loaded into designer');
+      expect([...storage.values]).toEqual([[first, original]]);
+      expect(worker.postMessage).toHaveBeenCalledTimes(commands);
+    },
+  );
+
   it('cancels captures before native transaction admission and never relabels their tick', async () => {
     storage.faults.openStall = true;
     click('capture-selected');

@@ -1052,6 +1052,154 @@ for (const phase of ['initial', 'final']) {
   });
 }
 
+for (const designer of [false, true]) {
+  test(`expired native blueprint reader cannot publish to designer=${designer} before terminal cleanup`, async ({
+    page,
+  }, info) => {
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.addInitScript(() => {
+      type HeldRead = { reader: FileReader; load?: () => void; terminal?: () => void };
+      const state = {
+        reads: 0,
+        aborts: 0,
+        pending: undefined as HeldRead | undefined,
+        oldTerminal: undefined as (() => void) | undefined,
+      };
+      (window as any).readerProbe = state;
+      window.FileReader = new Proxy(window.FileReader, {
+        construct(target, args: ConstructorParameters<typeof FileReader>, newTarget) {
+          const reader: FileReader = Reflect.construct(target, args, newTarget);
+          state.reads++;
+          const held: HeldRead = { reader };
+          state.pending = held;
+          reader.abort = () => {
+            state.aborts++;
+          };
+          reader.addEventListener('load', (event) => {
+            event.stopImmediatePropagation();
+            const callback = reader.onload;
+            held.load = () => callback?.call(reader, event);
+          });
+          reader.addEventListener('loadend', (event) => {
+            event.stopImmediatePropagation();
+            const callback = reader.onloadend;
+            held.terminal = () => callback?.call(reader, event);
+          });
+          return reader;
+        },
+      });
+    });
+    const before = await fixture(page);
+    const stored = [[first, encodeRecord(candidate('stored'), 1)]] as [string, string][];
+    await database(page, stored);
+    await openLibrary(page);
+    await page.locator('#blueprint-name').fill('retained designer');
+    const design = await download(page, '#export-blueprint');
+    const expired = serializeBlueprint(candidate('expired candidate').blueprint);
+    const input = designer ? '#blueprint-file' : '#library-file';
+    const otherInput = designer ? '#library-file' : '#blueprint-file';
+    const payload = {
+      name: 'expired.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(expired),
+    };
+    await page.locator(input).setInputFiles(payload);
+    await expect
+      .poll(() => page.evaluate(() => !!(window as any).readerProbe.pending?.terminal))
+      .toBe(true);
+    expect(await page.evaluate(() => (window as any).readerProbe.pending.reader.readyState)).toBe(
+      2,
+    );
+    expect(await page.evaluate(() => (window as any).readerProbe.pending.reader.result)).toBe(
+      expired,
+    );
+    const statusId = designer ? '#designer-file-status' : '#library-status';
+    await page.locator(statusId).filter({ hasText: 'Blueprint read timed out.' }).waitFor();
+    const timeout = await page.locator(statusId).textContent();
+    expect(await page.evaluate(() => (window as any).readerProbe.aborts)).toBe(1);
+    await page.evaluate(() => (window as any).readerProbe.pending.load());
+    await expect(page.locator(statusId)).toHaveText(timeout!);
+    await expect(page.locator('#library-candidate')).toBeHidden();
+    await expect(page.locator('#blueprint-name')).toHaveValue('retained designer');
+    expect(await database(page)).toEqual(stored);
+    expect(await download(page, '#export-blueprint')).toEqual(design);
+    expect(await pausedSave(page)).toEqual(before);
+    await page.screenshot({
+      path: info.outputPath(`library-reader-expiry-designer-${designer}.png`),
+      fullPage: true,
+    });
+    await page.locator(otherInput).setInputFiles(payload);
+    expect(await page.evaluate(() => (window as any).readerProbe.reads)).toBe(1);
+    await expect(page.locator('#library-status')).toContainText('Busy');
+    await page.evaluate(() => {
+      const state = (window as any).readerProbe;
+      state.oldTerminal = state.pending.terminal;
+      state.pending.terminal();
+      state.pending = undefined;
+    });
+    const retry = serializeBlueprint(candidate('explicit retry').blueprint);
+    await page
+      .locator(input)
+      .setInputFiles({
+        name: 'retry.json',
+        mimeType: 'application/json',
+        buffer: Buffer.from(retry),
+      });
+    await expect
+      .poll(() => page.evaluate(() => !!(window as any).readerProbe.pending?.terminal))
+      .toBe(true);
+    expect(await page.evaluate(() => (window as any).readerProbe.reads)).toBe(2);
+    const pendingInput = await page.locator(input).inputValue();
+    expect(pendingInput).not.toBe('');
+    await page.evaluate(() => (window as any).readerProbe.oldTerminal());
+    await expect(page.locator(input)).toHaveValue(pendingInput);
+    await page.locator(otherInput).setInputFiles(payload);
+    expect(await page.evaluate(() => (window as any).readerProbe.reads)).toBe(2);
+    await page.evaluate(() => {
+      const state = (window as any).readerProbe;
+      state.pending.load();
+      state.pending.terminal();
+      state.pending = undefined;
+    });
+    await expect(page.locator(input)).toHaveValue('');
+    if (designer) {
+      await expect(page.locator('#blueprint-name')).toHaveValue('explicit retry');
+      await expect(page.locator('#designer-file-status')).toContainText('loaded into designer');
+      await expect(page.locator('#library-candidate')).toBeHidden();
+    } else {
+      await expect(page.locator('#blueprint-name')).toHaveValue('retained designer');
+      await expect(page.locator('#library-candidate-name')).toHaveText('explicit retry');
+      await expect(page.locator('#library-status')).toContainText('Imported an unsaved blueprint');
+    }
+    expect(await database(page)).toEqual(stored);
+    expect(await pausedSave(page)).toEqual(before);
+    expect(errors).toEqual([]);
+    await info.attach(`native-reader-expiry-designer-${designer}.json`, {
+      contentType: 'application/json',
+      body: JSON.stringify({
+        designer,
+        actualNativeFileReader: true,
+        actualTenSecondDeadline: true,
+        injectedAbortAndTerminalDeliveryHold: true,
+        lateValidLoadSuppressed: true,
+        timeout,
+        noCandidateDesignerStorageOrSuccessResurrection: true,
+        exactSurvivingRows: stored,
+        blockedSecondReaderBeforeTerminal: true,
+        staleTerminalCannotReleaseNewOwnerOrClearItsInput: true,
+        explicitRetrySucceeded: true,
+        reads: 2,
+        pageErrors: errors,
+        designerSha256: createHash('sha256').update(design).digest('hex'),
+        ecologicalSha256: createHash('sha256').update(before).digest('hex'),
+        limits:
+          'Native file bytes read successfully; load/loadend delivery and abort are deliberately held. Not physical slow disk or native OS-picker cancellation.',
+      }),
+    });
+  });
+}
+
 test('native committed-but-late completion and late open retain ownership until actual terminal callbacks', async ({
   page,
 }, info) => {
