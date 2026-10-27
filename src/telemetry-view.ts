@@ -6,6 +6,7 @@ import {
   TELEMETRY_INTERVAL_TICKS,
   type Frame,
   type TelemetrySample,
+  type InterventionEntry,
 } from './model';
 
 type View = 'population' | 'food' | 'adaptation';
@@ -71,12 +72,17 @@ export function createTelemetryView(root: HTMLElement) {
     section = get('telemetry'),
     viewSelect = get<HTMLSelectElement>('telemetry-view'),
     sampleSelect = get<HTMLSelectElement>('telemetry-sample'),
+    manualSelect = get<HTMLSelectElement>('telemetry-intervention'),
+    manualSummary = get('telemetry-intervention-summary'),
+    manualDetails = get('telemetry-intervention-details'),
     plots = get('telemetry-plots'),
     details = get('telemetry-details'),
+    summary = get('telemetry-summary'),
     status = get('telemetry-status');
   let source: Frame | undefined,
     sourceKey = '',
     selectedTick: number | null = null,
+    selectedSequence: number | null = null,
     dirty = true,
     disposed = false,
     renderedWidth = 0;
@@ -97,6 +103,15 @@ export function createTelemetryView(root: HTMLElement) {
   };
   viewSelect.addEventListener('change', changeView);
   sampleSelect.addEventListener('change', change);
+  const changeManual = (): void => {
+    selectedSequence = manualSelect.value === 'latest' ? null : Number(manualSelect.value);
+    status.textContent =
+      selectedSequence === null
+        ? 'Following latest retained manual action.'
+        : `Selected manual action ${selectedSequence}.`;
+    invalidate();
+  };
+  manualSelect.addEventListener('change', changeManual);
   const observer =
     typeof ResizeObserver === 'undefined'
       ? undefined
@@ -106,7 +121,7 @@ export function createTelemetryView(root: HTMLElement) {
         });
   observer?.observe(section);
 
-  function table(caption: string, rows: [string, string][]): void {
+  function table(caption: string, rows: [string, string][], destination = details): void {
     const table = element('table'),
       body = element('tbody'),
       head = element('thead'),
@@ -126,7 +141,140 @@ export function createTelemetryView(root: HTMLElement) {
       row.append(heading, element('td', value));
       body.append(row);
     }
-    details.append(table);
+    destination.append(table);
+  }
+  function manualDetail(): void {
+    manualDetails.replaceChildren();
+    const state = source!.interventions,
+      entries = state.entries,
+      entry = entries.find((row) => row.sequence === selectedSequence) ?? entries.at(-1),
+      samples = source!.telemetry.samples,
+      start = samples.length === 1 ? samples[0].fromTick : samples[0]?.tick,
+      end = samples.at(-1)?.tick,
+      evicted = state.totalEntries - entries.length;
+    manualSummary.textContent = `${entries.length} of at most 128 manual entries retained; ${evicted} evicted${evicted ? ` through tick ${state.evictedThroughTick}` : ''}. ${state.originKind === 'legacy-import' ? `Earlier actions/settings before import at completed tick ${state.originTick} are unknown.` : 'Logging starts before the first ecological tick.'} Applied portions only, not a causal or replay history. ${start === undefined ? 'No sampled time axis yet.' : `${entries.filter((row) => row.lastTick < start).length} entirely before, ${entries.filter((row) => row.firstTick > end!).length} after the sampled domain; ${entries.filter((row) => (row.firstTick < start && row.lastTick >= start) || (row.firstTick <= end! && row.lastTick > end!)).length} crossing its edges. Same-tick actions are after that completed sample boundary.`}`;
+    if (!entry) return;
+    const rows: [string, string][] = [
+      ['Origin', 'Manual'],
+      ['Sequence', String(entry.sequence)],
+      ['Kind', entry.kind],
+      [
+        'Effect time',
+        entry.firstTick === entry.lastTick
+          ? `After completed tick ${entry.firstTick}; applied portion only`
+          : `After completed ticks ${entry.firstTick}–${entry.lastTick}; applied portions only`,
+      ],
+    ];
+    if (entry.kind === 'paint')
+      rows.push(
+        ['Tool', entry.detail.tool],
+        ['Radius', String(entry.detail.radius)],
+        ['First successful anchor', `${entry.detail.first.x}, ${entry.detail.first.y}`],
+        ['Last successful anchor', `${entry.detail.last.x}, ${entry.detail.last.y}`],
+        ['Successful commands', String(entry.detail.successfulCommands)],
+        [
+          'Net changed brush cells, summed per command (not unique area)',
+          String(entry.detail.changedBrushCells),
+        ],
+        ['Whole organisms manually removed', String(entry.detail.removedOrganisms)],
+      );
+    else if (entry.kind === 'placement') {
+      rows.push(['Meaning', 'Deliberate placement, not reproductive birth']);
+      for (const [field, value] of Object.entries(entry.detail)) rows.push([field, String(value)]);
+    } else if (entry.kind === 'settings') {
+      for (const [field, change] of Object.entries(entry.detail.changes))
+        rows.push([field, `${change!.before} → ${change!.after}`]);
+    } else
+      rows.push(
+        ['Climate shock', entry.detail.kind],
+        [
+          'Before stored event',
+          `offset ${entry.detail.before.offset}; until ${entry.detail.before.until}`,
+        ],
+        [
+          'After stored event',
+          `offset ${entry.detail.after.offset}; until ${entry.detail.after.until}`,
+        ],
+      );
+    table(`Manual ${entry.kind} #${entry.sequence}`, rows, manualDetails);
+  }
+  function manualStrip(plot: HTMLElement, width: number, start: number, end: number): void {
+    const prefix = `telemetry-manual-${plots.children.length}`,
+      svg = svgElement('svg', {
+        viewBox: `0 0 ${width} 48`,
+        role: 'img',
+        'aria-labelledby': `${prefix}-title ${prefix}-description`,
+      }),
+      plotWidth = width - 64,
+      x = (tick: number): number => 50 + ((tick - start) / (end - start)) * plotWidth,
+      bucketWidth = Math.max(12, plotWidth / 32),
+      groups = new Map<number, InterventionEntry[]>();
+    svg.classList.add('telemetry-manual-strip');
+    svg.append(
+      svgElement('title', { id: `${prefix}-title` }, 'Manual action after completed tick'),
+      svgElement(
+        'desc',
+        { id: `${prefix}-description` },
+        'Applied portions only; not a measurement or continuous effects.',
+      ),
+    );
+    const entries = source!.interventions.entries;
+    for (const entry of entries) {
+      if (entry.lastTick < start || entry.firstTick > end) continue;
+      const bucket = Math.min(
+        31,
+        Math.floor((x(Math.max(start, entry.firstTick)) - 50) / bucketWidth),
+      );
+      const group = groups.get(bucket) ?? [];
+      group.push(entry);
+      groups.set(bucket, group);
+    }
+    for (const group of groups.values()) {
+      const first = group[0],
+        lastTick = Math.max(...group.map((entry) => entry.lastTick)),
+        firstX = x(Math.max(start, first.firstTick)),
+        lastX = x(Math.min(lastTick, end)),
+        anchor = first.firstTick >= start ? `M${firstX},11l4,4l-4,4l-4,-4Z ` : '',
+        mark = svgElement('path', {
+          d: `${anchor}M${firstX},15H${lastX}`,
+          class: 'telemetry-manual-density',
+          'data-first-tick': first.firstTick,
+          'data-last-tick': lastTick,
+          'data-anchor-tick': first.firstTick >= start ? first.firstTick : 'none',
+          'data-clipped-first-tick': Math.max(start, first.firstTick),
+          'data-clipped-last-tick': Math.min(lastTick, end),
+          'data-count': group.length,
+          'stroke-dasharray': '3 2',
+        });
+      mark.append(
+        svgElement(
+          'title',
+          {},
+          `Manual density indicator: ${group.length} entries, sequences ${first.sequence}–${group.at(-1)!.sequence}, after completed ticks ${first.firstTick}–${lastTick}; not continuous effects or measurements${first.firstTick < start || lastTick > end ? '; clipped for drawing only, continues beyond plotted domain' : ''}.`,
+        ),
+      );
+      svg.append(mark);
+    }
+    const selected = entries.find((entry) => entry.sequence === selectedSequence) ?? entries.at(-1);
+    if (selected && selected.lastTick >= start && selected.firstTick <= end) {
+      const firstX = x(Math.max(start, selected.firstTick)),
+        lastX = x(Math.min(end, selected.lastTick)),
+        highlight = svgElement('path', {
+          d: `M${firstX},9V23M${firstX},16H${lastX}M${lastX},9V23`,
+          class: 'telemetry-selection',
+          'data-manual-sequence': selected.sequence,
+        });
+      highlight.append(
+        svgElement(
+          'title',
+          {},
+          `Selected manual #${selected.sequence}: actual successful ticks ${selected.firstTick}–${selected.lastTick}; applied portions only${selected.firstTick < start || selected.lastTick > end ? '; clipped for drawing only, continues beyond edge' : ''}.`,
+        ),
+      );
+      svg.append(highlight);
+    }
+    svg.append(svgElement('text', { x: 50, y: 42 }, '◇ Manual after tick; not a measurement'));
+    plot.append(svg);
   }
 
   function figure(
@@ -252,6 +400,7 @@ export function createTelemetryView(root: HTMLElement) {
       legend.append(entry);
     }
     plot.append(legend);
+    manualStrip(plot, width, start, end);
   }
 
   function render(): void {
@@ -264,6 +413,7 @@ export function createTelemetryView(root: HTMLElement) {
     renderedWidth = width;
     plots.replaceChildren();
     details.replaceChildren();
+    manualDetail();
     const samples = source.telemetry.samples,
       latest = samples.at(-1);
     if (!latest) {
@@ -486,9 +636,10 @@ export function createTelemetryView(root: HTMLElement) {
         samples = telemetry.samples,
         first = samples[0],
         last = samples.at(-1),
-        key = `${run}/${telemetry.originTick}/${telemetry.adaptationOriginTick}/${samples.length}/${first?.tick}/${last?.tick}`;
-      get('telemetry-summary').textContent =
-        `World tick ${frame.stats.tick}; ${last ? `latest sample tick ${last.tick}; retained ticks ${first!.tick}–${last.tick}; ${samples.length} of at most ${TELEMETRY_CAPACITY} samples` : 'no recorded samples'}. Samples every ${TELEMETRY_INTERVAL_TICKS} completed ticks. Current live values can differ after paused editing. No synthetic initial, latest or extinction point.`;
+        manual = frame.interventions,
+        latestManual = manual.entries.at(-1),
+        key = `${run}/${telemetry.originTick}/${telemetry.adaptationOriginTick}/${samples.length}/${first?.tick}/${last?.tick}/${manual.originTick}/${manual.originKind}/${manual.totalEntries}/${latestManual?.sequence}/${latestManual?.kind === 'paint' ? latestManual.detail.successfulCommands : ''}`;
+      summary.textContent = `World tick ${frame.stats.tick}; ${last ? `latest sample tick ${last.tick}; retained ticks ${first!.tick}–${last.tick}; ${samples.length} of at most ${TELEMETRY_CAPACITY} samples` : 'no recorded samples'}. Samples every ${TELEMETRY_INTERVAL_TICKS} completed ticks. Current live values can differ after paused editing. No synthetic initial, latest or extinction point.`;
       if (key === sourceKey) return;
       sourceKey = key;
       if (selectedTick !== null && !samples.some((sample) => sample.tick === selectedTick)) {
@@ -502,17 +653,44 @@ export function createTelemetryView(root: HTMLElement) {
       );
       sampleSelect.disabled = samples.length === 0;
       sampleSelect.value = selectedTick === null ? 'latest' : String(selectedTick);
+      if (
+        selectedSequence !== null &&
+        !manual.entries.some((entry) => entry.sequence === selectedSequence)
+      ) {
+        const evicted = selectedSequence;
+        selectedSequence = manual.entries[0]?.sequence ?? null;
+        status.textContent = `Manual sequence ${evicted} is no longer retained; showing ${selectedSequence === null ? 'latest when available' : `sequence ${selectedSequence}`}.`;
+      }
+      manualSelect.replaceChildren(
+        new Option(
+          manual.entries.length ? 'Latest retained manual action' : 'No retained manual actions',
+          'latest',
+        ),
+        ...manual.entries.map(
+          (entry) =>
+            new Option(
+              `Manual ${entry.kind} #${entry.sequence}; after tick ${entry.firstTick}${entry.lastTick !== entry.firstTick ? `–${entry.lastTick}` : ''}`,
+              String(entry.sequence),
+            ),
+        ),
+      );
+      manualSelect.disabled = manual.entries.length === 0;
+      manualSelect.value = selectedSequence === null ? 'latest' : String(selectedSequence);
       invalidate();
     },
     reset(): void {
       if (disposed) return;
       selectedTick = null;
+      selectedSequence = null;
       source = undefined;
       sourceKey = '';
       plots.replaceChildren();
       details.replaceChildren();
-      get('telemetry-summary').textContent =
-        'Waiting for the new world’s authoritative observations.';
+      manualDetails.replaceChildren();
+      manualSummary.textContent = 'Waiting for authoritative manual history.';
+      manualSelect.replaceChildren(new Option('No retained manual actions', 'latest'));
+      manualSelect.disabled = true;
+      summary.textContent = 'Waiting for the new world’s authoritative observations.';
       sampleSelect.replaceChildren(new Option('No recorded samples', 'latest'));
       sampleSelect.disabled = true;
       status.textContent = '';
@@ -525,6 +703,7 @@ export function createTelemetryView(root: HTMLElement) {
       observer?.disconnect();
       viewSelect.removeEventListener('change', changeView);
       sampleSelect.removeEventListener('change', change);
+      manualSelect.removeEventListener('change', changeManual);
     },
   };
 }

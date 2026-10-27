@@ -1710,3 +1710,56 @@ for (const scenario of [
     await other.close();
   });
 }
+
+test('composed library operations preserve complete world5 and measurement intervention exports', async ({
+  page,
+}, info) => {
+  await fixture(page);
+  await page.locator('#ecosystem-tab').click();
+  await page.locator('[data-shock="heat"]').click();
+  const before = await pausedSave(page);
+  const world = JSON.parse(before.toString()) as WorldFile;
+  expect(world.version).toBe(5);
+  expect(world.telemetry.version).toBe(2);
+  expect(world.interventions.version).toBe(1);
+  expect(world.interventions.entries).toHaveLength(1);
+  await page.locator('#ecosystem-tab').click();
+  const measurements = await download(page, '#measurements-json');
+  const csv = await download(page, '#measurements-csv');
+  await page.locator('#organism-tab').click();
+  const original = encodeRecord(candidate('composed design'), 1);
+  await database(page, [[first, original]]);
+  await openLibrary(page);
+  await page.locator('#library-load').click();
+  await page.locator('#library-confirm').click();
+  await expect(page.locator('#blueprint-name')).toHaveValue('composed design');
+  await page.locator('#library-delete').click();
+  await page.locator('#library-confirm').click();
+  await expect(page.locator('#library-selection')).toHaveText('No selected entry.');
+  expect(await database(page)).toEqual([]);
+  expect(await pausedSave(page)).toEqual(before);
+  await page.locator('#ecosystem-tab').click();
+  expect(await download(page, '#measurements-json')).toEqual(measurements);
+  expect(await download(page, '#measurements-csv')).toEqual(csv);
+  await info.attach('composed-world5.json', { contentType: 'application/json', body: before });
+  await info.attach('composed-measurements.json', {
+    contentType: 'application/json',
+    body: measurements,
+  });
+  await info.attach('composed-measurements.csv', { contentType: 'text/csv', body: csv });
+  await info.attach('native-composed-preservation.json', {
+    contentType: 'application/json',
+    body: JSON.stringify({
+      worldVersion: world.version,
+      telemetryVersion: world.telemetry.version,
+      interventionVersion: world.interventions.version,
+      fullWorldEqual: true,
+      fullJSONExportEqual: true,
+      fullCSVExportEqual: true,
+      buffers: [before, measurements, csv].map((buffer) => ({
+        bytes: buffer.length,
+        sha256: createHash('sha256').update(buffer).digest('hex'),
+      })),
+    }),
+  });
+});

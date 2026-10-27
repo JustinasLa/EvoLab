@@ -1079,6 +1079,28 @@ dialog a {
     grid-template-columns: minmax(0, 1fr) 336px;
   }
 }
+.measurement-downloads {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+}
+.measurement-downloads button {
+  min-height: 44px;
+  white-space: normal;
+}
+#telemetry-intervention-details {
+  overflow-wrap: anywhere;
+}
+#telemetry .telemetry-manual-strip {
+  display: block;
+  width: 100%;
+  height: 48px;
+}
+.telemetry-manual-density {
+  stroke: #bde879;
+  fill: none;
+  stroke-width: 1.5;
+}
 @media (max-width: 760px) {
   #app {
     height: auto;
