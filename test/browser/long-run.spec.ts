@@ -69,6 +69,9 @@ declare global {
     longRun: {
       state: ControlState | null;
       receipt: Receipt | null;
+      loadedReceipt: { commandId: number; state: ControlState } | null;
+      pauseReceipt: Receipt | null;
+      releaseRead?: (() => void) | null;
       counters: Counters | null;
       frames: number;
       metadataBytes: number;
@@ -151,6 +154,8 @@ async function observe(page: Page, instrument = true): Promise<void> {
     window.longRun = {
       state: null,
       receipt: null,
+      loadedReceipt: null,
+      pauseReceipt: null,
       counters: null,
       frames: 0,
       metadataBytes: 0,
@@ -208,6 +213,7 @@ async function observe(page: Page, instrument = true): Promise<void> {
               receivedAt: performance.now(),
               state: data.state ?? data.recovery?.state,
             };
+            if (posted.type === 'pause') evidence.pauseReceipt = evidence.receipt;
             posted = null;
           }
         });
@@ -220,6 +226,11 @@ async function observe(page: Page, instrument = true): Promise<void> {
             descriptor.set!.call(worker, (event: MessageEvent) => {
               const deliver = (delivery = event) => {
                 next?.(delivery);
+                if (delivery.data.type === 'loaded')
+                  window.longRun.loadedReceipt = {
+                    commandId: delivery.data.commandId,
+                    state: delivery.data.state,
+                  };
                 if (delivery.data.type === 'loaded' && !delivery.data.state.playback.paused)
                   document.getElementById('pause')!.click();
               };
@@ -336,13 +347,42 @@ async function load(page: Page, file: WorldFile, render: boolean, speed: number)
   await page.waitForFunction(() => window.longRun.state !== null);
   if (!(await page.evaluate(() => window.longRun.state!.playback.paused)))
     await control(page, 'pause');
+  await page.waitForFunction(() => window.longRun.state!.playback.paused);
+  const before = await page.evaluate(() => window.longRun.state!.replacementId);
   await page.locator('#file').setInputFiles({
     name: 'bounded-long-run.json',
     mimeType: 'application/json',
     buffer: Buffer.from(JSON.stringify(file)),
   });
+  await page.waitForFunction((before) => {
+    const { loadedReceipt, pauseReceipt } = window.longRun;
+    return (
+      loadedReceipt &&
+      loadedReceipt.commandId > before &&
+      (loadedReceipt.state.playback.paused ||
+        (pauseReceipt?.state.replacementId === loadedReceipt.commandId &&
+          pauseReceipt.commandId > loadedReceipt.commandId &&
+          pauseReceipt.state.playback.paused))
+    );
+  }, before);
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
-  expect(await settle(page)).toEqual(file);
+  const loaded = await page.evaluate(() => window.longRun.loadedReceipt!),
+    paused = await page.evaluate(() => window.longRun.state!),
+    original = await page.evaluate(async (file) => {
+      const modulePath = '/__reference/engine.js';
+      const { Ecosystem } = await import(modulePath);
+      return Ecosystem.load(JSON.stringify(file)).presentation();
+    }, file),
+    download = await downloadWorld(page);
+  expect(loaded.state.world).toEqual(original);
+  expect(loaded.state.world.stats.tick).toBe(file.tick);
+  expect(paused.replacementId).toBe(loaded.commandId);
+  expect(download.world.tick).toBe(paused.world.stats.tick);
+  expect(download.world.tick).toBeGreaterThanOrEqual(file.tick);
+  expect(await page.evaluate(() => window.longRun.receipt!.state.replacementId)).toBe(
+    loaded.commandId,
+  );
+  await expectExactDownload(page, file, download);
   await page.evaluate(
     ({ render, speed }) => {
       const checkbox = document.querySelector<HTMLInputElement>('#render-habitat')!;
@@ -356,7 +396,9 @@ async function load(page: Page, file: WorldFile, render: boolean, speed: number)
     },
     { render, speed },
   );
-  await settle(page);
+  const configured = await downloadWorld(page);
+  expect(configured.world).toEqual(download.world);
+  expect(configured.raw.equals(download.raw)).toBe(true);
   await page.locator('#world').scrollIntoViewIfNeeded();
   await expect.poll(() => page.evaluate(() => window.longRun.state?.display.visible)).toBe(true);
 }
@@ -1108,6 +1150,80 @@ test('browser-runtime real worker preserves every batch, inspection and snapshot
     results,
     method:
       'Actual startWorker and independent Ecosystem in matching browser runtime with deterministic scheduler/clock and detached structured-clone transport. Every completed batch across120ticks at1/4/12 includes real inspect AND display snapshot then exact full serialized Save. Explicit snapshot grids are deliberate and separate from zero-automatic-grid startup acceptance.',
+  });
+});
+
+test('load barriers distinguish a pending file read from a delivered replacement and its exact paused Save', async ({
+  page,
+}, testInfo) => {
+  await observe(page);
+  await page.goto('/');
+  await page.waitForFunction(() => window.longRun.state !== null);
+  await control(page, 'pause');
+  await page.waitForFunction(() => window.longRun.state!.playback.paused);
+  const prior = await downloadWorld(page),
+    priorReplacement = await page.evaluate(() => window.longRun.state!.replacementId),
+    file = fixture(64);
+  await expectExactDownload(page, new Ecosystem(DEFAULTS).save(), prior);
+  await page.evaluate(() => {
+    const read = File.prototype.text;
+    File.prototype.text = async function () {
+      if (this.name === 'bounded-long-run.json')
+        await new Promise<void>((resolve) => {
+          window.longRun.releaseRead = () => {
+            window.longRun.releaseRead = null;
+            resolve();
+          };
+        });
+      return read.call(this);
+    };
+    window.longRun.holdTerminal = true;
+  });
+  const loading = load(page, file, false, 1);
+  await page.waitForFunction(() => !!window.longRun.releaseRead);
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  const beforeRead = await downloadWorld(page);
+  expect(beforeRead.world).toEqual(prior.world);
+  expect(beforeRead.raw.equals(prior.raw)).toBe(true);
+  expect(await page.evaluate(() => window.longRun.state!.replacementId)).toBe(priorReplacement);
+  expect(await page.evaluate(() => window.longRun.loadedReceipt)).toBeNull();
+  await page.evaluate(() => window.longRun.releaseRead!());
+  await page.waitForFunction(
+    (tick) =>
+      !!window.longRun.releaseTerminal && window.longRun.state!.world.stats.tick >= tick + 4,
+    file.tick,
+  );
+  expect(await page.evaluate(() => window.longRun.loadedReceipt)).toBeNull();
+  await page.evaluate(() => window.longRun.releaseTerminal!());
+  await loading;
+  const after = await downloadWorld(page),
+    receipt = await page.evaluate(() => ({
+      loaded: window.longRun.loadedReceipt!,
+      paused: window.longRun.pauseReceipt!,
+      saved: window.longRun.receipt!,
+    }));
+  expect(receipt.loaded.state.world.stats.tick).toBe(file.tick);
+  expect(receipt.loaded.state.playback.paused).toBe(false);
+  expect(receipt.paused.state.replacementId).toBe(receipt.loaded.commandId);
+  expect(receipt.paused.commandId).toBeGreaterThan(receipt.loaded.commandId);
+  expect(after.world.tick).toBe(receipt.paused.state.world.stats.tick);
+  expect(after.world.tick).toBeGreaterThanOrEqual(file.tick + 4);
+  expect(receipt.saved.commandId).toBeGreaterThan(receipt.paused.commandId);
+  expect(receipt.saved.state.replacementId).toBe(receipt.loaded.commandId);
+  await expectExactDownload(page, file, after);
+  await attachRawSave(testInfo, 'load-barrier-before-read', beforeRead.raw);
+  await attachRawSave(testInfo, 'load-barrier-after-pause', after.raw);
+  await attachEvidence(testInfo, 'load-barrier-evidence', {
+    ...runtime(),
+    project: testInfo.project.name,
+    priorReplacement,
+    receipt,
+    inputTick: file.tick,
+    beforeReadSHA256: createHash('sha256').update(beforeRead.raw).digest('hex'),
+    afterPauseSHA256: createHash('sha256').update(after.raw).digest('hex'),
+    literalReferenceBytesEqual: true,
+    method:
+      'Actual File.text promise and actual loaded terminal delivery are separately held, not worker clocks or ecology. Save before admission retains the old paused world; living import resumes and genuinely advances before delayed loaded delivery triggers FIFO Pause. Completed replacement, correlated Pause and native Save must agree exactly with independent same-browser engine evolution.',
   });
 });
 
