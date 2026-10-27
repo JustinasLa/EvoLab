@@ -296,6 +296,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       owner.run !== data.runId ||
       owner.format !== data.format ||
       owner.strokeId !== data.strokeId ||
+      (manual ? data.requestId !== undefined : data.commandId !== undefined) ||
       (data.type !== 'error' && data.type !== expected)
     )
       return true;

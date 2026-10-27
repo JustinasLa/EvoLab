@@ -136,6 +136,7 @@ export function startWorker(
       if (
         !integer(id, 1, Number.MAX_SAFE_INTEGER) ||
         !integer(data.runId, 0, Number.MAX_SAFE_INTEGER) ||
+        (isManual ? data.requestId !== undefined : data.commandId !== undefined) ||
         (strokeOwned && !integer(data.strokeId, 1, Number.MAX_SAFE_INTEGER)) ||
         (data.type === 'export-measurements' && !['csv', 'json'].includes(data.format)) ||
         id <= postingWatermark

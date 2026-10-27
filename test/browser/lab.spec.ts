@@ -25,6 +25,7 @@ declare global {
     measurementGate: {
       processingBlocked: boolean;
       deliveryBlocked: boolean;
+      holdLifecycle: boolean;
       framesBlocked: boolean;
       counts: {
         E: number;
@@ -45,6 +46,7 @@ declare global {
       nextLifecycle: () => Promise<void>;
       waitForDrain: () => Promise<void>;
       releaseFrame: () => void;
+      failEndpoint: () => void;
     };
     telemetryEvidence: { frame: Frame | null; points: number[][]; loadText: string | null };
     telemetryPerformance: {
@@ -1035,6 +1037,7 @@ async function observeMeasurementOwnership(page: import('@playwright/test').Page
         const gate = (window.measurementGate = {
           processingBlocked: false,
           deliveryBlocked: false,
+          holdLifecycle: false,
           framesBlocked: false,
           counts,
           pending,
@@ -1073,6 +1076,9 @@ async function observeMeasurementOwnership(page: import('@playwright/test').Page
             latestFrame = null;
             if (frame) handler?.call(worker, frame);
           },
+          failEndpoint() {
+            worker.dispatchEvent(new MessageEvent('messageerror'));
+          },
         });
         Object.defineProperty(worker, 'onmessage', {
           configurable: true,
@@ -1098,7 +1104,7 @@ async function observeMeasurementOwnership(page: import('@playwright/test').Page
               lifecycleWaiter = null;
               waiter?.();
             }
-            if (gate.deliveryBlocked && !lifecycle) {
+            if (gate.deliveryBlocked && (!lifecycle || gate.holdLifecycle)) {
               results.set(id, event);
               if (results.size > 36) throw new Error('Unbounded terminal gate');
               return;
@@ -1219,6 +1225,68 @@ test('D9-A5 actual native4096-command stroke closes once without a4097th paint o
         'Only native frame delivery held, latest one retained; real engine and every manual terminal forwarded. Physical disk/touch and whole-heap bounds not measured.',
     }),
   });
+});
+test('D9-A7 actual native termination precedes abandonment of36 held receipts and a clean new Worker incarnation', async ({
+  page,
+}) => {
+  await observeMeasurementOwnership(page);
+  let downloads = 0;
+  page.on('download', () => downloads++);
+  await page.goto('/');
+  await requestPause(page);
+  await page.evaluate(() => {
+    const gate = window.measurementGate,
+      canvas = document.getElementById('world')!,
+      rect = canvas.getBoundingClientRect();
+    gate.deliveryBlocked = true;
+    gate.holdLifecycle = true;
+    document.getElementById('measurements-json')!.click();
+    document.getElementById('save')!.click();
+    document.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
+    const pointer = (type: string) =>
+      canvas.dispatchEvent(
+        new PointerEvent(type, {
+          pointerId: 1,
+          isPrimary: true,
+          clientX: rect.left + rect.width / 2,
+          clientY: rect.top + rect.height / 2,
+          bubbles: true,
+        }),
+      );
+    pointer('pointerdown');
+    for (let point = 0; point < 31; point++) pointer('pointermove');
+    pointer('pointerup');
+    document.getElementById('reset')!.click();
+  });
+  await expect.poll(() => page.evaluate(() => window.measurementGate.counts.completedL)).toBe(2);
+  expect(await page.evaluate(() => window.measurementGate.pending.size)).toBe(36);
+  const held = await page.evaluate(() => ({ ...window.measurementGate.counts }));
+  expect(held).toMatchObject({ serializedE: 1, serializedS: 1, terminated: 0, maximum: 36 });
+  await page.evaluate(() => window.measurementGate.failEndpoint());
+  expect(await page.evaluate(() => window.measurementGate.counts.terminated)).toBe(1);
+  expect(await page.evaluate(() => window.measurementGate.pending.size)).toBe(0);
+  await expect(page.locator('#run-state')).toHaveText('STOPPED');
+  await page.evaluate(() => window.measurementGate.releaseResults());
+  expect(downloads).toBe(0);
+  await page.reload();
+  await requestPause(page);
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  const fresh = JSON.parse((await downloadMeasurements(page, 'json')).toString());
+  expect(fresh.snapshot.seed).toBe(DEFAULTS.seed);
+  expect(downloads).toBe(1);
+  expect(await page.evaluate(() => window.measurementGate.counts.L)).toBe(1);
+  await test
+    .info()
+    .attach('native-endpoint-incarnation.json', {
+      contentType: 'application/json',
+      body: JSON.stringify({
+        held,
+        oldNativeTerminations: 1,
+        freshDownloads: downloads,
+        limitation:
+          'messageerror signal injected by test; real native terminate method and new native construction forwarded unchanged. This is endpoint-abandonment evidence; mount-disposer/late-file callback permutations are separately unit-bridged, not OS crash evidence.',
+      }),
+    });
 });
 for (const version of [2, 3, 4, 5] as const) {
   test(`measurement bytes preserve genuine world${version} migration,180 samples and truthful manual windows`, async ({

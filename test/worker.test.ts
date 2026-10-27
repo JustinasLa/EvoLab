@@ -157,6 +157,7 @@ describe('correlated manual/export worker protocol', () => {
     const harness = protocol();
     harness.raw(null);
     harness.raw({ type: 'start', runId: 1, requestId: 0, settings: DEFAULTS });
+    harness.raw({ type: 'start', runId: 1, requestId: 1, commandId: 1, settings: DEFAULTS });
     expect(harness.messages).toHaveLength(0);
     harness.post('save');
     expect(harness.last('error')).toMatchObject({ operation: 'save', requestId: 1, runId: 1 });

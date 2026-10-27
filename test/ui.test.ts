@@ -624,6 +624,97 @@ describe('D9 lifetime ownership with real processing and independently gated ter
     bridge.emit(receipt);
     expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
   });
+  it.each([
+    'export-measurements',
+    'save',
+    'begin-stroke',
+    'paint',
+    'placement',
+    'settings',
+    'shock',
+    'end-stroke',
+    'start',
+    'load',
+  ])(
+    'D9-A4 preserves newer %s ownership against every wrong header, duplicate and unrelated receipt',
+    async (target) => {
+      const bridge = ownershipBridge(),
+        operation = target === 'placement' ? 'paint' : target,
+        manual = ['begin-stroke', 'paint', 'placement', 'settings', 'shock'].includes(target),
+        category =
+          target === 'export-measurements'
+            ? 'E'
+            : target === 'save'
+              ? 'S'
+              : target === 'end-stroke'
+                ? 'C'
+                : ['start', 'load'].includes(target)
+                  ? 'L'
+                  : 'M';
+      bridge.holdTerminals((data) => data.operation === operation);
+      vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+      async function action() {
+        if (target === 'export-measurements') click('measurements-json');
+        else if (target === 'save') click('save');
+        else if (target === 'start') click('reset');
+        else if (target === 'load') await loadText(JSON.stringify(new Ecosystem().save()));
+        else if (target === 'settings') set('nutrients', '7');
+        else if (target === 'shock')
+          root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
+        else {
+          root
+            .querySelector<HTMLButtonElement>(
+              `[data-tool="${target === 'placement' ? 'plant' : 'food'}"]`,
+            )!
+            .click();
+          pointer('pointerdown', 50, 50);
+          pointer('pointerup');
+        }
+      }
+      await action();
+      const firstId = [...bridge.records.keys()][0],
+        old = bridge.records.get(firstId)!.terminal;
+      if (!['start', 'load'].includes(target)) click('reset');
+      bridge.deliver(firstId);
+      await action();
+      const id = [...bridge.records.keys()][0],
+        receipt = bridge.records.get(id)!.terminal;
+      if (manual) {
+        bridge.holdTerminals((data) =>
+          ['begin-stroke', 'paint', 'settings', 'shock'].includes(data.operation),
+        );
+        for (let entry = 0; entry < 31; entry++) set('nutrients', entry % 2 ? '1' : '2');
+        expect(bridge.records.size).toBe(32);
+      }
+      for (const wrong of [
+        old,
+        { ...old, type: 'error', message: 'duplicate error' },
+        { ...receipt, operation: operation === 'save' ? 'export-measurements' : 'save' },
+        { ...receipt, runId: receipt.runId - 1 },
+        { ...receipt, format: 'csv' },
+        { ...receipt, strokeId: 999 },
+        { ...receipt, requestId: undefined, commandId: undefined },
+        {
+          ...receipt,
+          ...(manual || target === 'end-stroke' ? { requestId: id } : { commandId: id }),
+        },
+        { ...receipt, requestId: id + 1000, commandId: id + 1000 },
+        ...['snapshot', 'progress', 'flow-ack'].map((type) => ({
+          type,
+          runId: receipt.runId,
+          requestId: id,
+          commandId: id,
+        })),
+      ])
+        bridge.emit(wrong);
+      const count = bridge.counts[category];
+      if (manual) set('nutrients', '3');
+      else await action();
+      expect(bridge.counts[category]).toBe(count);
+      bridge.deliverAll();
+      expect(bridge.records.size).toBe(0);
+    },
+  );
   it.each(['end-first', 'paint-first'])(
     'D9-A5 retires paint and C separately in %s order',
     (order) => {
