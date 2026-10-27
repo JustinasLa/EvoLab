@@ -4,7 +4,9 @@ export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 5;
+export const WORLD_VERSION = 6;
+export const LINEAGE_SUMMARY_CAPACITY = 256;
+export const LINEAGE_EVENT_CAPACITY = 512;
 export const INTERVENTION_CAPACITY = 128;
 export const MANUAL_CAPACITY = 32;
 export const STROKE_COMMAND_CAPACITY = 4096;
@@ -48,6 +50,42 @@ export interface Genome {
   preference: number;
   tolerance: number;
   tempo: number;
+}
+export type LineageOrigin = 'founder' | 'mutation' | 'manual' | 'legacy-unknown';
+export interface LivingLineage {
+  id: number;
+  origin: LineageOrigin;
+  createdTick: number | null;
+  parentId: number | null;
+  liveCount: number;
+  peakCount: number;
+  peakKind: 'lifetime' | 'since-origin';
+  extinctTick: number | null;
+}
+export interface LineageSummary extends LivingLineage {
+  admittedTick: number;
+  foundingGenome: Genome | null;
+  genomeStatus: 'retained' | 'pruned' | 'legacy-unknown';
+}
+export type LineageEvent =
+  | {
+      kind: 'created';
+      id: number;
+      tick: number;
+      origin: Exclude<LineageOrigin, 'legacy-unknown'>;
+      parentId: number | null;
+    }
+  | { kind: 'extinct'; id: number; tick: number };
+export interface LineageArchiveState {
+  version: 1;
+  originKind: 'fresh' | 'legacy-import';
+  originTick: number;
+  summariesPruned: boolean;
+  eventsPruned: boolean;
+  eventsEvictedThroughTick: number | null;
+  living: LivingLineage[];
+  summaries: LineageSummary[];
+  events: LineageEvent[];
 }
 export interface Organism {
   id: number;
@@ -174,10 +212,7 @@ export interface LoadFailureResponse {
   message: string;
   recovery: RetainedWorldState;
 }
-export interface WorldFile {
-  version: 5;
-  telemetry: TelemetryState;
-  interventions: InterventionState;
+interface WorldEcology {
   settings: Settings;
   random: number;
   tick: number;
@@ -191,12 +226,23 @@ export interface WorldFile {
   walls: number[];
   organisms: Organism[];
 }
-export type WorldFileV4 = Omit<WorldFile, 'version' | 'interventions'> & { version: 4 };
-export type WorldFileV3 = Omit<WorldFile, 'version' | 'telemetry' | 'interventions'> & {
+export interface WorldFile extends WorldEcology {
+  version: typeof WORLD_VERSION;
+  telemetry: TelemetryState;
+  interventions: InterventionState;
+  lineageArchive: LineageArchiveState;
+}
+export interface WorldFileV5 extends WorldEcology {
+  version: 5;
+  telemetry: TelemetryState;
+  interventions: InterventionState;
+}
+export type WorldFileV4 = WorldEcology & { version: 4; telemetry: TelemetryState };
+export type WorldFileV3 = WorldEcology & {
   version: 3;
   telemetry: TelemetryStateV1;
 };
-export type LegacyWorldFile = Omit<WorldFile, 'version' | 'telemetry' | 'interventions'> & {
+export type LegacyWorldFile = WorldEcology & {
   version: 2;
 };
 export type PaintTool = 'food' | 'wall' | 'erase';
@@ -258,7 +304,7 @@ export interface PaintOutcome {
 }
 export interface MeasurementSource {
   snapshot: {
-    worldVersion: 5;
+    worldVersion: typeof WORLD_VERSION;
     completedTick: number;
     seed: number;
     settings: Settings;

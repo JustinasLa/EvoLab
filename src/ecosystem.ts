@@ -6,6 +6,7 @@ import {
   TELEMETRY_INTERVAL_TICKS,
   TELEMETRY_CAPACITY,
   WORLD_MAX_BYTES,
+  WORLD_VERSION,
   INTERVENTION_CAPACITY,
   STROKE_COMMAND_CAPACITY,
   knownSettings,
@@ -32,6 +33,8 @@ import {
   type LegacyWorldFile,
   type WorldFileV3,
   type WorldFileV4,
+  type WorldFileV5,
+  type LineageArchiveState,
   type InterventionState,
   type InterventionEffect,
   type InterventionEntry,
@@ -47,6 +50,9 @@ import {
   type TelemetrySample,
   type TelemetryState,
 } from './model';
+import { LineageArchive, sameInherited } from './lineage';
+type LineageTransition =
+  { kind: 'founder' | 'manual' | 'clone' } | { kind: 'mutation'; parentId: number };
 const DIRECTIONS = [
   [1, 0],
   [0, 1],
@@ -253,7 +259,10 @@ function brushCells(radius: number): number {
       if (horizontal * horizontal + vertical * vertical <= radius * radius) count++;
   return count;
 }
-function validInterventions(value: unknown, file: WorldFile): value is InterventionState {
+function validInterventions(
+  value: unknown,
+  file: WorldFile | WorldFileV5,
+): value is InterventionState {
   const settingKeys = ['seed', 'mutation', 'nutrients', 'climate'];
   const settingsMatch = (left: Settings, right: Settings): boolean =>
     settingKeys.every((key) => left[key as keyof Settings] === right[key as keyof Settings]);
@@ -431,8 +440,15 @@ export class Ecosystem {
   private telemetry = emptyTelemetry(0);
   private interventions: InterventionState;
   private readonly recording: boolean;
-  constructor(settings: Settings = DEFAULTS, seed = true, options: { telemetry?: boolean } = {}) {
+  private readonly lineageRecording: boolean;
+  private lineage = new LineageArchive();
+  constructor(
+    settings: Settings = DEFAULTS,
+    seed = true,
+    options: { telemetry?: boolean; lineage?: boolean } = {},
+  ) {
     this.recording = options.telemetry !== false;
+    this.lineageRecording = options.lineage !== false;
     this.settings = { ...settings };
     this.interventions = emptyInterventions(settings);
     this.random = new Random(settings.seed);
@@ -559,7 +575,7 @@ export class Ecosystem {
   measurements(openStrokeSequence: number | null = null): MeasurementSource {
     return {
       snapshot: {
-        worldVersion: 5,
+        worldVersion: WORLD_VERSION,
         completedTick: this.tick,
         seed: this.settings.seed,
         settings: knownSettings(this.settings),
@@ -570,7 +586,7 @@ export class Ecosystem {
       interventions: structuredClone(this.interventions),
     };
   }
-  seed(): void {
+  private seed(): void {
     // Porous mineral ridges partition habitats without sealing them off.
     for (let i = 0; i < 7; i++) {
       const x = 20 + this.random.int(WIDTH - 40),
@@ -586,7 +602,7 @@ export class Ecosystem {
       x = WIDTH / 2,
       y = HEIGHT / 2;
     for (const position of positions({ genome, x, y, rotation: 0 })) this.walls[position] = 0;
-    this.spawn(genome, x, y, 1);
+    this.insert(genome, x, y, 1, undefined, 0, { kind: 'founder' });
   }
   canPlace(o: Pick<Organism, 'x' | 'y' | 'rotation' | 'genome'>, ignore = 0): boolean {
     return positions(o).every(
@@ -597,9 +613,45 @@ export class Ecosystem {
     genome: Genome,
     x: number,
     y: number,
-    species = this.nextSpecies++,
+    species?: number,
     parent?: Organism,
     rotation = 0,
+  ): Organism | undefined {
+    const allocated = species === undefined;
+    if (allocated) species = this.nextSpecies++;
+    if (parent) {
+      if (this.organisms.get(parent.id) !== parent) return;
+      if (!allocated && (species !== parent.species || !sameInherited(genome, parent.genome)))
+        return;
+    } else if (
+      !allocated &&
+      ![...this.organisms.values()].some(
+        (organism) => organism.species === species && sameInherited(genome, organism.genome),
+      )
+    )
+      return;
+    return this.insert(
+      genome,
+      x,
+      y,
+      species!,
+      parent,
+      rotation,
+      allocated
+        ? parent
+          ? { kind: 'mutation', parentId: parent.species }
+          : { kind: 'manual' }
+        : { kind: 'clone' },
+    );
+  }
+  private insert(
+    genome: Genome,
+    x: number,
+    y: number,
+    species: number,
+    parent: Organism | undefined,
+    rotation: number,
+    transition: LineageTransition,
   ): Organism | undefined {
     if (this.organisms.size >= LIMIT) return;
     const o: Organism = {
@@ -627,6 +679,13 @@ export class Ecosystem {
       this.occupied[i] = o.id;
       this.food[i] = 0;
     }
+    if (this.lineageRecording)
+      this.lineage.birth(
+        o,
+        this.tick,
+        transition.kind,
+        transition.kind === 'mutation' ? transition.parentId : null,
+      );
     return o;
   }
   kill(o: Organism, cause: DeathCause): void {
@@ -634,10 +693,11 @@ export class Ecosystem {
       this.occupied[i] = 0;
       this.food[i] = 1;
     }
-    this.organisms.delete(o.id);
+    const removed = this.organisms.delete(o.id);
     this.deaths++;
     this.lastDeath = { tick: this.tick, cause };
     if (this.recording) this.telemetry.pending.deaths[cause]++;
+    if (removed && this.lineageRecording) this.lineage.death(o, this.tick);
   }
   move(o: Organism, dx: number, dy: number, rotation = o.rotation): boolean {
     const target = {
@@ -762,13 +822,14 @@ export class Ecosystem {
         for (let attempt = 0; attempt < 3; attempt++) {
           const [dx, dy] = DIRECTIONS[this.random.int(4)],
             distance = 3 + this.random.int(5);
-          const child = this.spawn(
+          const child = this.insert(
             genome,
             o.x + dx * distance,
             o.y + dy * distance,
             changed ? this.nextSpecies : o.species,
             o,
             this.random.int(4),
+            changed ? { kind: 'mutation', parentId: o.species } : { kind: 'clone' },
           );
           if (child) {
             if (changed) this.nextSpecies++;
@@ -903,6 +964,13 @@ export class Ecosystem {
       },
     };
   }
+  lineageSnapshot(): LineageArchiveState {
+    return (
+      this.lineageRecording
+        ? this.lineage
+        : LineageArchive.legacy(this.organisms.values(), this.tick)
+    ).snapshot();
+  }
   save(): WorldFile {
     const food: number[] = [],
       walls: number[] = [];
@@ -911,7 +979,8 @@ export class Ecosystem {
       if (this.walls[cell]) walls.push(cell);
     }
     return {
-      version: 5,
+      version: WORLD_VERSION,
+      lineageArchive: this.lineageSnapshot(),
       telemetry: this.telemetrySnapshot(),
       interventions: structuredClone(this.interventions),
       settings: { ...this.settings },
@@ -935,11 +1004,15 @@ export class Ecosystem {
     )
       throw new Error('World file exceeds 2.5 MB.');
     const parsed: unknown = JSON.parse(text);
-    const f = parsed as WorldFile | WorldFileV4 | WorldFileV3 | LegacyWorldFile;
+    const f = parsed as WorldFile | WorldFileV5 | WorldFileV4 | WorldFileV3 | LegacyWorldFile;
     if (
       !f ||
       typeof f !== 'object' ||
-      (f.version !== 2 && f.version !== 3 && f.version !== 4 && f.version !== 5) ||
+      (f.version !== 2 &&
+        f.version !== 3 &&
+        f.version !== 4 &&
+        f.version !== 5 &&
+        f.version !== WORLD_VERSION) ||
       !validSettings(f.settings) ||
       !integer(f.random, -2147483648, 4294967295) ||
       !integer(f.tick, 0, 1e9) ||
@@ -952,13 +1025,13 @@ export class Ecosystem {
       !Array.isArray(f.organisms) ||
       f.organisms.length > LIMIT
     )
-      throw new Error('Not a valid EvoLab ecosystem (version 2, 3, 4 or 5).');
+      throw new Error('Not a valid EvoLab ecosystem (version 2, 3, 4, 5 or 6).');
     if (
       f.version !== 2 &&
       !validTelemetry(f.telemetry, f.tick, f.births, f.deaths, f.version === 3 ? 1 : 2)
     )
       throw new Error('Invalid ecosystem telemetry.');
-    if (f.version === 5 && !validInterventions(f.interventions, f))
+    if ((f.version === 5 || f.version === WORLD_VERSION) && !validInterventions(f.interventions, f))
       throw new Error('Invalid ecosystem manual intervention history.');
     const world = new Ecosystem(f.settings, false);
     for (const [field, array] of [
@@ -1013,7 +1086,7 @@ export class Ecosystem {
     });
     world.random.state = f.random;
     world.interventions =
-      f.version === 5
+      f.version === 5 || f.version === WORLD_VERSION
         ? structuredClone(f.interventions)
         : emptyInterventions(f.settings, f.tick, true);
     world.telemetry =
@@ -1030,6 +1103,10 @@ export class Ecosystem {
               })),
             }
           : structuredClone(f.telemetry);
+    world.lineage =
+      f.version === WORLD_VERSION
+        ? LineageArchive.load(f.lineageArchive, world.organisms.values(), f.tick, f.nextSpecies)
+        : LineageArchive.legacy(world.organisms.values(), f.tick);
     return world;
   }
 }
