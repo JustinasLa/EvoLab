@@ -401,6 +401,64 @@ describe('bounded long-run transport', () => {
     harness.send({ type: 'display-view', view: { epoch: 3, enabled: true, visible: true } });
     expect(display).toHaveBeenCalledTimes(3);
   });
+  it.each(['settings', 'inspect', 'paint', 'shock'] as const)(
+    'services a running off-mode Refresh synchronously after %s without losing held demand',
+    (type) => {
+      const display = vi.spyOn(Ecosystem.prototype, 'display'),
+        harness = workerHarness(false);
+      harness.send({
+        type: 'start',
+        settings: DEFAULTS,
+        display: { epoch: 0, enabled: false, visible: true },
+      });
+      harness.advance();
+      expect(display).not.toHaveBeenCalled();
+      expect(harness.transferStats.buffers).toBe(0);
+      harness.send({ type: 'snapshot', display: true });
+      const owner = harness.last('frame');
+      harness.send({ type: 'snapshot', display: true });
+      const payloads = {
+        settings: { settings: { mutation: 0.2 } },
+        inspect: { x: 120, y: 78 },
+        paint: { x: 10, y: 10, radius: 0, tool: 'food', genome: mouth },
+        shock: { kind: 'heat' },
+      };
+      harness.send({ type, ...payloads[type] });
+      const expected = Ecosystem.load(harness.saveText()),
+        queued = harness.tasks[0],
+        observation = structuredClone(harness.state());
+      expect(observation.playback.paused).toBe(false);
+      expect(harness.tasks).toHaveLength(1);
+      expect(display).toHaveBeenCalledTimes(1);
+      const acknowledge = (sequence: number, runId = owner.runId) =>
+        harness.scope.onmessage!({
+          data: { type: 'flow-ack', channel: 'display', runId, sequence },
+        } as MessageEvent);
+      acknowledge(owner.sequence + 1);
+      acknowledge(owner.sequence, owner.runId + 1);
+      expect(display).toHaveBeenCalledTimes(1);
+      acknowledge(owner.sequence);
+      expect(display).toHaveBeenCalledTimes(2);
+      expect(harness.last('frame').state).toEqual(observation);
+      const frame = harness.last('frame').frame,
+        reference = expected.frame();
+      expect({ ...frame, cells: [...frame.cells], ids: [...frame.ids] }).toEqual({
+        cells: [...reference.cells],
+        ids: [...reference.ids],
+        stats: reference.stats,
+        climate: reference.climate,
+        offset: reference.offset,
+      });
+      expect(harness.tasks).toEqual([queued]);
+      expect(harness.saveText()).toBe(JSON.stringify(expected.save()));
+      expect(harness.transferStats).toEqual({ batches: 2, buffers: 4, duplicates: 0, detached: 4 });
+      acknowledge(owner.sequence);
+      acknowledge(harness.last('frame').sequence);
+      harness.advance();
+      expect(harness.transferStats.buffers).toBe(4);
+      expect(harness.tasks).toHaveLength(1);
+    },
+  );
   it('measures actual completions across a full monotonic gap, labels hidden context and resets after pause/visibility changes', () => {
     const harness = workerHarness();
     harness.send({

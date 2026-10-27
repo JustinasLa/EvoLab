@@ -1027,6 +1027,58 @@ describe('owned command admission and real-worker interleavings', () => {
   });
 });
 describe('actual grid-free telemetry transport composition', () => {
+  it.each(['settings', 'inspect', 'paint', 'shock'] as const)(
+    'consumes one latest Refresh after a running off-mode %s command releases the held display',
+    (type) => {
+      const displays = vi.spyOn(Ecosystem.prototype, 'display'),
+        draws = vi.spyOn(viewModule, 'draw'),
+        harness = realWorker(true, false);
+      harness.deliver();
+      harness.advance();
+      harness.deliver();
+      expect(displays).not.toHaveBeenCalled();
+      expect(draws).not.toHaveBeenCalled();
+      expect(harness.gridTransfers()).toBe(0);
+      click('refresh-habitat');
+      harness.deliver();
+      click('refresh-habitat');
+      harness.deliver();
+      if (type === 'settings') set('mutation', '0.2');
+      else if (type === 'inspect') harness.command({ type, x: 120, y: 78 });
+      else if (type === 'shock')
+        root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
+      else {
+        root.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
+        pointer('pointerdown');
+        window.dispatchEvent(new Event('pointerup'));
+      }
+      harness.deliver();
+      expect(worker.commands.mock.calls.at(-1)![0].type).toBe(type);
+      const before = harness.save(),
+        queued = harness.tasks[0];
+      expect(displays).toHaveBeenCalledTimes(1);
+      expect(draws).not.toHaveBeenCalled();
+      paint(0);
+      expect(draws).toHaveBeenCalledTimes(1);
+      expect(displays).toHaveBeenCalledTimes(2);
+      expect(harness.outbox.filter((data) => data.type === 'frame')).toHaveLength(1);
+      const latest = harness.outbox.find((data) => data.type === 'frame');
+      expect(latest.state.world.stats.tick).toBe(before.tick);
+      expect(latest.state.playback.paused).toBe(false);
+      harness.deliver();
+      paint(0);
+      expect(draws).toHaveBeenCalledTimes(2);
+      expect(draws.mock.calls.at(-1)![2]).toEqual(latest.frame);
+      expect(harness.save()).toEqual(before);
+      expect(harness.tasks).toEqual([queued]);
+      expect(harness.gridTransfers()).toBe(4);
+      harness.advance();
+      harness.deliver();
+      paint(0);
+      expect(harness.gridTransfers()).toBe(4);
+      expect(draws).toHaveBeenCalledTimes(2);
+    },
+  );
   it('accepts one delayed detached source30 after current65 without rolling progress back or drawing from startup', async () => {
     const displays = vi.spyOn(Ecosystem.prototype, 'display'),
       draws = vi.spyOn(viewModule, 'draw');

@@ -498,14 +498,14 @@ export function startWorker(
             )
               throw new Error('Invalid live settings.');
             Object.assign(world.settings, patch);
-            interactive = paused && view.visible;
+            interactive ||= paused && view.visible;
             exactTelemetry = paused;
             break;
           }
           case 'inspect':
             if (!coordinates(data)) throw new Error('Invalid inspection coordinates.');
             selected = world.occupied[index(data.x, data.y)];
-            interactive = paused && view.visible;
+            interactive ||= paused && view.visible;
             exactTelemetry = paused;
             break;
           case 'paint': {
@@ -519,7 +519,7 @@ export function startWorker(
             const population = world.organisms.size;
             world.paint(data.tool, data.x, data.y, data.radius, data.genome);
             reconcile(population);
-            interactive = paused && view.visible;
+            interactive ||= paused && view.visible;
             exactTelemetry = paused;
             break;
           }
@@ -527,7 +527,7 @@ export function startWorker(
             if (data.kind !== 'cold' && data.kind !== 'heat')
               throw new Error('Invalid climate event.');
             world.shock(data.kind);
-            interactive = paused && view.visible;
+            interactive ||= paused && view.visible;
             exactTelemetry = paused;
             break;
           case 'snapshot':
