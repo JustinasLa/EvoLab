@@ -347,6 +347,7 @@ describe('native event ownership and transactions', () => {
     await expect(library.mutate({ type: 'create', candidate: candidate() })).rejects.toMatchObject({
       code: 'busy',
     });
+    native.connection.onversionchange();
     delete native.faults.txStall;
     native.current.complete();
     await pending();
@@ -355,6 +356,46 @@ describe('native event ownership and transactions', () => {
     expect(status).toHaveBeenCalledWith(expect.stringContaining('committed after'));
     library.dispose();
   });
+  it.each(
+    [false, true].flatMap((expired) =>
+      ['onversionchange', 'onclose'].flatMap((invalidation) =>
+        ['complete', 'abort'].map((terminal) => ({ expired, invalidation, terminal })),
+      ),
+    ),
+  )(
+    'revokes read presentation after expired=$expired $invalidation until $terminal',
+    async ({ expired, invalidation, terminal }) => {
+      vi.useFakeTimers();
+      const native = harness();
+      native.values.set(first, encodeRecord(candidate(), 1));
+      const status = vi.fn();
+      const library = createLibrary({ factory: () => native.factory, status });
+      await library.open();
+      native.faults.completionStall = 'readonly';
+      native.faults.abortThrow = true;
+      const reading = library.list().then(
+        () => 'read',
+        () => 'rejected',
+      );
+      await pending();
+      const owner = native.current;
+      if (expired) await vi.advanceTimersByTimeAsync(10000);
+      native.connection[invalidation]();
+      const calls = status.mock.calls.length;
+      expect(library.busy).toBe(true);
+      await vi.advanceTimersByTimeAsync(10001);
+      expect(status).toHaveBeenCalledTimes(calls);
+      await expect(library.open()).rejects.toMatchObject({ code: 'busy' });
+      if (terminal === 'complete') owner.releaseCompletion();
+      else owner.native.onabort();
+      await reading;
+      expect(library.busy).toBe(false);
+      expect(status).toHaveBeenCalledTimes(calls);
+      expect([...native.values]).toEqual([[first, encodeRecord(candidate(), 1)]]);
+      library.dispose();
+    },
+  );
+
   it('preserves unsupported stores, handles native close/version changes and disposal', async () => {
     for (const fault of ['keyPath', 'autoIncrement', 'indexes', 'storeThrow'] as const) {
       const native = harness();

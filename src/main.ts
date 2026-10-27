@@ -96,6 +96,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   let exportUrl: string | undefined;
   let librarySnapshot: LibrarySnapshot = { count: 0, rows: [] };
   let librarySelected: string | undefined;
+  let initialLibrarySelection = true;
   let librarySelection = 0;
   let libraryRequest = 0;
   let libraryWorking: 'refresh' | 'write' | 'load' | undefined;
@@ -380,8 +381,9 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       const snapshot = await library.list();
       if (!alive || request !== libraryRequest) return;
       librarySnapshot = snapshot;
-      if (selection === librarySelection && librarySelected === undefined)
+      if (selection === librarySelection && initialLibrarySelection)
         librarySelected = snapshot.rows.find((row) => row.kind === 'valid')?.id;
+      initialLibrarySelection = false;
       if (!selectedEntry()) librarySelected = undefined;
       renderLibrary();
       libraryStatus(outcome || 'Library refreshed. Other tabs may change it.');
@@ -438,6 +440,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       const id = await library.mutate(action);
       if (!alive || request !== libraryRequest) return;
       if (selection === librarySelection) {
+        initialLibrarySelection = false;
         librarySelected =
           action.type === 'delete'
             ? (valid[deletedIndex + 1] ?? valid[deletedIndex - 1])?.id
@@ -1175,6 +1178,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     if (button.dataset.libraryId) {
       cancelDialog('Selection changed.');
       cancelReplacement('library selection changed.');
+      initialLibrarySelection = false;
       librarySelected = button.dataset.libraryId;
       librarySelection++;
       renderLibrary();

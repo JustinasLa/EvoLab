@@ -227,6 +227,8 @@ export function createLibrary(
   let database: IDBDatabase | undefined;
   let opening: IDBOpenDBRequest | undefined;
   let active: IDBTransaction | undefined;
+  let activeStatus: ((message: string) => void) | undefined;
+  let revokeRead: (() => void) | undefined;
   let operationTimer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
   const status = (message: string): void => {
@@ -243,7 +245,7 @@ export function createLibrary(
     try {
       active?.abort();
     } catch {
-      status(messages.pending);
+      activeStatus?.(messages.pending);
     }
   };
   async function open(): Promise<void> {
@@ -310,12 +312,14 @@ export function createLibrary(
         }
         database = connection;
         connection.onversionchange = () => {
+          revokeRead?.();
           abort();
           close();
           options.invalidated?.();
           status('Another tab changed the library. Confirmations cancelled; Retry explicitly.');
         };
         connection.onclose = () => {
+          revokeRead?.();
           abort();
           close();
           options.invalidated?.();
@@ -347,17 +351,31 @@ export function createLibrary(
       active = native;
       let result: Result,
         failure: LibraryError | undefined,
-        expired = false;
+        expired = false,
+        presentation = true;
+      const phaseStatus = (message: string): void => {
+        if (presentation) status(message);
+      };
+      activeStatus = phaseStatus;
       const timer = setTimeout(() => {
         expired = true;
-        status(messages.pending);
+        phaseStatus(messages.pending);
         abort();
         reject(new LibraryError('pending'));
       }, 10000);
       operationTimer = timer;
+      // A revoked read still owns its native transaction until terminal delivery.
+      // Its deadline and presentation are independent of that ownership.
+      if (mode === 'readonly')
+        revokeRead = () => {
+          presentation = false;
+          clearTimeout(timer);
+          operationTimer = undefined;
+        };
       const finish = (): void => {
         clearTimeout(timer);
         operationTimer = undefined;
+        activeStatus = revokeRead = undefined;
         native.oncomplete = native.onabort = native.onerror = null;
         if (active === native) active = undefined;
       };
@@ -373,13 +391,13 @@ export function createLibrary(
         const error = failure ?? storageError(native.error);
         finish();
         if (expired)
-          status('Native operation aborted; no write from it committed. Refresh explicitly.');
+          phaseStatus('Native operation aborted; no write from it committed. Refresh explicitly.');
         reject(error);
       };
       native.oncomplete = () => {
         finish();
         if (expired)
-          status(
+          phaseStatus(
             mode === 'readwrite'
               ? 'Native write committed after the deadline. Refresh to inspect the committed record.'
               : 'Native read settled. Refresh explicitly.',

@@ -426,6 +426,7 @@ describe('explicit bounded local library', () => {
   it.each(['initial', 'final'])(
     'cancels the %s completed library read across connection invalidation until terminal delivery',
     async (phase) => {
+      vi.useFakeTimers();
       storage.values.set(first, encodeRecord(draft('must not publish'), 1));
       await open();
       set('blueprint-name', 'retained designer');
@@ -452,6 +453,12 @@ describe('explicit bounded local library', () => {
       click('library-refresh');
       await flush();
       expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+      const captureEffectsAcrossDeadline = vi.spyOn(get('capture-selected'), 'setAttribute');
+      await vi.advanceTimersByTimeAsync(10001);
+      await flush();
+      expect(get('library-status').textContent).toBe(status);
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+      expect(captureEffectsAcrossDeadline).not.toHaveBeenCalled();
       delete storage.faults.completionStall;
       owner.releaseCompletion();
       await flush();
@@ -468,6 +475,16 @@ describe('explicit bounded local library', () => {
       expect(document.activeElement).toBe(get('blueprint-description'));
       expect(get('library-status').textContent).toBe(status);
       expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+      expect(captureEffectsAcrossDeadline).not.toHaveBeenCalled();
+      click('library-refresh');
+      await flush();
+      expect(get('library-status').textContent).toContain('Library refreshed');
+      click('library-load');
+      await flush();
+      expect(get<HTMLDialogElement>('library-dialog').open).toBe(true);
+      click('library-confirm');
+      await flush();
+      expect(get<HTMLInputElement>('blueprint-name').value).toBe('must not publish');
     },
   );
 
@@ -750,6 +767,7 @@ describe('explicit bounded local library', () => {
   it.each(['refresh', 'delete', 'repair'] as const)(
     'revokes %s refresh publication and followups across connection invalidation without releasing native ownership',
     async (action) => {
+      vi.useFakeTimers();
       const original = encodeRecord(draft('target'), 1);
       const neighbor = encodeRecord(draft('neighbor'), 1);
       storage.values.set(
@@ -788,6 +806,12 @@ describe('explicit bounded local library', () => {
       await flush();
       expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
       const captureEffects = vi.spyOn(get('capture-selected'), 'setAttribute');
+      const captureEffectsAcrossDeadline = vi.spyOn(get('capture-selected'), 'setAttribute');
+      await vi.advanceTimersByTimeAsync(10001);
+      await flush();
+      expect(get('library-status').textContent).toBe(status);
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+      expect(captureEffectsAcrossDeadline).not.toHaveBeenCalled();
       delete storage.faults.completionStall;
       delete storage.faults.abortThrow;
       owner.releaseCompletion();
@@ -809,6 +833,68 @@ describe('explicit bounded local library', () => {
       expect([...storage.values]).toEqual(committed);
     },
   );
+
+  it.each([
+    'sole delete',
+    'disappeared',
+    'vanished next',
+    'vanished previous',
+    'vanished preferred',
+  ])('preserves deliberate no selection through repeated refresh after %s', async (scenario) => {
+    const a = encodeRecord(draft('A'), 1);
+    const b = encodeRecord(draft('B'), 1);
+    const c = encodeRecord(draft('C'), 1);
+    const unseen =
+      scenario === 'vanished preferred' ? '00000000-0000-4000-8000-000000000004' : third;
+    const expected =
+      scenario === 'vanished preferred'
+        ? [
+            [first, a],
+            [unseen, c],
+          ]
+        : [[unseen, c]];
+    storage.values.set(first, a);
+    if (scenario.startsWith('vanished')) storage.values.set(second, b);
+    if (scenario === 'vanished preferred') storage.values.set(third, c);
+    await open();
+    if (scenario === 'vanished previous' || scenario === 'vanished preferred') select(second);
+    // Simulate an unseen same-origin tab update without refreshing this snapshot.
+    storage.values.set(unseen, c);
+    if (scenario === 'disappeared') {
+      storage.values.delete(first);
+      click('library-refresh');
+    } else {
+      if (scenario === 'vanished preferred') storage.values.delete(third);
+      if (scenario === 'vanished next') storage.values.delete(second);
+      if (scenario === 'vanished previous') storage.values.delete(first);
+      click('library-delete');
+      click('library-confirm');
+    }
+    await flush();
+    expect([...storage.values]).toEqual(expected);
+    const assertNone = () => {
+      expect(get('library-selection').textContent).toBe('No selected entry.');
+      expect(root.querySelector('[data-library-id][aria-pressed="true"]')).toBeNull();
+      for (const action of ['load', 'rename', 'duplicate', 'export', 'delete'])
+        expect(get<HTMLButtonElement>(`library-${action}`).disabled).toBe(true);
+    };
+    assertNone();
+    if (scenario !== 'disappeared') expect(document.activeElement).toBe(get('library-heading'));
+    get('library-refresh').focus();
+    for (let repeat = 0; repeat < 2; repeat++) {
+      click('library-refresh');
+      await flush();
+      assertNone();
+      expect(document.activeElement).toBe(get('library-refresh'));
+    }
+    select(unseen);
+    get('library-load').focus();
+    click('library-refresh');
+    await flush();
+    expect(get('library-selection').textContent).toContain(unseen);
+    expect(get<HTMLButtonElement>('library-load').disabled).toBe(false);
+    expect(document.activeElement).toBe(get('library-load'));
+  });
 
   it('keeps timed-out native ownership, refuses busy replacement, and reports terminal connection state', async () => {
     vi.useFakeTimers();

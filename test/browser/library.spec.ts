@@ -659,6 +659,17 @@ for (const action of ['refresh', 'delete', 'repair'] as const) {
         nativeSetAttribute.apply(this, args);
       };
     });
+    const heldBeyondDeadlineMs = await page.evaluate(async () => {
+      const start = performance.now();
+      await new Promise((resolve) => setTimeout(resolve, 10100));
+      return performance.now() - start;
+    });
+    expect(heldBeyondDeadlineMs).toBeGreaterThanOrEqual(10000);
+    await expect(page.locator('#library-status')).toHaveText(status!);
+    expect(await page.evaluate(() => (window as any).lateCaptureUpdates)).toBe(0);
+    expect(await page.evaluate(() => (window as any).libraryProbe.databaseTransactions)).toBe(
+      transactions,
+    );
     await releaseDatabase(page);
     await expect(page.locator('#library-status')).toHaveText(status!);
     if (action !== 'refresh') expect(status).toContain('Write committed');
@@ -682,10 +693,13 @@ for (const action of ['refresh', 'delete', 'repair'] as const) {
     await expect(page.locator('#library-rows > li')).toHaveCount(surviving.length);
     expect(await database(page)).toEqual(surviving);
     expect(errors).toEqual([]);
+    await info.attach('preserved-world.json', { contentType: 'application/json', body: before });
+    await info.attach('preserved-designer.json', { contentType: 'application/json', body: design });
     await info.attach(`native-${action}-refresh-versionchange.json`, {
       contentType: 'application/json',
       body: JSON.stringify({
         action,
+        heldBeyondDeadlineMs,
         upgrade,
         actualNativeVersionchange: true,
         upgradeAbortedWithoutSchemaChange: true,
@@ -1002,7 +1016,11 @@ for (const phase of ['initial', 'final']) {
       (name) =>
         new Promise<void>((resolve, reject) => {
           const request = indexedDB.open(name, 2);
-          request.onerror = () => reject(request.error);
+          request.onupgradeneeded = () => request.transaction!.abort();
+          request.onerror = (event) => {
+            event.preventDefault();
+            resolve();
+          };
           request.onsuccess = () => {
             request.result.close();
             resolve();
@@ -1017,6 +1035,26 @@ for (const phase of ['initial', 'final']) {
       transactions,
     );
     expect(await page.evaluate(() => (window as any).libraryProbe.heldDatabase.length)).toBe(1);
+    await page.evaluate(() => {
+      const capture = document.querySelector('#capture-selected')!;
+      const nativeSetAttribute = capture.setAttribute;
+      (window as any).lateCaptureUpdates = 0;
+      capture.setAttribute = function (...args) {
+        (window as any).lateCaptureUpdates++;
+        nativeSetAttribute.apply(this, args);
+      };
+    });
+    const heldBeyondDeadlineMs = await page.evaluate(async () => {
+      const start = performance.now();
+      await new Promise((resolve) => setTimeout(resolve, 10100));
+      return performance.now() - start;
+    });
+    expect(heldBeyondDeadlineMs).toBeGreaterThanOrEqual(10000);
+    await expect(page.locator('#library-status')).toHaveText(status!);
+    expect(await page.evaluate(() => (window as any).lateCaptureUpdates)).toBe(0);
+    expect(await page.evaluate(() => (window as any).libraryProbe.databaseTransactions)).toBe(
+      transactions,
+    );
     await releaseDatabase(page);
     await expect(page.locator('#library-dialog')).toBeHidden();
     await expect(page.locator('#blueprint-name')).toHaveValue('retained designer');
@@ -1029,16 +1067,33 @@ for (const phase of ['initial', 'final']) {
     );
     await expect(page.locator('#blueprint-description')).toBeFocused();
     await expect(page.locator('#library-status')).toHaveText(status!);
+    expect(await page.evaluate(() => (window as any).lateCaptureUpdates)).toBe(0);
+    expect(await page.evaluate(() => (window as any).libraryProbe.databaseTransactions)).toBe(
+      transactions,
+    );
+    expect(await database(page)).toEqual(stored);
     expect(await download(page, '#export-blueprint')).toEqual(design);
     expect(await pausedSave(page)).toEqual(before);
     await page.screenshot({
       path: info.outputPath(`library-${phase}-read-versionchange.png`),
       fullPage: true,
     });
+    await page.locator('#library-refresh').click();
+    await expect(page.locator('#library-status')).toContainText('Library refreshed');
+    await page.locator('#library-load').click();
+    await expect(page.locator('#library-dialog')).toBeVisible();
+    await page.locator('#library-confirm').click();
+    await expect(page.locator('#blueprint-name')).toHaveValue('must not publish');
+    expect(await database(page)).toEqual(stored);
+    expect(await pausedSave(page)).toEqual(before);
+    await info.attach('preserved-world.json', { contentType: 'application/json', body: before });
+    await info.attach('preserved-designer.json', { contentType: 'application/json', body: design });
     await info.attach(`native-${phase}-read-versionchange.json`, {
       contentType: 'application/json',
       body: JSON.stringify({
         phase,
+        heldBeyondDeadlineMs,
+        explicitRetrySucceeded: true,
         fullId: first,
         actualNativeVersionchange: true,
         completedTransactionCallbackDeliveryHeld: true,
@@ -1532,3 +1587,126 @@ test('native Enter and Space capture preserve focus through live frames and boun
     await page.screenshot({ path: info.outputPath(`library-reflow-${width}.png`), fullPage: true });
   }
 });
+
+for (const scenario of [
+  'sole delete',
+  'disappeared',
+  'vanished next',
+  'vanished previous',
+  'vanished preferred',
+]) {
+  test(`native two-tab selection remains deliberately empty after ${scenario}`, async ({
+    page,
+    context,
+  }, info) => {
+    const before = await fixture(page);
+    const design = await download(page, '#export-blueprint');
+    const other = await context.newPage();
+    await other.goto('/');
+    await other.locator('#pause').click();
+    const a = encodeRecord(candidate('A'), 1);
+    const b = encodeRecord(candidate('B'), 1);
+    const c = encodeRecord(candidate('C unseen'), 1);
+    const unseen =
+      scenario === 'vanished preferred' ? '00000000-0000-4000-8000-000000000004' : third;
+    const expectedRows =
+      scenario === 'vanished preferred'
+        ? [
+            [first, a],
+            [unseen, c],
+          ]
+        : [[unseen, c]];
+    const initialRows: [string, string][] = [[first, a]];
+    if (scenario.startsWith('vanished')) initialRows.push([second, b]);
+    if (scenario === 'vanished preferred') initialRows.push([third, c]);
+    await database(other, initialRows);
+    await openLibrary(page);
+    if (scenario === 'vanished previous' || scenario === 'vanished preferred')
+      await page.locator(`[data-library-id="${second}"]`).click();
+    // Update from a genuine second native connection without changing the displayed snapshot.
+    await database(
+      other,
+      scenario === 'vanished preferred'
+        ? [
+            [first, a],
+            [second, b],
+            [unseen, c],
+          ]
+        : scenario === 'vanished next'
+          ? [
+              [first, a],
+              [unseen, c],
+            ]
+          : scenario === 'vanished previous'
+            ? [
+                [second, b],
+                [unseen, c],
+              ]
+            : scenario === 'disappeared'
+              ? [[unseen, c]]
+              : [
+                  [first, a],
+                  [unseen, c],
+                ],
+      true,
+    );
+    if (scenario === 'disappeared') await page.locator('#library-refresh').click();
+    else {
+      await page.locator('#library-delete').click();
+      await page.locator('#library-confirm').click();
+    }
+    await expect(page.locator('#library-rows > li')).toHaveCount(expectedRows.length);
+    const assertNone = async () => {
+      await expect(page.locator('#library-selection')).toHaveText('No selected entry.');
+      await expect(page.locator('[data-library-id][aria-pressed="true"]')).toHaveCount(0);
+      for (const action of ['load', 'rename', 'duplicate', 'export', 'delete'])
+        await expect(page.locator(`#library-${action}`)).toBeDisabled();
+    };
+    await assertNone();
+    if (scenario !== 'disappeared') await expect(page.locator('#library-heading')).toBeFocused();
+    await page.locator('#library-refresh').focus();
+    for (let repeat = 0; repeat < 2; repeat++) {
+      await page.locator('#library-refresh').click();
+      await expect(page.locator('#library-status')).toContainText('Library refreshed');
+      await assertNone();
+      await expect(page.locator('#library-refresh')).toBeFocused();
+    }
+    await page.locator(`[data-library-id="${unseen}"]`).click();
+    await page.locator('#library-load').focus();
+    await page.locator('#library-refresh').evaluate((button: HTMLButtonElement) => button.click());
+    await expect(page.locator('#library-status')).toContainText('Library refreshed');
+    await expect(page.locator(`[data-library-id="${unseen}"]`)).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await expect(page.locator('#library-selection')).toContainText(unseen);
+    for (const action of ['load', 'rename', 'duplicate', 'export', 'delete'])
+      await expect(page.locator(`#library-${action}`)).toBeEnabled();
+    await expect(page.locator('#library-load')).toBeFocused();
+    expect(await database(other)).toEqual(expectedRows);
+    expect(await download(page, '#export-blueprint')).toEqual(design);
+    expect(await pausedSave(page)).toEqual(before);
+    await info.attach('selection-preserved-world.json', {
+      contentType: 'application/json',
+      body: before,
+    });
+    await info.attach('selection-preserved-designer.json', {
+      contentType: 'application/json',
+      body: design,
+    });
+    await info.attach('native-deliberate-no-selection.json', {
+      contentType: 'application/json',
+      body: JSON.stringify({
+        scenario,
+        exactRows: expectedRows,
+        deliberateNoneAcrossRefreshes: true,
+        explicitSelection: unseen,
+        worldBytes: before.length,
+        worldSha256: createHash('sha256').update(before).digest('hex'),
+        designerBytes: design.length,
+        designerSha256: createHash('sha256').update(design).digest('hex'),
+      }),
+    });
+    await other.close();
+  });
+}
