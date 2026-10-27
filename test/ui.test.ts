@@ -1141,8 +1141,8 @@ describe('ecosystem desk', () => {
     expect(get('species-count').textContent).toBe('1 lineage');
     expect(get('world-count').textContent).toBe('1 organism · 1 lineage');
     const populated = Ecosystem.load(JSON.stringify(world.save()));
-    populated.spawn(founder(1), 2, 10, 2);
-    populated.spawn(founder(2), 2, 25, 3);
+    populated.spawn(founder(1), 2, 10);
+    populated.spawn(founder(2), 2, 25);
     for (let update = 0; update < 12; update++) emit(populated.frame());
     expect(root.querySelectorAll('.lineage')).toHaveLength(3);
     expect(get('species-count').textContent).toBe('3 lineages');
@@ -1941,7 +1941,8 @@ describe('authoritative playback presentation', () => {
       click('reset');
       harness.deliver();
       expect(get<HTMLInputElement>('pause-on-extinction').checked).toBe(preference);
-      const empty = nearDeath();
+      const { lineageArchive: _lineageArchive, ...historical } = nearDeath();
+      const empty = { ...historical, version: 5 };
       empty.organisms = [];
       await loadText(JSON.stringify(empty));
       harness.deliver();

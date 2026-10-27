@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { Ecosystem } from '../src/ecosystem';
-import { DEFAULTS, LIMIT, Random, WIDTH, type Genome, type WorldFile } from '../src/model';
+import {
+  DEFAULTS,
+  LIMIT,
+  Random,
+  WIDTH,
+  type Genome,
+  type WorldFile,
+  type LineageSummary,
+  type LineageEvent,
+} from '../src/model';
 import { advance, legacyV3, legacyV4, legacyV5 } from './fixtures/telemetry';
+import { cpus, platform, totalmem } from 'node:os';
 
 const genome = (): Genome => ({
   cells: [{ x: 0, y: 0, type: 7 }],
@@ -13,7 +23,454 @@ const empty = () => new Ecosystem({ ...DEFAULTS, mutation: 0, climate: 0, nutrie
 const reload = (world: Ecosystem) => Ecosystem.load(JSON.stringify(world.save()));
 const beforeArchive = ({ lineageArchive: _archive, ...saved }: WorldFile) => saved;
 
+function knownSummary(
+  id: number,
+  createdTick: number,
+  extinctTick: number | null,
+  parentId: number | null = null,
+): LineageSummary {
+  return {
+    id,
+    origin: parentId === null ? 'manual' : 'mutation',
+    createdTick,
+    parentId,
+    liveCount: extinctTick === null ? 1 : 0,
+    peakCount: 1,
+    peakKind: 'lifetime',
+    extinctTick,
+    admittedTick: createdTick,
+    foundingGenome: genome(),
+    genomeStatus: 'retained',
+  };
+}
+function evidence(events: LineageEvent[], rows: LineageSummary[] = [], watermark = 0): WorldFile {
+  const world = empty();
+  advance(world, 100);
+  const saved = world.save();
+  saved.nextSpecies = 2000;
+  saved.deaths = 1000;
+  const filler = Array.from({ length: 256 }, (_, offset) =>
+    knownSummary(1000 + offset, watermark, watermark),
+  );
+  const fillerEvents: LineageEvent[] = filler.flatMap((row) => [
+    { kind: 'created', id: row.id, tick: watermark, origin: 'manual', parentId: null },
+    { kind: 'extinct', id: row.id, tick: watermark },
+  ]);
+  saved.lineageArchive = {
+    version: 1,
+    originKind: 'fresh',
+    originTick: 0,
+    summariesPruned: true,
+    eventsPruned: true,
+    eventsEvictedThroughTick: watermark,
+    living: [],
+    summaries: [...filler.slice(rows.length), ...rows],
+    events: [...fillerEvents.slice(events.length), ...events],
+  };
+  return saved;
+}
+function created(id: number, tick: number, parentId: number | null = null): LineageEvent {
+  return { kind: 'created', id, tick, origin: parentId === null ? 'manual' : 'mutation', parentId };
+}
+const extinct = (id: number, tick: number): LineageEvent => ({ kind: 'extinct', id, tick });
+function rejects(saved: WorldFile): void {
+  const active = new Ecosystem();
+  advance(active, 31);
+  const before = active.save();
+  expect(() => Ecosystem.load(JSON.stringify(saved))).toThrow('lineage archive');
+  expect(active.save()).toEqual(before);
+}
+
+describe('strict bounded archive candidate validation', () => {
+  it('F1/F2 requires transitions strictly after the watermark, including observed legacy deaths', () => {
+    const world = empty();
+    advance(world, 80);
+    for (let iteration = 0; iteration < 513; iteration++)
+      world.kill(world.spawn(genome(), 1, 1)!, 'manual');
+    advance(world, 10);
+    for (let iteration = 0; iteration < 256; iteration++)
+      world.kill(world.spawn(genome(), 1, 1)!, 'manual');
+    advance(world, 10);
+    const suffix = world.lineageSnapshot();
+    expect(suffix.eventsEvictedThroughTick).toBe(80);
+    expect(suffix.events.every((event) => event.tick === 90)).toBe(true);
+    const placed = world.spawn(genome(), 1, 1)!;
+    const missingCreation = world.save();
+    missingCreation.lineageArchive.events = suffix.events;
+    missingCreation.lineageArchive.eventsEvictedThroughTick = 80;
+    rejects(missingCreation);
+    world.kill(placed, 'manual');
+    const missingDeath = world.save();
+    const row = missingDeath.lineageArchive.summaries.at(-1)!;
+    row.createdTick = 80;
+    row.admittedTick = 100;
+    row.genomeStatus = 'pruned';
+    row.foundingGenome = null;
+    missingDeath.lineageArchive.events = suffix.events;
+    missingDeath.lineageArchive.eventsEvictedThroughTick = 80;
+    rejects(missingDeath);
+    row.origin = 'legacy-unknown';
+    row.createdTick = null;
+    row.peakKind = 'since-origin';
+    row.genomeStatus = 'legacy-unknown';
+    missingDeath.lineageArchive.originKind = 'legacy-import';
+    rejects(missingDeath);
+    missingDeath.lineageArchive.events = [...suffix.events.slice(1), extinct(row.id, 100)];
+    missingDeath.lineageArchive.eventsEvictedThroughTick = 90;
+    expect(Ecosystem.load(JSON.stringify(missingDeath)).save()).toEqual(missingDeath);
+  });
+
+  it('F4 checks metadata, mixed and event-only direct parent dates without reconstructing ancestors', () => {
+    const impossible = [created(5, 0), extinct(5, 10), created(6, 20, 5), extinct(6, 30)];
+    for (const rows of [
+      [],
+      [knownSummary(5, 0, 10)],
+      [knownSummary(5, 0, 10), knownSummary(6, 20, 30, 5)],
+    ])
+      rejects(evidence(impossible, rows));
+    rejects(evidence([created(6, 10, 5), created(5, 20), extinct(5, 30), extinct(6, 30)]));
+    const metadataOnly = evidence([], [knownSummary(5, 0, 0), knownSummary(6, 0, 0, 5)]);
+    expect(Ecosystem.load(JSON.stringify(metadataOnly)).save()).toEqual(metadataOnly);
+    metadataOnly.lineageArchive.summaries.at(-1)!.createdTick = 1;
+    metadataOnly.lineageArchive.summaries.at(-1)!.admittedTick = 1;
+    metadataOnly.lineageArchive.summaries.at(-1)!.extinctTick = 1;
+    rejects(metadataOnly);
+    const valid = evidence([created(5, 0), created(6, 20, 5), extinct(5, 20), extinct(6, 30)]);
+    expect(Ecosystem.load(JSON.stringify(valid)).save()).toEqual(valid);
+    const unknownParent = evidence([created(6, 20, 2), extinct(6, 30)]);
+    expect(Ecosystem.load(JSON.stringify(unknownParent)).save()).toEqual(unknownParent);
+  });
+
+  it('F5 enforces same-tick positions and one-missing watermark-prefix deductions', () => {
+    const valid = [created(5, 10), created(6, 10, 5), extinct(5, 10), extinct(6, 20)];
+    const saved = evidence(valid);
+    expect(Ecosystem.load(JSON.stringify(saved)).save()).toEqual(saved);
+    rejects(evidence([valid[1], valid[0], valid[2], valid[3]]));
+    rejects(evidence([valid[0], valid[2], valid[1], valid[3]]));
+    const parent = knownSummary(5, 10, 10),
+      child = knownSummary(6, 10, 20, 5);
+    rejects(evidence([created(5, 10), extinct(5, 10), extinct(6, 20)], [parent, child], 10));
+    rejects(evidence([created(5, 10), created(6, 10, 5), extinct(6, 20)], [parent, child], 10));
+    for (const events of [
+      [created(6, 10, 5), extinct(5, 10), extinct(6, 20)],
+      [extinct(5, 10), extinct(6, 20)],
+      [extinct(6, 20)],
+    ]) {
+      const candidate = evidence(events, [parent, child], 10);
+      expect(Ecosystem.load(JSON.stringify(candidate)).save()).toEqual(candidate);
+    }
+  });
+
+  it('F6 preserves sparse IDs, unknown legacy creation and event-only extinct prefixes', () => {
+    const parent: LineageSummary = {
+      ...knownSummary(5, 0, 30),
+      origin: 'legacy-unknown',
+      createdTick: null,
+      peakKind: 'since-origin',
+      genomeStatus: 'legacy-unknown',
+      foundingGenome: null,
+    };
+    const saved = evidence(
+      [created(999_999_998, 20, 5), extinct(5, 30), extinct(999_999_998, 40)],
+      [parent],
+    );
+    saved.nextSpecies = 1_000_000_000;
+    saved.lineageArchive.originKind = 'legacy-import';
+    const world = Ecosystem.load(JSON.stringify(saved)),
+      control = reload(world);
+    for (const candidate of [world, control]) {
+      candidate.spawn(genome(), 1, 1);
+      candidate.step();
+    }
+    expect(world.save()).toEqual(control.save());
+    expect(world.nextSpecies).toBe(1_000_000_001);
+    expect(() => reload(world)).toThrow('ecosystem');
+    const impossible = structuredClone(saved);
+    impossible.lineageArchive.summaries.at(-1)!.extinctTick = 10;
+    impossible.lineageArchive.events = [
+      extinct(1500, 0),
+      ...impossible.lineageArchive.events.filter((event) => event.id !== 5),
+    ];
+    rejects(impossible);
+  });
+});
+
+describe('archive field and genotype validation', () => {
+  it('rejects every missing/extra record key and malformed bounded collections', () => {
+    const world = empty();
+    const placed = world.spawn(genome(), 1, 1)!;
+    world.kill(placed, 'manual');
+    const base = world.save();
+    const targets = [
+      (file: any) => file.lineageArchive,
+      (file: any) => file.lineageArchive.summaries[0],
+      (file: any) => file.lineageArchive.summaries[0].foundingGenome,
+      (file: any) => file.lineageArchive.summaries[0].foundingGenome.cells[0],
+      (file: any) => file.lineageArchive.events[0],
+      (file: any) => file.lineageArchive.events[1],
+    ];
+    for (const target of targets)
+      for (const key of [...Object.keys(target(base)), 'unknown']) {
+        const invalid = structuredClone(base);
+        if (key === 'unknown') target(invalid)[key] = true;
+        else delete target(invalid)[key];
+        rejects(invalid);
+      }
+    const livingWorld = empty();
+    livingWorld.spawn(genome(), 1, 1);
+    for (const key of [...Object.keys(livingWorld.lineageSnapshot().living[0]), 'extra']) {
+      const invalid: any = livingWorld.save();
+      if (key === 'extra') invalid.lineageArchive.living[0][key] = 1;
+      else delete invalid.lineageArchive.living[0][key];
+      rejects(invalid);
+    }
+    for (const change of [
+      (file: any) => (file.lineageArchive = null),
+      (file: any) => (file.lineageArchive = []),
+      (file: any) => (file.lineageArchive.version = 2),
+      (file: any) => (file.lineageArchive.originKind = 'invented'),
+      (file: any) => (file.lineageArchive.originTick = 1),
+      (file: any) => (file.lineageArchive.summariesPruned = 1),
+      (file: any) => (file.lineageArchive.eventsPruned = 'true'),
+      (file: any) => (file.lineageArchive.eventsEvictedThroughTick = 0),
+      (file: any) => (file.lineageArchive.living = Array(1601).fill({})),
+      (file: any) => (file.lineageArchive.summaries = Array(257).fill({})),
+      (file: any) => (file.lineageArchive.events = Array(513).fill({})),
+      (file: any) => (file.lineageArchive.events[0] = null),
+      (file: any) => (file.lineageArchive.events[1].kind = 'death'),
+      (file: any) => (file.lineageArchive.events[0].tick = -1),
+      (file: any) => (file.lineageArchive.events[0].id = 1e9),
+      (file: any) => file.lineageArchive.events.push(file.lineageArchive.events[1]),
+      (file: any) => file.lineageArchive.events.unshift(file.lineageArchive.events[0]),
+      (file: any) => (file.lineageArchive.summaries[0].id = 1.5),
+      (file: any) => (file.lineageArchive.summaries[0].liveCount = 1),
+      (file: any) => (file.lineageArchive.summaries[0].peakCount = 0),
+      (file: any) => (file.lineageArchive.summaries[0].origin = 'mutation'),
+      (file: any) => (file.lineageArchive.summaries[0].peakKind = 'since-origin'),
+      (file: any) => (file.lineageArchive.summaries[0].extinctTick = null),
+      (file: any) => (file.lineageArchive.summaries[0].foundingGenome = null),
+      (file: any) => (file.lineageArchive.summaries[0].foundingGenome.cells = []),
+      (file: any) => (file.lineageArchive.summaries[0].genomeStatus = 'pruned'),
+      (file: any) => file.lineageArchive.summaries.push(file.lineageArchive.summaries[0]),
+      (file: any) => (file.lineageArchive.summaries = []),
+    ]) {
+      const invalid = structuredClone(base);
+      change(invalid);
+      rejects(invalid);
+    }
+  });
+
+  it('requires homogeneous known groups even after detail pruning, but preserves unknown legacy variants', () => {
+    const world = empty();
+    const parent = world.spawn(genome(), 1, 1)!;
+    world.spawn(genome(), 2, 1, parent.species);
+    const current = world.save();
+    current.organisms[1].genome.tempo = 3;
+    rejects(current);
+    const legacy = Ecosystem.load(JSON.stringify(legacyV5(current)));
+    expect(legacy.spawn({ ...genome(), tempo: 3 }, 3, 1, parent.species)).toBeDefined();
+    expect(reload(legacy).save()).toEqual(legacy.save());
+    for (let position = 0; position < 256; position++)
+      world.spawn(genome(), position % WIDTH, Math.floor(position / WIDTH) + 10);
+    const pruned = world.save();
+    pruned.organisms[1].genome.tempo = 3;
+    rejects(pruned);
+    const mismatch = empty();
+    mismatch.spawn(genome(), 1, 1);
+    const invalid = mismatch.save();
+    invalid.organisms[0].genome.preference = 0.2;
+    rejects(invalid);
+    const detached = legacy.lineageSnapshot();
+    for (const organism of [...legacy.organisms.values()]) legacy.kill(organism, 'manual');
+    expect(legacy.lineageSnapshot().summaries[0]).toMatchObject({
+      origin: 'legacy-unknown',
+      extinctTick: 0,
+    });
+    expect(detached.living[0].liveCount).toBe(3);
+    expect(reload(legacy).save()).toEqual(legacy.save());
+  });
+});
+
 describe('bounded observed lineage lifecycle', () => {
+  it.each([2, 3, 4, 5])(
+    'preserves uninterrupted ecology, order and permitted extensions across v%s boundaries',
+    (version) => {
+      for (const tick of [29, 30, 59, 60, 89])
+        for (const populated of [true, false]) {
+          const setup = empty(),
+            first = setup.spawn(genome(), 20, 20)!;
+          setup.spawn({ ...genome(), preference: 0.8 }, 40, 40);
+          setup.spawn(genome(), 60, 60, first.species);
+          const initial = legacyV5(setup.save());
+          initial.random = -123456789;
+          initial.organisms = [initial.organisms[1], initial.organisms[2], initial.organisms[0]];
+          (initial.settings as any).extension = { nested: ['λ', { value: 7 }] };
+          for (const organism of initial.organisms) {
+            (organism as any).extension = { ordered: [3, 2, 1] };
+            (organism.genome as any).extension = { nested: ['retained'] };
+            (organism.genome.cells[0] as any).extension = 'cell';
+            organism.ancestry = [organism.species, organism.species];
+            organism.energy = 100;
+          }
+          const source = Ecosystem.load(JSON.stringify(initial));
+          advance(source, tick);
+          if (!populated)
+            for (const organism of [...source.organisms.values()]) source.kill(organism, 'manual');
+          const saved = source.save(),
+            v5 = legacyV5(saved);
+          const { telemetry: _telemetry, interventions: _interventions, ...old } = v5;
+          const file =
+            version === 2
+              ? { ...old, version: 2, lineageArchive: { untrusted: 'ignored' } }
+              : version === 3
+                ? legacyV3(saved)
+                : version === 4
+                  ? legacyV4(saved)
+                  : v5;
+          const migrated = Ecosystem.load(JSON.stringify(file));
+          const physical = ({
+            lineageArchive: _archive,
+            telemetry: _history,
+            interventions: _manual,
+            ...state
+          }: WorldFile) => state;
+          expect(physical(migrated.save())).toEqual(physical(saved));
+          expect(migrated.lineageSnapshot()).toMatchObject({
+            originKind: 'legacy-import',
+            originTick: tick,
+            events: [],
+          });
+          if (populated) {
+            expect(migrated.lineageSnapshot().living.map((row) => row.id)).toEqual([5, 6]);
+            expect(migrated.lineageSnapshot().summaries.map((row) => row.id)).toEqual([6, 5]);
+            expect(
+              migrated
+                .lineageSnapshot()
+                .living.every(
+                  (row) =>
+                    row.createdTick === null &&
+                    row.parentId === null &&
+                    row.peakKind === 'since-origin',
+                ),
+            ).toBe(true);
+          }
+          if (version >= 4) expect(migrated.save().telemetry).toEqual(saved.telemetry);
+          if (version === 5) expect(migrated.save().interventions).toEqual(saved.interventions);
+          const roundtrip = reload(migrated);
+          for (const world of [source, migrated, roundtrip]) advance(world, 61);
+          expect(physical(migrated.save())).toEqual(physical(source.save()));
+          expect(migrated.save()).toEqual(roundtrip.save());
+          const latest = migrated.save().telemetry.samples.at(-1)!;
+          expect(latest).toEqual(
+            source.save().telemetry.samples.find((sample) => sample.tick === latest.tick),
+          );
+          if (version >= 4) expect(migrated.save().telemetry).toEqual(source.save().telemetry);
+          if (version === 5)
+            expect(migrated.save().interventions).toEqual(source.save().interventions);
+        }
+    },
+  );
+  it('measures a 1600x16/eight-ancestor/180-sample/128-intervention saturated archive', () => {
+    const start = performance.now();
+    const world = empty();
+    world.nextId = 999_998_000;
+    world.nextSpecies = 999_998_000;
+    const body: Genome = {
+      ...genome(),
+      cells: Array.from({ length: 16 }, (_, cell) => ({
+        x: cell % 4,
+        y: Math.floor(cell / 4),
+        type: (3 + (cell % 6)) as 3 | 4 | 5 | 6 | 7 | 8,
+      })),
+    };
+    let parent = world.spawn(body, 0, 0)!;
+    for (let transition = 0; transition < 8; transition++) {
+      const child = world.spawn(body, transition % 2 ? 0 : 4, 0, undefined, parent)!;
+      world.kill(parent, 'manual');
+      parent = child;
+    }
+    for (let position = 1; position < LIMIT; position++) {
+      const child = world.spawn(
+        {
+          ...body,
+          preference: ((position % 10) + 0.12345678901234568) / 10,
+          tolerance: 0.3456789012345679,
+          tempo: 12,
+        },
+        (position % 60) * 4,
+        Math.floor(position / 60) * 4,
+        undefined,
+        parent,
+      )!;
+      expect(child).toBeDefined();
+    }
+    for (const organism of world.organisms.values()) organism.energy = 80000.12345678901;
+    world.births = 999_999_999;
+    world.deaths = 999_999_999;
+    advance(world, 30);
+    for (let entry = 0; entry < 131; entry++) world.changeSettings({ nutrients: entry % 2 });
+    const constructionMs = performance.now() - start;
+    const snapshotStart = performance.now(),
+      saved = world.save(),
+      snapshotMs = performance.now() - snapshotStart;
+    const sample = saved.telemetry.samples[0];
+    saved.tick = 5400;
+    saved.telemetry.samples = Array.from({ length: 180 }, (_, interval) => ({
+      ...structuredClone(sample),
+      fromTick: interval * 30,
+      tick: (interval + 1) * 30,
+    }));
+    saved.telemetry.pending.fromTick = 5400;
+    const serializationStart = performance.now(),
+      text = JSON.stringify(saved),
+      serializationMs = performance.now() - serializationStart;
+    const loadStart = performance.now(),
+      restored = Ecosystem.load(text),
+      loadMs = performance.now() - loadStart;
+    expect(restored.save()).toEqual(saved);
+    expect(saved.organisms).toHaveLength(LIMIT);
+    expect(
+      saved.organisms.every(
+        (organism) => organism.genome.cells.length === 16 && organism.ancestry.length === 8,
+      ),
+    ).toBe(true);
+    expect(saved.lineageArchive.living).toHaveLength(1600);
+    expect(saved.lineageArchive.summaries).toHaveLength(256);
+    expect(
+      saved.lineageArchive.summaries.every((row) => row.foundingGenome?.cells.length === 16),
+    ).toBe(true);
+    expect(saved.lineageArchive.events).toHaveLength(512);
+    expect(saved.interventions.entries).toHaveLength(128);
+    expect(saved.telemetry.samples).toHaveLength(180);
+    const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+    expect(bytes(saved)).toBeLessThan(2_500_000);
+    const before = JSON.stringify(world.lineageSnapshot());
+    world.save();
+    world.frame();
+    world.measurements();
+    expect(JSON.stringify(world.lineageSnapshot())).toBe(before);
+    console.info(
+      'LINEAGE_SIZE_MEASUREMENTS',
+      JSON.stringify({
+        fixture:
+          'Real 1600x16 bodies with eight actual lineage transitions, one real boundary repeated in 180 explicit payload intervals; not a 5400-tick trajectory',
+        bytes: bytes(saved),
+        archiveBytes: bytes(saved.lineageArchive),
+        livingBytes: bytes(saved.lineageArchive.living),
+        summaryBytes: bytes(saved.lineageArchive.summaries),
+        eventBytes: bytes(saved.lineageArchive.events),
+        constructionMs,
+        snapshotMs,
+        serializationMs,
+        loadMs,
+        node: process.version,
+        platform: platform(),
+        architecture: process.arch,
+        cpus: cpus().length,
+        memoryBytes: totalmem(),
+      }),
+    );
+  });
   it('records the genuine founder and detached ordered founding fields without extensions', () => {
     const world = new Ecosystem();
     const saved = world.save();
@@ -191,8 +648,8 @@ describe('bounded observed lineage lifecycle', () => {
     }
     for (let tick = 0; tick < 180; tick++) {
       if (tick === 45) {
-        observed.shock(-0.32);
-        control.shock(-0.32);
+        observed.shock('cold');
+        control.shock('cold');
       }
       observed.step();
       control.step();
@@ -241,9 +698,11 @@ describe('bounded observed lineage lifecycle', () => {
         originKind: 'legacy-import',
         originTick: 29,
         events: [],
-        summaries: [
-          { id: saved.organisms[0].species, foundingGenome: null, genomeStatus: 'legacy-unknown' },
-        ],
+      });
+      expect(migrated.lineageSnapshot().summaries[0]).toMatchObject({
+        id: saved.organisms[0].species,
+        foundingGenome: null,
+        genomeStatus: 'legacy-unknown',
       });
       expect(migrated.save().organisms).toEqual(saved.organisms);
       const continued = reload(migrated);

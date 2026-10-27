@@ -71,9 +71,9 @@ function inherited(genome: Genome): Genome {
 }
 export function sameInherited(first: Genome, second: Genome): boolean {
   return (
-    first.preference === second.preference &&
-    first.tolerance === second.tolerance &&
-    first.tempo === second.tempo &&
+    Object.is(first.preference, second.preference) &&
+    Object.is(first.tolerance, second.tolerance) &&
+    Object.is(first.tempo, second.tempo) &&
     first.cells.length === second.cells.length &&
     first.cells.every((cell, position) => {
       const other = second.cells[position];
@@ -443,8 +443,8 @@ function validateArchive(
     summaries: state.summaries.map((row) => ({
       ...metadata(row),
       admittedTick: row.admittedTick,
-      genomeStatus: row.genomeStatus,
       foundingGenome: row.foundingGenome === null ? null : inherited(row.foundingGenome),
+      genomeStatus: row.genomeStatus,
     })),
     events: state.events.map((event) => ({ ...event })),
   };

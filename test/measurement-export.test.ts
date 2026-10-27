@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { Ecosystem } from '../src/ecosystem';
-import { DEFAULTS, WORLD_MAX_BYTES, founder, type MeasurementSource } from '../src/model';
+import {
+  DEFAULTS,
+  WORLD_MAX_BYTES,
+  WORLD_VERSION,
+  founder,
+  type MeasurementSource,
+} from '../src/model';
 import {
   MEASUREMENT_COLUMNS,
   checkedMeasurementText,
@@ -158,6 +164,20 @@ function decode(text: string): any {
 }
 
 describe('bounded retained measurement codec', () => {
+  it('reports the current complete-world version without changing measurement format or adding lineage replay', () => {
+    const world = new Ecosystem();
+    const source = world.measurements();
+    const envelope = measurementEnvelope(source);
+    expect(source.snapshot.worldVersion).toBe(WORLD_VERSION);
+    expect(world.save().version).toBe(WORLD_VERSION);
+    expect(envelope.version).toBe(1);
+    expect(envelope.telemetry).toEqual(world.save().telemetry);
+    expect(envelope.interventions).toEqual(world.save().interventions);
+    expect(envelope).not.toHaveProperty('lineageArchive');
+    expect(JSON.parse(serializeMeasurements(source, 'json').text)).not.toHaveProperty(
+      'lineageArchive',
+    );
+  });
   it.each([
     '',
     's:literal',
