@@ -1011,7 +1011,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     stop();
   };
   worker.onerror = workerFailed;
-  worker.onmessageerror = workerFailed;
+  worker.addEventListener('messageerror', workerFailed);
   function render(): void {
     telemetry.render();
     if (dirty && frame) {

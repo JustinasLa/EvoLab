@@ -140,6 +140,8 @@ describe('bounded model-dependent telemetry presentation', () => {
     const strips = root.querySelectorAll('.telemetry-manual-strip');
     expect(strips.length).toBeGreaterThan(0);
     for (const strip of strips) {
+      for (const id of strip.getAttribute('aria-labelledby')!.split(' '))
+        expect(root.querySelector(`#${id}`)?.textContent).toBeTruthy();
       expect(strip.querySelectorAll('.telemetry-manual-density')).toHaveLength(1);
       expect(strip.querySelector('[data-count="128"]')!.textContent).toContain('sequences 1–128');
     }

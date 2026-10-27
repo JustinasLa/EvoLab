@@ -5,7 +5,7 @@ import { Ecosystem } from '../src/ecosystem';
 import { DEFAULTS, founder, type Frame, type PlaybackState, type WorldFile } from '../src/model';
 import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../src/blueprint';
 import { startWorker, type Scope } from '../src/worker';
-class WorkerStub {
+class WorkerStub extends EventTarget {
   playback: PlaybackState = { paused: false, pauseOnExtinction: true, extinction: null };
   postMessage = vi.fn((data: any) => {
     if (data.type === 'start')
@@ -158,10 +158,9 @@ function ownershipBridge(mountFunction = mount) {
       endpoint.onmessage?.({ data } as MessageEvent);
     },
   };
-  const endpoint = {
+  const endpoint = Object.assign(new EventTarget(), {
     onmessage: null as ((event: MessageEvent) => void) | null,
     onerror: null as (() => void) | null,
-    onmessageerror: null as (() => void) | null,
     postMessage: (data: any) => {
       if (key(data)) {
         counts[classify(data.type)]++;
@@ -182,7 +181,7 @@ function ownershipBridge(mountFunction = mount) {
       records.clear();
       callbacks.length = 0;
     },
-  };
+  });
   startWorker(scope, (callback) => {
     expect(callbacks.length).toBeLessThan(1);
     callbacks.push(callback);
@@ -753,6 +752,16 @@ describe('D9 lifetime ownership with real processing and independently gated ter
     dispose();
     expect(bridge.counts.terminated).toBe(1);
     expect(bridge.records.size).toBe(0);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+  it('D9-A6 handles messageerror through EventTarget before abandoning physical ownership', () => {
+    const bridge = ownershipBridge();
+    bridge.holdTerminals();
+    saturate();
+    bridge.endpoint.dispatchEvent(new MessageEvent('messageerror'));
+    expect(bridge.counts.terminated).toBe(1);
+    expect(bridge.records.size).toBe(0);
+    expect(get('run-state').textContent).toBe('STOPPED');
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
 });

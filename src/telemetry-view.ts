@@ -198,16 +198,25 @@ export function createTelemetryView(root: HTMLElement) {
     table(`Manual ${entry.kind} #${entry.sequence}`, rows, manualDetails);
   }
   function manualStrip(plot: HTMLElement, width: number, start: number, end: number): void {
-    const svg = svgElement('svg', {
+    const prefix = `telemetry-manual-${plots.children.length}`,
+      svg = svgElement('svg', {
         viewBox: `0 0 ${width} 48`,
         role: 'img',
-        'aria-label': 'Manual action after completed tick; not a measurement',
+        'aria-labelledby': `${prefix}-title ${prefix}-description`,
       }),
       plotWidth = width - 64,
       x = (tick: number): number => 50 + ((tick - start) / (end - start)) * plotWidth,
       bucketWidth = Math.max(12, plotWidth / 32),
       groups = new Map<number, InterventionEntry[]>();
     svg.classList.add('telemetry-manual-strip');
+    svg.append(
+      svgElement('title', { id: `${prefix}-title` }, 'Manual action after completed tick'),
+      svgElement(
+        'desc',
+        { id: `${prefix}-description` },
+        'Applied portions only; not a measurement or continuous effects.',
+      ),
+    );
     const entries = source!.interventions.entries;
     for (const entry of entries) {
       if (entry.firstTick < start || entry.firstTick > end) continue;

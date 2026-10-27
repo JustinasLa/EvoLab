@@ -22,6 +22,12 @@ import { advance, legacyV3, legacyV4 } from '../fixtures/telemetry';
 
 declare global {
   interface Window {
+    measurementReadGate: {
+      blocked: boolean;
+      ready: boolean;
+      counts: { calls: number; active: number; maximum: number };
+      release: () => void;
+    };
     measurementGate: {
       processingBlocked: boolean;
       deliveryBlocked: boolean;
@@ -904,6 +910,10 @@ async function downloadMeasurements(page: import('@playwright/test').Page, forma
   expect(download.suggestedFilename()).toMatch(
     new RegExp(`^evolab-measurements-\\d+-tick-\\d+\\.${format}$`),
   );
+  await test.info().attach(download.suggestedFilename(), {
+    body: bytes,
+    contentType: format === 'csv' ? 'text/csv' : 'application/json',
+  });
   return bytes;
 }
 function referenceManualPaint(
@@ -1287,6 +1297,125 @@ test('D9-A7 actual native termination precedes abandonment of36 held receipts an
     }),
   });
 });
+test('D9-A10 native file reads stay single-owner through cancellation, reset and a full lifecycle latch; equal-tick pins reset only on success', async ({
+  page,
+}) => {
+  await observeMeasurementOwnership(page);
+  await page.addInitScript(() => {
+    const nativeText = File.prototype.text;
+    let release: (() => void) | null = null;
+    const gate = (window.measurementReadGate = {
+      blocked: false,
+      ready: false,
+      counts: { calls: 0, active: 0, maximum: 0 },
+      release() {
+        const complete = release;
+        release = null;
+        this.ready = false;
+        complete?.();
+      },
+    });
+    File.prototype.text = async function () {
+      gate.counts.calls++;
+      gate.counts.active++;
+      gate.counts.maximum = Math.max(gate.counts.maximum, gate.counts.active);
+      try {
+        const text = await nativeText.call(this);
+        if (gate.blocked)
+          await new Promise<void>((resolve) => {
+            if (release) throw new Error('Unbounded native file-read gate');
+            release = resolve;
+            gate.ready = true;
+          });
+        return text;
+      } finally {
+        gate.counts.active--;
+      }
+    };
+  });
+  const source = Ecosystem.load(JSON.stringify(telemetryScenario('full-ring')));
+  source.changeSettings({ nutrients: 1 });
+  source.changeSettings({ nutrients: 0 });
+  const fixture = source.save(),
+    pick = async (world: WorldFile) =>
+      page.locator('#file').setInputFiles({
+        name: 'native-world.json',
+        mimeType: 'application/json',
+        buffer: Buffer.from(JSON.stringify(world)),
+      });
+  await page.goto('/');
+  await pick(fixture);
+  await expect(page.locator('#notice')).toContainText('World restored');
+  const before = await downloadPausedWorld(page);
+  expect(before).toEqual(Buffer.from(JSON.stringify(fixture)));
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  const sample = String(fixture.telemetry.samples[0].tick);
+  await page.locator('#telemetry-sample').selectOption(sample);
+  await page.locator('#telemetry-intervention').selectOption('1');
+  await page.locator('#telemetry-intervention').focus();
+  const invalid = structuredClone(fixture);
+  invalid.interventions.entries.at(-1)!.sequence++;
+  await pick(invalid);
+  await expect(page.locator('#notice')).toContainText(/intervention/i);
+  await expect(page.locator('#telemetry-sample')).toHaveValue(sample);
+  await expect(page.locator('#telemetry-intervention')).toHaveValue('1');
+  await expect(page.locator('#telemetry-intervention')).toBeFocused();
+  expect(await downloadPausedWorld(page)).toEqual(before);
+  await pick(fixture);
+  await expect(page.locator('#notice')).toContainText('World restored');
+  await expect(page.locator('#telemetry-sample')).toHaveValue('latest');
+  await expect(page.locator('#telemetry-intervention')).toHaveValue('latest');
+  const readsBefore = await page.evaluate(() => window.measurementReadGate.counts.calls);
+  await page.evaluate(() => {
+    window.measurementReadGate.blocked = true;
+  });
+  await pick(new Ecosystem({ ...DEFAULTS, seed: 123 }).save());
+  await expect.poll(() => page.evaluate(() => window.measurementReadGate.ready)).toBe(true);
+  await pick(new Ecosystem({ ...DEFAULTS, seed: 456 }).save());
+  await expect(page.locator('#notice')).toContainText('No second read was started');
+  expect(await page.evaluate(() => window.measurementReadGate.counts.calls)).toBe(readsBefore + 1);
+  await page.locator('#file').dispatchEvent('cancel');
+  await page.evaluate(() => document.getElementById('reset')!.click());
+  await requestPause(page);
+  const reset = await downloadPausedWorld(page);
+  await page.evaluate(() => {
+    window.measurementReadGate.blocked = false;
+    window.measurementReadGate.release();
+  });
+  await expect.poll(() => page.evaluate(() => window.measurementReadGate.counts.active)).toBe(0);
+  expect(await downloadPausedWorld(page)).toEqual(reset);
+  const lifecycles = await page.evaluate(() => window.measurementGate.counts.L);
+  await page.evaluate(() => {
+    window.measurementGate.deliveryBlocked = true;
+    window.measurementGate.holdLifecycle = true;
+    document.getElementById('reset')!.click();
+  });
+  await expect
+    .poll(() => page.evaluate(() => window.measurementGate.counts.completedL))
+    .toBe(lifecycles + 1);
+  await pick(fixture);
+  await expect(page.locator('#notice')).toContainText('capacity busy');
+  expect(await page.evaluate(() => window.measurementGate.counts.L)).toBe(lifecycles + 1);
+  await page.evaluate(() => window.measurementGate.releaseResults());
+  await expect.poll(() => page.evaluate(() => window.measurementGate.pending.size)).toBe(0);
+  await requestPause(page);
+  const saved = JSON.parse((await downloadPausedWorld(page)).toString()),
+    reference = new Ecosystem(fixture.settings);
+  advance(reference, saved.tick);
+  expect(saved).toEqual(reference.save());
+  const reads = await page.evaluate(() => window.measurementReadGate.counts);
+  expect(reads).toMatchObject({ active: 0, maximum: 1 });
+  await test.info().attach('native-world-file-ownership.json', {
+    body: JSON.stringify({
+      reads,
+      lifecyclesBeforeBusyRead: lifecycles,
+      lifecyclePostsAfterBusyRead: lifecycles + 1,
+      limitation:
+        'Forwards actual File.text bytes; delays promise-result delivery, not physical disk I/O. Cancellation uses a DOM cancel event, not an operating-system picker. Slider-capacity and disposal permutations additionally use the real-engine unit bridge.',
+    }),
+    contentType: 'application/json',
+  });
+});
 for (const version of [2, 3, 4, 5] as const) {
   test(`measurement bytes preserve genuine world${version} migration,180 samples and truthful manual windows`, async ({
     page,
@@ -1341,6 +1470,49 @@ for (const version of [2, 3, 4, 5] as const) {
     expect(json.windows.settings.unknownEvictedPrefix).toBe(version === 5);
     for (const view of ['population', 'food', 'adaptation'])
       await page.locator('#telemetry-view').selectOption(view);
+    if (version === 5) {
+      const sequence = String(expected.interventions.entries[0].sequence),
+        sample = String(expected.telemetry.samples.at(-2)!.tick),
+        layouts: object[] = [];
+      await expect(page.locator('#telemetry-intervention option')).toHaveCount(129);
+      await page.locator('#telemetry-intervention').selectOption(sequence);
+      await page.locator('#telemetry-sample').selectOption(sample);
+      for (const width of [360, 390, 640, 760, 780, 1024, 1280, 1600]) {
+        await page.locator('#telemetry-intervention').focus();
+        await page.setViewportSize({ width, height: 800 });
+        await expect(page.locator('#telemetry-intervention')).toBeFocused();
+        for (const view of ['population', 'food', 'adaptation']) {
+          await page.locator('#telemetry-view').selectOption(view);
+          await expect(page.locator('#telemetry-intervention')).toHaveValue(sequence);
+          await expect(page.locator('#telemetry-sample')).toHaveValue(sample);
+          const layout = await page.locator('#telemetry').evaluate((section) => ({
+            nodes: section.querySelectorAll('*').length,
+            fits: document.documentElement.scrollWidth <= innerWidth,
+            densities: [...section.querySelectorAll('.telemetry-manual-strip')].map((strip) =>
+              [...strip.querySelectorAll('.telemetry-manual-density')].map((mark) =>
+                Number(mark.getAttribute('data-count')),
+              ),
+            ),
+          }));
+          expect(layout.nodes).toBeLessThan(2000);
+          expect(layout.fits).toBe(true);
+          expect(layout.densities.length).toBeGreaterThan(0);
+          for (const density of layout.densities) expect(density).toEqual([128]);
+          layouts.push({ width, view, ...layout });
+        }
+        if ([360, 390, 640, 1280].includes(width)) {
+          await page.locator('#telemetry').scrollIntoViewIfNeeded();
+          await test.info().attach(`dense180-128-${width}.png`, {
+            body: await page.screenshot({ fullPage: true }),
+            contentType: 'image/png',
+          });
+        }
+      }
+      await test.info().attach('dense180-128-layouts.json', {
+        body: JSON.stringify(layouts),
+        contentType: 'application/json',
+      });
+    }
     await page.locator('#thermal').click();
     expect(await downloadPausedWorld(page)).toEqual(before);
     await test.info().attach('measurement-downloads.json', {
@@ -1468,8 +1640,17 @@ for (const mode of ['processing', 'delivery'] as const) {
     await expect(page.locator('#save')).toBeEnabled();
     await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
     const current = JSON.parse((await downloadMeasurements(page, 'json')).toString());
-    expect(current.snapshot.completedTick).toBeGreaterThanOrEqual(0);
+    const reference = new Ecosystem();
+    advance(reference, current.snapshot.completedTick);
+    expect(current.snapshot.settings).toEqual(reference.settings);
+    expect(current.telemetry).toEqual(reference.save().telemetry);
+    expect(current.interventions).toEqual(reference.save().interventions);
     expect(downloads).toBe(1);
+    await requestPause(page);
+    const saved = JSON.parse((await downloadPausedWorld(page)).toString());
+    advance(reference, saved.tick - reference.tick);
+    expect(saved).toEqual(reference.save());
+    expect(downloads).toBe(2);
     await test.info().attach('native-ownership-counts.json', {
       contentType: 'application/json',
       body: JSON.stringify({
@@ -2436,11 +2617,13 @@ test.describe('pause on total extinction', () => {
     await page.locator('#mutation').fill('0.37');
     await page.locator('#climate').fill('0.25');
     await page.locator('#nutrients').fill('7');
-    const expected = {
-      ...before,
-      settings: { ...before.settings, nutrients: 7, mutation: 0.37, climate: 0.25 },
-    };
-    expect(await readWorld(page)).toEqual(expected);
+    const reference = Ecosystem.load(JSON.stringify(before));
+    reference.changeSettings({ nutrients: 3 });
+    reference.changeSettings({ mutation: 0.37 });
+    reference.changeSettings({ climate: 0.25 });
+    reference.changeSettings({ nutrients: 7 });
+    const expected = reference.save();
+    await expect(page.getByRole('button', { name: 'Save world' })).toBeDisabled();
     await page.evaluate('window.recoveryDelivery.release()');
     await expect(page.locator('#notice')).toContainText('version 2, 3, 4 or 5');
     await expect(page.locator('#nutrients')).toHaveValue('7');
