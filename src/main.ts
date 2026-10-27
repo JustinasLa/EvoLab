@@ -136,7 +136,7 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
   }
 }
 
-export function mount(root: HTMLElement, worker: Worker): () => void {
+export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): () => void {
   root.innerHTML = markup;
   const controls = new Map(
     [...root.querySelectorAll<HTMLElement>('[id]')].map((element) => [element.id, element]),
@@ -207,7 +207,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     progressWatermark = 0;
   let desiredView: DisplayView = {
     epoch: 0,
-    enabled: true,
+    enabled: renderHabitat,
     visible:
       document.visibilityState !== 'hidden' &&
       canvas.getBoundingClientRect().width > 0 &&
@@ -215,6 +215,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   };
   let acknowledgedView: DisplayView = { ...desiredView },
     viewIntent: DisplayView | null = null;
+  get<HTMLInputElement>('render-habitat').checked = renderHabitat;
   let heldDisplay: { runId: number; sequence: number; viewEpoch: number } | null = null;
   let pendingFrame: Extract<WorkerResponse, { type: 'frame' }> | null = null;
   let displayedRevision = -1,
@@ -1051,9 +1052,9 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     if (!alive) return;
     const data = raw as WorkerResponse;
     if (data.type === 'progress') {
-      if (data.sequence <= progressWatermark) return;
       if (data.runId === runId && establishedRun === runId && !stopped)
         accept(data.state, data.telemetry);
+      if (data.sequence <= progressWatermark) return;
       progressWatermark = data.sequence;
       worker.postMessage({
         type: 'flow-ack',

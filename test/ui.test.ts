@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, captureCommand } from '../src/main';
 import * as model from '../src/model';
 import { draw, genomeSvg, organismHtml, point, viewport } from '../src/view';
+import * as viewModule from '../src/view';
 import { Ecosystem } from '../src/ecosystem';
 import { DEFAULTS, founder, type Frame, type PlaybackState, type WorldFile } from '../src/model';
 import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../src/blueprint';
 import { startWorker, type Scope } from '../src/worker';
+import { legacyV3 } from './fixtures/telemetry';
 class WorkerStub {
   playback: PlaybackState = { paused: false, pauseOnExtinction: true, extinction: null };
   pendingCommand: any;
@@ -163,7 +165,7 @@ async function loadText(text: string): Promise<void> {
   upload({ size: text.length, text: async () => text });
   await Promise.resolve();
 }
-function realWorker(clean = false) {
+function realWorker(clean = false, renderHabitat = true) {
   if (clean) {
     dispose();
     worker = new WorkerStub();
@@ -175,9 +177,11 @@ function realWorker(clean = false) {
     time = 0;
   const identities = new Map<number, number>();
   const direct = new WeakSet<object>();
+  let gridTransfers = 0;
   const scope: Scope = {
     onmessage: null,
     postMessage: (data, transfer = []) => {
+      if (data.type === 'frame') gridTransfers += transfer.length;
       const response: any = structuredClone(data, { transfer });
       if ('commandId' in response) {
         const pageId = identities.get(response.commandId);
@@ -237,7 +241,7 @@ function realWorker(clean = false) {
     command(data, true);
   });
   if (initial) command(initial, true);
-  else dispose = mount(root, worker as unknown as Worker);
+  else dispose = mount(root, worker as unknown as Worker, renderHabitat);
   const deliver = () => {
     let deliveries = 0;
     while (outbox.length) {
@@ -257,6 +261,7 @@ function realWorker(clean = false) {
     command,
     deliver,
     save,
+    gridTransfers: () => gridTransfers,
     advance: () => {
       time += 40;
       tasks.shift()!();
@@ -800,6 +805,54 @@ describe('owned command admission and real-worker interleavings', () => {
       expect(harness.save().tick).toBe(pending.state.world.stats.tick);
     },
   );
+  it.each(
+    [false, true].flatMap((frameFirst) =>
+      ['valid', 'invalid'].map((candidate) => ({ frameFirst, candidate })),
+    ),
+  )(
+    'keeps discarded display fenced across $candidate replacement and disabling proof (frame first=$frameFirst)',
+    async ({ frameFirst, candidate }) => {
+      const displays = vi.spyOn(Ecosystem.prototype, 'display');
+      const harness = realWorker(true);
+      harness.deliver();
+      paint(0);
+      harness.deliver();
+      harness.advance();
+      const held = harness.outbox.splice(
+        harness.outbox.findIndex((data) => data.type === 'frame'),
+        1,
+      )[0];
+      harness.deliver();
+      await loadText(
+        candidate === 'invalid' ? '{}' : JSON.stringify(new Ecosystem(DEFAULTS).save()),
+      );
+      const terminal = harness.outbox.splice(
+        harness.outbox.findIndex((data) => data.type === 'loaded' || data.type === 'error'),
+        1,
+      )[0];
+      get<HTMLInputElement>('render-habitat').checked = false;
+      get('render-habitat').dispatchEvent(new Event('change'));
+      const before = displays.mock.calls.length;
+      const acknowledgements = () =>
+        worker.postMessage.mock.calls.filter(
+          ([data]) =>
+            data.type === 'flow-ack' &&
+            data.channel === 'display' &&
+            data.sequence === held.sequence,
+        );
+      if (frameFirst) worker.onmessage!({ data: held } as MessageEvent);
+      paint(0);
+      expect(acknowledgements()).toHaveLength(0);
+      worker.onmessage!({ data: terminal } as MessageEvent);
+      if (!frameFirst) worker.onmessage!({ data: held } as MessageEvent);
+      paint(0);
+      expect(acknowledgements()).toHaveLength(0);
+      expect(displays).toHaveBeenCalledTimes(before);
+      harness.deliver();
+      expect(acknowledgements()).toHaveLength(1);
+      expect(displays).toHaveBeenCalledTimes(before);
+    },
+  );
   it('retains a newly admitted target dependency while startup proof is still held', () => {
     const harness = realWorker(true);
     set('target-tick', '120');
@@ -973,6 +1026,219 @@ describe('owned command admission and real-worker interleavings', () => {
     expect(get('notice').textContent).toContain('cannot change while stopped');
   });
 });
+describe('actual grid-free telemetry transport composition', () => {
+  it('accepts one delayed detached source30 after current65 without rolling progress back or drawing from startup', async () => {
+    const displays = vi.spyOn(Ecosystem.prototype, 'display'),
+      draws = vi.spyOn(viewModule, 'draw');
+    const harness = realWorker(true, false),
+      chart = chartRecorder();
+    const receive = worker.onmessage!;
+    let held: any,
+      received: any,
+      holdAt = 0;
+    worker.onmessage = (event) => {
+      const data = event.data;
+      expect(data.type).not.toBe('frame');
+      if (holdAt >= 0 && data.telemetry) {
+        if (!held && data.type === 'progress' && data.telemetry.tick === holdAt) held = data;
+        const { telemetry: _source, ...progress } = data;
+        receive({ data: progress } as MessageEvent);
+      } else {
+        if (data.telemetry) received = data.telemetry;
+        receive(event);
+      }
+    };
+    harness.deliver();
+    expect(get('telemetry-summary').textContent).toContain('history not yet known');
+    expect(held.telemetry.tick).toBe(0);
+    receive({ data: held } as MessageEvent);
+    held = undefined;
+    expect(get('telemetry-summary').textContent).toContain('empty at source tick 0');
+    holdAt = 30;
+    set('speed', '1', 'change');
+    harness.deliver();
+    const runTo = (tick: number) => {
+      set('target-tick', String(tick));
+      click('run-to-tick');
+      harness.deliver();
+      while (harness.save().tick < tick) {
+        harness.advance();
+        harness.deliver();
+      }
+    };
+    runTo(30);
+    expect(held.telemetry.tick).toBe(30);
+    const expected30 = new Ecosystem(DEFAULTS);
+    for (let tick = 0; tick < 30; tick++) expected30.step();
+    expect(held.telemetry.telemetry).toEqual(expected30.save().telemetry);
+    runTo(65);
+    expect(get('tick').textContent).toBe('TICK 65');
+    expect(get('telemetry-summary').textContent).toContain('awaiting newer telemetry observations');
+    const old = held,
+      acknowledgementCount = worker.postMessage.mock.calls.filter(
+        ([data]) => data.type === 'flow-ack',
+      ).length;
+    receive({ data: old } as MessageEvent);
+    held = undefined;
+    expect(worker.postMessage.mock.calls.filter(([data]) => data.type === 'flow-ack')).toHaveLength(
+      acknowledgementCount,
+    );
+    expect(get('telemetry-summary').textContent).toContain('World tick 65');
+    expect(get('telemetry-summary').textContent).toContain('source observed at tick 30');
+    expect(get('telemetry-summary').textContent).toContain('last received recorded sample tick 30');
+    expect(chart.paths.at(-1)).toEqual([[30, expected30.organisms.size]]);
+    holdAt = -1;
+    set('target-tick', '90');
+    click('run-to-tick');
+    harness.deliver();
+    expect(get('telemetry-summary').textContent).toContain('source observed at tick 65');
+    expect(get('telemetry-summary').textContent).toContain('last received recorded sample tick 60');
+    while (harness.save().tick < 90) {
+      harness.advance();
+      harness.deliver();
+    }
+    const expected90 = new Ecosystem(DEFAULTS);
+    for (let tick = 0; tick < 90; tick++) expected90.step();
+    expect(harness.save()).toEqual(expected90.save());
+    expect(received.tick).toBe(90);
+    expect(received.telemetry).toEqual(expected90.save().telemetry);
+    expect(chart.paths.at(-1)).toEqual(
+      expected90.save().telemetry.samples.map((sample) => [sample.tick, sample.population]),
+    );
+    const rows = () =>
+      new Map(
+        [...get('telemetry-details').querySelectorAll('tbody tr')].map((row) => [
+          row.querySelector('th')!.textContent,
+          row.querySelector('td')!.textContent,
+        ]),
+      );
+    set('telemetry-view', 'food', 'change');
+    paint(0);
+    expect(rows().get('Leaf energy gained over this interval')).toBe(
+      String(expected90.save().telemetry.samples.at(-1)!.energy.leavesGained),
+    );
+    set('telemetry-view', 'adaptation', 'change');
+    paint(0);
+    expect(
+      [...root.querySelectorAll('[data-bin]')].map((bin) => Number(bin.getAttribute('data-count'))),
+    ).toEqual(expected90.save().telemetry.samples.at(-1)!.adaptation!.preferenceBins);
+    const before = root.innerHTML;
+    for (const stale of [old, { ...old, runId: old.runId + 999, sequence: old.sequence + 999 }])
+      receive({ data: stale } as MessageEvent);
+    expect(root.innerHTML).toBe(before);
+    click('ecosystem-tab');
+    set('telemetry-sample', '30', 'change');
+    const selector = get<HTMLSelectElement>('telemetry-sample');
+    selector.focus();
+    paint(0);
+    await loadText('{}');
+    harness.deliver();
+    paint(0);
+    expect(selector.value).toBe('30');
+    expect(document.activeElement).toBe(selector);
+    expect(harness.save()).toEqual(expected90.save());
+    const replacement = new Ecosystem({ ...DEFAULTS, nutrients: 0 });
+    for (let tick = 0; tick < 90; tick++) replacement.step();
+    await loadText(JSON.stringify(replacement.save()));
+    harness.deliver();
+    paint(0);
+    expect(selector.value).toBe('latest');
+    expect(document.activeElement).toBe(selector);
+    const replaced = root.innerHTML;
+    receive({ data: old } as MessageEvent);
+    expect(root.innerHTML).toBe(replaced);
+    expect(displays).not.toHaveBeenCalled();
+    expect(draws).not.toHaveBeenCalled();
+    expect(harness.gridTransfers()).toBe(0);
+    dispose();
+    const disposed = root.innerHTML;
+    receive({ data: old } as MessageEvent);
+    paint(0);
+    expect(root.innerHTML).toBe(disposed);
+    expect(draws).not.toHaveBeenCalled();
+  });
+  it('integrates genuine v3 null gaps, v4 continuation, empty origins and pin eviction with zero grids', async () => {
+    const displays = vi.spyOn(Ecosystem.prototype, 'display'),
+      draws = vi.spyOn(viewModule, 'draw');
+    const harness = realWorker(true, false);
+    harness.deliver();
+    for (const origin of [25, 30, 31]) {
+      const world = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0 }, false);
+      while (world.tick < origin) world.step();
+      const legacy = legacyV3(world.save());
+      await loadText(JSON.stringify(legacy));
+      harness.deliver();
+      paint(0);
+      const migrated = harness.save();
+      expect(migrated.telemetry.adaptationOriginTick).toBe(origin);
+      expect(migrated.telemetry.samples.every((sample) => sample.adaptation === null)).toBe(true);
+      expect(migrated.telemetry.pending).toEqual(legacy.telemetry.pending);
+      if (origin === 25)
+        expect(get('telemetry-summary').textContent).toContain('empty at source tick 25');
+      else {
+        set('telemetry-view', 'adaptation', 'change');
+        paint(0);
+        expect(get('telemetry-details').textContent).toContain('were not recorded');
+        expect(get('telemetry-details').textContent).toContain('Unavailable');
+      }
+      await loadText(JSON.stringify(migrated));
+      harness.deliver();
+      expect(harness.save()).toEqual(migrated);
+    }
+    get<HTMLInputElement>('pause-on-extinction').checked = false;
+    get('pause-on-extinction').dispatchEvent(new Event('change'));
+    harness.deliver();
+    set('speed', '12', 'change');
+    harness.deliver();
+    set('target-tick', '90');
+    click('run-to-tick');
+    harness.deliver();
+    while (harness.save().tick < 90) {
+      harness.advance();
+      harness.deliver();
+    }
+    click('ecosystem-tab');
+    set('telemetry-sample', '30', 'change');
+    get('telemetry-sample').focus();
+    paint(0);
+    set('target-tick', '5430');
+    click('run-to-tick');
+    harness.deliver();
+    while (harness.save().tick < 5430) {
+      harness.advance();
+      harness.deliver();
+    }
+    paint(0);
+    expect(harness.save().telemetry.samples).toHaveLength(180);
+    expect(get<HTMLSelectElement>('telemetry-sample').value).toBe('60');
+    expect(get('telemetry-status').textContent).toContain('30');
+    expect(document.activeElement).toBe(get('telemetry-sample'));
+    expect(displays).not.toHaveBeenCalled();
+    expect(draws).not.toHaveBeenCalled();
+    expect(harness.gridTransfers()).toBe(0);
+  });
+  it('keeps natural progress100ms and source250ms cadence independent without any transport hold', () => {
+    const displays = vi.spyOn(Ecosystem.prototype, 'display');
+    const harness = realWorker(true, false);
+    harness.deliver();
+    set('speed', '1', 'change');
+    harness.deliver();
+    for (let batch = 0; batch < 39; batch++) {
+      harness.advance();
+      harness.deliver();
+    }
+    expect(get('tick').textContent).toBe('TICK 39');
+    expect(get('telemetry-summary').textContent).toContain('source observed at tick 36');
+    expect(get('telemetry-summary').textContent).toContain('last received recorded sample tick 30');
+    expect(get('telemetry-summary').textContent).toContain('Observation/transport lag');
+    const reference = new Ecosystem(DEFAULTS);
+    for (let tick = 0; tick < 39; tick++) reference.step();
+    expect(harness.save()).toEqual(reference.save());
+    expect(displays).not.toHaveBeenCalled();
+    expect(harness.gridTransfers()).toBe(0);
+  });
+});
+
 describe('ecosystem desk', () => {
   it('starts with Pan and Organism selected without changing the world when dragged', () => {
     expect(get('world').dataset.tool).toBe('pan');
