@@ -4,6 +4,7 @@ import {
   WORLD_MAX_BYTES,
   STROKE_COMMAND_CAPACITY,
   validSettings,
+  knownSettings,
   validGenome,
   integer,
   index,
@@ -174,7 +175,7 @@ export function startWorker(
           ...owner,
           completedTick: world.tick,
           seed: world.settings.seed,
-          settings: { ...world.settings },
+          settings: knownSettings(world.settings),
           playback: playback(),
         });
         send();
@@ -199,7 +200,7 @@ export function startWorker(
                 recovery: {
                   frame,
                   selected: world.organisms.get(selected) ?? null,
-                  settings: { ...world.settings },
+                  settings: knownSettings(world.settings),
                   playback: playback(),
                 },
               };
@@ -226,7 +227,7 @@ export function startWorker(
           ...owner,
           completedTick: world.tick,
           seed: world.settings.seed,
-          settings: world.settings,
+          settings: knownSettings(world.settings),
           playback: playback(),
         });
         send();
@@ -355,7 +356,31 @@ export function startWorker(
         send();
       } else if (data.type === 'snapshot') send();
     } catch (error) {
-      if (correlated) scope.postMessage({ type: 'error', ...owner, message: errorText(error) });
+      if (correlated && data.type === 'start' && world) {
+        runId = data.runId;
+        stroke = null;
+        try {
+          const frame = world.frame();
+          scope.postMessage(
+            {
+              type: 'error',
+              ...owner,
+              message: errorText(error),
+              recovery: {
+                frame,
+                selected: world.organisms.get(selected) ?? null,
+                settings: knownSettings(world.settings),
+                playback: playback(),
+              },
+            },
+            [frame.cells.buffer, frame.ids.buffer],
+          );
+        } catch (failure) {
+          paused = true;
+          scope.postMessage({ type: 'error', ...owner, message: errorText(failure), fatal: true });
+        }
+      } else if (correlated)
+        scope.postMessage({ type: 'error', ...owner, message: errorText(error) });
       else report(error);
     }
   };

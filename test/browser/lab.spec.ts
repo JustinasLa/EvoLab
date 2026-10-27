@@ -18,10 +18,34 @@ import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../../s
 import { writeFile } from 'node:fs/promises';
 import { cpus, platform, totalmem } from 'node:os';
 import { Ecosystem } from '../../src/ecosystem';
-import { advance, legacyV3 } from '../fixtures/telemetry';
+import { advance, legacyV3, legacyV4 } from '../fixtures/telemetry';
 
 declare global {
   interface Window {
+    measurementGate: {
+      processingBlocked: boolean;
+      deliveryBlocked: boolean;
+      framesBlocked: boolean;
+      counts: {
+        E: number;
+        S: number;
+        M: number;
+        C: number;
+        L: number;
+        completedL: number;
+        serializedE: number;
+        serializedS: number;
+        nativePosts: number;
+        maximum: number;
+        terminated: number;
+      };
+      pending: Map<number, object>;
+      releasePosts: () => void;
+      releaseResults: () => void;
+      nextLifecycle: () => Promise<void>;
+      waitForDrain: () => Promise<void>;
+      releaseFrame: () => void;
+    };
     telemetryEvidence: { frame: Frame | null; points: number[][]; loadText: string | null };
     telemetryPerformance: {
       enabled: boolean;
@@ -153,7 +177,7 @@ test('literal v3 telemetry migrates through the file input and real worker befor
   const migratedBytes = await downloadPausedWorld(page),
     migrated = JSON.parse(migratedBytes.toString()) as WorldFile;
   expect(migrated).toEqual(expected());
-  expect(migrated.version).toBe(4);
+  expect(migrated.version).toBe(5);
   expect(migrated.telemetry.version).toBe(2);
   expect(migrated.telemetry.originTick).toBe(fixture.telemetry.originTick);
   expect(migrated.telemetry.adaptationOriginTick).toBe(65);
@@ -878,6 +902,519 @@ async function downloadWorld(page: import('@playwright/test').Page): Promise<Buf
   for await (const chunk of stream) chunks.push(chunk);
   return Buffer.concat(chunks);
 }
+async function downloadMeasurements(page: import('@playwright/test').Page, format: 'json' | 'csv') {
+  const pending = page.waitForEvent('download');
+  await page.locator(`#measurements-${format}`).click();
+  const download = await pending,
+    stream = await download.createReadStream(),
+    chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  const bytes = Buffer.concat(chunks);
+  expect(download.suggestedFilename()).toMatch(
+    new RegExp(`^evolab-measurements-\\d+-tick-\\d+\\.${format}$`),
+  );
+  return bytes;
+}
+function restoreMeasurementZeros(envelope: any) {
+  const paths = envelope.negativeZeroPaths as string[];
+  expect(paths).toEqual([...paths].sort());
+  expect(new Set(paths).size).toBe(paths.length);
+  for (const path of paths) {
+    const fields = path.slice(1).split('/'),
+      last = fields.pop()!;
+    let target = envelope;
+    for (const field of fields) target = target[field];
+    expect(target[last] === 0).toBe(true);
+    target[last] = -0;
+  }
+  return envelope;
+}
+function decodeDownloadedCsv(bytes: Buffer) {
+  const text = bytes.toString('utf8'),
+    rows: string[][] = [];
+  let row: string[] = [],
+    field = '',
+    quoted = false;
+  for (let offset = 0; offset < text.length; offset++) {
+    const character = text[offset];
+    if (character === '"') {
+      if (quoted && text[offset + 1] === '"') {
+        field += '"';
+        offset++;
+      } else quoted = !quoted;
+    } else if (!quoted && character === ',') {
+      row.push(field);
+      field = '';
+    } else if (!quoted && character === '\r' && text[offset + 1] === '\n') {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = '';
+      offset++;
+    } else field += character;
+  }
+  expect(quoted).toBe(false);
+  expect(field).toBe('');
+  expect(row).toEqual([]);
+  const header = rows.shift()!;
+  const literal = (value: string) => {
+    expect(value.startsWith('s:')).toBe(true);
+    return value.slice(2);
+  };
+  let envelope: any;
+  for (const row of rows) {
+    expect(row.length).toBe(header.length);
+    const values = Object.fromEntries(header.map((key, index) => [key, row[index]])),
+      type = literal(values.record_type);
+    if (type === 'metadata') {
+      envelope = JSON.parse(literal(values.metadata_json));
+      envelope.telemetry.samples = [];
+      envelope.interventions.entries = [];
+    } else if (type === 'intervention')
+      envelope.interventions.entries.push({
+        sequence: Number(values['manual.sequence']),
+        origin: literal(values['manual.origin']),
+        kind: literal(values['manual.kind']),
+        firstTick: Number(values['manual.firstTick']),
+        lastTick: Number(values['manual.lastTick']),
+        detail: JSON.parse(literal(values.metadata_json)),
+      });
+    else {
+      const value: any = {};
+      for (const [key, raw] of Object.entries(values)) {
+        if (
+          !raw ||
+          ['record_type', 'record_index', 'adaptation_status', 'metadata_json'].includes(key)
+        )
+          continue;
+        const fields = key.split('.'),
+          last = fields.pop()!;
+        let target = value;
+        for (const field of fields)
+          target = target[field] ??= ['cellCounts', 'preferenceBins'].includes(field) ? [] : {};
+        target[last] = raw === 'null' ? null : Number(raw);
+      }
+      if (type === 'sample') {
+        if (literal(values.adaptation_status) === 'legacy-unknown') value.adaptation = null;
+        envelope.telemetry.samples.push(value);
+      } else {
+        expect(type).toBe('pending');
+        envelope.telemetry.pending = value;
+      }
+    }
+  }
+  return restoreMeasurementZeros(envelope);
+}
+async function observeMeasurementOwnership(page: import('@playwright/test').Page) {
+  await page.addInitScript(() => {
+    window.Worker = new Proxy(window.Worker, {
+      construct(target, args, newTarget) {
+        const worker: Worker = Reflect.construct(target, args, newTarget),
+          nativePost = worker.postMessage.bind(worker),
+          nativeTerminate = worker.terminate.bind(worker),
+          pending = new Map<number, object>(),
+          posts = new Map<number, any>(),
+          results = new Map<number, MessageEvent>();
+        let handler: ((this: Worker, event: MessageEvent) => void) | null = null,
+          lifecycleWaiter: (() => void) | null = null,
+          drainWaiter: (() => void) | null = null,
+          latestFrame: MessageEvent | null = null;
+        const counts = {
+          E: 0,
+          S: 0,
+          M: 0,
+          C: 0,
+          L: 0,
+          completedL: 0,
+          serializedE: 0,
+          serializedS: 0,
+          nativePosts: 0,
+          maximum: 0,
+          terminated: 0,
+        };
+        const gate = (window.measurementGate = {
+          processingBlocked: false,
+          deliveryBlocked: false,
+          framesBlocked: false,
+          counts,
+          pending,
+          releasePosts() {
+            this.processingBlocked = false;
+            for (const [id, command] of posts) {
+              posts.delete(id);
+              counts.nativePosts++;
+              nativePost(command);
+            }
+          },
+          releaseResults() {
+            this.deliveryBlocked = false;
+            for (const [id, event] of results) {
+              results.delete(id);
+              pending.delete(id);
+              handler?.call(worker, event);
+            }
+          },
+          nextLifecycle() {
+            if (lifecycleWaiter) throw new Error('Only one lifecycle waiter allowed');
+            return new Promise<void>((resolve) => {
+              lifecycleWaiter = resolve;
+            });
+          },
+          waitForDrain() {
+            if (!pending.size) return Promise.resolve();
+            if (drainWaiter) throw new Error('Only one drain waiter allowed');
+            return new Promise<void>((resolve) => {
+              drainWaiter = resolve;
+            });
+          },
+          releaseFrame() {
+            this.framesBlocked = false;
+            const frame = latestFrame;
+            latestFrame = null;
+            if (frame) handler?.call(worker, frame);
+          },
+        });
+        Object.defineProperty(worker, 'onmessage', {
+          configurable: true,
+          get: () => handler,
+          set: (next) => {
+            handler = next;
+          },
+        });
+        worker.addEventListener('message', (event) => {
+          const data = event.data,
+            id = data.requestId ?? data.commandId;
+          if (data.type === 'frame' && gate.framesBlocked) {
+            latestFrame = event;
+            return;
+          }
+          if (data.operation && pending.has(id)) {
+            if (data.type === 'measurement-exported') counts.serializedE++;
+            if (data.type === 'saved') counts.serializedS++;
+            const lifecycle = ['start', 'load'].includes(data.operation);
+            if (lifecycle) {
+              counts.completedL++;
+              const waiter = lifecycleWaiter;
+              lifecycleWaiter = null;
+              waiter?.();
+            }
+            if (gate.deliveryBlocked && !lifecycle) {
+              results.set(id, event);
+              if (results.size > 36) throw new Error('Unbounded terminal gate');
+              return;
+            }
+            pending.delete(id);
+          }
+          handler?.call(worker, event);
+          if (!pending.size && drainWaiter) {
+            const resolve = drainWaiter;
+            drainWaiter = null;
+            resolve();
+          }
+        });
+        worker.postMessage = new Proxy(worker.postMessage, {
+          apply(postMessage, receiver, messages) {
+            const command = messages[0],
+              id = command.requestId ?? command.commandId;
+            if (id) {
+              const category =
+                command.type === 'export-measurements'
+                  ? 'E'
+                  : command.type === 'save'
+                    ? 'S'
+                    : command.type === 'end-stroke'
+                      ? 'C'
+                      : ['start', 'load'].includes(command.type)
+                        ? 'L'
+                        : 'M';
+              counts[category]++;
+              pending.set(id, { operation: command.type, runId: command.runId });
+              counts.maximum = Math.max(counts.maximum, pending.size);
+              if (pending.size > 36) throw new Error('Native ownership exceeded36');
+              if (gate.processingBlocked) {
+                posts.set(id, command);
+                return;
+              }
+            }
+            counts.nativePosts++;
+            return Reflect.apply(postMessage, receiver, messages);
+          },
+        });
+        worker.terminate = () => {
+          nativeTerminate();
+          counts.terminated++;
+          pending.clear();
+          posts.clear();
+          results.clear();
+          latestFrame = null;
+        };
+        return worker;
+      },
+    });
+  });
+}
+test('D9-A5 actual native4096-command stroke closes once without a4097th paint or extra ecological effects', async ({
+  page,
+}) => {
+  await observeMeasurementOwnership(page);
+  await page.goto('/');
+  await requestPause(page);
+  const before = await downloadPausedWorld(page),
+    reference = Ecosystem.load(before.toString());
+  await page.getByRole('button', { name: 'Food', exact: true }).click();
+  await page.locator('#brush').evaluate((input: HTMLInputElement) => {
+    input.value = '0';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const position = await coordinate(page, 10, 10);
+  await page.evaluate(() => {
+    window.measurementGate.framesBlocked = true;
+  });
+  await page.mouse.move(position.x, position.y);
+  await page.mouse.down();
+  await page.evaluate(async (position) => {
+    const canvas = document.getElementById('world')!,
+      gate = window.measurementGate;
+    await gate.waitForDrain();
+    for (let command = 1; command < 4096; command++) {
+      canvas.dispatchEvent(
+        new PointerEvent('pointermove', {
+          pointerId: 1,
+          isPrimary: true,
+          clientX: position.x,
+          clientY: position.y,
+          bubbles: true,
+        }),
+      );
+      await gate.waitForDrain();
+    }
+    canvas.dispatchEvent(
+      new PointerEvent('pointermove', {
+        pointerId: 1,
+        isPrimary: true,
+        clientX: position.x + 20,
+        clientY: position.y,
+        bubbles: true,
+      }),
+    );
+    gate.releaseFrame();
+  }, position);
+  await page.mouse.up();
+  const counts = await page.evaluate(() => window.measurementGate.counts);
+  expect(counts).toMatchObject({ M: 4097, C: 1, terminated: 0 });
+  const outcome = reference.paint('food', 10, 10, 0, founder(0));
+  reference.recordPaint(outcome, 'food', 0, 10, 10, null);
+  const after = await downloadPausedWorld(page);
+  expect(after).toEqual(Buffer.from(JSON.stringify(reference.save())));
+  expect(JSON.parse(after.toString()).interventions.entries.at(-1).detail.successfulCommands).toBe(
+    1,
+  );
+  await test.info().attach('native4096-stroke.json', {
+    contentType: 'application/json',
+    body: JSON.stringify({
+      counts,
+      beforeSHA256: createHash('sha256').update(before).digest('hex'),
+      afterSHA256: createHash('sha256').update(after).digest('hex'),
+      frameGate:
+        'Only native frame delivery held, latest one retained; real engine and every manual terminal forwarded. Physical disk/touch and whole-heap bounds not measured.',
+    }),
+  });
+});
+for (const version of [2, 3, 4, 5] as const) {
+  test(`measurement bytes preserve genuine world${version} migration,180 samples and truthful manual windows`, async ({
+    page,
+  }) => {
+    const world = Ecosystem.load(JSON.stringify(telemetryScenario('full-ring')));
+    for (let entry = 0; entry < 130; entry++)
+      world.changeSettings({ nutrients: entry % 2 ? 0 : 1 });
+    world.changeSettings({ climate: -0 });
+    const current = world.save();
+    (current.settings as any).retainedExtension = '=literal,"λ\r\n@formula';
+    const { telemetry: _telemetry, interventions: _interventions, ...ecology } = current;
+    const candidate =
+      version === 2
+        ? { ...ecology, version: 2 }
+        : version === 3
+          ? legacyV3(current)
+          : version === 4
+            ? legacyV4(current)
+            : current;
+    expect(candidate.version).toBe(version);
+    expect('interventions' in candidate).toBe(version === 5);
+    const text = JSON.stringify(candidate).replace(/"climate":0(?=[,}])/g, '"climate":-0'),
+      reference = Ecosystem.load(text),
+      expected = reference.save();
+    await page.goto('/');
+    await page.locator('#file').setInputFiles({
+      name: `genuine-world${version}.json`,
+      mimeType: 'application/json',
+      buffer: Buffer.from(text),
+    });
+    await expect(page.locator('#notice')).toContainText('World restored');
+    const before = await downloadPausedWorld(page);
+    expect(before).toEqual(Buffer.from(JSON.stringify(expected)));
+    await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+    const jsonBytes = await downloadMeasurements(page, 'json'),
+      csvBytes = await downloadMeasurements(page, 'csv'),
+      json = restoreMeasurementZeros(JSON.parse(jsonBytes.toString('utf8'))),
+      csv = decodeDownloadedCsv(csvBytes);
+    expect(csv).toEqual(json);
+    expect(json.telemetry).toEqual(expected.telemetry);
+    expect(json.interventions).toEqual(expected.interventions);
+    expect(json.snapshot.completedTick).toBe(expected.tick);
+    expect(Object.is(json.snapshot.settings.climate, -0)).toBe(true);
+    expect(jsonBytes.toString()).not.toContain('retainedExtension');
+    expect(json.windows.samples.retainedCount).toBe(version === 2 ? 0 : 180);
+    expect(json.windows.manual).toMatchObject({
+      retainedCount: version === 5 ? 128 : 0,
+      capacity: 128,
+      originKind: version === 5 ? 'fresh' : 'legacy-import',
+      coverage: 'applied-portions-only',
+    });
+    expect(json.windows.settings.unknownEvictedPrefix).toBe(version === 5);
+    for (const view of ['population', 'food', 'adaptation'])
+      await page.locator('#telemetry-view').selectOption(view);
+    await page.locator('#thermal').click();
+    expect(await downloadPausedWorld(page)).toEqual(before);
+    await test.info().attach('measurement-downloads.json', {
+      contentType: 'application/json',
+      body: JSON.stringify({
+        version,
+        tick: expected.tick,
+        worldSHA256: createHash('sha256').update(before).digest('hex'),
+        jsonSHA256: createHash('sha256').update(jsonBytes).digest('hex'),
+        csvSHA256: createHash('sha256').update(csvBytes).digest('hex'),
+        windows: json.windows,
+        signedZeroPaths: json.negativeZeroPaths,
+      }),
+    });
+  });
+}
+for (const speed of [1, 4, 12]) {
+  test(`running ${speed}x native exports match independent real ecology at each authoritative FIFO position`, async ({
+    page,
+  }) => {
+    await page.goto('/');
+    await page.locator('#speed').selectOption(String(speed));
+    await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+    for (const format of ['json', 'csv'] as const) {
+      const bytes = await downloadMeasurements(page, format),
+        envelope =
+          format === 'json'
+            ? restoreMeasurementZeros(JSON.parse(bytes.toString()))
+            : decodeDownloadedCsv(bytes),
+        reference = new Ecosystem();
+      advance(reference, envelope.snapshot.completedTick);
+      expect(envelope.snapshot.seed).toBe(reference.settings.seed);
+      expect(envelope.telemetry).toEqual(reference.save().telemetry);
+      expect(envelope.interventions).toEqual(reference.save().interventions);
+    }
+    await requestPause(page);
+    const saved = JSON.parse((await downloadPausedWorld(page)).toString()),
+      reference = new Ecosystem();
+    advance(reference, saved.tick);
+    expect(saved).toEqual(reference.save());
+  });
+}
+for (const mode of ['processing', 'delivery'] as const) {
+  test(`D9-A9 native ${mode} gate keeps all36 owners across repeated replacements and drains without stale downloads`, async ({
+    page,
+  }) => {
+    await observeMeasurementOwnership(page);
+    let downloads = 0;
+    page.on('download', () => downloads++);
+    await page.goto('/');
+    await requestPause(page);
+    await page.evaluate((mode) => {
+      const gate = window.measurementGate;
+      gate.processingBlocked = mode === 'processing';
+      gate.deliveryBlocked = mode === 'delivery';
+      const click = (id: string) => document.getElementById(id)!.click(),
+        canvas = document.getElementById('world')!,
+        rect = canvas.getBoundingClientRect();
+      click('measurements-json');
+      click('save');
+      document.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
+      const pointer = (type: string) =>
+        canvas.dispatchEvent(
+          new PointerEvent(type, {
+            pointerId: 1,
+            isPrimary: true,
+            clientX: rect.left + rect.width / 2,
+            clientY: rect.top + rect.height / 2,
+            bubbles: true,
+          }),
+        );
+      pointer('pointerdown');
+      for (let point = 0; point < 31; point++) pointer('pointermove');
+      pointer('pointerup');
+      click('reset');
+      if (mode === 'processing')
+        for (let attempt = 0; attempt < 256; attempt++) {
+          click('reset');
+          click('measurements-csv');
+          click('save');
+          pointer('pointerdown');
+          pointer('pointerup');
+        }
+    }, mode);
+    if (mode === 'processing') {
+      expect(await page.evaluate(() => window.measurementGate.pending.size)).toBe(36);
+      await page.evaluate(() => window.measurementGate.releasePosts());
+    } else {
+      await expect
+        .poll(() => page.evaluate(() => window.measurementGate.counts.completedL))
+        .toBe(2);
+      await page.evaluate(async () => {
+        const gate = window.measurementGate,
+          input = document.getElementById('file') as HTMLInputElement;
+        for (let replacement = 0; replacement < 256; replacement++) {
+          const completion = gate.nextLifecycle();
+          if (replacement % 2) {
+            const files = new DataTransfer();
+            files.items.add(new File(['{}'], 'invalid-world.json', { type: 'application/json' }));
+            input.files = files.files;
+            input.dispatchEvent(new Event('change'));
+          } else document.getElementById('reset')!.click();
+          await completion;
+          for (const id of ['measurements-json', 'measurements-csv', 'save'])
+            document.getElementById(id)!.click();
+        }
+      });
+      expect(await page.evaluate(() => window.measurementGate.pending.size)).toBe(35);
+      await page.evaluate(() => window.measurementGate.releaseResults());
+    }
+    await expect.poll(() => page.evaluate(() => window.measurementGate.pending.size)).toBe(0);
+    const counts = await page.evaluate(() => window.measurementGate.counts);
+    expect(counts).toMatchObject({
+      E: 1,
+      S: 1,
+      M: 32,
+      C: 1,
+      L: mode === 'processing' ? 2 : 258,
+      maximum: 36,
+      serializedE: 1,
+      serializedS: 1,
+      terminated: 0,
+    });
+    expect(downloads).toBe(0);
+    await expect(page.locator('#save')).toBeEnabled();
+    await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+    const current = JSON.parse((await downloadMeasurements(page, 'json')).toString());
+    expect(current.snapshot.completedTick).toBeGreaterThanOrEqual(0);
+    expect(downloads).toBe(1);
+    await test.info().attach('native-ownership-counts.json', {
+      contentType: 'application/json',
+      body: JSON.stringify({
+        mode,
+        counts,
+        downloads,
+        limits:
+          'Actual native Worker and real result forwarding. DOM-dispatched pointer/file actions; not OS picker, physical touch, heap or disk-duration evidence. No finite drain guarantee for a suspended endpoint.',
+      }),
+    });
+  });
+}
 async function downloadPausedWorld(page: import('@playwright/test').Page): Promise<Buffer> {
   const bytes = await downloadWorld(page),
     world = JSON.parse(bytes.toString()) as WorldFile;
@@ -1525,6 +2062,7 @@ async function extinctionFixture(
   world.settings = { ...world.settings, climate: 0, nutrients: 0 };
   world.tick = 417;
   const history = new Ecosystem(world.settings, false);
+  world.interventions = history.save().interventions;
   for (let tick = 0; tick < world.tick; tick++) history.step();
   world.telemetry = history.save().telemetry;
   world.food = [index(5, 5)];
@@ -1837,7 +2375,7 @@ test.describe('pause on total extinction', () => {
     };
     expect(await readWorld(page)).toEqual(expected);
     await page.evaluate('window.recoveryDelivery.release()');
-    await expect(page.locator('#notice')).toContainText('version 2, 3 or 4');
+    await expect(page.locator('#notice')).toContainText('version 2, 3, 4 or 5');
     await expect(page.locator('#nutrients')).toHaveValue('7');
     await expect(page.locator('#nutrients-value')).toHaveText('7%');
     await expect(page.locator('#mutation-value')).toHaveText('37%');
@@ -1950,7 +2488,7 @@ for (const terminalTick of [90, 91]) {
       expect(populations).toHaveLength(3);
       await expectPopulationChart(page, populations);
       await importWorld(page, { ...terminal, version: 99 } as unknown as WorldFile);
-      await expect(page.locator('#notice')).toContainText('version 2, 3 or 4');
+      await expect(page.locator('#notice')).toContainText('version 2, 3, 4 or 5');
       expect(await readWorld(page)).toEqual(terminal);
       await expectPopulationChart(page, populations);
       await page.waitForTimeout(160);
@@ -2063,7 +2601,7 @@ test('restores real worker telemetry, renders its population projection and down
   expect(frame.telemetry).toEqual(before);
   const downloaded = JSON.parse((await downloadWorld(page)).toString());
   expect(downloaded.telemetry).toEqual(before);
-  expect(downloaded.version).toBe(4);
+  expect(downloaded.version).toBe(5);
   expect(downloaded.telemetry.version).toBe(2);
   expect(downloaded.telemetry.intervalTicks).toBe(30);
   const restored = Ecosystem.load(JSON.stringify(downloaded));
@@ -2294,7 +2832,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   await expect(page.locator('[data-shock="bloom"]')).toHaveCount(0);
   const saved = await downloadWorld(page),
     world = JSON.parse(saved.toString());
-  expect(world.version).toBe(4);
+  expect(world.version).toBe(5);
   expect(world.organisms.length).toBeGreaterThan(1);
   const o = world.organisms[0],
     c = o.genome.cells[0];

@@ -1,12 +1,13 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { startWorker, type Scope } from '../src/worker';
 import { Ecosystem } from '../src/ecosystem';
-import { legacyV3 } from './fixtures/telemetry';
+import { legacyV3, legacyV4 } from './fixtures/telemetry';
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
 import {
   DEFAULTS,
   WIDTH,
   WORLD_MAX_BYTES,
+  STROKE_COMMAND_CAPACITY,
   founder,
   index,
   type WorldFile,
@@ -20,6 +21,47 @@ const mouth: Genome = {
   tolerance: 0.3,
   tempo: 2,
 };
+function sender(scope: Scope) {
+  let posting = 0,
+    runId = 0,
+    stroke = 0,
+    active = 0;
+  const manual = ['begin-stroke', 'end-stroke', 'paint', 'settings', 'shock'];
+  function raw(data: any): void {
+    const tracked = [...manual, 'start', 'load', 'save', 'export-measurements'].includes(data.type);
+    if (data.type === 'start' || data.type === 'load') runId = data.runId;
+    const message = tracked
+      ? { runId, ...data, [manual.includes(data.type) ? 'commandId' : 'requestId']: ++posting }
+      : data;
+    scope.onmessage!({ data: message } as MessageEvent);
+  }
+  return (data: any): void => {
+    if (data.type === 'paint' && ['food', 'wall', 'erase'].includes(data.tool)) {
+      if (active) raw({ type: 'end-stroke', strokeId: active });
+      active = ++stroke;
+      raw({ type: 'begin-stroke', tool: data.tool, radius: data.radius, strokeId: active });
+      raw({ ...data, strokeId: active });
+    } else {
+      if (active && ['start', 'load', 'settings', 'shock', 'paint'].includes(data.type)) {
+        raw({ type: 'end-stroke', strokeId: active });
+        active = 0;
+      }
+      raw(data);
+    }
+  };
+}
+function manualPaint(
+  world: Ecosystem,
+  tool: 'food' | 'wall' | 'erase' | 'plant',
+  x: number,
+  y: number,
+  radius: number,
+  genome: Genome,
+): void {
+  const outcome = world.paint(tool, x, y, radius, genome);
+  if (outcome.placement) world.appendIntervention({ kind: 'placement', detail: outcome.placement });
+  else if (tool !== 'plant') world.recordPaint(outcome, tool, radius, x, y, null);
+}
 function terminalWorld(offset = 1, energy = 5, atTick = 71): WorldFile {
   const world = new Ecosystem({ ...DEFAULTS, seed: 87, climate: 0, nutrients: 0 }, false);
   const organism = world.spawn(mouth, 40, 40)!;
@@ -33,7 +75,7 @@ function terminalWorld(offset = 1, energy = 5, atTick = 71): WorldFile {
   world.walls[index(6, 6)] = 1;
   return world.save();
 }
-function workerHarness() {
+function workerHarness(startFunction = startWorker) {
   const tasks: (() => void)[] = [],
     messages: any[] = [],
     seenTransfers = new WeakSet<object>(),
@@ -57,9 +99,10 @@ function workerHarness() {
       messages.push(response);
     },
   };
-  startWorker(scope, (callback) => tasks.push(callback));
+  startFunction(scope, (callback) => tasks.push(callback));
+  const post = sender(scope);
   const send = (data: any) => {
-    scope.onmessage!({ data } as MessageEvent);
+    post(data);
     return messages.at(-1);
   };
   const last = (type = 'frame') => messages.filter((message) => message.type === type).at(-1);
@@ -91,10 +134,221 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
+describe('correlated manual/export worker protocol', () => {
+  function protocol(startFunction = startWorker) {
+    const harness = workerHarness(startFunction);
+    let posting = 0;
+    const raw = (data: any) => harness.scope.onmessage!({ data } as MessageEvent);
+    const post = (type: string, payload: object = {}, runId = 1) => {
+      const data = {
+        type,
+        runId,
+        ...payload,
+        [['begin-stroke', 'paint', 'end-stroke', 'settings', 'shock'].includes(type)
+          ? 'commandId'
+          : 'requestId']: ++posting,
+      };
+      raw(data);
+      return data;
+    };
+    return { ...harness, post, raw };
+  }
+  it('uses a lifetime watermark, exact owner headers and one bounded error terminal, including absent and stale worlds', () => {
+    const harness = protocol();
+    harness.raw(null);
+    harness.raw({ type: 'start', runId: 1, requestId: 0, settings: DEFAULTS });
+    expect(harness.messages).toHaveLength(0);
+    harness.post('save');
+    expect(harness.last('error')).toMatchObject({ operation: 'save', requestId: 1, runId: 1 });
+    const started = harness.post('start', { settings: DEFAULTS });
+    const responseCount = harness.responseCount;
+    harness.raw(started);
+    harness.raw({ ...started, runId: 2 });
+    expect(harness.responseCount).toBe(responseCount);
+    harness.post('save', {}, 0);
+    expect(harness.last('error')).toMatchObject({ operation: 'save', requestId: 3, runId: 0 });
+    harness.post('export-measurements', { format: 'json' });
+    expect(harness.last('measurement-exported')).toMatchObject({ requestId: 4, runId: 1 });
+    harness.post('start', { settings: DEFAULTS }, 2);
+    const capture = vi.spyOn(Ecosystem.prototype, 'measurements');
+    harness.raw({ type: 'export-measurements', runId: 2, requestId: 4, format: 'csv' });
+    expect(capture).not.toHaveBeenCalled();
+    harness.post('export-measurements', { format: 'csv' }, 2);
+    expect(capture).toHaveBeenCalledTimes(1);
+    capture.mockImplementationOnce(() => {
+      throw new Error('x'.repeat(1000));
+    });
+    harness.post('export-measurements', { format: 'json' }, 2);
+    expect(harness.last('error')).toMatchObject({
+      operation: 'export-measurements',
+      format: 'json',
+      requestId: 7,
+      runId: 2,
+    });
+    expect(harness.last('error').message.length).toBe(512);
+    harness.post('export-measurements', { format: 'json' }, 2);
+    expect(harness.last('measurement-exported').requestId).toBe(8);
+    vi.spyOn(Ecosystem.prototype, 'frame').mockImplementationOnce(() => {
+      throw new Error('injected snapshot failure');
+    });
+    harness.raw({ type: 'snapshot' });
+    expect(harness.last('error')).toEqual({
+      type: 'error',
+      runId: 2,
+      message: 'injected snapshot failure',
+    });
+    harness.post('save', {}, 2);
+    const beforeFailure = harness.last('saved').text;
+    harness.post('start', { settings: { ...DEFAULTS, nutrients: -1 } }, 3);
+    expect(harness.last('error')).toMatchObject({
+      operation: 'start',
+      runId: 3,
+      recovery: { settings: DEFAULTS },
+    });
+    harness.post('save', {}, 3);
+    expect(harness.last('saved').text).toBe(beforeFailure);
+    vi.mocked(Ecosystem.prototype.frame).mockImplementationOnce(() => {
+      throw new Error('injected recovery failure');
+    });
+    harness.post('start', { settings: { ...DEFAULTS, nutrients: -1 } }, 4);
+    expect(harness.last('error')).toMatchObject({
+      operation: 'start',
+      runId: 4,
+      fatal: true,
+      message: 'injected recovery failure',
+    });
+  });
+  it('coalesces only real applied portions, preserves mid-stroke reads and rejects mismatched/closed commands', () => {
+    const harness = protocol();
+    harness.post('start', { settings: DEFAULTS });
+    harness.raw({ type: 'pause' });
+    harness.post('begin-stroke', { strokeId: 1, tool: 'food', radius: 0 });
+    harness.post('begin-stroke', { strokeId: 2, tool: 'food', radius: 0 });
+    expect(harness.last('error').operation).toBe('begin-stroke');
+    const paint = (x: number, strokeId = 1) =>
+      harness.post('paint', { strokeId, tool: 'food', radius: 0, x, y: 1, genome: founder(0) });
+    paint(1, 2);
+    expect(harness.last('error').operation).toBe('paint');
+    paint(1);
+    expect(harness.last('manual-result')).toMatchObject({ status: 'applied', rowSequence: 1 });
+    harness.post('save');
+    const before = harness.last('saved').text;
+    for (const format of ['csv', 'json']) harness.post('export-measurements', { format });
+    expect(JSON.parse(harness.last('measurement-exported').text).snapshot.openStrokeSequence).toBe(
+      1,
+    );
+    harness.raw({ type: 'inspect', x: 1, y: 1 });
+    harness.raw({ type: 'snapshot' });
+    harness.post('save');
+    expect(harness.last('saved').text).toBe(before);
+    paint(1);
+    expect(harness.last('manual-result')).toMatchObject({ status: 'no-op', rowSequence: null });
+    harness.raw({ type: 'step' });
+    paint(2);
+    harness.post('end-stroke', { strokeId: 2 });
+    expect(harness.last('manual-result')).toMatchObject({ status: 'no-op', strokeId: 2 });
+    paint(3);
+    harness.post('end-stroke', { strokeId: 1 });
+    expect(harness.last('manual-result')).toMatchObject({ status: 'applied', strokeId: 1 });
+    paint(4);
+    expect(harness.last('error').operation).toBe('paint');
+    harness.post('save');
+    const saved = JSON.parse(harness.last('saved').text) as WorldFile;
+    expect(saved.interventions.entries).toEqual([
+      {
+        sequence: 1,
+        origin: 'manual',
+        kind: 'paint',
+        firstTick: 0,
+        lastTick: 1,
+        detail: {
+          tool: 'food',
+          radius: 0,
+          first: { x: 1, y: 1 },
+          last: { x: 3, y: 1 },
+          successfulCommands: 3,
+          changedBrushCells: 3,
+          removedOrganisms: 0,
+        },
+      },
+    ]);
+    expect(Ecosystem.load(harness.last('saved').text).save()).toEqual(saved);
+    harness.post('shock', { kind: 'heat' });
+    harness.post('shock', { kind: 'heat' });
+    expect(harness.last('manual-result')).toMatchObject({ status: 'no-op', rowSequence: null });
+  });
+  it('fault-injects a four-command worker ceiling; native browser evidence separately executes the actual4096 limit', async () => {
+    expect(STROKE_COMMAND_CAPACITY).toBe(4096);
+    vi.resetModules();
+    vi.doMock('../src/model', async (original) => ({
+      ...(await original<object>()),
+      STROKE_COMMAND_CAPACITY: 4,
+    }));
+    const { startWorker: boundedStart } = await import('../src/worker');
+    vi.doUnmock('../src/model');
+    const harness = protocol(boundedStart);
+    const receive = harness.scope.postMessage;
+    harness.scope.postMessage = (data, transfer) => {
+      if (data.type !== 'frame') receive(data, transfer);
+    };
+    harness.post('start', { settings: DEFAULTS });
+    harness.raw({ type: 'pause' });
+    harness.post('begin-stroke', { strokeId: 1, tool: 'food', radius: 0 });
+    for (let command = 0; command < 4; command++)
+      harness.post('paint', {
+        strokeId: 1,
+        tool: 'food',
+        radius: 0,
+        x: 1,
+        y: 1,
+        genome: founder(0),
+      });
+    harness.post('paint', { strokeId: 1, tool: 'food', radius: 0, x: 2, y: 1, genome: founder(0) });
+    expect(harness.last('error').message).toContain('exhausted');
+    harness.post('end-stroke', { strokeId: 1 });
+    harness.post('save');
+    const saved = JSON.parse(harness.last('saved').text) as WorldFile;
+    expect(saved.tick).toBe(0);
+    expect(saved.interventions.entries).toHaveLength(1);
+    expect(saved.interventions.entries[0]).toMatchObject({
+      detail: {
+        successfulCommands: 1,
+        changedBrushCells: 1,
+        first: { x: 1, y: 1 },
+        last: { x: 1, y: 1 },
+      },
+    });
+    expect(saved.food).not.toContain(242);
+    expect(harness.messages.length).toBeLessThanOrEqual(6);
+  });
+  it('returns explicit invalid-payload errors and logs only actual placement/settings/shock success', () => {
+    const harness = protocol();
+    harness.post('start', { settings: DEFAULTS });
+    harness.raw({ type: 'pause' });
+    for (const tool of ['unknown', 'food']) {
+      harness.post('paint', { tool, x: -1, y: 1, radius: 0, genome: founder(0), strokeId: 1 });
+      expect(harness.last('error').operation).toBe('paint');
+    }
+    harness.post('settings', { settings: null });
+    expect(harness.last('error').operation).toBe('settings');
+    harness.post('paint', { tool: 'plant', x: 1, y: 1, radius: 0, genome: founder(0) });
+    expect(harness.last('manual-result')).toMatchObject({ status: 'applied', rowSequence: 1 });
+    harness.post('paint', { tool: 'plant', x: 1, y: 1, radius: 0, genome: founder(0) });
+    expect(harness.last('manual-result')).toMatchObject({ status: 'no-op', rowSequence: null });
+    harness.post('settings', { settings: { nutrients: 7 } });
+    expect(harness.last('manual-result')).toMatchObject({ status: 'applied', rowSequence: 2 });
+    harness.post('shock', { kind: 'cold' });
+    expect(harness.last('manual-result')).toMatchObject({ status: 'applied', rowSequence: 3 });
+    harness.post('save');
+    expect(
+      JSON.parse(harness.last('saved').text).interventions.entries.map((entry: any) => entry.kind),
+    ).toEqual(['placement', 'settings', 'shock']);
+  });
+});
 describe('worker control and persistence', () => {
   it('rejects oversized outbound UTF-8 saves nonfatally without download, truncation or scheduling changes', () => {
     const original = new Ecosystem().save(),
-      { telemetry: _telemetry, ...ecology } = original;
+      { telemetry: _telemetry, interventions: _interventions, ...ecology } = original;
     const file = {
       ...ecology,
       version: 2,
@@ -133,7 +387,7 @@ describe('worker control and persistence', () => {
     harness.send({ type: 'pause' });
     harness.advance();
     harness.send({ type: 'paint', tool: 'erase', x: 40, y: 40, radius: 0, genome });
-    reference.paint('erase', 40, 40, 0, genome);
+    manualPaint(reference, 'erase', 40, 40, 0, genome);
     const extinct = harness.saveText();
     expect(extinct).toBe(JSON.stringify(reference.save()));
     expect(harness.last().playback).toEqual({
@@ -162,7 +416,7 @@ describe('worker control and persistence', () => {
       radius: 0,
       genome: blueprint.genome,
     });
-    reference.paint('plant', 80, 80, 0, blueprint.genome);
+    manualPaint(reference, 'plant', 80, 80, 0, blueprint.genome);
     expect(harness.last().playback).toEqual({
       paused: true,
       pauseOnExtinction: true,
@@ -211,7 +465,7 @@ describe('worker control and persistence', () => {
       radius: 0,
       genome: blueprint.genome,
     });
-    reference.paint('plant', 80, 80, 0, blueprint.genome);
+    manualPaint(reference, 'plant', 80, 80, 0, blueprint.genome);
     const placed = harness.save();
     expect(placed).toEqual(reference.save());
     expect(placed.tick).toBe(before.tick);
@@ -238,7 +492,7 @@ describe('worker control and persistence', () => {
     const tasks: (() => void)[] = [],
       scope: Scope = { postMessage: vi.fn(), onmessage: null };
     startWorker(scope, (callback) => tasks.push(callback));
-    const send = (data: object) => scope.onmessage!({ data } as MessageEvent);
+    const send = sender(scope);
     const last = () => vi.mocked(scope.postMessage).mock.calls.at(-1)![0];
     send({ type: 'start', settings: DEFAULTS, runId: 10 });
     send({ type: 'pause' });
@@ -323,8 +577,28 @@ describe('worker control and persistence', () => {
         );
         harness.send({ type: 'inspect', x: WIDTH / 2, y: 78 });
         harness.frame();
+        for (const format of ['json', 'csv']) {
+          harness.send({ type: 'export-measurements', format });
+          const exported = harness.last('measurement-exported');
+          expect(exported).toMatchObject({
+            operation: 'export-measurements',
+            runId: 1,
+            format,
+            completedTick: batch * speed,
+            seed: DEFAULTS.seed,
+          });
+          expect(new TextEncoder().encode(exported.text).byteLength).toBe(exported.byteLength);
+          if (format === 'json') {
+            const measurement = JSON.parse(exported.text),
+              expected = reference.save();
+            expect(measurement.telemetry).toEqual(expected.telemetry);
+            expect(measurement.interventions).toEqual(expected.interventions);
+            expect(measurement.snapshot.completedTick).toBe(expected.tick);
+            expect(measurement.snapshot.settings).toEqual(expected.settings);
+          }
+        }
         expect(harness.saveText()).toBe(before);
-        expect(harness.messages).toHaveLength(3);
+        expect(harness.messages).toHaveLength(5);
         expect(harness.messages.filter((message) => message.type === 'frame')).toHaveLength(1);
       }
       harness.send({ type: 'pause' });
@@ -493,7 +767,7 @@ describe('worker control and persistence', () => {
     const tasks: (() => void)[] = [],
       scope: Scope = { postMessage: vi.fn(), onmessage: null };
     startWorker(scope, (cb) => tasks.push(cb));
-    const send = (data: any) => scope.onmessage!({ data } as MessageEvent),
+    const send = sender(scope),
       last = () => vi.mocked(scope.postMessage).mock.calls.at(-1)![0];
     send({ type: 'snapshot' });
     send({ type: 'resume' });
@@ -526,7 +800,8 @@ describe('worker control and persistence', () => {
     send({ type: 'settings', settings: { nutrients: -1 } });
     const beforeBloom = vi.mocked(scope.postMessage).mock.calls.length;
     send({ type: 'shock', kind: 'bloom' });
-    expect(scope.postMessage).toHaveBeenCalledTimes(beforeBloom);
+    expect(scope.postMessage).toHaveBeenCalledTimes(beforeBloom + 1);
+    expect(last()).toMatchObject({ type: 'error', operation: 'shock' });
     send({ type: 'paint', tool: 'food', x: 20, y: 20, radius: 2, genome: founder(0) });
     send({ type: 'paint', tool: 'plant', x: 40, y: 40, radius: 0, genome: founder(0) });
     send({ type: 'inspect', x: 40, y: 40 });
@@ -556,7 +831,7 @@ describe('worker control and persistence', () => {
     vi.useFakeTimers();
     const scope: Scope = { postMessage: vi.fn(), onmessage: null };
     startWorker(scope);
-    const send = (data: any) => scope.onmessage!({ data } as MessageEvent);
+    const send = sender(scope);
     send({ type: 'start', settings: DEFAULTS, runId: 4 });
     const step = vi.spyOn(Ecosystem.prototype, 'step').mockImplementation(() => {
       throw new Error('Failed tick');
@@ -954,18 +1229,20 @@ describe('integrated extinction and telemetry', () => {
     expect(harness.tasks).toHaveLength(0);
   });
 
-  it.each([2, 3, 4])(
+  it.each([2, 3, 4, 5])(
     'migrates/restores v%i then preserves terminal and pending history through an empty save continuation',
     (version) => {
       const harness = workerHarness();
       const current = terminalWorld(1, 5, 89);
-      const { telemetry: _telemetry, ...legacy } = current;
+      const { telemetry: _telemetry, interventions: _interventions, ...legacy } = current;
       const file =
         version === 2
           ? { ...legacy, version: 2 as const }
           : version === 3
             ? legacyV3(current)
-            : current;
+            : version === 4
+              ? legacyV4(current)
+              : current;
       expect(file.version).toBe(version);
       if (file.version === 2) expect(file).not.toHaveProperty('telemetry');
       else {
@@ -983,7 +1260,7 @@ describe('integrated extinction and telemetry', () => {
       const imported = harness.save();
       expect(imported).toEqual(reference.save());
       expect(imported.telemetry.originTick).toBe(version === 2 ? 89 : 0);
-      expect(imported.telemetry.adaptationOriginTick).toBe(version === 4 ? 0 : 89);
+      expect(imported.telemetry.adaptationOriginTick).toBe(version >= 4 ? 0 : 89);
       if (file.version === 3)
         expect(imported.telemetry).toEqual({
           ...file.telemetry,
@@ -991,15 +1268,32 @@ describe('integrated extinction and telemetry', () => {
           adaptationOriginTick: file.tick,
           samples: file.telemetry.samples.map((sample) => ({ ...sample, adaptation: null })),
         });
-      if (file.version === 4) {
-        expect(imported).toEqual(file);
+      if (file.version >= 4) {
+        expect(imported).toEqual(
+          file.version === 5
+            ? file
+            : {
+                ...file,
+                version: 5,
+                interventions: {
+                  version: 1,
+                  originTick: file.tick,
+                  originKind: 'legacy-import',
+                  originSettings: { ...file.settings },
+                  prefixSettings: { ...file.settings },
+                  totalEntries: 0,
+                  evictedThroughTick: null,
+                  entries: [],
+                },
+              },
+        );
         expect(file.telemetry.adaptationOriginTick).toBe(0);
         for (const sample of file.telemetry.samples) expect(sample.adaptation).not.toBeNull();
       }
       harness.advance();
       reference.step();
       const terminal = harness.save();
-      expect(terminal.version).toBe(4);
+      expect(terminal.version).toBe(5);
       expect(terminal.telemetry.version).toBe(2);
       expect(terminal.telemetry.samples.at(-1)).toMatchObject({
         fromTick: version === 2 ? 89 : 60,
@@ -1027,7 +1321,7 @@ describe('integrated extinction and telemetry', () => {
       expect(harness.save().telemetry.samples.map((sample) => sample.tick)).toEqual(
         version === 2 ? [90, 120, 150, 180] : [30, 60, 90, 120, 150, 180],
       );
-      expect(harness.save().telemetry.adaptationOriginTick).toBe(version === 4 ? 0 : 89);
+      expect(harness.save().telemetry.adaptationOriginTick).toBe(version >= 4 ? 0 : 89);
       expect(harness.last('frame').playback.paused).toBe(true);
     },
   );
