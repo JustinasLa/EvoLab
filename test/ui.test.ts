@@ -116,7 +116,7 @@ function realWorker() {
   };
   return { tasks, outbox, command, deliver, save, advance: () => tasks.shift()!() };
 }
-function ownershipBridge(mountFunction = mount) {
+function ownershipBridge(mountFunction = mount, beforePublish: (data: any) => void = () => {}) {
   dispose();
   type Record = { command: any; terminal?: any };
   const records = new Map<number, Record>(),
@@ -141,6 +141,7 @@ function ownershipBridge(mountFunction = mount) {
   const scope: Scope = {
     onmessage: null,
     postMessage(data, transfer = []) {
+      beforePublish(data);
       if (data.type === 'frame' && framesBlocked) {
         latestFrame = data;
         return;
@@ -195,6 +196,12 @@ function ownershipBridge(mountFunction = mount) {
     get latestFrame() {
       return latestFrame;
     },
+    get callbackCount() {
+      return callbacks.length;
+    },
+    advance() {
+      callbacks.shift()!();
+    },
     blockProcessing() {
       processingBlocked = true;
     },
@@ -227,6 +234,142 @@ function ownershipBridge(mountFunction = mount) {
     },
   };
 }
+describe('post-success publication failures with real ecology and independent physical owners', () => {
+  it.each(['start', 'load', 'settings', 'paint', 'shock'])(
+    'shows an independent stopped failure after one successful %s and recovers the applied world explicitly',
+    async (operation) => {
+      let armed = false,
+        targetId = 0,
+        terminals = 0,
+        failures = 0,
+        currentWorld!: Ecosystem;
+      const originalFrame = Ecosystem.prototype.frame;
+      vi.spyOn(Ecosystem.prototype, 'frame').mockImplementation(function (this: Ecosystem) {
+        currentWorld = this;
+        return originalFrame.call(this);
+      });
+      const bridge = ownershipBridge(mount, (data) => {
+        if (targetId && (data.requestId ?? data.commandId) === targetId) {
+          terminals++;
+          expect(data.type).not.toBe('error');
+          armed = true;
+        }
+        if (data.type === 'frame' && armed) {
+          armed = false;
+          throw new Error('injected frame publication after successful terminal');
+        }
+        if (data.type === 'error' && data.fatal && !data.operation) failures++;
+      });
+      bridge.advance();
+      expect(bridge.callbackCount).toBe(0);
+      bridge.holdTerminals();
+      click('measurements-json');
+      click('save');
+      set('mutation', '0.2');
+      if (operation === 'paint') {
+        root.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
+        pointer('pointerdown', 50, 50);
+      } else {
+        root.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
+        pointer('pointerdown', 50, 50);
+        pointer('pointerup');
+      }
+      const held = new Map(bridge.records),
+        post = bridge.endpoint.postMessage,
+        candidate = new Ecosystem({ ...DEFAULTS, seed: 73, nutrients: 0 }, false);
+      let command: any;
+      vi.spyOn(bridge.endpoint, 'postMessage').mockImplementation((data: any) => {
+        if (!targetId && terminals === 0 && data.type === operation) {
+          targetId = data.requestId ?? data.commandId;
+          command = structuredClone(data);
+        }
+        post(data);
+      });
+      bridge.holdTerminals(
+        (data) => held.has(data.requestId ?? data.commandId) || data.operation === 'end-stroke',
+      );
+      let reference = Ecosystem.load(JSON.stringify(currentWorld.save()));
+      if (operation === 'start') click('reset');
+      else if (operation === 'load') await loadText(JSON.stringify(candidate.save()));
+      else if (operation === 'settings') set('nutrients', '7');
+      else if (operation === 'shock')
+        root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
+      else {
+        pointer('pointermove', 80, 50);
+        pointer('pointerup');
+      }
+      expect(targetId).toBeGreaterThan(0);
+      expect(terminals).toBe(1);
+      expect(failures).toBe(1);
+      expect(get('run-state').textContent).toBe('STOPPED');
+      expect(get('notice').textContent).toContain('The action completed');
+      expect(get('notice').textContent).toContain('World preserved');
+      expect(get<HTMLButtonElement>('step').disabled).toBe(true);
+      expect(bridge.callbackCount).toBe(0);
+      expect(bridge.counts.terminated).toBe(0);
+      for (const [id, record] of held) expect(bridge.records.get(id)).toBe(record);
+      if (operation === 'start') reference = new Ecosystem(command.settings);
+      else if (operation === 'load') reference = candidate;
+      else if (operation === 'settings') reference.changeSettings(command.settings);
+      else if (operation === 'shock') {
+        const before = { offset: reference.eventOffset, until: reference.eventUntil };
+        reference.shock(command.kind);
+        reference.appendIntervention({
+          kind: 'shock',
+          detail: {
+            kind: command.kind,
+            before,
+            after: { offset: reference.eventOffset, until: reference.eventUntil },
+          },
+        });
+      } else {
+        const outcome = reference.paint(
+            command.tool,
+            command.x,
+            command.y,
+            command.radius,
+            command.genome,
+          ),
+          sequence = reference.interventions.entries.at(-1)!.sequence;
+        reference.recordPaint(
+          outcome,
+          command.tool,
+          command.radius,
+          command.x,
+          command.y,
+          sequence,
+        );
+      }
+      expect(currentWorld.save()).toEqual(reference.save());
+      targetId = 0;
+      await loadText('{}');
+      expect(get('run-state').textContent).toBe('PAUSED');
+      expect(get('notice').textContent).toContain('Not a valid');
+      expect(bridge.callbackCount).toBe(0);
+      expect(get<HTMLButtonElement>('measurements-json').disabled).toBe(true);
+      expect(get<HTMLButtonElement>('save').disabled).toBe(true);
+      expect(currentWorld.save()).toEqual(reference.save());
+      for (const [id, record] of held) expect(bridge.records.get(id)).toBe(record);
+      bridge.deliverAll();
+      expect(URL.createObjectURL).not.toHaveBeenCalled();
+      expect(bridge.records.size).toBe(0);
+      expect(get<HTMLButtonElement>('measurements-json').disabled).toBe(false);
+      expect(get<HTMLButtonElement>('save').disabled).toBe(false);
+      if (!reference.organisms.size) {
+        get<HTMLInputElement>('pause-on-extinction').checked = false;
+        get('pause-on-extinction').dispatchEvent(new Event('change'));
+        expect(get('run-state').textContent).toBe('PAUSED');
+      }
+      click('pause');
+      expect(get('run-state').textContent).toBe('LIVE');
+      expect(bridge.callbackCount).toBe(1);
+      bridge.advance();
+      for (let tick = 0; tick < 4; tick++) reference.step();
+      expect(currentWorld.save()).toEqual(reference.save());
+      expect(bridge.callbackCount).toBe(1);
+    },
+  );
+});
 describe('D9 lifetime ownership with real processing and independently gated terminal delivery', () => {
   it.each(['start', 'load'])(
     'D9-A10 proven nonposted %s preserves the current run and applicable serialized downloads',

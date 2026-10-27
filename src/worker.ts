@@ -94,7 +94,12 @@ export function startWorker(
   function queue(): void {
     if (!queued) {
       queued = true;
-      defer(tick, 40);
+      try {
+        defer(tick, 40);
+      } catch (error) {
+        queued = false;
+        throw error;
+      }
     }
   }
   function tick(): void {
@@ -144,11 +149,16 @@ export function startWorker(
         return;
       postingWatermark = id;
     }
+    let settled = false;
+    const complete = (response: any): void => {
+      scope.postMessage(response);
+      settled = true;
+    };
     const result = (
       status: 'applied' | 'no-op' | 'rejected',
       rowSequence: number | null = null,
     ): void =>
-      scope.postMessage({
+      complete({
         type: 'manual-result',
         ...owner,
         status,
@@ -171,7 +181,7 @@ export function startWorker(
         selected = 0;
         extinction = null;
         stroke = null;
-        scope.postMessage({
+        complete({
           type: 'started',
           ...owner,
           completedTick: world.tick,
@@ -223,7 +233,7 @@ export function startWorker(
         selected = 0;
         extinction = world.organisms.size ? null : { tick: world.tick, cause: 'empty-import' };
         reconcile(world.organisms.size);
-        scope.postMessage({
+        complete({
           type: 'loaded',
           ...owner,
           completedTick: world.tick,
@@ -329,21 +339,22 @@ export function startWorker(
         result(sequence === null ? 'no-op' : 'applied', sequence);
         send();
       } else if (data.type === 'save' && world) {
-        const text = JSON.stringify(world.save());
-        if (new TextEncoder().encode(text).byteLength > WORLD_MAX_BYTES)
+        const text = JSON.stringify(world.save()),
+          byteLength = new TextEncoder().encode(text).byteLength;
+        if (byteLength > WORLD_MAX_BYTES)
           throw new Error('World file exceeds 2.5 MB. World preserved; no download created.');
-        scope.postMessage({
+        complete({
           type: 'saved',
           ...owner,
           completedTick: world.tick,
           seed: world.settings.seed,
-          byteLength: new TextEncoder().encode(text).byteLength,
+          byteLength,
           text,
         });
       } else if (data.type === 'export-measurements' && world) {
         const source = world.measurements(stroke?.sequence ?? null),
           payload = serializeMeasurements(source, data.format);
-        scope.postMessage({
+        complete({
           type: 'measurement-exported',
           ...owner,
           completedTick: source.snapshot.completedTick,
@@ -357,7 +368,15 @@ export function startWorker(
         send();
       } else if (data.type === 'snapshot') send();
     } catch (error) {
-      if (correlated && data.type === 'start' && world) {
+      if (settled) {
+        paused = true;
+        report(
+          new Error(
+            `The action completed, but publishing or scheduling failed. World preserved; import a world or reseed to recover. ${errorText(error)}`,
+          ),
+          true,
+        );
+      } else if (correlated && data.type === 'start' && world) {
         runId = data.runId;
         stroke = null;
         try {

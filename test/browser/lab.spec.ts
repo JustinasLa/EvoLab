@@ -22,6 +22,13 @@ import { advance, legacyV3, legacyV4 } from '../fixtures/telemetry';
 
 declare global {
   interface Window {
+    publicationFault: {
+      arm: () => Promise<void>;
+      terminals: number;
+      failures: number;
+      latest: object | null;
+      pendingAtArm: number | null;
+    };
     measurementReadGate: {
       blocked: boolean;
       ready: boolean;
@@ -68,6 +75,317 @@ declare global {
       }[];
     };
   }
+}
+
+test('unselected crossing manual spans remain clipped and disclosed with independent focused pins', async ({
+  page,
+}, testInfo) => {
+  await observeTelemetry(page);
+  const world = new Ecosystem(DEFAULTS, false),
+    sequence = world.recordPaint(world.paint('food', 1, 1, 0, founder(0)), 'food', 0, 1, 1, null)!;
+  advance(world, 45);
+  world.recordPaint(world.paint('food', 2, 1, 0, founder(0)), 'food', 0, 2, 1, sequence);
+  world.changeSettings({ nutrients: 6 });
+  advance(world, 16);
+  world.changeSettings({ nutrients: 7 });
+  await page.goto('/');
+  await importTelemetryWorld(page, world.save());
+  const before = await downloadPausedWorld(page),
+    layouts: object[] = [];
+  expect(before).toEqual(Buffer.from(JSON.stringify(world.save())));
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  await page.locator('#telemetry-sample').selectOption('30');
+  for (const selection of ['2', 'latest']) {
+    await page.locator('#telemetry-intervention').selectOption(selection);
+    for (const view of ['population', 'food', 'adaptation']) {
+      await page.locator('#telemetry-view').selectOption(view);
+      await page.locator('#telemetry-intervention').focus();
+      await expect(
+        page.locator('.telemetry-manual-strip [data-first-tick="0"]').first(),
+      ).toBeAttached();
+      const layout = await page.evaluate(() => ({
+        sample: (document.querySelector('#telemetry-sample') as HTMLSelectElement).value,
+        manual: (document.querySelector('#telemetry-intervention') as HTMLSelectElement).value,
+        focus: document.activeElement?.id,
+        nodes: document.querySelector('#telemetry')!.querySelectorAll('*').length,
+        fits: document.documentElement.scrollWidth <= innerWidth,
+        domains: [...document.querySelectorAll('svg[data-start-tick]')].map((plot) => [
+          plot.getAttribute('data-start-tick'),
+          plot.getAttribute('data-end-tick'),
+        ]),
+        spans: [...document.querySelectorAll('.telemetry-manual-strip')].map((strip) => {
+          const span = strip.querySelector('[data-first-tick="0"]')!;
+          return {
+            actualFirst: span.getAttribute('data-first-tick'),
+            actualLast: span.getAttribute('data-last-tick'),
+            anchor: span.getAttribute('data-anchor-tick'),
+            clippedFirst: span.getAttribute('data-clipped-first-tick'),
+            clippedLast: span.getAttribute('data-clipped-last-tick'),
+            path: span.getAttribute('d'),
+            title: span.textContent,
+            groups: strip.querySelectorAll('.telemetry-manual-density').length,
+            height: strip.getBoundingClientRect().height,
+            inventedLatestAnchor: !!strip.querySelector('[data-first-tick="61"]'),
+            selectedCrossing: !!strip.querySelector('[data-manual-sequence="1"]'),
+          };
+        }),
+      }));
+      expect(layout).toMatchObject({
+        sample: '30',
+        manual: selection,
+        focus: 'telemetry-intervention',
+        fits: true,
+      });
+      expect(layout.nodes).toBeLessThan(2000);
+      expect(layout.domains.length).toBeGreaterThan(0);
+      expect(layout.domains.every((domain) => JSON.stringify(domain) === '["30","60"]')).toBe(true);
+      for (const span of layout.spans) {
+        expect(span).toMatchObject({
+          actualFirst: '0',
+          actualLast: '45',
+          anchor: 'none',
+          clippedFirst: '30',
+          clippedLast: '45',
+          inventedLatestAnchor: false,
+          selectedCrossing: false,
+          height: 48,
+        });
+        expect(span.path).toMatch(/^M50,15H[\d.]+$/);
+        expect(span.title).toContain('after completed ticks 0–45');
+        expect(span.title).toContain('clipped for drawing only, continues beyond plotted domain');
+        expect(span.groups).toBeLessThanOrEqual(32);
+      }
+      layouts.push({ selection, view, ...layout });
+    }
+  }
+  await page
+    .locator('#telemetry')
+    .screenshot({ path: testInfo.outputPath('unselected-crossing-span.png') });
+  expect(await downloadWorld(page)).toEqual(before);
+  await testInfo.attach('unselected-crossing-spans.json', {
+    contentType: 'application/json',
+    body: JSON.stringify({
+      layouts,
+      beforeSHA256: createHash('sha256').update(before).digest('hex'),
+      fullBytesUnchanged: true,
+    }),
+  });
+});
+
+for (const operation of ['initial-start', 'start', 'load', 'settings', 'paint', 'shock']) {
+  test(`native post-success ${operation} publication fault preserves applied state and unrelated owners until explicit recovery`, async ({
+    page,
+  }, testInfo) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', (error) => pageErrors.push(error.message));
+    const actualOperation = operation === 'initial-start' ? 'start' : operation,
+      injection = `(() => {
+        const nativePost = self.postMessage.bind(self), nativeTimeout = self.setTimeout.bind(self);
+        let armed = ${operation === 'initial-start'}, failFrame = false, pending = 0, waiting = false;
+        const acknowledge = () => { if (waiting && pending === 0) { waiting = false; armed = true; nativePost({ type: '__publication_fault_armed', pending }); } };
+        self.setTimeout = (callback, delay, ...args) => { pending++; return nativeTimeout((...values) => { pending--; try { callback(...values); } finally { acknowledge(); } }, delay, ...args); };
+        self.addEventListener('message', event => { if (event.data?.type === '__arm_publication_fault') { event.stopImmediatePropagation(); waiting = true; acknowledge(); } });
+        self.postMessage = (data, ...args) => {
+          if (failFrame && data.type === 'frame') { failFrame = false; throw new Error('Injected native-worker frame publication fault after successful terminal'); }
+          nativePost(data, ...args);
+          if (armed && data.operation === ${JSON.stringify(actualOperation)} && ['started', 'loaded', 'manual-result'].includes(data.type)) { armed = false; failFrame = true; }
+        };
+      })();\n`;
+    await page.route('**/assets/worker-*.js', async (route) => {
+      const response = await route.fetch();
+      await route.fulfill({ response, body: injection + (await response.text()) });
+    });
+    await observeMeasurementOwnership(page);
+    await page.addInitScript(
+      ({ initial, operation }) => {
+        window.Worker = new Proxy(window.Worker, {
+          construct(target, args, newTarget) {
+            const worker: Worker = Reflect.construct(target, args, newTarget);
+            let active = initial,
+              waiter: (() => void) | null = null;
+            const evidence = (window.publicationFault = {
+              terminals: 0,
+              failures: 0,
+              latest: null as object | null,
+              pendingAtArm: null as number | null,
+              arm: () =>
+                new Promise<void>((resolve) => {
+                  waiter = resolve;
+                  worker.postMessage({ type: '__arm_publication_fault' });
+                }),
+            });
+            worker.addEventListener('message', ({ data }) => {
+              if (data.type === '__publication_fault_armed') {
+                active = true;
+                evidence.pendingAtArm = data.pending;
+                const resolve = waiter;
+                waiter = null;
+                resolve?.();
+              }
+              if (active && data.operation === operation) {
+                evidence.terminals++;
+                evidence.latest = {
+                  type: data.type,
+                  operation: data.operation,
+                  runId: data.runId,
+                  requestId: data.requestId,
+                  commandId: data.commandId,
+                };
+              }
+              if (data.type === 'error' && data.fatal && !data.operation) evidence.failures++;
+            });
+            return worker;
+          },
+        });
+      },
+      { initial: operation === 'initial-start', operation: actualOperation },
+    );
+    await page.goto('/');
+    let reference = new Ecosystem();
+    let held: [number, object][] = [];
+    if (operation !== 'initial-start') {
+      await expect(page.locator('#population')).not.toHaveText('—');
+      reference = new Ecosystem(DEFAULTS, false);
+      advance(reference, 61);
+      await importTelemetryWorld(page, reference.save());
+      expect(await downloadPausedWorld(page)).toEqual(
+        Buffer.from(JSON.stringify(reference.save())),
+      );
+      await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+      await page.evaluate(() => {
+        window.measurementGate.deliveryBlocked = true;
+      });
+      await page.locator('#measurements-json').click();
+      await page.locator('#save').click();
+      await page.locator('#mutation').evaluate((input: HTMLInputElement) => {
+        input.value = '0.2';
+        input.dispatchEvent(new Event('input'));
+      });
+      reference.changeSettings({ mutation: 0.2 });
+      await page.getByRole('button', { name: 'Food', exact: true }).click();
+      await page.locator('#brush').evaluate((input: HTMLInputElement) => {
+        input.value = '0';
+        input.dispatchEvent(new Event('input'));
+      });
+      const first = await coordinate(page, 1, 1);
+      await page.mouse.move(first.x, first.y);
+      await page.mouse.down();
+      referenceManualPaint(reference, 'food', 1, 1, 0, founder(0));
+      if (operation !== 'paint') await page.mouse.up();
+      await expect(page.locator('#notice')).not.toContainText('Worker capacity busy');
+      await page.evaluate(() => window.publicationFault.arm());
+      held = await page.evaluate(() => {
+        window.measurementGate.deliveryBlocked = false;
+        return [...window.measurementGate.pending];
+      });
+      expect(held.length).toBe(operation === 'paint' ? 5 : 6);
+      if (operation === 'start') {
+        await page.getByText('World settings', { exact: true }).click();
+        await page.locator('#reset').click();
+        reference = new Ecosystem(reference.settings);
+      } else if (operation === 'load') {
+        reference = new Ecosystem({ ...DEFAULTS, seed: 74, nutrients: 0 }, false);
+        advance(reference, 65);
+        await page.locator('#file').setInputFiles({
+          name: 'post-success-candidate.json',
+          mimeType: 'application/json',
+          buffer: Buffer.from(JSON.stringify(reference.save())),
+        });
+      } else if (operation === 'settings') {
+        await page.locator('#nutrients').evaluate((input: HTMLInputElement) => {
+          input.value = '7';
+          input.dispatchEvent(new Event('input'));
+        });
+        reference.changeSettings({ nutrients: 7 });
+      } else if (operation === 'shock') {
+        await page.locator('[data-shock="heat"]').click();
+        const before = { offset: reference.eventOffset, until: reference.eventUntil };
+        reference.shock('heat');
+        reference.appendIntervention({
+          kind: 'shock',
+          detail: {
+            kind: 'heat',
+            before,
+            after: { offset: reference.eventOffset, until: reference.eventUntil },
+          },
+        });
+      } else {
+        const next = await coordinate(page, 2, 1);
+        await page.mouse.move(next.x, next.y);
+        reference.recordPaint(
+          reference.paint('food', 2, 1, 0, founder(0)),
+          'food',
+          0,
+          2,
+          1,
+          reference.interventions.entries.at(-1)!.sequence,
+        );
+        await page.mouse.up();
+      }
+    }
+    await expect(page.locator('#run-state')).toHaveText('STOPPED');
+    await expect(page.locator('#notice')).toContainText('The action completed');
+    await expect(page.locator('#notice')).toContainText('World preserved');
+    await expect(page.locator('#step')).toBeDisabled();
+    const stopped = await page.evaluate(() => ({
+      ...window.publicationFault,
+      arm: undefined,
+      counts: { ...window.measurementGate.counts },
+      pending: [...window.measurementGate.pending],
+    }));
+    expect(stopped.terminals).toBe(1);
+    expect(stopped.failures).toBe(1);
+    expect(stopped.counts.terminated).toBe(0);
+    if (operation !== 'initial-start') expect(stopped.pendingAtArm).toBe(0);
+    for (const [id, owner] of held)
+      expect(stopped.pending.find(([key]) => key === id)?.[1]).toEqual(owner);
+    await page
+      .locator('#notice')
+      .screenshot({ path: testInfo.outputPath('post-success-stopped-notice.png') });
+    await page.locator('#file').setInputFiles({
+      name: 'explicit-retained-recovery.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from('{}'),
+    });
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    await expect(page.locator('#notice')).toContainText('Not a valid');
+    if (held.length) {
+      await expect(page.locator('#save')).toBeDisabled();
+      await expect(page.locator('#measurements-json')).toBeDisabled();
+    }
+    await page.evaluate(() => {
+      window.measurementGate.releaseResults();
+    });
+    await expect(page.locator('#save')).toBeEnabled();
+    const recovered = await downloadPausedWorld(page);
+    expect(recovered).toEqual(Buffer.from(JSON.stringify(reference.save())));
+    if (!reference.organisms.size) {
+      await page.locator('#pause-on-extinction').uncheck();
+      await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    }
+    await page.locator('#pause').click();
+    await expect(page.locator('#tick')).not.toHaveText(
+      `TICK ${reference.tick.toLocaleString('en-US')}`,
+    );
+    const resumed = await pause(page),
+      captured = JSON.parse(resumed.toString()) as WorldFile;
+    expect(captured.tick).toBeGreaterThan(reference.tick);
+    advance(reference, captured.tick - reference.tick);
+    expect(captured).toEqual(reference.save());
+    expect(pageErrors).toEqual([]);
+    await testInfo.attach('native-post-success-fault-recovery.json', {
+      contentType: 'application/json',
+      body: JSON.stringify({
+        operation,
+        stopped,
+        recoveredSHA256: createHash('sha256').update(recovered).digest('hex'),
+        resumedSHA256: createHash('sha256').update(resumed).digest('hex'),
+        injectionSHA256: createHash('sha256').update(injection).digest('hex'),
+        limitation:
+          'Actual built native Worker and engine, deliberate one-shot post-terminal publication exception and read-only native scheduler wrapper. Not an OS transport failure. Held callbacks are delivery gates, not physical cancellation.',
+      }),
+    });
+  });
 }
 
 function telemetryScenario(

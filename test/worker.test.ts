@@ -153,6 +153,134 @@ describe('correlated manual/export worker protocol', () => {
     };
     return { ...harness, post, raw };
   }
+  it.each([
+    ...['initial-start', 'start', 'load', 'settings', 'paint', 'shock'].flatMap((operation) =>
+      ['frame-build', 'frame-publication'].flatMap((fault) =>
+        (operation === 'initial-start' ? [false] : [false, true]).map((pending) => [
+          operation,
+          fault,
+          pending,
+        ]),
+      ),
+    ),
+    ...['initial-start', 'start', 'load'].map((operation) => [operation, 'scheduling', false]),
+  ])(
+    'settles %s once before an independent stopped %s failure with pending callback %s and explicit retained-world recovery',
+    (operation, fault, pending) => {
+      let failSchedule = false,
+        armed = false,
+        terminals = 0,
+        independentFailures = 0;
+      const harness = protocol((scope, defer) =>
+        startWorker(scope, (callback, delay) => {
+          if (failSchedule) {
+            failSchedule = false;
+            throw new Error('injected post-success scheduling failure');
+          }
+          return defer!(callback, delay);
+        }),
+      );
+      if (operation !== 'initial-start') {
+        harness.post('start', { settings: DEFAULTS });
+        harness.raw({ type: 'pause' });
+        if (!pending) harness.advance();
+        expect(harness.tasks).toHaveLength(pending ? 1 : 0);
+      }
+      const reference = new Ecosystem(),
+        actualOperation = operation === 'initial-start' ? 'start' : operation,
+        targetRun = ['start', 'load'].includes(operation) ? 2 : 1,
+        publish = harness.scope.postMessage,
+        originalFrame = Ecosystem.prototype.frame;
+      vi.spyOn(Ecosystem.prototype, 'frame').mockImplementation(function (this: Ecosystem) {
+        if (armed && fault === 'frame-build') {
+          armed = false;
+          throw new Error('injected post-success frame construction failure');
+        }
+        return originalFrame.call(this);
+      });
+      harness.scope.postMessage = (data, transfer) => {
+        if (data.operation === actualOperation) {
+          terminals++;
+          expect(data.type).not.toBe('error');
+          armed = true;
+          if (fault === 'scheduling') failSchedule = true;
+        }
+        if (data.type === 'frame' && armed && fault === 'frame-publication') {
+          armed = false;
+          throw new Error('injected post-success frame publication failure');
+        }
+        if (data.type === 'error' && data.fatal && !data.operation) independentFailures++;
+        publish(data, transfer);
+      };
+      if (actualOperation === 'start') harness.post('start', { settings: DEFAULTS }, targetRun);
+      else if (operation === 'load')
+        harness.post('load', { text: JSON.stringify(reference.save()) }, targetRun);
+      else if (operation === 'settings') {
+        harness.post('settings', { settings: { nutrients: 7 } });
+        reference.changeSettings({ nutrients: 7 });
+      } else if (operation === 'shock') {
+        harness.post('shock', { kind: 'heat' });
+        const before = { offset: reference.eventOffset, until: reference.eventUntil };
+        reference.shock('heat');
+        reference.appendIntervention({
+          kind: 'shock',
+          detail: {
+            kind: 'heat',
+            before,
+            after: { offset: reference.eventOffset, until: reference.eventUntil },
+          },
+        });
+      } else {
+        harness.post('begin-stroke', { strokeId: 1, tool: 'food', radius: 0 });
+        harness.post('paint', {
+          strokeId: 1,
+          tool: 'food',
+          x: 1,
+          y: 1,
+          radius: 0,
+          genome: founder(0),
+        });
+        manualPaint(reference, 'food', 1, 1, 0, founder(0));
+      }
+      expect(terminals).toBe(1);
+      expect(independentFailures).toBe(1);
+      expect(harness.last('error')).toMatchObject({ type: 'error', runId: targetRun, fatal: true });
+      expect(harness.last('error').message).toContain('The action completed');
+      expect(harness.last('error')).not.toHaveProperty('requestId');
+      expect(harness.last('error')).not.toHaveProperty('commandId');
+      expect(harness.last('error')).not.toHaveProperty('operation');
+      expect(harness.tasks).toHaveLength(pending ? 1 : 0);
+      if (pending) harness.advance();
+      expect(harness.tasks).toHaveLength(0);
+      harness.post('save', {}, targetRun);
+      expect(JSON.parse(harness.last('saved').text)).toEqual(reference.save());
+      harness.scope.postMessage = publish;
+      armed = false;
+      harness.post('load', { text: '{}' }, targetRun + 1);
+      expect(harness.last('error')).toMatchObject({
+        operation: 'load',
+        recovery: { playback: { paused: true } },
+      });
+      expect(harness.tasks).toHaveLength(0);
+      harness.raw({ type: 'resume' });
+      expect(harness.tasks).toHaveLength(1);
+      harness.advance();
+      for (let tick = 0; tick < 4; tick++) reference.step();
+      harness.post('save', {}, targetRun + 1);
+      expect(JSON.parse(harness.last('saved').text)).toEqual(reference.save());
+      expect(harness.tasks).toHaveLength(1);
+    },
+  );
+  it('encodes a complete Save only once and reports its exact byte length without changing state', () => {
+    const harness = protocol();
+    harness.post('start', { settings: DEFAULTS });
+    const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+    harness.post('save');
+    expect(encode).toHaveBeenCalledTimes(1);
+    const saved = harness.last('saved');
+    expect(saved.byteLength).toBe(new TextEncoder().encode(saved.text).byteLength);
+    expect(saved.text).toBe(JSON.stringify(new Ecosystem().save()));
+  });
   it('uses a lifetime watermark, exact owner headers and one bounded error terminal, including absent and stale worlds', () => {
     const harness = protocol();
     harness.raw(null);
@@ -570,8 +698,9 @@ describe('worker control and persistence', () => {
         expect(emitted.frame.stats.tick).toBe(batch * speed);
         for (let tick = 0; tick < speed; tick++) reference.step();
         expect(harness.tasks).toHaveLength(1);
-        const before = harness.saveText();
-        expect(before).toBe(JSON.stringify(reference.save()));
+        const before = harness.saveText(),
+          expected = reference.save();
+        expect(before).toBe(JSON.stringify(expected));
         const samples = emitted.frame.telemetry.samples;
         expect(samples.map((sample) => sample.tick)).toEqual(
           Array.from({ length: Math.floor((batch * speed) / 30) }, (_, index) => (index + 1) * 30),
@@ -590,8 +719,7 @@ describe('worker control and persistence', () => {
           });
           expect(new TextEncoder().encode(exported.text).byteLength).toBe(exported.byteLength);
           if (format === 'json') {
-            const measurement = JSON.parse(exported.text),
-              expected = reference.save();
+            const measurement = JSON.parse(exported.text);
             expect(measurement.telemetry).toEqual(expected.telemetry);
             expect(measurement.interventions).toEqual(expected.interventions);
             expect(measurement.snapshot.completedTick).toBe(expected.tick);

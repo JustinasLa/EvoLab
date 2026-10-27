@@ -2083,6 +2083,27 @@ describe('telemetry persistence, migration and complete candidate validation', (
 });
 
 describe('whole-world persistence', () => {
+  it('projects complete ordered terrain exactly like the original independent index-filter oracle without mutating ecology', () => {
+    const world = empty();
+    for (let cell = 0; cell < WIDTH * HEIGHT; cell++) {
+      if (cell % 7 === 0) world.food[cell] = 1;
+      else if (cell % 11 === 0) world.walls[cell] = 1;
+    }
+    world.food[WIDTH * HEIGHT - 1] = 1;
+    const food = [...world.food.keys()].filter((cell) => world.food[cell]),
+      walls = [...world.walls.keys()].filter((cell) => world.walls[cell]),
+      random = world.random.state,
+      saved = world.save();
+    expect(saved.food).toEqual(food);
+    expect(saved.walls).toEqual(walls);
+    expect(saved.food[0]).toBe(0);
+    expect(saved.food.at(-1)).toBe(WIDTH * HEIGHT - 1);
+    expect(Ecosystem.load(JSON.stringify(saved)).save()).toEqual(saved);
+    saved.food.length = 0;
+    saved.walls.length = 0;
+    expect(world.save()).toEqual({ ...saved, food, walls });
+    expect(world.random.state).toBe(random);
+  });
   it('restores every organism, terrain, counters and RNG state and continues identically', () => {
     const w = new Ecosystem();
     for (let i = 0; i < 100; i++) w.step();

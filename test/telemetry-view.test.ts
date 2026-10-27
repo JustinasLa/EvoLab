@@ -130,6 +130,58 @@ describe('bounded model-dependent telemetry presentation', () => {
     show(world.frame(), 2);
     expect(get<HTMLSelectElement>('telemetry-intervention').value).toBe('latest');
   });
+  it('draws unselected crossing strokes without inventing clipped-edge anchors or disturbing either pin', () => {
+    const world = new Ecosystem(DEFAULTS, false),
+      sequence = world.recordPaint(
+        world.paint('food', 1, 1, 0, founder(0)),
+        'food',
+        0,
+        1,
+        1,
+        null,
+      )!;
+    advance(world, 45);
+    world.recordPaint(world.paint('food', 2, 1, 0, founder(0)), 'food', 0, 2, 1, sequence);
+    world.changeSettings({ nutrients: 6 });
+    advance(world, 16);
+    world.changeSettings({ nutrients: 7 });
+    const before = JSON.stringify(world.save());
+    show(world.frame());
+    choose('telemetry-sample', '30');
+    for (const selection of ['2', 'latest']) {
+      choose('telemetry-intervention', selection);
+      get('telemetry-intervention').focus();
+      for (const view of ['population', 'food', 'adaptation']) {
+        choose('telemetry-view', view);
+        expect(document.activeElement).toBe(get('telemetry-intervention'));
+        expect(get<HTMLSelectElement>('telemetry-sample').value).toBe('30');
+        expect(get<HTMLSelectElement>('telemetry-intervention').value).toBe(selection);
+        expect(root.querySelector('[data-manual-sequence="1"]')).toBeNull();
+        for (const strip of root.querySelectorAll('.telemetry-manual-strip')) {
+          const span = strip.querySelector('[data-first-tick="0"]')!;
+          expect(span.getAttribute('data-last-tick')).toBe('45');
+          expect(span.getAttribute('data-anchor-tick')).toBe('none');
+          expect(span.getAttribute('data-clipped-first-tick')).toBe('30');
+          expect(span.getAttribute('data-clipped-last-tick')).toBe('45');
+          expect(span.getAttribute('d')).toMatch(/^M50,15H[\d.]+$/);
+          expect(span.textContent).toContain('after completed ticks 0–45');
+          expect(span.textContent).toContain(
+            'clipped for drawing only, continues beyond plotted domain',
+          );
+          expect(strip.querySelectorAll('.telemetry-manual-density').length).toBeLessThanOrEqual(
+            32,
+          );
+          expect(strip.querySelector('[data-first-tick="61"]')).toBeNull();
+        }
+        for (const plot of root.querySelectorAll('svg[data-start-tick]')) {
+          expect(plot.getAttribute('data-start-tick')).toBe('30');
+          expect(plot.getAttribute('data-end-tick')).toBe('60');
+        }
+        expect(root.querySelectorAll('*').length).toBeLessThan(2000);
+      }
+    }
+    expect(JSON.stringify(world.save())).toBe(before);
+  });
   it('bounds128 same-tick markers/options and honestly falls back when a selected sequence is evicted', () => {
     const world = new Ecosystem({ ...DEFAULTS, nutrients: 0 }, false);
     advance(world, 60);

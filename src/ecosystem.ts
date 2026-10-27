@@ -904,6 +904,12 @@ export class Ecosystem {
     };
   }
   save(): WorldFile {
+    const food: number[] = [],
+      walls: number[] = [];
+    for (let cell = 0; cell < this.food.length; cell++) {
+      if (this.food[cell]) food.push(cell);
+      if (this.walls[cell]) walls.push(cell);
+    }
     return {
       version: 5,
       telemetry: this.telemetrySnapshot(),
@@ -917,8 +923,8 @@ export class Ecosystem {
       nextSpecies: this.nextSpecies,
       eventUntil: this.eventUntil,
       eventOffset: this.eventOffset,
-      food: [...this.food.keys()].filter((i) => this.food[i]),
-      walls: [...this.walls.keys()].filter((i) => this.walls[i]),
+      food,
+      walls,
       organisms: structuredClone([...this.organisms.values()]),
     };
   }

@@ -219,8 +219,11 @@ export function createTelemetryView(root: HTMLElement) {
     );
     const entries = source!.interventions.entries;
     for (const entry of entries) {
-      if (entry.firstTick < start || entry.firstTick > end) continue;
-      const bucket = Math.min(31, Math.floor((x(entry.firstTick) - 50) / bucketWidth));
+      if (entry.lastTick < start || entry.firstTick > end) continue;
+      const bucket = Math.min(
+        31,
+        Math.floor((x(Math.max(start, entry.firstTick)) - 50) / bucketWidth),
+      );
       const group = groups.get(bucket) ?? [];
       group.push(entry);
       groups.set(bucket, group);
@@ -228,10 +231,17 @@ export function createTelemetryView(root: HTMLElement) {
     for (const group of groups.values()) {
       const first = group[0],
         lastTick = Math.max(...group.map((entry) => entry.lastTick)),
+        firstX = x(Math.max(start, first.firstTick)),
+        lastX = x(Math.min(lastTick, end)),
+        anchor = first.firstTick >= start ? `M${firstX},11l4,4l-4,4l-4,-4Z ` : '',
         mark = svgElement('path', {
-          d: `M${x(first.firstTick)},11l4,4l-4,4l-4,-4Z M${x(first.firstTick)},15H${x(Math.min(lastTick, end))}`,
+          d: `${anchor}M${firstX},15H${lastX}`,
           class: 'telemetry-manual-density',
           'data-first-tick': first.firstTick,
+          'data-last-tick': lastTick,
+          'data-anchor-tick': first.firstTick >= start ? first.firstTick : 'none',
+          'data-clipped-first-tick': Math.max(start, first.firstTick),
+          'data-clipped-last-tick': Math.min(lastTick, end),
           'data-count': group.length,
           'stroke-dasharray': '3 2',
         });
@@ -239,7 +249,7 @@ export function createTelemetryView(root: HTMLElement) {
         svgElement(
           'title',
           {},
-          `Manual density indicator: ${group.length} entries, sequences ${first.sequence}–${group.at(-1)!.sequence}, after completed ticks ${first.firstTick}–${lastTick}; not continuous effects or measurements${lastTick > end ? '; continues beyond plotted domain' : ''}.`,
+          `Manual density indicator: ${group.length} entries, sequences ${first.sequence}–${group.at(-1)!.sequence}, after completed ticks ${first.firstTick}–${lastTick}; not continuous effects or measurements${first.firstTick < start || lastTick > end ? '; clipped for drawing only, continues beyond plotted domain' : ''}.`,
         ),
       );
       svg.append(mark);
