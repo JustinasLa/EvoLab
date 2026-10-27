@@ -1,9 +1,12 @@
 import { Ecosystem } from './ecosystem';
+import { serializeMeasurements } from './measurement-export';
 import {
   WIDTH,
   HEIGHT,
   WORLD_MAX_BYTES,
+  STROKE_COMMAND_CAPACITY,
   validSettings,
+  knownSettings,
   validGenome,
   integer,
   index,
@@ -18,6 +21,8 @@ import {
   type ControlState,
   type TelemetrySnapshot,
   type ExtinctionSummary,
+  type PaintTool,
+  type ManualOperation,
   type WorkerResponse,
 } from './model';
 
@@ -62,6 +67,14 @@ export function startWorker(
   let endpoints: { time: number; ticks: number }[] = [],
     completedTicks = 0;
   let gap: TickRate | null = null;
+  let activeCommand: any;
+  let stroke: {
+    id: number;
+    tool: PaintTool;
+    radius: number;
+    sequence: number | null;
+    count: number;
+  } | null = null;
   const next = nextSessionId;
   const context = (): 'visible' | 'hidden' => (view.visible ? 'visible' : 'hidden');
   function resetRate(): void {
@@ -134,7 +147,12 @@ export function startWorker(
   function telemetry(): TelemetrySnapshot {
     telemetryDirty = false;
     telemetryAt = now();
-    return { revision, tick: world!.tick, telemetry: world!.telemetrySnapshot() };
+    return {
+      revision,
+      tick: world!.tick,
+      telemetry: world!.telemetrySnapshot(),
+      interventions: world!.interventionSnapshot(),
+    };
   }
   function changed(): void {
     revision = next(revision);
@@ -152,15 +170,21 @@ export function startWorker(
     progressAt = now();
     progressSequence = next(progressSequence);
     progressOwner = { runId, sequence: progressSequence };
-    scope.postMessage({
-      type: 'progress',
-      runId,
-      sequence: progressSequence,
-      state: state(),
-      ...(forced || (telemetryDirty && now() - telemetryAt >= 250)
-        ? { telemetry: telemetry() }
-        : {}),
-    });
+    try {
+      scope.postMessage({
+        type: 'progress',
+        runId,
+        sequence: progressSequence,
+        state: state(),
+        ...(forced || (telemetryDirty && now() - telemetryAt >= 250)
+          ? { telemetry: telemetry() }
+          : {}),
+      });
+    } catch (error) {
+      progressOwner = null;
+      progressDirty = true;
+      throw error;
+    }
   }
   function publishDisplay(): void {
     if (!alive || !world || failed || displayOwner || !view.visible || !displayDirty) return;
@@ -171,18 +195,24 @@ export function startWorker(
       frame = world.display(observation.world);
     displaySequence = next(displaySequence);
     displayOwner = { runId, sequence: displaySequence };
-    scope.postMessage(
-      {
-        type: 'frame',
-        runId,
-        sequence: displaySequence,
-        viewEpoch: view.epoch,
-        state: observation,
-        frame,
-        selectedId: observation.selected?.id ?? 0,
-      },
-      [frame.cells.buffer, frame.ids.buffer],
-    );
+    try {
+      scope.postMessage(
+        {
+          type: 'frame',
+          runId,
+          sequence: displaySequence,
+          viewEpoch: view.epoch,
+          state: observation,
+          frame,
+          selectedId: observation.selected?.id ?? 0,
+        },
+        [frame.cells.buffer, frame.ids.buffer],
+      );
+    } catch (error) {
+      displayOwner = null;
+      displayDirty = true;
+      throw error;
+    }
   }
   function reconcile(previousPopulation: number): void {
     if (world!.organisms.size) extinction = null;
@@ -226,8 +256,15 @@ export function startWorker(
         type: 'error',
         runId: responseRun,
         ...(responseCommand === undefined ? {} : { commandId: responseCommand }),
+        ...(responseCommand !== undefined && activeCommand?.commandId === responseCommand
+          ? {
+              operation: activeCommand.type,
+              ...(activeCommand.format === undefined ? {} : { format: activeCommand.format }),
+              ...(activeCommand.strokeId === undefined ? {} : { strokeId: activeCommand.strokeId }),
+            }
+          : {}),
         code,
-        message: (error instanceof Error ? error.message : String(error)).slice(0, 1000),
+        message: (error instanceof Error ? error.message : String(error)).slice(0, 512),
         ...(fatal
           ? { fatal: true as const }
           : world && !failed && responseRun === runId
@@ -242,7 +279,12 @@ export function startWorker(
   function queue(): void {
     if (alive && world && !paused && !failed && !queued) {
       queued = true;
-      defer(tick, target?.status === 'running' ? 0 : 40);
+      try {
+        defer(tick, target?.status === 'running' ? 0 : 40);
+      } catch (error) {
+        queued = false;
+        throw error;
+      }
     }
   }
   function tick(): void {
@@ -308,21 +350,34 @@ export function startWorker(
     if (
       !integer(data.runId, 0, Number.MAX_SAFE_INTEGER) ||
       !integer(data.commandId, 1, Number.MAX_SAFE_INTEGER) ||
+      data.requestId !== undefined ||
       typeof data.type !== 'string'
     )
       return;
     if (data.commandId <= commandId) return;
+    activeCommand = data;
+    commandId = data.commandId;
     const replacement = data.type === 'start' || data.type === 'load';
     if (replacement ? data.runId <= runId : data.runId !== runId) {
       report('Command belongs to an inactive world.', 'stale-run', data.runId, data.commandId);
       return;
     }
-    commandId = data.commandId;
-    if (failed && !replacement) {
+    if (
+      failed &&
+      !replacement &&
+      !['save', 'export-measurements', 'snapshot', 'inspect', 'end-stroke'].includes(data.type)
+    ) {
       report('The ecosystem worker is stopped.', 'invalid-command', runId, commandId);
       return;
     }
     let errorCode: Extract<WorkerResponse, { type: 'error' }>['code'] = 'invalid-command';
+    let completed = false;
+    const complete = (response: WorkerResponse): void => {
+      scope.postMessage({ ...response, operation: data.type } as WorkerResponse);
+      completed = true;
+    };
+    let manualResult:
+      { status: 'applied' | 'no-op' | 'rejected'; rowSequence: number | null } | undefined;
     try {
       if (data.type === 'start') {
         if (
@@ -343,12 +398,13 @@ export function startWorker(
         paused = failed = false;
         selected = 0;
         extinction = null;
+        stroke = null;
         target = null;
         displayDirty = interactive = settled = false;
         changed();
         resetRate();
         settle();
-        scope.postMessage({
+        complete({
           type: 'control',
           runId,
           commandId,
@@ -358,6 +414,8 @@ export function startWorker(
       } else if (data.type === 'load') {
         if (typeof data.text !== 'string') throw new Error('Invalid world text.');
         runId = data.runId;
+        failed = false;
+        stroke = null;
         displayDirty = interactive = settled = false;
         resetRate();
         let restored: Ecosystem;
@@ -383,7 +441,7 @@ export function startWorker(
         reconcile(world.organisms.size);
         resetRate();
         settle();
-        scope.postMessage({
+        complete({
           type: 'loaded',
           runId,
           commandId,
@@ -486,18 +544,63 @@ export function startWorker(
             settled = true;
             exactTelemetry = true;
             break;
+          case 'begin-stroke':
+            if (stroke) throw new Error('A brush stroke is already open.');
+            if (
+              !integer(data.strokeId, 1, Number.MAX_SAFE_INTEGER) ||
+              !['food', 'wall', 'erase'].includes(data.tool) ||
+              !integer(data.radius, 0, 8)
+            )
+              throw new Error('Invalid brush stroke.');
+            stroke = {
+              id: data.strokeId,
+              tool: data.tool,
+              radius: data.radius,
+              sequence: null,
+              count: 0,
+            };
+            manualResult = { status: 'no-op', rowSequence: null };
+            mutation = false;
+            break;
+          case 'end-stroke':
+            if (!integer(data.strokeId, 1, Number.MAX_SAFE_INTEGER))
+              throw new Error('Invalid stroke closure.');
+            manualResult = {
+              status: stroke?.id === data.strokeId ? 'applied' : 'no-op',
+              rowSequence: null,
+            };
+            if (stroke?.id === data.strokeId) stroke = null;
+            mutation = false;
+            break;
           case 'settings': {
+            stroke = null;
             const patch = data.settings;
             if (
               !patch ||
               typeof patch !== 'object' ||
+              Array.isArray(patch) ||
               Object.keys(patch).some(
                 (key) => !['mutation', 'nutrients', 'climate'].includes(key),
               ) ||
               !validSettings({ ...world.settings, ...patch })
             )
               throw new Error('Invalid live settings.');
-            Object.assign(world.settings, patch);
+            const changes: Partial<
+              Record<'mutation' | 'nutrients' | 'climate', { before: number; after: number }>
+            > = {};
+            for (const key of ['mutation', 'nutrients', 'climate'] as const)
+              if (patch[key] !== undefined && patch[key] !== world.settings[key])
+                changes[key] = { before: world.settings[key], after: patch[key] };
+            let sequence: number | null = null;
+            if (Object.keys(changes).length) {
+              world.requireInterventionCapacity();
+              Object.assign(world.settings, patch);
+              sequence = world.appendIntervention({ kind: 'settings', detail: { changes } });
+            }
+            manualResult = {
+              status: sequence === null ? 'no-op' : 'applied',
+              rowSequence: sequence,
+            };
             interactive ||= paused && view.visible;
             exactTelemetry = paused;
             break;
@@ -516,20 +619,66 @@ export function startWorker(
               !validGenome(data.genome)
             )
               throw new Error('Invalid paint command.');
+            if (data.tool === 'plant') stroke = null;
+            else if (
+              !stroke ||
+              stroke.id !== data.strokeId ||
+              stroke.tool !== data.tool ||
+              stroke.radius !== data.radius ||
+              stroke.count >= STROKE_COMMAND_CAPACITY
+            )
+              throw new Error('Rejected closed or exhausted brush stroke.');
+            world.requireInterventionCapacity(data.tool !== 'plant' && stroke!.sequence !== null);
+            if (stroke) stroke.count++;
             const population = world.organisms.size;
-            world.paint(data.tool, data.x, data.y, data.radius, data.genome);
+            const outcome = world.paint(data.tool, data.x, data.y, data.radius, data.genome);
+            let sequence: number | null = null;
+            if (outcome.placement)
+              sequence = world.appendIntervention({ kind: 'placement', detail: outcome.placement });
+            else if (stroke) {
+              sequence = world.recordPaint(
+                outcome,
+                stroke.tool,
+                stroke.radius,
+                data.x,
+                data.y,
+                stroke.sequence,
+              );
+              stroke.sequence = sequence;
+              if (!outcome.changedBrushCells && !outcome.removedOrganisms) sequence = null;
+            }
             reconcile(population);
+            manualResult = {
+              status: sequence === null ? 'no-op' : 'applied',
+              rowSequence: sequence,
+            };
             interactive ||= paused && view.visible;
             exactTelemetry = paused;
             break;
           }
-          case 'shock':
-            if (data.kind !== 'cold' && data.kind !== 'heat')
-              throw new Error('Invalid climate event.');
+          case 'shock': {
+            stroke = null;
+            if (!['cold', 'heat'].includes(data.kind) || world.tick + 900 > 1e9)
+              throw new Error('Invalid climate shock.');
+            const before = { offset: world.eventOffset, until: world.eventUntil };
+            world.requireInterventionCapacity();
             world.shock(data.kind);
+            const after = { offset: world.eventOffset, until: world.eventUntil };
+            const sequence =
+              before.offset !== after.offset || before.until !== after.until
+                ? world.appendIntervention({
+                    kind: 'shock',
+                    detail: { kind: data.kind, before, after },
+                  })
+                : null;
+            manualResult = {
+              status: sequence === null ? 'no-op' : 'applied',
+              rowSequence: sequence,
+            };
             interactive ||= paused && view.visible;
             exactTelemetry = paused;
             break;
+          }
           case 'snapshot':
             if (typeof data.display !== 'boolean') throw new Error('Invalid snapshot request.');
             mutation = false;
@@ -538,10 +687,36 @@ export function startWorker(
             break;
           case 'save': {
             errorCode = 'save-failed';
-            const text = JSON.stringify(world.save());
-            if (new TextEncoder().encode(text).byteLength > WORLD_MAX_BYTES)
+            const text = JSON.stringify(world.save()),
+              byteLength = new TextEncoder().encode(text).byteLength;
+            if (byteLength > WORLD_MAX_BYTES)
               throw new Error('World file exceeds 2.5 MB. Nothing was downloaded.');
-            scope.postMessage({ type: 'saved', runId, commandId, state: state(), text });
+            complete({
+              type: 'saved',
+              runId,
+              commandId,
+              state: state(),
+              text,
+              byteLength,
+              completedTick: world.tick,
+              seed: world.settings.seed,
+            });
+            return;
+          }
+          case 'export-measurements': {
+            const source = world.measurements(stroke?.sequence ?? null);
+            const payload = serializeMeasurements(source, data.format);
+            complete({
+              type: 'measurement-exported',
+              operation: 'export-measurements',
+              runId,
+              commandId,
+              state: state(),
+              completedTick: source.snapshot.completedTick,
+              seed: source.snapshot.seed,
+              format: data.format,
+              ...payload,
+            });
             return;
           }
           default:
@@ -549,19 +724,42 @@ export function startWorker(
         }
         if (mutation) changed();
         if (interactive) displayDirty = true;
-        scope.postMessage({
-          type: 'control',
-          runId,
-          commandId,
-          state: state(),
-          ...(exactTelemetry ? { telemetry: telemetry() } : {}),
-        });
+        const observation = state();
+        const history = exactTelemetry ? { telemetry: telemetry() } : {};
+        if (manualResult)
+          complete({
+            type: 'manual-result',
+            operation: data.type as ManualOperation,
+            runId,
+            commandId,
+            state: observation,
+            ...history,
+            ...manualResult,
+            completedTick: world.tick,
+            ...(data.strokeId === undefined ? {} : { strokeId: data.strokeId }),
+          });
+        else complete({ type: 'control', runId, commandId, state: observation, ...history });
       }
       publishDisplay();
       publishProgress();
       queue();
     } catch (error) {
-      report(error, errorCode, data.runId, data.commandId);
+      if (completed)
+        report(
+          new Error(
+            'The action completed, but publishing or scheduling failed. World preserved; import a world or reseed to recover. ' +
+              (error instanceof Error ? error.message : String(error)),
+          ),
+          'fatal',
+        );
+      else {
+        if (data.type === 'start' && world) {
+          runId = data.runId;
+          stroke = null;
+          failed = false;
+        }
+        report(error, errorCode, data.runId, data.commandId);
+      }
     }
   };
   return () => {

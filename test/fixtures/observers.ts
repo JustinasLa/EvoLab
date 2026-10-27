@@ -34,6 +34,15 @@ export function observerWorld(population = 6, maximal = false): WorldFile {
   world.births = world.deaths = 999_999_999;
   for (let tick = 0; tick < 30; tick++) world.step();
   assert.equal(world.organisms.size, population);
+  for (let point = 0; point < 128; point++) {
+    const outcome = world.paint('food', point, 155, 0, {
+      cells: [{ x: 0, y: 0, type: 3 }],
+      preference: 0.5,
+      tolerance: 0.3,
+      tempo: 2,
+    });
+    assert.ok(world.recordPaint(outcome, 'food', 0, point, 155, null));
+  }
   const saved = world.save(),
     sample = saved.telemetry.samples[0],
     origin = maximal ? 999_994_590 : 0;
@@ -59,6 +68,8 @@ export function observerWorld(population = 6, maximal = false): WorldFile {
     saved.eventUntil = 1_000_000_000;
     saved.eventOffset = -0.32;
   }
+  saved.interventions.originSettings = { ...saved.settings };
+  saved.interventions.prefixSettings = { ...saved.settings };
   return saved;
 }
 

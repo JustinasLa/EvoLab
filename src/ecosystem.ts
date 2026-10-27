@@ -6,6 +6,9 @@ import {
   TELEMETRY_INTERVAL_TICKS,
   TELEMETRY_CAPACITY,
   WORLD_MAX_BYTES,
+  INTERVENTION_CAPACITY,
+  STROKE_COMMAND_CAPACITY,
+  knownSettings,
   PREFERENCE_ENDPOINTS,
   Random,
   index,
@@ -29,6 +32,15 @@ import {
   type DeathRecord,
   type LegacyWorldFile,
   type WorldFileV3,
+  type WorldFileV4,
+  type InterventionState,
+  type InterventionEffect,
+  type InterventionEntry,
+  type PaintOutcome,
+  type PaintTool,
+  type SettingsPatch,
+  type SettingKey,
+  type MeasurementSource,
   type PreferenceBins,
   type DeathCause,
   type EnergyLedger,
@@ -223,6 +235,185 @@ function validTelemetry(
   }
   return countedBirths <= births && countedDeaths <= deaths;
 }
+function emptyInterventions(settings: Settings, tick = 0, legacy = false): InterventionState {
+  return {
+    version: 1,
+    originTick: tick,
+    originKind: legacy ? 'legacy-import' : 'fresh',
+    originSettings: knownSettings(settings),
+    totalEntries: 0,
+    evictedThroughTick: null,
+    prefixSettings: knownSettings(settings),
+    entries: [],
+  };
+}
+function brushCells(radius: number): number {
+  let count = 0;
+  for (let vertical = -radius; vertical <= radius; vertical++)
+    for (let horizontal = -radius; horizontal <= radius; horizontal++)
+      if (horizontal * horizontal + vertical * vertical <= radius * radius) count++;
+  return count;
+}
+function validInterventions(value: unknown, file: WorldFile): value is InterventionState {
+  const settingKeys = ['seed', 'mutation', 'nutrients', 'climate'];
+  const settingsMatch = (left: Settings, right: Settings): boolean =>
+    settingKeys.every((key) => left[key as keyof Settings] === right[key as keyof Settings]);
+  if (
+    !exactKeys(value, [
+      'version',
+      'originTick',
+      'originKind',
+      'originSettings',
+      'totalEntries',
+      'evictedThroughTick',
+      'prefixSettings',
+      'entries',
+    ]) ||
+    value.version !== 1 ||
+    !integer(value.originTick, 0, file.tick) ||
+    !['fresh', 'legacy-import'].includes(value.originKind as string) ||
+    (value.originKind === 'fresh' && value.originTick !== 0) ||
+    !exactKeys(value.originSettings, settingKeys) ||
+    !validSettings(value.originSettings) ||
+    !exactKeys(value.prefixSettings, settingKeys) ||
+    !validSettings(value.prefixSettings) ||
+    !integer(value.totalEntries, 0, Number.MAX_SAFE_INTEGER) ||
+    !Array.isArray(value.entries) ||
+    value.entries.length !== Math.min(INTERVENTION_CAPACITY, value.totalEntries)
+  )
+    return false;
+  const evicted = value.totalEntries - value.entries.length;
+  if (
+    evicted === 0
+      ? value.evictedThroughTick !== null ||
+        !settingsMatch(value.originSettings, value.prefixSettings)
+      : !integer(value.evictedThroughTick, value.originTick, file.tick)
+  )
+    return false;
+  const replay = { ...value.prefixSettings };
+  if (replay.seed !== file.settings.seed || value.originSettings.seed !== replay.seed) return false;
+  let previousTick = (value.evictedThroughTick as number | null) ?? value.originTick,
+    previousShock: { offset: number; until: number } | undefined;
+  const coordinate = (point: unknown): boolean =>
+    exactKeys(point, ['x', 'y']) &&
+    integer(point.x, 0, WIDTH - 1) &&
+    integer(point.y, 0, HEIGHT - 1);
+  const event = (candidate: unknown): candidate is { offset: number; until: number } =>
+    exactKeys(candidate, ['offset', 'until']) &&
+    finite(candidate.offset, -0.32, 0.32) &&
+    integer(candidate.until, 0, 1e9);
+  for (const [index, row] of value.entries.entries()) {
+    if (
+      !exactKeys(row, ['sequence', 'origin', 'kind', 'firstTick', 'lastTick', 'detail']) ||
+      row.sequence !== evicted + index + 1 ||
+      row.origin !== 'manual' ||
+      !integer(row.firstTick, previousTick, file.tick) ||
+      !integer(row.lastTick, row.firstTick, file.tick)
+    )
+      return false;
+    const detail = row.detail;
+    previousTick = row.lastTick;
+    if (row.kind === 'paint') {
+      if (
+        !exactKeys(detail, [
+          'tool',
+          'radius',
+          'first',
+          'last',
+          'successfulCommands',
+          'changedBrushCells',
+          'removedOrganisms',
+        ]) ||
+        !['food', 'wall', 'erase'].includes(detail.tool as string) ||
+        !integer(detail.radius, 0, 8) ||
+        !coordinate(detail.first) ||
+        !coordinate(detail.last) ||
+        !integer(detail.successfulCommands, 1, STROKE_COMMAND_CAPACITY)
+      )
+        return false;
+      const maximum = detail.successfulCommands * brushCells(detail.radius);
+      if (
+        !integer(detail.changedBrushCells, 0, maximum) ||
+        !integer(detail.removedOrganisms, 0, maximum) ||
+        detail.successfulCommands > detail.changedBrushCells + detail.removedOrganisms ||
+        (detail.tool !== 'erase' &&
+          (detail.removedOrganisms !== 0 || detail.changedBrushCells === 0))
+      )
+        return false;
+    } else {
+      if (row.firstTick !== row.lastTick) return false;
+      if (row.kind === 'placement') {
+        if (
+          !exactKeys(detail, [
+            'x',
+            'y',
+            'organismId',
+            'speciesId',
+            'bodyCells',
+            'preference',
+            'tolerance',
+            'tempo',
+          ]) ||
+          !integer(detail.x, 0, WIDTH - 1) ||
+          !integer(detail.y, 0, HEIGHT - 1) ||
+          !integer(detail.organismId, 1, file.nextId - 1) ||
+          !integer(detail.speciesId, 1, file.nextSpecies - 1) ||
+          !integer(detail.bodyCells, 1, 16) ||
+          !finite(detail.preference, 0, 1) ||
+          !finite(detail.tolerance, 0.12, 0.6) ||
+          !integer(detail.tempo, 2, 12)
+        )
+          return false;
+      } else if (row.kind === 'settings') {
+        if (
+          !exactKeys(detail, ['changes']) ||
+          !detail.changes ||
+          typeof detail.changes !== 'object' ||
+          Array.isArray(detail.changes)
+        )
+          return false;
+        const changes = detail.changes as Record<string, unknown>,
+          keys = Object.keys(changes);
+        if (!keys.length || keys.some((key) => !['mutation', 'nutrients', 'climate'].includes(key)))
+          return false;
+        for (const key of keys) {
+          const change = changes[key],
+            field = key as SettingKey;
+          if (
+            !exactKeys(change, ['before', 'after']) ||
+            change.before !== replay[field] ||
+            change.before === change.after ||
+            !validSettings({ ...replay, [field]: change.before }) ||
+            !validSettings({ ...replay, [field]: change.after })
+          )
+            return false;
+          replay[field] = change.after as number;
+        }
+      } else if (row.kind === 'shock') {
+        if (
+          !exactKeys(detail, ['kind', 'before', 'after']) ||
+          !['cold', 'heat'].includes(detail.kind as string) ||
+          !event(detail.before) ||
+          !event(detail.after) ||
+          detail.after.offset !== (detail.kind === 'cold' ? -0.32 : 0.32) ||
+          detail.after.until !== row.firstTick + 900 ||
+          (detail.before.offset === detail.after.offset &&
+            detail.before.until === detail.after.until) ||
+          (previousShock &&
+            (previousShock.offset !== detail.before.offset ||
+              previousShock.until !== detail.before.until))
+        )
+          return false;
+        previousShock = detail.after;
+      } else return false;
+    }
+  }
+  return (
+    settingsMatch(replay, file.settings) &&
+    (!previousShock ||
+      (previousShock.offset === file.eventOffset && previousShock.until === file.eventUntil))
+  );
+}
 export class Ecosystem {
   random: Random;
   settings: Settings;
@@ -239,10 +430,12 @@ export class Ecosystem {
   eventOffset = 0;
   lastDeath: DeathRecord | null = null;
   private telemetry = emptyTelemetry(0);
+  private interventions: InterventionState;
   private readonly recording: boolean;
   constructor(settings: Settings = DEFAULTS, seed = true, options: { telemetry?: boolean } = {}) {
     this.recording = options.telemetry !== false;
     this.settings = { ...settings };
+    this.interventions = emptyInterventions(settings);
     this.random = new Random(settings.seed);
     if (seed) this.seed();
   }
@@ -293,6 +486,90 @@ export class Ecosystem {
   }
   telemetrySnapshot(): TelemetryState {
     return this.recording ? structuredClone(this.telemetry) : emptyTelemetry(this.tick);
+  }
+  requireInterventionCapacity(continuing = false): void {
+    if (!continuing && this.interventions.totalEntries === Number.MAX_SAFE_INTEGER)
+      throw new Error('Manual history sequence limit reached. World preserved.');
+  }
+  appendIntervention(effect: InterventionEffect): number {
+    this.requireInterventionCapacity();
+    if (this.interventions.entries.length === INTERVENTION_CAPACITY) {
+      const removed = this.interventions.entries.shift()!;
+      this.interventions.evictedThroughTick = removed.lastTick;
+      if (removed.kind === 'settings')
+        for (const [key, change] of Object.entries(removed.detail.changes))
+          this.interventions.prefixSettings[key as SettingKey] = change!.after;
+    }
+    const sequence = ++this.interventions.totalEntries;
+    this.interventions.entries.push({
+      ...structuredClone(effect),
+      sequence,
+      origin: 'manual',
+      firstTick: this.tick,
+      lastTick: this.tick,
+    });
+    return sequence;
+  }
+  recordPaint(
+    outcome: PaintOutcome,
+    tool: PaintTool,
+    radius: number,
+    x: number,
+    y: number,
+    sequence: number | null,
+  ): number | null {
+    if (!outcome.changedBrushCells && !outcome.removedOrganisms) return sequence;
+    const latest = this.interventions.entries.at(-1);
+    if (sequence !== null && latest?.sequence === sequence && latest.kind === 'paint') {
+      latest.lastTick = this.tick;
+      latest.detail.last = { x, y };
+      latest.detail.successfulCommands++;
+      latest.detail.changedBrushCells += outcome.changedBrushCells;
+      latest.detail.removedOrganisms += outcome.removedOrganisms;
+      return sequence;
+    }
+    return this.appendIntervention({
+      kind: 'paint',
+      detail: {
+        tool,
+        radius,
+        first: { x, y },
+        last: { x, y },
+        successfulCommands: 1,
+        changedBrushCells: outcome.changedBrushCells,
+        removedOrganisms: outcome.removedOrganisms,
+      },
+    });
+  }
+  changeSettings(patch: SettingsPatch): number | null {
+    const next = { ...this.settings, ...patch };
+    if (
+      !validSettings(next) ||
+      Object.keys(patch).some((key) => !['mutation', 'nutrients', 'climate'].includes(key))
+    )
+      throw new Error('Invalid manual settings patch.');
+    const changes: Extract<InterventionEffect, { kind: 'settings' }>['detail']['changes'] = {};
+    for (const key of ['mutation', 'nutrients', 'climate'] as const)
+      if (next[key] !== this.settings[key])
+        changes[key] = { before: this.settings[key], after: next[key] };
+    if (!Object.keys(changes).length) return null;
+    this.requireInterventionCapacity();
+    this.settings = next;
+    return this.appendIntervention({ kind: 'settings', detail: { changes } });
+  }
+  measurements(openStrokeSequence: number | null = null): MeasurementSource {
+    return {
+      snapshot: {
+        worldVersion: 5,
+        completedTick: this.tick,
+        seed: this.settings.seed,
+        settings: knownSettings(this.settings),
+        event: { offset: this.eventOffset, until: this.eventUntil },
+        openStrokeSequence,
+      },
+      telemetry: this.telemetrySnapshot(),
+      interventions: structuredClone(this.interventions),
+    };
   }
   seed(): void {
     // Porous mineral ridges partition habitats without sealing them off.
@@ -511,11 +788,33 @@ export class Ecosystem {
     }
     this.observe();
   }
-  paint(tool: Tool, x: number, y: number, radius: number, genome: Genome): void {
+  paint(tool: Tool, x: number, y: number, radius: number, genome: Genome): PaintOutcome {
     if (tool === 'plant') {
-      this.spawn(genome, x, y);
-      return;
+      const placed = this.spawn(genome, x, y);
+      return {
+        changedBrushCells: 0,
+        removedOrganisms: 0,
+        placement: placed
+          ? {
+              x: placed.x,
+              y: placed.y,
+              organismId: placed.id,
+              speciesId: placed.species,
+              bodyCells: placed.genome.cells.length,
+              preference: placed.genome.preference,
+              tolerance: placed.genome.tolerance,
+              tempo: placed.genome.tempo,
+            }
+          : null,
+      };
     }
+    const before: [number, number, number][] = [];
+    for (let vertical = -radius; vertical <= radius; vertical++)
+      for (let horizontal = -radius; horizontal <= radius; horizontal++)
+        if (horizontal * horizontal + vertical * vertical <= radius * radius) {
+          const position = index(x + horizontal, y + vertical);
+          before.push([position, this.food[position], this.walls[position]]);
+        }
     const victims = new Set<number>();
     for (let dy = -radius; dy <= radius; dy++)
       for (let dx = -radius; dx <= radius; dx++)
@@ -539,6 +838,13 @@ export class Ecosystem {
       for (let dy = -radius; dy <= radius; dy++)
         for (let dx = -radius; dx <= radius; dx++)
           if (dx * dx + dy * dy <= radius * radius) this.food[index(x + dx, y + dy)] = 0;
+    return {
+      placement: null,
+      removedOrganisms: victims.size,
+      changedBrushCells: before.filter(
+        ([position, food, wall]) => this.food[position] !== food || this.walls[position] !== wall,
+      ).length,
+    };
   }
   shock(kind: 'cold' | 'heat'): void {
     this.eventOffset = kind === 'cold' ? -0.32 : 0.32;
@@ -588,7 +894,12 @@ export class Ecosystem {
       },
     };
   }
-  display(presentation: Pick<Frame, 'stats' | 'climate' | 'offset'>): Omit<Frame, 'telemetry'> {
+  interventionSnapshot(): InterventionState {
+    return structuredClone(this.interventions);
+  }
+  display(
+    presentation: Pick<Frame, 'stats' | 'climate' | 'offset'>,
+  ): Omit<Frame, 'telemetry' | 'interventions'> {
     const cells = new Uint8Array(this.food.length),
       ids = this.occupied.slice();
     for (let position = 0; position < cells.length; position++)
@@ -600,12 +911,23 @@ export class Ecosystem {
     return { cells, ids, ...presentation };
   }
   frame(): Frame {
-    return { ...this.display(this.presentation()), telemetry: this.telemetrySnapshot() };
+    return {
+      ...this.display(this.presentation()),
+      telemetry: this.telemetrySnapshot(),
+      interventions: this.interventionSnapshot(),
+    };
   }
   save(): WorldFile {
+    const food: number[] = [],
+      walls: number[] = [];
+    for (let cell = 0; cell < this.food.length; cell++) {
+      if (this.food[cell]) food.push(cell);
+      if (this.walls[cell]) walls.push(cell);
+    }
     return {
-      version: 4,
+      version: 5,
       telemetry: this.telemetrySnapshot(),
+      interventions: structuredClone(this.interventions),
       settings: { ...this.settings },
       random: this.random.state,
       tick: this.tick,
@@ -615,8 +937,8 @@ export class Ecosystem {
       nextSpecies: this.nextSpecies,
       eventUntil: this.eventUntil,
       eventOffset: this.eventOffset,
-      food: [...this.food.keys()].filter((i) => this.food[i]),
-      walls: [...this.walls.keys()].filter((i) => this.walls[i]),
+      food,
+      walls,
       organisms: structuredClone([...this.organisms.values()]),
     };
   }
@@ -627,11 +949,11 @@ export class Ecosystem {
     )
       throw new Error('World file exceeds 2.5 MB.');
     const parsed: unknown = JSON.parse(text);
-    const f = parsed as WorldFile | WorldFileV3 | LegacyWorldFile;
+    const f = parsed as WorldFile | WorldFileV4 | WorldFileV3 | LegacyWorldFile;
     if (
       !f ||
       typeof f !== 'object' ||
-      (f.version !== 2 && f.version !== 3 && f.version !== 4) ||
+      (f.version !== 2 && f.version !== 3 && f.version !== 4 && f.version !== 5) ||
       !validSettings(f.settings) ||
       !integer(f.random, -2147483648, 4294967295) ||
       !integer(f.tick, 0, 1e9) ||
@@ -644,12 +966,14 @@ export class Ecosystem {
       !Array.isArray(f.organisms) ||
       f.organisms.length > LIMIT
     )
-      throw new Error('Not a valid EvoLab ecosystem (version 2, 3 or 4).');
+      throw new Error('Not a valid EvoLab ecosystem (version 2, 3, 4 or 5).');
     if (
       f.version !== 2 &&
       !validTelemetry(f.telemetry, f.tick, f.births, f.deaths, f.version === 3 ? 1 : 2)
     )
       throw new Error('Invalid ecosystem telemetry.');
+    if (f.version === 5 && !validInterventions(f.interventions, f))
+      throw new Error('Invalid ecosystem manual intervention history.');
     const world = new Ecosystem(f.settings, false);
     for (const [field, array] of [
       ['food', world.food],
@@ -702,6 +1026,10 @@ export class Ecosystem {
       eventOffset: f.eventOffset,
     });
     world.random.state = f.random;
+    world.interventions =
+      f.version === 5
+        ? structuredClone(f.interventions)
+        : emptyInterventions(f.settings, f.tick, true);
     world.telemetry =
       f.version === 2
         ? emptyTelemetry(f.tick)

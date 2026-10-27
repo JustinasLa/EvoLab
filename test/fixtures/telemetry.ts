@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { Ecosystem } from '../../src/ecosystem';
-import { DEFAULTS, WIDTH, type WorldFile, type WorldFileV3 } from '../../src/model';
+import {
+  DEFAULTS,
+  WIDTH,
+  type WorldFile,
+  type WorldFileV3,
+  type WorldFileV4,
+} from '../../src/model';
 
 export function advance(world: Ecosystem, ticks: number): void {
   for (let tick = 0; tick < ticks; tick++) world.step();
@@ -29,8 +35,9 @@ export function colony(
 }
 
 export function legacyV3(saved: WorldFile): WorldFileV3 {
+  const { interventions: _interventions, ...historical } = ecology(saved);
   return {
-    ...ecology(saved),
+    ...historical,
     version: 3,
     telemetry: {
       version: 1,
@@ -40,4 +47,8 @@ export function legacyV3(saved: WorldFile): WorldFileV3 {
       pending: saved.telemetry.pending,
     },
   };
+}
+export function legacyV4(saved: WorldFile): WorldFileV4 {
+  const { interventions: _interventions, ...historical } = saved;
+  return { ...historical, version: 4 };
 }

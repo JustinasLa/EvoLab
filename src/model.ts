@@ -4,6 +4,10 @@ export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
+export const WORLD_VERSION = 5;
+export const INTERVENTION_CAPACITY = 128;
+export const MANUAL_CAPACITY = 32;
+export const STROKE_COMMAND_CAPACITY = 4096;
 export const PREFERENCE_ENDPOINTS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1] as const;
 export type PreferenceBins = [
   number,
@@ -93,6 +97,7 @@ export interface Frame {
   climate: number;
   offset: number;
   telemetry: TelemetryState;
+  interventions: InterventionState;
 }
 export type DeathCause = 'age' | 'energy' | 'manual';
 export type TraitMean = number | null;
@@ -202,6 +207,7 @@ export interface TelemetrySnapshot {
   revision: number;
   tick: number;
   telemetry: TelemetryState;
+  interventions: InterventionState;
 }
 export interface AcceptedTelemetrySource extends TelemetrySnapshot {
   runId: number;
@@ -226,8 +232,12 @@ export type CommandPayload =
       y: number;
       radius: number;
       genome: Genome;
+      strokeId?: number;
     }
-  | { type: 'shock'; kind: 'cold' | 'heat' };
+  | { type: 'shock'; kind: 'cold' | 'heat' }
+  | { type: 'begin-stroke'; strokeId: number; tool: PaintTool; radius: number }
+  | { type: 'end-stroke'; strokeId: number }
+  | { type: 'export-measurements'; format: MeasurementFormat };
 export type OrdinaryCommand = CommandPayload & { runId: number; commandId: number };
 export interface FlowAck {
   type: 'flow-ack';
@@ -259,6 +269,7 @@ export type WorkerResponse =
       commandId: number;
       state: ControlState;
       telemetry?: TelemetrySnapshot;
+      operation?: string;
     }
   | {
       type: 'loaded';
@@ -266,12 +277,50 @@ export type WorkerResponse =
       commandId: number;
       state: ControlState;
       telemetry: TelemetrySnapshot;
+      operation?: string;
     }
-  | { type: 'saved'; runId: number; commandId: number; state: ControlState; text: string }
+  | {
+      type: 'saved';
+      operation?: 'save';
+      runId: number;
+      commandId: number;
+      state: ControlState;
+      text: string;
+      completedTick: number;
+      seed: number;
+      byteLength: number;
+    }
+  | {
+      type: 'measurement-exported';
+      operation: 'export-measurements';
+      runId: number;
+      commandId: number;
+      state: ControlState;
+      text: string;
+      format: MeasurementFormat;
+      completedTick: number;
+      seed: number;
+      byteLength: number;
+    }
+  | {
+      type: 'manual-result';
+      operation: ManualOperation;
+      runId: number;
+      commandId: number;
+      state: ControlState;
+      telemetry?: TelemetrySnapshot;
+      strokeId?: number;
+      status: 'applied' | 'no-op' | 'rejected';
+      completedTick: number;
+      rowSequence: number | null;
+    }
   | {
       type: 'error';
       runId: number;
       commandId?: number;
+      operation?: string;
+      format?: MeasurementFormat;
+      strokeId?: number;
       code:
         | 'invalid-command'
         | 'stale-run'
@@ -320,8 +369,9 @@ export function observedOrganism(organism: Organism): Organism {
   };
 }
 export interface WorldFile {
-  version: 4;
+  version: 5;
   telemetry: TelemetryState;
+  interventions: InterventionState;
   settings: Settings;
   random: number;
   tick: number;
@@ -335,11 +385,92 @@ export interface WorldFile {
   walls: number[];
   organisms: Organism[];
 }
-export type WorldFileV3 = Omit<WorldFile, 'version' | 'telemetry'> & {
+export type WorldFileV4 = Omit<WorldFile, 'version' | 'interventions'> & { version: 4 };
+export type WorldFileV3 = Omit<WorldFile, 'version' | 'telemetry' | 'interventions'> & {
   version: 3;
   telemetry: TelemetryStateV1;
 };
-export type LegacyWorldFile = Omit<WorldFile, 'version' | 'telemetry'> & { version: 2 };
+export type LegacyWorldFile = Omit<WorldFile, 'version' | 'telemetry' | 'interventions'> & {
+  version: 2;
+};
+export type PaintTool = 'food' | 'wall' | 'erase';
+export type SettingKey = 'mutation' | 'nutrients' | 'climate';
+export type SettingsPatch = Partial<Pick<Settings, SettingKey>>;
+export interface Coordinate {
+  x: number;
+  y: number;
+}
+export interface ClimateEvent {
+  offset: number;
+  until: number;
+}
+export interface PaintDetail {
+  tool: PaintTool;
+  radius: number;
+  first: Coordinate;
+  last: Coordinate;
+  successfulCommands: number;
+  changedBrushCells: number;
+  removedOrganisms: number;
+}
+export interface PlacementDetail extends Coordinate {
+  organismId: number;
+  speciesId: number;
+  bodyCells: number;
+  preference: number;
+  tolerance: number;
+  tempo: number;
+}
+export type InterventionEffect =
+  | { kind: 'paint'; detail: PaintDetail }
+  | { kind: 'placement'; detail: PlacementDetail }
+  | {
+      kind: 'settings';
+      detail: { changes: Partial<Record<SettingKey, { before: number; after: number }>> };
+    }
+  | { kind: 'shock'; detail: { kind: 'cold' | 'heat'; before: ClimateEvent; after: ClimateEvent } };
+export type InterventionEntry = InterventionEffect & {
+  sequence: number;
+  origin: 'manual';
+  firstTick: number;
+  lastTick: number;
+};
+export interface InterventionState {
+  version: 1;
+  originTick: number;
+  originKind: 'fresh' | 'legacy-import';
+  originSettings: Settings;
+  totalEntries: number;
+  evictedThroughTick: number | null;
+  prefixSettings: Settings;
+  entries: InterventionEntry[];
+}
+export interface PaintOutcome {
+  changedBrushCells: number;
+  removedOrganisms: number;
+  placement: PlacementDetail | null;
+}
+export interface MeasurementSource {
+  snapshot: {
+    worldVersion: 5;
+    completedTick: number;
+    seed: number;
+    settings: Settings;
+    event: ClimateEvent;
+    openStrokeSequence: number | null;
+  };
+  telemetry: TelemetryState;
+  interventions: InterventionState;
+}
+export type MeasurementFormat = 'csv' | 'json';
+export type ManualOperation = 'begin-stroke' | 'paint' | 'settings' | 'shock' | 'end-stroke';
+export type TrackedOperation = ManualOperation | 'export-measurements' | 'save' | 'start' | 'load';
+export const knownSettings = ({ seed, mutation, nutrients, climate }: Settings): Settings => ({
+  seed,
+  mutation,
+  nutrients,
+  climate,
+});
 export const clamp = (v: number, min: number, max: number): number =>
   Math.max(min, Math.min(max, v));
 export const index = (x: number, y: number): number =>

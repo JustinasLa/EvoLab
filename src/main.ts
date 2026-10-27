@@ -6,12 +6,14 @@ import {
   WIDTH,
   HEIGHT,
   WORLD_MAX_BYTES,
+  MANUAL_CAPACITY,
+  STROKE_COMMAND_CAPACITY,
+  integer,
   clamp,
   founder,
   speciesName,
   validGenome,
   validSettings,
-  integer,
   observedGenome,
   observedSettings,
   nextSessionId,
@@ -29,6 +31,8 @@ import {
   type Tool,
   type CellType,
   type PlaybackState,
+  type PaintTool,
+  type MeasurementFormat,
 } from './model';
 import { draw, genomeSvg, markup, organismHtml, point, viewport, type Camera } from './view';
 import { createTelemetryView } from './telemetry-view';
@@ -127,7 +131,28 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
         y: data.y,
         radius: data.radius,
         genome: observedGenome(data.genome),
+        ...(data.strokeId === undefined ? {} : { strokeId: data.strokeId }),
       };
+    case 'export-measurements':
+      if (!['csv', 'json'].includes(data.format)) throw new Error('Invalid measurement format.');
+      return { type: 'export-measurements', format: data.format };
+    case 'begin-stroke':
+      if (
+        !integer(data.strokeId, 1, Number.MAX_SAFE_INTEGER) ||
+        !['food', 'wall', 'erase'].includes(data.tool) ||
+        !integer(data.radius, 0, 8)
+      )
+        throw new Error('Invalid brush stroke.');
+      return {
+        type: 'begin-stroke',
+        strokeId: data.strokeId,
+        tool: data.tool,
+        radius: data.radius,
+      };
+    case 'end-stroke':
+      if (!integer(data.strokeId, 1, Number.MAX_SAFE_INTEGER))
+        throw new Error('Invalid stroke closure.');
+      return { type: 'end-stroke', strokeId: data.strokeId };
     case 'shock':
       if (data.kind !== 'cold' && data.kind !== 'heat') throw new Error('Invalid climate event.');
       return { type: 'shock', kind: data.kind };
@@ -188,6 +213,8 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     type: CommandPayload['type'];
     commandId: number;
     runId: number;
+    strokeId?: number;
+    format?: MeasurementFormat;
   };
   const pending: Entry[] = [];
   const pendingSettings: Partial<Record<keyof Settings, { ticket: number; value: number }>> = {};
@@ -195,6 +222,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     ticket = 0,
     wireId = 0,
     generation = 0;
+  let rejectedTicket = -1;
   let latestState: ControlState | undefined,
     acceptedRun = 0,
     latestTelemetry: AcceptedTelemetrySource | null = null;
@@ -226,6 +254,71 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   let pendingSpeed: { ticket: number; value: number } | null = null,
     pendingExtinction: { ticket: number; value: boolean } | null = null;
   let waitingFile: { file: File; request: number; generation: number; run: number } | null = null;
+  let strokeId = 0,
+    terminated = false;
+  let closeLease: { strokeId: number; beginPosted: boolean; posted: boolean } | null = null;
+  let localStroke: { id: number; tool: PaintTool; radius: number; count: number } | null = null;
+  let ownerPointer: number | null = null;
+  type Download = { url: string; timer?: ReturnType<typeof setTimeout> };
+  const downloads: Partial<Record<'save' | 'export-measurements', Download>> = {};
+  const lifecycleBusy = (): boolean =>
+    posted?.type === 'start' ||
+    posted?.type === 'load' ||
+    pending.some((entry) => entry.payload.type === 'start' || entry.payload.type === 'load');
+  const manualCount = (): number =>
+    pending.filter((entry) =>
+      ['begin-stroke', 'paint', 'settings', 'shock'].includes(entry.payload.type),
+    ).length +
+    Number(!!posted && ['begin-stroke', 'paint', 'settings', 'shock'].includes(posted.type));
+  const hasOwner = (type: CommandPayload['type']): boolean =>
+    posted?.type === type || pending.some((entry) => entry.payload.type === type);
+  function availability(): void {
+    const unavailable = terminated || stopped || lifecycleBusy();
+    get<HTMLButtonElement>('save').disabled = unavailable || hasOwner('save') || !!downloads.save;
+    for (const format of ['csv', 'json'])
+      get<HTMLButtonElement>('measurements-' + format).disabled =
+        unavailable || hasOwner('export-measurements') || !!downloads['export-measurements'];
+  }
+  function clearDownload(
+    operation: 'save' | 'export-measurements',
+    owned = downloads[operation],
+  ): void {
+    if (!owned || downloads[operation] !== owned) return;
+    delete downloads[operation];
+    if (owned.timer !== undefined) clearTimeout(owned.timer);
+    URL.revokeObjectURL(owned.url);
+    if (alive) availability();
+  }
+  function terminate(): void {
+    if (!terminated) {
+      worker.terminate();
+      terminated = true;
+    }
+    clearDownload('save');
+    clearDownload('export-measurements');
+    closeLease = localStroke = null;
+    ownerPointer = null;
+    dragging = false;
+    if (alive) availability();
+  }
+  function postTracked(
+    type: CommandPayload['type'],
+    payload: Record<string, unknown> = {},
+  ): boolean {
+    return send({ type, ...payload });
+  }
+  function endStroke(): void {
+    dragging = false;
+    ownerPointer = null;
+    localStroke = null;
+    const lease = closeLease;
+    if (!lease || lease.posted) return;
+    lease.posted = true;
+    if (!send({ type: 'end-stroke', strokeId: lease.strokeId })) {
+      terminate();
+      stop();
+    }
+  }
   function increment(value: number): number {
     try {
       return nextSessionId(value);
@@ -257,7 +350,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     });
   }
   function pump(): void {
-    if (!alive || posted) return;
+    if (!alive || terminated || posted) return;
+    const previousRun = runId,
+      previousEstablished = establishedRun;
     const start = pending[0]?.payload.type === 'start';
     if (viewIntent && !start && establishedRun === runId && !stopped) {
       const view = viewIntent;
@@ -287,6 +382,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     if (entry.targetTicket) entry.targetTicket.wireId = wireId;
     if (payload.type === 'start' || payload.type === 'load') {
       runId = increment(runId);
+      stopped = false;
       establishedRun = null;
       pendingFrame = null;
       telemetry.update({ status: 'pending', commandId: wireId });
@@ -296,7 +392,11 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       }
       text('run-state', 'LOADING');
     }
+    if (payload.type === 'begin-stroke' && closeLease?.strokeId === payload.strokeId)
+      closeLease.beginPosted = true;
     posted = {
+      ...('strokeId' in payload ? { strokeId: payload.strokeId } : {}),
+      ...('format' in payload ? { format: payload.format } : {}),
       type: payload.type,
       ticket: entry.ticket,
       generation: entry.generation,
@@ -306,10 +406,55 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       targetTicket: entry.targetTicket,
       cancelTicket: entry.cancelTicket,
     };
-    worker.postMessage({ ...payload, runId, commandId: wireId });
+    availability();
+    try {
+      const previousSave = downloads.save,
+        previousExport = downloads['export-measurements'];
+      worker.postMessage({ ...payload, runId, commandId: wireId });
+      if (payload.type === 'start' || payload.type === 'load') {
+        if (previousSave) clearDownload('save', previousSave);
+        if (previousExport) clearDownload('export-measurements', previousExport);
+      }
+    } catch (error) {
+      rejectedTicket = entry.ticket;
+      if (error instanceof DOMException && error.name === 'DataCloneError') {
+        posted = null;
+        runId = previousRun;
+        establishedRun =
+          previousEstablished ?? (latestState && acceptedRun === previousRun ? previousRun : null);
+        if (payload.type === 'begin-stroke') {
+          closeLease = null;
+          localStroke = null;
+          ownerPointer = null;
+          dragging = false;
+        }
+        if (latestState && establishedRun === runId) {
+          accept(latestState);
+          renderSettings(latestState.settings);
+          renderPlayback(latestState.playback);
+        }
+        availability();
+      } else {
+        terminate();
+        stop();
+      }
+      notice('Could not post this action. No automatic retry was queued.');
+    }
   }
   function send(data: any): boolean {
-    if (!alive || (stopped && data.type !== 'start' && data.type !== 'load')) return false;
+    if (
+      !alive ||
+      terminated ||
+      (stopped && data.type !== 'start' && data.type !== 'load' && data.type !== 'end-stroke')
+    )
+      return false;
+    if (
+      (data.type === 'save' || data.type === 'export-measurements') &&
+      (hasOwner(data.type) || downloads[data.type as 'save' | 'export-measurements'])
+    ) {
+      notice('Worker capacity busy; wait for the earlier download.');
+      return false;
+    }
     try {
       let payload = captureCommand(data, settings);
       const reserved = payload.type === 'pause' || payload.type === 'cancel-target';
@@ -332,7 +477,13 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         payload.type !== 'start' &&
         (reserved
           ? pending.some((entry) => entry.reserved)
-          : pending.filter((entry) => !entry.reserved).length - superseded.length >= 30)
+          : payload.type !== 'end-stroke' &&
+            pending.filter((entry) => !entry.reserved).length -
+              superseded.length +
+              Number(
+                !!closeLease && !pending.some((entry) => entry.payload.type === 'end-stroke'),
+              ) >=
+              30)
       ) {
         dragging = false;
         notice('Controls busy; wait for acknowledgement.');
@@ -360,8 +511,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           }
         }
       pending.push(entry);
+      availability();
       pump();
-      return true;
+      return rejectedTicket !== entry.ticket;
     } catch (error) {
       dragging = false;
       notice((error as Error).message);
@@ -431,7 +583,13 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   function stop(): void {
     stopped = true;
     paused = true;
+    clearDownload('save');
+    clearDownload('export-measurements');
+    const retainedClose = closeLease?.beginPosted
+      ? pending.find((entry) => entry.payload.type === 'end-stroke')
+      : undefined;
     pending.length = 0;
+    if (retainedClose) pending.push(retainedClose);
     viewIntent = null;
     establishedRun = null;
     pendingFrame = null;
@@ -442,6 +600,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     text('run-state', 'STOPPED');
     text('tick-rate', 'Measured ticks/s: — · paused/stopped');
     root.classList.add('paused');
+    availability();
   }
   const tab = (name: string): void => {
     root
@@ -451,6 +610,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     get('organism-panel').hidden = name !== 'organism';
   };
   function choose(next: Tool): void {
+    endStroke();
     if (next === 'plant' && !validGenome(blueprint)) {
       notice('Draw 1–16 connected cells before placing an organism.');
       tab('organism');
@@ -502,6 +662,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     );
   }
   function copyDesign(genome: Genome): void {
+    endStroke();
     designRevision++;
     blueprint = structuredClone(genome);
     blueprintName = speciesName(genome);
@@ -537,6 +698,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     }
   }
   function reset(): void {
+    if (lifecycleBusy()) {
+      notice('World replacement capacity busy; wait for acknowledgement.');
+      return;
+    }
     const seed = Number(get<HTMLInputElement>('seed').value),
       next = { ...settings, seed };
     if (!get<HTMLInputElement>('seed').checkValidity() || !validSettings(next)) {
@@ -547,11 +712,25 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       { type: 'start', settings: next, display: desiredView },
       settings,
     );
-    generation = increment(generation);
+    try {
+      generation = increment(generation);
+    } catch {
+      notice('Session counter exhausted. Restart the worker.');
+      return;
+    }
     worldRequest++;
     waitingFile = null;
     blueprintRequest++;
+    if (closeLease?.beginPosted) endStroke();
+    else {
+      closeLease = null;
+      localStroke = null;
+      ownerPointer = null;
+      dragging = false;
+    }
+    const retainedClose = pending.find((entry) => entry.payload.type === 'end-stroke');
     pending.length = 0;
+    if (retainedClose) pending.push(retainedClose);
     targetTicket = undefined;
     for (const key of ['mutation', 'nutrients', 'climate'] as const) delete pendingSettings[key];
     settingsEdits = {};
@@ -585,10 +764,80 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       get<HTMLDetailsElement>('specimen-details').open = true;
       send({ type: 'inspect', ...p });
       tab('organism');
-    } else if (tool !== 'pan')
-      send({ type: 'paint', tool, ...p, radius: brush, genome: blueprint });
+    } else if (tool !== 'pan') {
+      if (!validGenome(blueprint)) {
+        notice('Draw 1–16 connected cells before painting.');
+        return;
+      }
+      const genome: Genome = {
+        cells: blueprint.cells.map(({ x, y, type }) => ({ x, y, type })),
+        preference: blueprint.preference,
+        tolerance: blueprint.tolerance,
+        tempo: blueprint.tempo,
+      };
+      if (tool === 'plant') {
+        endStroke();
+        postTracked('paint', { tool, ...p, radius: brush, genome });
+        return;
+      }
+      const stroke = localStroke!;
+      if (
+        stroke.count >= STROKE_COMMAND_CAPACITY ||
+        !postTracked('paint', {
+          tool: stroke.tool,
+          ...p,
+          radius: stroke.radius,
+          genome,
+          strokeId: stroke.id,
+        })
+      ) {
+        endStroke();
+        notice(
+          'Partial brush stroke stopped at its command/capacity limit. Earlier admitted points may still complete.',
+        );
+      } else {
+        stroke.count++;
+        if (stroke.count === STROKE_COMMAND_CAPACITY) {
+          endStroke();
+          notice('Partial brush stroke reached 4096 commands. Start a new gesture to continue.');
+        }
+      }
+    }
   }
   canvas.addEventListener('pointerdown', (event) => {
+    if (
+      ownerPointer !== null ||
+      (event.button !== undefined && event.button !== 0) ||
+      event.isPrimary === false
+    )
+      return;
+    if (tool !== 'pan' && tool !== 'inspect' && (lifecycleBusy() || stopped || terminated)) {
+      notice('World replacement or transport is not ready for editing.');
+      return;
+    }
+    if (
+      ['food', 'wall', 'erase'].includes(tool) &&
+      (closeLease ||
+        manualCount() > MANUAL_CAPACITY - 2 ||
+        pending.filter((entry) => !entry.reserved).length > 27 ||
+        wireId > Number.MAX_SAFE_INTEGER - 3 ||
+        strokeId === Number.MAX_SAFE_INTEGER)
+    ) {
+      notice('Brush capacity busy. A fresh pointer press is required after earlier work drains.');
+      return;
+    }
+    if (['food', 'wall', 'erase'].includes(tool)) {
+      const id = ++strokeId;
+      closeLease = { strokeId: id, beginPosted: false, posted: false };
+      localStroke = { id, tool: tool as PaintTool, radius: brush, count: 0 };
+      if (!postTracked('begin-stroke', { strokeId: id, tool, radius: brush })) {
+        if (closeLease?.beginPosted) endStroke();
+        else closeLease = null;
+        localStroke = null;
+        return;
+      }
+    }
+    ownerPointer = event.pointerId;
     dragging = true;
     lastX = event.clientX;
     lastY = event.clientY;
@@ -596,7 +845,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     act(event);
   });
   canvas.addEventListener('pointermove', (event) => {
-    if (!dragging) return;
+    if (!dragging || event.pointerId !== ownerPointer) return;
     if (tool === 'pan') {
       camera.x += event.clientX - lastX;
       camera.y += event.clientY - lastY;
@@ -605,11 +854,14 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     lastX = event.clientX;
     lastY = event.clientY;
   });
-  const release = (): void => {
-    dragging = false;
+  const release = (event: Event): void => {
+    if ('pointerId' in event && event.pointerId !== ownerPointer) return;
+    endStroke();
   };
   window.addEventListener('pointerup', release);
   window.addEventListener('pointercancel', release);
+  window.addEventListener('blur', release);
+  canvas.addEventListener('lostpointercapture', release);
   canvas.addEventListener(
     'wheel',
     (event) => {
@@ -696,6 +948,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   for (const id of ['mutation', 'nutrients', 'climate'] as const)
     get(id).addEventListener('input', () => {
       const value = Number(get<HTMLInputElement>(id).value);
+      endStroke();
       if (!send({ type: 'settings', settings: { [id]: value } })) {
         get<HTMLInputElement>(id).value = String(settings[id]);
         return;
@@ -707,20 +960,23 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       );
     });
   get('brush').addEventListener('input', () => {
+    endStroke();
     brush = Number(get<HTMLInputElement>('brush').value);
     text('brush-value', `${brush} cells`);
   });
   get('preference').addEventListener('input', () => {
+    endStroke();
     designRevision++;
     blueprint.preference = Number(get<HTMLInputElement>('preference').value);
     text('preference-value', `${Math.round(blueprint.preference * 40)}°`);
   });
   get('reset').addEventListener('click', reset);
-  root
-    .querySelectorAll<HTMLButtonElement>('[data-shock]')
-    .forEach((b) =>
-      b.addEventListener('click', () => send({ type: 'shock', kind: b.dataset.shock })),
-    );
+  root.querySelectorAll<HTMLButtonElement>('[data-shock]').forEach((b) =>
+    b.addEventListener('click', () => {
+      endStroke();
+      postTracked('shock', { kind: b.dataset.shock });
+    }),
+  );
   root.querySelectorAll<HTMLButtonElement>('[data-cell]').forEach((b) =>
     b.addEventListener('click', () => {
       cellType = Number(b.dataset.cell) as CellType;
@@ -733,6 +989,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   get('editor').addEventListener('click', (event) => {
     const b = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-x]');
     if (!b) return;
+    endStroke();
     designRevision++;
     const x = Number(b.dataset.x),
       y = Number(b.dataset.y),
@@ -744,6 +1001,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     editor();
   });
   get('clear-design').addEventListener('click', () => {
+    endStroke();
     designRevision++;
     blueprint = founder(0);
     blueprintName = BLUEPRINT_DEFAULT_NAME;
@@ -790,6 +1048,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       }
       if (!current()) return;
       const imported = parseBlueprint(content);
+      endStroke();
       blueprint = imported.genome;
       blueprintName = imported.name;
       blueprintDescription = imported.description;
@@ -823,6 +1082,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   get('help').addEventListener('click', () => get<HTMLDialogElement>('help-dialog').showModal());
   get('close-help').addEventListener('click', () => get<HTMLDialogElement>('help-dialog').close());
   get('save').addEventListener('click', () => send({ type: 'save' }));
+  for (const format of ['csv', 'json'] as const)
+    get('measurements-' + format).addEventListener('click', () =>
+      send({ type: 'export-measurements', format }),
+    );
   const worldInput = get<HTMLInputElement>('file');
   function invalidateCandidate(): void {
     worldRequest++;
@@ -843,7 +1106,14 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     try {
       if (request.file.size > WORLD_MAX_BYTES) throw new Error('World file exceeds 2.5 MB.');
       const content = await request.file.text();
-      if (current()) send({ type: 'load', text: content });
+      if (current()) {
+        if (lifecycleBusy())
+          notice('World replacement capacity busy; choose the file again after acknowledgement.');
+        else {
+          endStroke();
+          send({ type: 'load', text: content });
+        }
+      }
     } catch (error) {
       if (current()) notice(error instanceof Error ? error.message : 'Could not read this world.');
     } finally {
@@ -866,6 +1136,8 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     const file = worldInput.files?.[0];
     if (!file) return;
     waitingFile = { file, request: worldRequest, generation, run: runId };
+    if (reading)
+      notice('World read still outstanding; only the latest waiting selection is retained.');
     void readWorld();
   });
   const keyboard = (event: KeyboardEvent): void => {
@@ -1036,22 +1308,51 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       source: latestTelemetry,
     });
   }
-  function download(data: Extract<WorkerResponse, { type: 'saved' }>): void {
-    const url = URL.createObjectURL(new Blob([data.text], { type: 'application/json' })),
-      anchor = document.createElement('a');
+  function download(
+    data: Extract<WorkerResponse, { type: 'saved' | 'measurement-exported' }>,
+  ): void {
+    const operation = data.type === 'saved' ? 'save' : 'export-measurements';
+    if (
+      typeof data.text !== 'string' ||
+      data.text.length > WORLD_MAX_BYTES ||
+      !integer(data.completedTick, 0, 1e9) ||
+      !integer(data.seed, 0, 4294967295) ||
+      !integer(data.byteLength, 0, WORLD_MAX_BYTES) ||
+      new TextEncoder().encode(data.text).byteLength !== data.byteLength
+    )
+      throw new Error('Invalid completed download payload; no download created.');
+    const format = data.type === 'saved' ? 'json' : data.format;
+    const anchor = document.createElement('a');
+    let lease: Download | undefined,
+      dispatched = false;
     try {
+      const url = URL.createObjectURL(
+        new Blob([data.text], {
+          type: format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json;charset=utf-8',
+        }),
+      );
+      lease = { url };
+      downloads[operation] = lease;
       anchor.href = url;
-      anchor.download = `evolab-world-${data.state.settings.seed}.json`;
+      anchor.download =
+        operation === 'save'
+          ? 'evolab-world-' + data.seed + '.json'
+          : 'evolab-measurements-' + data.seed + '-tick-' + data.completedTick + '.' + format;
+      document.body.append(anchor);
       anchor.click();
+      const owned = lease;
+      lease.timer = setTimeout(() => clearDownload(operation, owned), 1000);
+      dispatched = true;
     } finally {
       anchor.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      if (!dispatched && lease) clearDownload(operation, lease);
     }
   }
   worker.onmessage = ({ data: raw }) => {
-    if (!alive) return;
+    if (!alive || !raw || typeof raw !== 'object') return;
     const data = raw as WorkerResponse;
     if (data.type === 'progress') {
+      if (!integer(data.sequence, 1, Number.MAX_SAFE_INTEGER)) return;
       if (data.runId === runId && establishedRun === runId && !stopped)
         accept(data.state, data.telemetry);
       if (data.sequence <= progressWatermark) return;
@@ -1066,6 +1367,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       return;
     }
     if (data.type === 'frame') {
+      if (!integer(data.sequence, 1, Number.MAX_SAFE_INTEGER)) return;
       if (data.sequence <= displayWatermark) return;
       heldDisplay = { runId: data.runId, sequence: data.sequence, viewEpoch: data.viewEpoch };
       if (data.runId === runId && establishedRun === runId && !stopped) accept(data.state);
@@ -1093,84 +1395,160 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       !completion ||
       data.commandId !== completion.commandId ||
       data.runId !== completion.runId ||
+      ('requestId' in data && data.requestId !== undefined) ||
+      data.operation !== completion.type ||
+      ('format' in data ? data.format : undefined) !== completion.format ||
+      ('strokeId' in data ? data.strokeId : undefined) !== completion.strokeId ||
       !(
         data.type === 'error' ||
         data.type ===
-          (completion.type === 'save' ? 'saved' : completion.type === 'load' ? 'loaded' : 'control')
+          (completion.type === 'save'
+            ? 'saved'
+            : completion.type === 'export-measurements'
+              ? 'measurement-exported'
+              : ['begin-stroke', 'end-stroke', 'paint', 'settings', 'shock'].includes(
+                    completion.type,
+                  )
+                ? 'manual-result'
+                : completion.type === 'load'
+                  ? 'loaded'
+                  : 'control')
       )
     ) {
-      if (data.type === 'error' && data.fatal && data.runId === runId) {
+      if (
+        data.type === 'error' &&
+        data.fatal &&
+        data.runId === runId &&
+        data.commandId === undefined &&
+        data.operation === undefined &&
+        !('requestId' in data && data.requestId !== undefined)
+      ) {
         stop();
         notice(data.message);
       }
       return;
     }
-    const current = completion.generation === generation && data.runId === runId;
-    if (current) {
-      if (completion.targetTicket === targetTicket) targetTicket = undefined;
-      for (const key of ['mutation', 'nutrients', 'climate'] as const)
-        if (pendingSettings[key] && pendingSettings[key]!.ticket <= completion.ticket)
-          delete pendingSettings[key];
-      if (pendingSpeed && pendingSpeed.ticket <= completion.ticket) pendingSpeed = null;
-      if (pendingExtinction && pendingExtinction.ticket <= completion.ticket)
-        pendingExtinction = null;
-      const observation = data.type === 'error' ? data.recovery?.state : data.state;
-      const source =
-        data.type === 'error'
-          ? data.recovery?.telemetry
-          : data.type === 'saved'
-            ? undefined
-            : data.telemetry;
-      if (data.type === 'error' && data.fatal) {
-        stop();
-        establishedRun = null;
-      } else if (observation) {
-        if (
-          (completion.type === 'start' && data.type === 'control') ||
-          (completion.type === 'load' &&
-            (data.type === 'loaded' ||
-              (data.type === 'error' && data.code === 'load-failed' && data.recovery)))
-        ) {
-          establishedRun = runId;
-          if (data.type !== 'error') {
-            stopped = false;
-            updates = 0;
+    const current = completion.generation === generation && data.runId === runId && !stopped;
+    try {
+      if (current) {
+        if (data.type === 'error' || (data.type === 'manual-result' && data.status === 'rejected'))
+          rejectedTicket = completion.ticket;
+        if (completion.targetTicket === targetTicket) targetTicket = undefined;
+        for (const key of ['mutation', 'nutrients', 'climate'] as const)
+          if (pendingSettings[key] && pendingSettings[key]!.ticket <= completion.ticket) {
+            delete pendingSettings[key];
+            delete settingsEdits[key];
           }
+        if (pendingSpeed && pendingSpeed.ticket <= completion.ticket) pendingSpeed = null;
+        if (pendingExtinction && pendingExtinction.ticket <= completion.ticket)
+          pendingExtinction = null;
+        if (
+          data.type === 'error' &&
+          (typeof data.message !== 'string' || data.message.length > 512)
+        )
+          throw new Error('Invalid worker error payload.');
+        if (
+          data.type === 'manual-result' &&
+          (!['applied', 'no-op', 'rejected'].includes(data.status) ||
+            !integer(data.completedTick, 0, 1e9) ||
+            (data.rowSequence !== null && !integer(data.rowSequence, 1, Number.MAX_SAFE_INTEGER)))
+        )
+          throw new Error('Invalid manual completion payload.');
+        const observation = data.type === 'error' ? data.recovery?.state : data.state;
+        if (
+          observation &&
+          (completion.type === 'start' || completion.type === 'load') &&
+          (!validSettings(observation.settings) || !integer(observation.world?.stats?.tick, 0, 1e9))
+        )
+          throw new Error('Invalid lifecycle terminal.');
+        const source =
+          data.type === 'error'
+            ? data.recovery?.telemetry
+            : data.type === 'saved' || data.type === 'measurement-exported'
+              ? undefined
+              : data.telemetry;
+        if (data.type === 'error' && data.fatal) {
+          stop();
+          establishedRun = null;
+        } else if (observation) {
+          if (
+            (completion.type === 'start' &&
+              (data.type === 'control' || (data.type === 'error' && data.recovery))) ||
+            (completion.type === 'load' &&
+              (data.type === 'loaded' ||
+                (data.type === 'error' && data.code === 'load-failed' && data.recovery)))
+          ) {
+            establishedRun = runId;
+            stopped = false;
+            if (data.type !== 'error') {
+              updates = 0;
+            }
+          }
+          if (establishedRun === runId) {
+            if (observation.display.epoch >= acknowledgedView.epoch)
+              acknowledgedView = { ...observation.display };
+            if (acknowledgedView.epoch === desiredView.epoch) text('render-pending', '');
+            accept(observation, source);
+            if (
+              (data.type === 'error' ||
+                (data.type === 'manual-result' && data.status === 'rejected')) &&
+              completion.type === 'settings'
+            )
+              renderSettings(observation.settings);
+          }
+        } else if (completion.type === 'load' || completion.type === 'start') {
+          stop();
+          telemetry.update({ status: 'unavailable' });
         }
-        if (establishedRun === runId) {
-          if (observation.display.epoch >= acknowledgedView.epoch)
-            acknowledgedView = { ...observation.display };
-          if (acknowledgedView.epoch === desiredView.epoch) text('render-pending', '');
-          accept(observation, source);
+        if (data.type === 'error') {
+          if (completion.type === 'run-to') {
+            if (!targetTicket) text('target-status', data.message);
+          } else notice(data.message);
+        } else if (data.type === 'loaded')
+          notice('World restored. Playback follows Pause on extinction.');
+        else if (data.type === 'manual-result' && data.status === 'rejected')
+          notice('Worker rejected this manual action; no successful effect recorded.');
+      }
+      if (data.type === 'saved' || (data.type === 'measurement-exported' && current)) {
+        try {
+          download(data);
+          if (current)
+            notice(
+              data.type === 'saved'
+                ? 'World saved, including every organism and its ancestry.'
+                : 'Download requested: retained observations as of completed tick ' +
+                    data.completedTick +
+                    '.',
+            );
+        } catch {
+          if (current) notice('Could not download this world. Try saving again.');
         }
-      } else if (completion.type === 'load' || completion.type === 'start') {
-        stop();
-        telemetry.update({ status: 'unavailable' });
       }
-      if (data.type === 'error') {
-        if (completion.type === 'run-to') {
-          if (!targetTicket) text('target-status', data.message);
-        } else notice(data.message);
-      } else if (data.type === 'loaded')
-        notice('World restored. Playback follows Pause on extinction.');
+    } catch (error) {
+      rejectedTicket = completion.ticket;
+      if (current && completion.type === 'settings' && latestState)
+        renderSettings(latestState.settings);
+      if (current)
+        notice(
+          error instanceof Error ? error.message.slice(0, 512) : 'Could not complete this action.',
+        );
+    } finally {
+      if (completion.type === 'end-stroke' && closeLease?.strokeId === completion.strokeId)
+        closeLease = null;
+      posted = null;
+      availability();
+      pump();
+      releaseDiscard();
     }
-    if (data.type === 'saved') {
-      try {
-        download(data);
-        if (current) notice('World saved, including every organism and its ancestry.');
-      } catch {
-        if (current) notice('Could not download this world. Try saving again.');
-      }
-    }
-    posted = null;
-    pump();
-    releaseDiscard();
   };
-  worker.onerror = () => {
+  const workerFailed = (): void => {
     if (!alive) return;
     notice('The ecosystem worker stopped. Reload the page to restart.');
+    terminate();
     stop();
   };
+  worker.onerror = workerFailed;
+  worker.addEventListener('messageerror', workerFailed);
   function render(): void {
     telemetry.render();
     if (
@@ -1252,11 +1630,13 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     document.removeEventListener('visibilitychange', visibility);
     telemetry.dispose();
     cancelAnimationFrame(animation);
-    worker.terminate();
+    terminate();
     window.removeEventListener('keydown', keyboard);
     window.removeEventListener('resize', resize);
     window.removeEventListener('pointerup', release);
     window.removeEventListener('pointercancel', release);
+    window.removeEventListener('blur', release);
+    canvas.removeEventListener('lostpointercapture', release);
   };
 }
 const root = document.getElementById('app');

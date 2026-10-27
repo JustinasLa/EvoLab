@@ -33,6 +33,7 @@ test.beforeAll(async () => {
           engine: resolve('src/ecosystem.ts'),
           controller: resolve('src/main.ts'),
           worker: resolve('src/worker.ts'),
+          'measurement-export': resolve('src/measurement-export.ts'),
         },
         formats: ['es'],
         fileName: (_format, entry) => `${entry}.js`,
@@ -519,7 +520,9 @@ test('real admitted plant retains its complete anatomy through a later designer 
   const download = await downloadWorld(page),
     saved = download.world;
   const reference = Ecosystem.load(JSON.stringify(file));
-  reference.paint('plant', location!.x, location!.y, 2, genome);
+  const placement = reference.paint('plant', location!.x, location!.y, 2, genome);
+  if (placement.placement)
+    reference.appendIntervention({ kind: 'placement', detail: placement.placement });
   expect(saved).toEqual(reference.save());
   expect(download.raw.equals(Buffer.from(JSON.stringify(reference.save())))).toBe(true);
   expect(saved.organisms).toHaveLength(1);
@@ -909,7 +912,7 @@ test('native exact targets, suspended cancellation and render-off editing preser
     mimeType: 'application/json',
     buffer: Buffer.from(JSON.stringify({ ...stepped, version: 99 })),
   });
-  await expect(page.locator('#notice')).toContainText('version 2, 3 or 4');
+  await expect(page.locator('#notice')).toContainText('version 2, 3, 4 or 5');
   expect(await settle(page)).toEqual(stepped);
   await capture('retained-world-failed-import');
   await attachEvidence(testInfo, 'native-target-evidence', {
@@ -1044,11 +1047,14 @@ test('browser-runtime real worker preserves every batch, inspection and snapshot
   await page.goto('/');
   const results = await page.evaluate(async (file) => {
     const enginePath = '/__reference/engine.js',
-      workerPath = '/__reference/worker.js';
+      workerPath = '/__reference/worker.js',
+      codecPath = '/__reference/measurement-export.js';
     const { Ecosystem } = await import(enginePath);
     const { startWorker } = await import(workerPath);
+    const { serializeMeasurements } = await import(codecPath);
     const records = [],
-      rendered = new Map<number, string>();
+      rendered = new Map<number, string>(),
+      renderedExports = new Map<string, string>();
     for (const render of [true, false])
       for (const speed of [1, 4, 12]) {
         const tasks: (() => void)[] = [],
@@ -1060,6 +1066,8 @@ test('browser-runtime real worker preserves every batch, inspection and snapshot
           callbacks = 0,
           inspections = 0,
           snapshots = 0;
+        const exports: Record<string, string> = {};
+        let measurementReads = 0;
         const scope: any = {
           onmessage: null,
           postMessage(data: any, transfer: Transferable[] = []) {
@@ -1081,6 +1089,11 @@ test('browser-runtime real worker preserves every batch, inspection and snapshot
             if (response.type === 'error') throw new Error(response.message);
             if (response.state) state = response.state;
             if (response.type === 'saved') text = response.text;
+            if (response.type === 'measurement-exported') {
+              exports[response.format] = response.text;
+              if (new TextEncoder().encode(response.text).byteLength !== response.byteLength)
+                throw new Error('Measurement UTF8 byte count changed');
+            }
             if (response.type === 'frame' || response.type === 'progress')
               scope.onmessage({
                 data: {
@@ -1121,6 +1134,18 @@ test('browser-runtime real worker preserves every batch, inspection and snapshot
           send({ type: 'snapshot', display: true });
           snapshots++;
           drain();
+          for (const format of ['json', 'csv']) {
+            send({ type: 'export-measurements', format });
+            measurementReads++;
+            drain();
+            const expected = serializeMeasurements(reference.measurements(null), format).text;
+            if (exports[format] !== expected)
+              throw new Error(`Exact ${format} bytes diverged at${reference.tick}`);
+            const key = `${speed}:${reference.tick}:${format}`;
+            if (render) renderedExports.set(key, exports[format]);
+            else if (renderedExports.get(key) !== exports[format])
+              throw new Error('Rendering changed measurement bytes');
+          }
           send({ type: 'save' });
           drain();
           const expected = JSON.stringify(reference.save());
@@ -1137,6 +1162,7 @@ test('browser-runtime real worker preserves every batch, inspection and snapshot
           callbacks,
           inspections,
           snapshots,
+          measurementReads,
           tick: reference.tick,
           rawSaveBytes: new TextEncoder().encode(text).byteLength,
         });
@@ -1149,7 +1175,7 @@ test('browser-runtime real worker preserves every batch, inspection and snapshot
     project: testInfo.project.name,
     results,
     method:
-      'Actual startWorker and independent Ecosystem in matching browser runtime with deterministic scheduler/clock and detached structured-clone transport. Every completed batch across120ticks at1/4/12 includes real inspect AND display snapshot then exact full serialized Save. Explicit snapshot grids are deliberate and separate from zero-automatic-grid startup acceptance.',
+      'Actual startWorker and independent Ecosystem in matching browser runtime with deterministic scheduler/clock and detached structured-clone transport. Every completed batch across120ticks at1/4/12 includes real inspect AND display snapshot, BOTH exact JSON/CSV measurement exports and exact full serialized Save; raw measurement bytes are also directly paired on/off. Explicit snapshot grids are deliberate and separate from zero-automatic-grid startup acceptance.',
   });
 });
 

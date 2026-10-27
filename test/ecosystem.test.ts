@@ -42,6 +42,256 @@ function adjacent(value: number, direction: -1 | 1): number {
   return view.getFloat64(0, false);
 }
 
+describe('real bounded manual evidence and complete current-save validation', () => {
+  function logged(): Ecosystem {
+    const world = empty(),
+      genome = single(7);
+    const placed = world.paint('plant', 20, 20, 0, genome);
+    world.appendIntervention({ kind: 'placement', detail: placed.placement! });
+    world.recordPaint(world.paint('food', 0, 0, 8, genome), 'food', 8, 0, 0, null);
+    world.changeSettings({ mutation: 0.2, nutrients: 3, climate: 0.4 });
+    for (const kind of ['heat', 'cold'] as const) {
+      const before = { offset: world.eventOffset, until: world.eventUntil };
+      world.shock(kind);
+      world.appendIntervention({
+        kind: 'shock',
+        detail: { kind, before, after: { offset: world.eventOffset, until: world.eventUntil } },
+      });
+    }
+    return world;
+  }
+  it('counts net wrapped brush effects, not transient erase writes, or unique area across a stroke', () => {
+    const world = empty(),
+      genome = single(7),
+      before = world.save();
+    const first = world.paint('food', 0, 0, 8, genome);
+    expect(first).toEqual({ changedBrushCells: 197, removedOrganisms: 0, placement: null });
+    const sequence = world.recordPaint(first, 'food', 8, 0, 0, null);
+    const noOp = world.paint('food', 0, 0, 8, genome);
+    expect(noOp.changedBrushCells).toBe(0);
+    expect(world.recordPaint(noOp, 'food', 8, 0, 0, sequence)).toBe(sequence);
+    expect(world.measurements().interventions.entries).toHaveLength(1);
+    const wall = world.paint('wall', 0, 0, 8, genome);
+    expect(wall.changedBrushCells).toBe(197);
+    expect(world.paint('food', 0, 0, 8, genome).changedBrushCells).toBe(0);
+    expect(world.paint('wall', 0, 0, 8, genome).changedBrushCells).toBe(0);
+    world.paint('erase', 0, 0, 8, genome);
+    const final = world.paint('food', 0, 0, 8, genome);
+    world.step();
+    world.recordPaint(final, 'food', 8, 0, 0, sequence);
+    const entry = world.measurements().interventions.entries[0];
+    expect(entry).toMatchObject({
+      firstTick: 0,
+      lastTick: 1,
+      detail: { successfulCommands: 2, changedBrushCells: 394, removedOrganisms: 0 },
+    });
+    expect(world.random.state).toBe(before.random);
+    expect(world.save().telemetry.samples).toEqual([]);
+    const victim = world.spawn(
+      {
+        ...genome,
+        cells: [
+          { x: 0, y: 0, type: 7 },
+          { x: 1, y: 0, type: 7 },
+        ],
+      },
+      20,
+      20,
+      1,
+      undefined,
+      1,
+    )!;
+    const erased = world.paint('erase', 20, 20, 0, genome);
+    expect(erased).toEqual({ changedBrushCells: 0, removedOrganisms: 1, placement: null });
+    expect(world.organisms.has(victim.id)).toBe(false);
+    expect(world.food[index(20, 21)]).toBe(1);
+    expect(world.food[index(20, 20)]).toBe(0);
+    expect(world.measurements().telemetry.pending.deaths.manual).toBe(1);
+    expect(world.paint('erase', 20, 20, 0, genome)).toEqual({
+      changedBrushCells: 0,
+      removedOrganisms: 0,
+      placement: null,
+    });
+  });
+  it('uses one real placement attempt, including original failed direction/species side effects', () => {
+    const candidate = empty(),
+      reference = empty(),
+      genome = single(7);
+    for (const world of [candidate, reference]) world.walls[index(20, 20)] = 1;
+    const result = candidate.paint('plant', 20, 20, 0, genome),
+      attempted = reference.spawn(genome, 20, 20);
+    expect(attempted).toBeUndefined();
+    expect(result.placement).toBeNull();
+    expect(candidate.save()).toEqual(reference.save());
+    expect(candidate.nextSpecies).toBe(6);
+    expect(candidate.random.state).not.toBe(DEFAULTS.seed);
+    const placed = candidate.paint('plant', 30, 30, 0, genome).placement!;
+    candidate.appendIntervention({ kind: 'placement', detail: placed });
+    expect(placed).toEqual({
+      x: 30,
+      y: 30,
+      organismId: 1,
+      speciesId: 6,
+      bodyCells: 1,
+      preference: 0.5,
+      tolerance: 0.3,
+      tempo: 2,
+    });
+    expect(candidate.births).toBe(0);
+    expect(Ecosystem.load(JSON.stringify(candidate.save())).save()).toEqual(candidate.save());
+  });
+  it('evicts the exact oldest settings prefix and never rewrites captured anchors or historical measurements', () => {
+    const world = empty();
+    expect(world.changeSettings({})).toBeNull();
+    expect(world.changeSettings({ mutation: DEFAULTS.mutation })).toBeNull();
+    for (const patch of [{ seed: 1 }, { mutation: -1 }, { climate: Infinity }, { nutrients: 0.5 }])
+      expect(() => world.changeSettings(patch as any)).toThrow('settings');
+    for (let action = 0; action < 130; action++)
+      world.changeSettings({ nutrients: (action % 2) + 1 });
+    const saved = world.save(),
+      log = saved.interventions;
+    expect(log.entries).toHaveLength(128);
+    expect(log.totalEntries).toBe(130);
+    expect(log.entries.map((entry) => entry.sequence)).toEqual(
+      Array.from({ length: 128 }, (_, index) => index + 3),
+    );
+    expect(log.evictedThroughTick).toBe(0);
+    expect(log.originSettings.nutrients).toBe(0);
+    expect(log.prefixSettings.nutrients).toBe(2);
+    expect(Ecosystem.load(JSON.stringify(saved)).save()).toEqual(saved);
+    log.entries[0].firstTick = 999;
+    log.prefixSettings.nutrients = 19;
+    expect(world.measurements().interventions.prefixSettings.nutrients).toBe(2);
+    expect(world.measurements().interventions.entries[0].firstTick).toBe(0);
+  });
+  it.each([0, 25, 29, 30, 31, 59, 60, 61, 65])(
+    'preserves every current log/telemetry/ecology field at tick %i and through continuation',
+    (tick) => {
+      const world = logged();
+      advance(world, tick);
+      const saved = world.save(),
+        restored = Ecosystem.load(JSON.stringify(saved));
+      expect(restored.save()).toEqual(saved);
+      expect(restored.measurements().interventions).toEqual(saved.interventions);
+      advance(world, 105);
+      advance(restored, 105);
+      expect(restored.save()).toEqual(world.save());
+    },
+  );
+  it('rejects malformed complete envelopes and every row discriminator before replacing anything', () => {
+    const world = logged(),
+      saved = world.save(),
+      before = JSON.stringify(saved);
+    const corrupt: ((file: any) => void)[] = [
+      (file) => delete file.interventions,
+      ...[null, [], {}, { ...saved.interventions, extra: 1 }].map(
+        (value) => (file: any) => (file.interventions = value),
+      ),
+      ...[
+        'version',
+        'originTick',
+        'originKind',
+        'originSettings',
+        'totalEntries',
+        'evictedThroughTick',
+        'prefixSettings',
+        'entries',
+      ].map((key) => (file: any) => delete file.interventions[key]),
+      ...[0, 2, '1', null].map((value) => (file: any) => (file.interventions.version = value)),
+      ...[-1, 0.1, 1e9, null].map(
+        (value) => (file: any) => (file.interventions.originTick = value),
+      ),
+      (file) => (file.interventions.originKind = 'imported'),
+      (file) => (file.interventions.originSettings.seed = 10),
+      (file) => (file.interventions.originSettings.extra = 1),
+      (file) => (file.interventions.originSettings.climate = -1),
+      (file) => (file.interventions.prefixSettings.extra = 1),
+      (file) => (file.interventions.prefixSettings.seed = 11),
+      (file) => (file.interventions.prefixSettings.nutrients = 1),
+      (file) => (file.interventions.evictedThroughTick = 0),
+      (file) => (file.interventions.totalEntries = Number.MAX_SAFE_INTEGER + 1),
+      (file) => file.interventions.totalEntries++,
+      (file) => (file.interventions.entries[4] = null),
+      (file) => (file.interventions.entries[4].extra = 1),
+      (file) => (file.interventions.entries[4].sequence = 4),
+      (file) => (file.interventions.entries[4].origin = 'automatic'),
+      (file) => (file.interventions.entries[4].firstTick = -1),
+      (file) => (file.interventions.entries[4].lastTick = 1),
+      (file) => (file.interventions.entries[4].kind = 'unknown'),
+      (file) => (file.interventions.entries[0].detail.organismId = saved.nextId),
+      (file) => (file.interventions.entries[0].detail.speciesId = saved.nextSpecies),
+      (file) => (file.interventions.entries[0].detail.bodyCells = 17),
+      (file) => (file.interventions.entries[0].detail.x = 240),
+      (file) => (file.interventions.entries[0].detail.tolerance = 0.1),
+      (file) => (file.interventions.entries[0].detail.tempo = 13),
+      (file) => (file.interventions.entries[0].detail.preference = 2),
+      (file) => (file.interventions.entries[1].detail.first.extra = 1),
+      (file) => (file.interventions.entries[1].detail.last.y = 156),
+      (file) => (file.interventions.entries[1].detail.radius = 9),
+      (file) => (file.interventions.entries[1].detail.tool = 'plant'),
+      (file) => (file.interventions.entries[1].detail.successfulCommands = 4097),
+      (file) => (file.interventions.entries[1].detail.changedBrushCells = 198),
+      (file) => (file.interventions.entries[1].detail.changedBrushCells = 0),
+      (file) => (file.interventions.entries[1].detail.removedOrganisms = 1),
+      (file) => (file.interventions.entries[1].detail.tool = 'plant'),
+      (file) => {
+        file.interventions.entries[1].detail.tool = 'erase';
+        file.interventions.entries[1].detail.removedOrganisms = 198;
+      },
+      (file) => (file.interventions.entries[2].detail.extra = 1),
+      ...[[], {}, null, { seed: { before: 42, after: 43 } }, { invalid: 1 }].map(
+        (changes) => (file: any) => (file.interventions.entries[2].detail.changes = changes),
+      ),
+      (file) => (file.interventions.entries[2].detail.changes.mutation.before = 0),
+      (file) => (file.interventions.entries[2].detail.changes.mutation.after = 0.12),
+      (file) => (file.interventions.entries[2].detail.changes.mutation.after = 1),
+      (file) => (file.interventions.entries[2].detail.changes.mutation.extra = 1),
+      (file) => (file.interventions.entries[3].detail.kind = 'other'),
+      (file) => (file.interventions.entries[3].detail.after.offset = 0),
+      (file) => (file.interventions.entries[3].detail.after.until = 901),
+      (file) => (file.interventions.entries[3].detail.before = []),
+      (file) =>
+        (file.interventions.entries[3].detail.before = file.interventions.entries[3].detail.after),
+      (file) => (file.interventions.entries[4].detail.before.offset = 0),
+      (file) => (file.eventOffset = 0),
+    ];
+    for (const mutate of corrupt) {
+      const candidate = structuredClone(saved);
+      mutate(candidate);
+      expect(() => Ecosystem.load(JSON.stringify(candidate)), String(mutate)).toThrow(
+        'intervention',
+      );
+      expect(JSON.stringify(world.save())).toBe(before);
+    }
+  });
+  it('preserves imported extensions and validates huge safe sequences without wrapping or silently losing new rows', () => {
+    const world = empty();
+    world.recordPaint(world.paint('food', 1, 1, 0, single()), 'food', 0, 1, 1, null);
+    const file = world.save(),
+      template = file.interventions.entries[0];
+    file.interventions.totalEntries = Number.MAX_SAFE_INTEGER;
+    file.interventions.evictedThroughTick = 0;
+    file.interventions.entries = Array.from({ length: 128 }, (_, index) => ({
+      ...structuredClone(template),
+      sequence: Number.MAX_SAFE_INTEGER - 127 + index,
+    }));
+    (file.settings as any).retained = 'é'.repeat(10000);
+    const restored = Ecosystem.load(JSON.stringify(file));
+    expect(restored.save()).toEqual(file);
+    const before = restored.save();
+    expect(() => restored.requireInterventionCapacity()).toThrow('sequence limit');
+    expect(() =>
+      restored.appendIntervention({ kind: 'paint', detail: (template as any).detail }),
+    ).toThrow('sequence limit');
+    restored.requireInterventionCapacity(true);
+    expect(restored.save()).toEqual(before);
+    expect(restored.measurements().snapshot.settings).not.toHaveProperty('retained');
+    const bad = structuredClone(file);
+    bad.interventions.evictedThroughTick = 1;
+    expect(() => Ecosystem.load(JSON.stringify(bad))).toThrow('intervention');
+  });
+});
+
 describe('standalone blueprint engine boundaries', () => {
   const genome = (): Genome => ({
     cells: [3, 4, 5, 6, 7, 8].map((type, offset) => ({
@@ -1362,7 +1612,19 @@ describe('measured thermal adaptation', () => {
           return sample;
         }),
       ).toEqual(legacy.telemetry.samples);
-      expect(ecology(saved)).toEqual({ ...ecology(world.save()), version: 4 });
+      expect(ecology(saved)).toEqual({
+        ...ecology(world.save()),
+        interventions: {
+          version: 1,
+          originTick: tick,
+          originKind: 'legacy-import',
+          originSettings: { ...world.settings },
+          prefixSettings: { ...world.settings },
+          totalEntries: 0,
+          evictedThroughTick: null,
+          entries: [],
+        },
+      });
       const nextBoundary = (Math.floor(tick / 30) + 1) * 30;
       advance(restored, nextBoundary - tick);
       expect(restored.save().telemetry.samples.at(-1)!.adaptation).not.toBeNull();
@@ -1481,8 +1743,18 @@ describe('telemetry persistence, migration and complete candidate validation', (
             JSON.stringify({ ...file, telemetry: { untrusted: 'ignored legacy extension' } }),
           ),
           { version: _version, ...expectedEcology } = file,
-          { version: current, ...actualEcology } = ecology(world.save());
-        expect(current).toBe(4);
+          { version: current, interventions, ...actualEcology } = ecology(world.save());
+        expect(current).toBe(5);
+        expect(interventions).toEqual({
+          version: 1,
+          originTick: tick,
+          originKind: 'legacy-import',
+          originSettings: { ...file.settings },
+          prefixSettings: { ...file.settings },
+          totalEntries: 0,
+          evictedThroughTick: null,
+          entries: [],
+        });
         expect(actualEcology).toEqual(expectedEcology);
         expect(world.save().telemetry).toMatchObject({
           originTick: tick,
@@ -1811,6 +2083,27 @@ describe('telemetry persistence, migration and complete candidate validation', (
 });
 
 describe('whole-world persistence', () => {
+  it('projects complete ordered terrain exactly like the original independent index-filter oracle without mutating ecology', () => {
+    const world = empty();
+    for (let cell = 0; cell < WIDTH * HEIGHT; cell++) {
+      if (cell % 7 === 0) world.food[cell] = 1;
+      else if (cell % 11 === 0) world.walls[cell] = 1;
+    }
+    world.food[WIDTH * HEIGHT - 1] = 1;
+    const food = [...world.food.keys()].filter((cell) => world.food[cell]),
+      walls = [...world.walls.keys()].filter((cell) => world.walls[cell]),
+      random = world.random.state,
+      saved = world.save();
+    expect(saved.food).toEqual(food);
+    expect(saved.walls).toEqual(walls);
+    expect(saved.food[0]).toBe(0);
+    expect(saved.food.at(-1)).toBe(WIDTH * HEIGHT - 1);
+    expect(Ecosystem.load(JSON.stringify(saved)).save()).toEqual(saved);
+    saved.food.length = 0;
+    saved.walls.length = 0;
+    expect(world.save()).toEqual({ ...saved, food, walls });
+    expect(world.random.state).toBe(random);
+  });
   it('restores every organism, terrain, counters and RNG state and continues identically', () => {
     const w = new Ecosystem();
     for (let i = 0; i < 100; i++) w.step();

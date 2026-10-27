@@ -8,7 +8,7 @@ import { DEFAULTS, founder, type Frame, type PlaybackState, type WorldFile } fro
 import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../src/blueprint';
 import { startWorker, type Scope } from '../src/worker';
 import { legacyV3 } from './fixtures/telemetry';
-class WorkerStub {
+class WorkerStub extends EventTarget {
   playback: PlaybackState = { paused: false, pauseOnExtinction: true, extinction: null };
   pendingCommand: any;
   commands = vi.fn((data: any) => {
@@ -23,7 +23,7 @@ class WorkerStub {
   postMessage = vi.fn((data: any) => {
     if (data.type === 'flow-ack') return;
     this.commands(data);
-    if (data.type === 'load' || data.type === 'save') return;
+    if (data.type === 'load' || data.type === 'save' || data.type === 'export-measurements') return;
     if (data.type === 'pause' || data.type === 'resume')
       this.playback = { ...this.playback, paused: data.type === 'pause' };
     if (data.type === 'pause-on-extinction')
@@ -83,6 +83,7 @@ class WorkerStub {
       revision: state.revision,
       tick: frame.stats.tick,
       telemetry: frame.telemetry,
+      interventions: frame.interventions,
     };
     let data: any;
     if (fixture.type === 'frame')
@@ -99,7 +100,7 @@ class WorkerStub {
       data = {
         type: 'error',
         runId,
-        commandId: command?.commandId,
+        commandId: fixture.fatal && !this.pendingCommand ? undefined : command?.commandId,
         code: fixture.fatal ? 'fatal' : 'load-failed',
         message: fixture.message,
         ...(fixture.fatal ? { fatal: true } : {}),
@@ -123,18 +124,40 @@ class WorkerStub {
           : {}),
       };
     else if (fixture.type === 'saved')
-      data = { type: 'saved', runId, commandId: command?.commandId, state, text: fixture.text };
+      data = {
+        type: 'saved',
+        runId,
+        commandId: command?.commandId,
+        state,
+        text: fixture.text,
+        completedTick: state.world.stats.tick,
+        seed: state.settings.seed,
+        byteLength: new TextEncoder().encode(fixture.text).byteLength,
+      };
     else if (fixture.type === 'playback' && !this.pendingCommand)
       data = { type: 'progress', runId, sequence: ++this.progressSequence, state, telemetry };
     else
       data = {
-        type: fixture.type === 'loaded' ? 'loaded' : 'control',
+        type:
+          fixture.type === 'loaded'
+            ? 'loaded'
+            : ['begin-stroke', 'end-stroke', 'paint', 'settings', 'shock'].includes(command?.type)
+              ? 'manual-result'
+              : 'control',
+        ...(command?.type ? { operation: command.type } : {}),
+        ...(command?.strokeId === undefined ? {} : { strokeId: command.strokeId }),
+        status: 'no-op',
+        completedTick: state.world.stats.tick,
+        rowSequence: null,
         runId,
         commandId: command?.commandId,
         state,
         telemetry,
       };
-    if (data.commandId !== undefined) this.pendingCommand = null;
+    if (data.commandId !== undefined) {
+      data.operation = command?.type;
+      this.pendingCommand = null;
+    }
     this.onmessage?.({ data } as MessageEvent);
     if (fixture.type === 'frame')
       this.onmessage?.({
@@ -268,6 +291,930 @@ function realWorker(clean = false, renderHabitat = true) {
     },
   };
 }
+function ownershipBridge(mountFunction = mount, beforePublish: (data: any) => void = () => {}) {
+  dispose();
+  type Record = { command: any; terminal?: any };
+  const records = new Map<number, Record>(),
+    processing = new Set<number>(),
+    callbacks: (() => void)[] = [],
+    counts = { E: 0, S: 0, M: 0, C: 0, L: 0, maximum: 0, delivered: 0, terminated: 0 };
+  let processingBlocked = false,
+    framesBlocked = false,
+    hold: (data: any) => boolean = () => false,
+    latestFrame: any,
+    latestSource: any;
+  const classify = (type: string): 'E' | 'S' | 'M' | 'C' | 'L' =>
+    type === 'export-measurements'
+      ? 'E'
+      : type === 'save'
+        ? 'S'
+        : type === 'end-stroke'
+          ? 'C'
+          : ['start', 'load'].includes(type)
+            ? 'L'
+            : 'M';
+  const key = (data: any): number => data.requestId ?? data.commandId;
+  const scope: Scope = {
+    onmessage: null,
+    postMessage(data, transfer = []) {
+      beforePublish(data);
+      if (data.type === 'frame' && framesBlocked) {
+        latestFrame = data;
+        return;
+      }
+      data = structuredClone(data, { transfer });
+      if ('telemetry' in data) latestSource = data.telemetry;
+      if (data.type === 'error' && data.recovery) latestSource = data.recovery.telemetry;
+      if (data.type === 'frame') latestFrame = data;
+      const record = records.get(key(data));
+      if (record && data.operation) {
+        expect(record.terminal).toBeUndefined();
+        record.terminal = data;
+        if (hold(data)) return;
+        records.delete(key(data));
+        counts.delivered++;
+      }
+      endpoint.onmessage?.({ data } as MessageEvent);
+    },
+  };
+  const endpoint = Object.assign(new EventTarget(), {
+    onmessage: null as ((event: MessageEvent) => void) | null,
+    onerror: null as (() => void) | null,
+    postMessage: (data: any) => {
+      if (key(data)) {
+        counts[classify(data.type)]++;
+        expect(records.has(key(data))).toBe(false);
+        records.set(key(data), { command: structuredClone(data) });
+        expect(records.size).toBeLessThanOrEqual(36);
+        counts.maximum = Math.max(counts.maximum, records.size);
+        if (processingBlocked) {
+          processing.add(key(data));
+          return;
+        }
+      }
+      scope.onmessage!({ data: structuredClone(data) } as MessageEvent);
+    },
+    terminate: () => {
+      counts.terminated++;
+      processing.clear();
+      records.clear();
+      callbacks.length = 0;
+    },
+  });
+  startWorker(scope, (callback) => {
+    expect(callbacks.length).toBeLessThan(1);
+    callbacks.push(callback);
+  });
+  dispose = mountFunction(root, endpoint as unknown as Worker);
+  click('pause');
+  return {
+    endpoint,
+    records,
+    counts,
+    get latestFrame() {
+      return (
+        latestFrame && {
+          ...latestFrame,
+          frame: {
+            ...latestFrame.frame,
+            telemetry: latestSource?.telemetry,
+            interventions: latestSource?.interventions,
+          },
+        }
+      );
+    },
+    get callbackCount() {
+      return callbacks.length;
+    },
+    advance() {
+      callbacks.shift()!();
+    },
+    blockProcessing() {
+      processingBlocked = true;
+    },
+    holdFrames() {
+      framesBlocked = true;
+    },
+    holdTerminals(predicate: (data: any) => boolean = () => true) {
+      hold = predicate;
+    },
+    processAll() {
+      processingBlocked = false;
+      for (const id of processing) {
+        processing.delete(id);
+        scope.onmessage!({ data: records.get(id)!.command } as MessageEvent);
+      }
+    },
+    deliver(id: number) {
+      const record = records.get(id)!;
+      expect(record?.terminal).toBeDefined();
+      records.delete(id);
+      counts.delivered++;
+      endpoint.onmessage?.({ data: record.terminal } as MessageEvent);
+      return record.terminal;
+    },
+    deliverAll() {
+      for (const id of records.keys()) this.deliver(id);
+    },
+    emit(data: any) {
+      endpoint.onmessage?.({ data } as MessageEvent);
+    },
+  };
+}
+describe('post-success publication failures with real ecology and independent physical owners', () => {
+  it.each(['start', 'load', 'settings', 'paint', 'shock'])(
+    'shows an independent stopped failure after one successful %s and recovers the applied world explicitly',
+    async (operation) => {
+      let armed = false,
+        targetId = 0,
+        terminals = 0,
+        failures = 0,
+        currentWorld!: Ecosystem;
+      const presentation = Ecosystem.prototype.presentation;
+      vi.spyOn(Ecosystem.prototype, 'presentation').mockImplementation(function (this: Ecosystem) {
+        currentWorld = this;
+        return presentation.call(this);
+      });
+      const bridge = ownershipBridge(mount, (data) => {
+        if (targetId && data.commandId === targetId) {
+          terminals++;
+          expect(data.type).not.toBe('error');
+          armed = true;
+        }
+        if (data.type === 'frame' && armed) {
+          armed = false;
+          throw new Error('injected frame publication after successful terminal');
+        }
+        if (data.type === 'error' && data.fatal && !data.operation) failures++;
+      });
+      bridge.advance();
+      paint(0);
+      paint(0);
+      expect(bridge.callbackCount).toBe(0);
+      const candidate = new Ecosystem({ ...DEFAULTS, seed: 73, nutrients: 0 }, false);
+      let reference = Ecosystem.load(JSON.stringify(currentWorld.save()));
+      const post = bridge.endpoint.postMessage;
+      let command: any;
+      vi.spyOn(bridge.endpoint, 'postMessage').mockImplementation((data: any) => {
+        if (!targetId && data.type === operation) {
+          targetId = data.commandId;
+          command = structuredClone(data);
+        }
+        post(data);
+      });
+      bridge.holdTerminals((data) => data.operation === operation);
+      if (operation === 'start') click('reset');
+      else if (operation === 'load') await loadText(JSON.stringify(candidate.save()));
+      else if (operation === 'settings') set('nutrients', '7');
+      else if (operation === 'shock')
+        root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
+      else {
+        root.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
+        pointer('pointerdown', 50, 50);
+      }
+      expect(targetId).toBeGreaterThan(0);
+      expect(terminals).toBe(1);
+      expect(failures).toBe(1);
+      expect(get('run-state').textContent).toBe('STOPPED');
+      expect(get('notice').textContent).toContain('The action completed');
+      expect(get('notice').textContent).toContain('World preserved');
+      expect(get<HTMLButtonElement>('step').disabled).toBe(true);
+      expect(bridge.callbackCount).toBe(0);
+      expect(bridge.counts.terminated).toBe(0);
+      expect(bridge.records.size).toBe(1);
+      if (operation === 'start') reference = new Ecosystem(command.settings);
+      else if (operation === 'load') reference = candidate;
+      else if (operation === 'settings') reference.changeSettings(command.settings);
+      else if (operation === 'paint') {
+        const outcome = reference.paint(
+          command.tool,
+          command.x,
+          command.y,
+          command.radius,
+          command.genome,
+        );
+        reference.recordPaint(outcome, command.tool, command.radius, command.x, command.y, null);
+      } else {
+        const before = { offset: reference.eventOffset, until: reference.eventUntil };
+        reference.shock(command.kind);
+        reference.appendIntervention({
+          kind: 'shock',
+          detail: {
+            kind: command.kind,
+            before,
+            after: { offset: reference.eventOffset, until: reference.eventUntil },
+          },
+        });
+      }
+      expect(currentWorld.save()).toEqual(reference.save());
+      bridge.deliver(targetId);
+      expect(get('run-state').textContent).toBe('STOPPED');
+      expect(bridge.records.size).toBe(0);
+      targetId = 0;
+      vi.mocked(bridge.endpoint.postMessage).mockRestore();
+      bridge.holdTerminals(() => false);
+      await loadText('{}');
+      expect(get('run-state').textContent).toBe('PAUSED');
+      expect(get('notice').textContent).toContain('Not a valid');
+      expect(bridge.callbackCount).toBe(0);
+      expect(currentWorld.save()).toEqual(reference.save());
+      expect(get<HTMLButtonElement>('measurements-json').disabled).toBe(false);
+      expect(get<HTMLButtonElement>('save').disabled).toBe(false);
+      if (!reference.organisms.size) {
+        get<HTMLInputElement>('pause-on-extinction').checked = false;
+        get('pause-on-extinction').dispatchEvent(new Event('change'));
+      }
+      click('pause');
+      expect(get('run-state').textContent).toBe('LIVE');
+      expect(bridge.callbackCount).toBe(1);
+      bridge.advance();
+      for (let tick = 0; tick < 4; tick++) reference.step();
+      expect(currentWorld.save()).toEqual(reference.save());
+      expect(bridge.callbackCount).toBe(1);
+    },
+  );
+});
+describe('D9 lifetime ownership with real processing and independently gated terminal delivery', () => {
+  it('reserves close inside30 general places through saturation, Pause, view disable, fatal stop and explicit replacement', () => {
+    const bridge = ownershipBridge();
+    bridge.holdTerminals();
+    root.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
+    pointer('pointerdown');
+    const begin = [...bridge.records.keys()][0];
+    for (let point = 0; point < 40; point++) pointer('pointermove', 151 + point, 150);
+    pointer('pointerup');
+    click('pause');
+    get<HTMLInputElement>('render-habitat').checked = false;
+    get('render-habitat').dispatchEvent(new Event('change'));
+    expect(bridge.records.size).toBe(1);
+    expect(bridge.records.get(begin)!.command.type).toBe('begin-stroke');
+    expect(bridge.counts.C).toBe(0);
+    bridge.emit({ type: 'error', runId: 1, fatal: true, message: 'injected independent fatal' });
+    expect(get('run-state').textContent).toBe('STOPPED');
+    click('reset');
+    bridge.deliver(begin);
+    const close = [...bridge.records.keys()][0];
+    expect(bridge.records.get(close)!.command.type).toBe('end-stroke');
+    expect(bridge.counts.L).toBe(1);
+    bridge.deliver(close);
+    const start = [...bridge.records.keys()][0];
+    expect(bridge.records.get(start)!.command).toMatchObject({
+      type: 'start',
+      display: { enabled: false },
+    });
+    bridge.deliverAll();
+    expect(bridge.counts.C).toBe(1);
+    expect(bridge.counts.maximum).toBe(1);
+    expect(bridge.latestFrame.frame.interventions.entries).toEqual([]);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+  it.each(['save', 'export-measurements'])(
+    'keeps the %s subtype fenced through exact delivery and URL cleanup',
+    (operation) => {
+      vi.useFakeTimers();
+      const bridge = ownershipBridge();
+      bridge.holdTerminals();
+      const id = operation === 'save' ? 'save' : 'measurements-json';
+      click(id);
+      const owner = [...bridge.records.keys()][0];
+      get(id).dispatchEvent(new Event('click'));
+      expect(get('notice').textContent).toContain('earlier download');
+      expect(bridge.records.size).toBe(1);
+      bridge.deliver(owner);
+      get(id).dispatchEvent(new Event('click'));
+      expect(get('notice').textContent).toContain('earlier download');
+      expect(bridge.records.size).toBe(0);
+      expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1000);
+      click(id);
+      expect(bridge.records.size).toBe(1);
+      bridge.deliverAll();
+      expect(URL.createObjectURL).toHaveBeenCalledTimes(2);
+    },
+  );
+  it.each(['start', 'load'])(
+    'retires both native URL leases only when queued %s actually posts after the predecessor',
+    async (operation) => {
+      vi.useFakeTimers();
+      const bridge = ownershipBridge();
+      vi.mocked(URL.createObjectURL)
+        .mockReturnValueOnce('blob:save')
+        .mockReturnValueOnce('blob:export');
+      click('save');
+      click('measurements-json');
+      expect(URL.createObjectURL).toHaveBeenCalledTimes(2);
+      bridge.holdTerminals();
+      set('nutrients', '7');
+      if (operation === 'start') click('reset');
+      else await loadText(JSON.stringify(new Ecosystem().save()));
+      expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+      expect(bridge.records.size).toBe(1);
+      bridge.deliverAll();
+      expect(URL.revokeObjectURL.mock.calls).toEqual([['blob:save'], ['blob:export']]);
+      expect(bridge.records.size).toBe(0);
+      vi.advanceTimersByTime(1000);
+      expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+      expect(get<HTMLButtonElement>('save').disabled).toBe(false);
+      expect(get<HTMLButtonElement>('measurements-json').disabled).toBe(false);
+    },
+  );
+  it('retires both completed URL leases once on independent fatal without refunding a posted owner', () => {
+    vi.useFakeTimers();
+    const bridge = ownershipBridge();
+    click('save');
+    click('measurements-json');
+    bridge.holdTerminals();
+    set('nutrients', '7');
+    const owner = [...bridge.records.keys()][0],
+      terminal = bridge.records.get(owner)!.terminal;
+    bridge.emit({
+      type: 'error',
+      runId: terminal.runId,
+      code: 'fatal',
+      fatal: true,
+      message: 'fault',
+    });
+    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+    expect(bridge.records.size).toBe(1);
+    expect(bridge.records.has(owner)).toBe(true);
+    vi.advanceTimersByTime(1000);
+    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+    bridge.deliverAll();
+    expect(bridge.records.size).toBe(0);
+    expect(get('run-state').textContent).toBe('STOPPED');
+  });
+  it.each(['start', 'load'])(
+    'D9-A10 proven nonposted %s preserves the retained world after predecessor downloads finish',
+    async (operation) => {
+      const bridge = ownershipBridge();
+      bridge.holdTerminals();
+      click('measurements-json');
+      click('save');
+      const post = bridge.endpoint.postMessage;
+      vi.spyOn(bridge.endpoint, 'postMessage').mockImplementation((data: any) => {
+        if (data.type === operation)
+          throw new DOMException('injected nonposting', 'DataCloneError');
+        post(data);
+      });
+      const anchor = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+      if (operation === 'load') await loadText('{}');
+      bridge.deliverAll();
+      expect(anchor).toHaveBeenCalledTimes(2);
+      if (operation === 'start') click('reset');
+      expect(bridge.counts.L).toBe(1);
+      expect(bridge.records.size).toBe(0);
+      expect(bridge.counts.terminated).toBe(0);
+      expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+      expect(get('notice').textContent).toContain('No automatic retry');
+      expect(get('run-state').textContent).toBe('PAUSED');
+    },
+  );
+  it('D9-A10 rejects a real sequence-limit settings edit without an optimistic UI value or log/RNG change', async () => {
+    const bridge = ownershipBridge(),
+      world = new Ecosystem({ ...DEFAULTS, nutrients: 0 }, false);
+    for (let entry = 0; entry < 128; entry++)
+      world.changeSettings({ nutrients: entry % 2 ? 0 : 1 });
+    const saved = world.save(),
+      offset = Number.MAX_SAFE_INTEGER - 128;
+    saved.interventions.totalEntries = Number.MAX_SAFE_INTEGER;
+    saved.interventions.evictedThroughTick = 0;
+    for (const entry of saved.interventions.entries) entry.sequence += offset;
+    expect(Ecosystem.load(JSON.stringify(saved)).save()).toEqual(saved);
+    await loadText(JSON.stringify(saved));
+    set('nutrients', '7');
+    expect(get<HTMLInputElement>('nutrients').value).toBe('0');
+    expect(get('nutrients-value').textContent).toBe('0%');
+    expect(get('notice').textContent).toContain('sequence limit');
+    expect(bridge.records.size).toBe(0);
+    expect(bridge.latestFrame.frame.interventions).toEqual(saved.interventions);
+    set('nutrients', '0');
+    expect(bridge.records.size).toBe(0);
+  });
+  it('D9-A7 ignores callbacks from a disposed incarnation with reused request numbers on a remount', () => {
+    const old = ownershipBridge();
+    old.holdTerminals();
+    click('measurements-json');
+    const receipt = [...old.records.values()][0].terminal,
+      callback = old.endpoint.onmessage!;
+    const current = ownershipBridge();
+    current.holdTerminals();
+    click('measurements-json');
+    expect([...current.records.keys()][0]).toBe(receipt.commandId);
+    callback({ data: receipt } as MessageEvent);
+    old.endpoint.onerror?.();
+    expect(current.records.size).toBe(1);
+    expect(get<HTMLButtonElement>('measurements-json').disabled).toBe(true);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(old.counts.terminated).toBe(1);
+  });
+  it.each(['DataCloneError', 'Error'])(
+    'D9-A6 proves nonposting or actual termination on injected %s',
+    (kind) => {
+      const bridge = ownershipBridge();
+      vi.spyOn(bridge.endpoint, 'postMessage').mockImplementationOnce(() => {
+        if (kind === 'DataCloneError') throw new DOMException('injected clone failure', kind);
+        throw new Error('injected port failure');
+      });
+      click('measurements-json');
+      expect(bridge.records.size).toBe(0);
+      expect(bridge.counts.terminated).toBe(kind === 'Error' ? 1 : 0);
+      expect(get('notice').textContent).toContain('No automatic retry');
+      if (kind === 'Error') root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
+    },
+  );
+  it.each(['begin-stroke', 'end-stroke'])(
+    'D9-A6 keeps the reserved close honest on injected nonposting %s',
+    (operation) => {
+      const bridge = ownershipBridge(),
+        original = bridge.endpoint.postMessage;
+      vi.spyOn(bridge.endpoint, 'postMessage').mockImplementation((data: any) => {
+        if (data.type === operation) throw new DOMException('injected failure', 'DataCloneError');
+        original(data);
+      });
+      root.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
+      pointer('pointerdown');
+      pointer('pointerup');
+      expect(bridge.counts.terminated).toBe(operation === 'end-stroke' ? 1 : 0);
+      expect(bridge.records.size).toBe(0);
+    },
+  );
+  it.each([
+    'payload',
+    'error',
+    'fatal',
+    'lifecycle',
+    'manual',
+    'rejected',
+    'Blob',
+    'URL',
+    'anchor',
+    'click',
+    'nonError',
+  ])('D9-A6 retires exact owners through injected %s bookkeeping failures', (failure) => {
+    const bridge = ownershipBridge();
+    bridge.holdTerminals();
+    if (failure === 'lifecycle') click('reset');
+    else if (failure === 'manual' || failure === 'rejected') set('nutrients', '7');
+    else click('measurements-json');
+    const [id, record] = [...bridge.records][0];
+    if (failure === 'payload') record.terminal.byteLength++;
+    if (failure === 'lifecycle') record.terminal.state.settings.seed = -1;
+    if (failure === 'manual') record.terminal.status = 'invalid';
+    if (failure === 'rejected') record.terminal.status = 'rejected';
+    if (failure === 'error' || failure === 'fatal')
+      record.terminal = {
+        ...record.terminal,
+        type: 'error',
+        message: failure === 'error' ? 'x'.repeat(513) : 'injected fatal terminal',
+        fatal: failure === 'fatal',
+      };
+    if (failure === 'Blob')
+      vi.stubGlobal(
+        'Blob',
+        class {
+          constructor() {
+            throw new Error('injected Blob failure');
+          }
+        },
+      );
+    if (failure === 'URL' || failure === 'nonError')
+      vi.mocked(URL.createObjectURL).mockImplementationOnce(() => {
+        throw failure === 'URL' ? new Error('injected URL failure') : 'injected non-Error';
+      });
+    if (failure === 'anchor') {
+      const create = document.createElement.bind(document);
+      vi.spyOn(document, 'createElement').mockImplementation((name: string) => {
+        if (name === 'a') throw new Error('injected anchor failure');
+        return create(name);
+      });
+    }
+    if (failure === 'click')
+      vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {
+        throw new Error('injected click failure');
+      });
+    bridge.deliver(id);
+    expect(bridge.records.size).toBe(0);
+    expect(get('notice').textContent).not.toContain('Download requested');
+    if (failure === 'lifecycle')
+      expect(get('notice').textContent).toContain('Invalid lifecycle terminal');
+    if (failure === 'manual')
+      expect(get<HTMLInputElement>('nutrients').value).toBe(String(DEFAULTS.nutrients));
+    if (failure === 'rejected')
+      expect(get<HTMLInputElement>('nutrients').value).toBe(
+        String(record.terminal.state.settings.nutrients),
+      );
+    if (failure === 'rejected') expect(get('notice').textContent).toContain('Worker rejected');
+    if (failure === 'click') expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
+  });
+  it('D9-A5 fault-injects a four-command UI ceiling; the real4096 ceiling is separately verified in worker and native browser cases', async () => {
+    vi.resetModules();
+    vi.doMock('../src/model', async (original) => ({
+      ...(await original<object>()),
+      STROKE_COMMAND_CAPACITY: 4,
+    }));
+    const { mount: boundedMount } = await import('../src/main');
+    vi.doUnmock('../src/model');
+    const bridge = ownershipBridge(boundedMount);
+    bridge.holdFrames();
+    const before = bridge.counts.M;
+    root.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
+    get('world').dispatchEvent(new MouseEvent('pointerdown', { button: 2 }));
+    expect(bridge.counts.M).toBe(before);
+    pointer('pointerdown');
+    pointer('pointerdown');
+    for (let command = 1; command < 4; command++) pointer('pointermove');
+    pointer('pointermove');
+    pointer('pointerup');
+    expect(bridge.counts).toMatchObject({ M: before + 5, C: 1 });
+    expect(bridge.records.size).toBe(0);
+    expect(bridge.latestFrame.frame.interventions.entries[0].detail.successfulCommands).toBe(1);
+    expect(get('notice').textContent).toContain('4096');
+  });
+  it('rejects an invalid edited blueprint at an already selected placement tool without a manual success', () => {
+    root.querySelector<HTMLButtonElement>('[data-tool="plant"]')!.click();
+    root.querySelector<HTMLButtonElement>('[data-x="4"][data-y="4"]')!.click();
+    pointer('pointerdown');
+    pointer('pointerup');
+    expect(get('notice').textContent).toContain('connected cells before painting');
+  });
+  it('D9-A10 guards the physical File.text slot until settlement and ignores cancelled and disposed reads', async () => {
+    const bridge = ownershipBridge();
+    let resolve!: (value: string) => void;
+    upload({
+      size: 2,
+      text: () =>
+        new Promise((complete) => {
+          resolve = complete;
+        }),
+    });
+    get('file').dispatchEvent(new Event('cancel'));
+    const second = vi.fn(async () => '{}');
+    upload({ size: 2, text: second });
+    expect(second).not.toHaveBeenCalled();
+    expect(get('notice').textContent).toContain('still outstanding');
+    resolve('{}');
+    await Promise.resolve();
+    expect(bridge.counts.L).toBe(1);
+    upload({
+      size: 2,
+      text: () =>
+        new Promise((complete) => {
+          resolve = complete;
+        }),
+    });
+    dispose();
+    resolve('{}');
+    await Promise.resolve();
+    expect(bridge.counts.L).toBe(1);
+    expect(bridge.counts.terminated).toBe(1);
+  });
+  it('D9-A4 explicitly fault-injects a small safe-ID ceiling without wrapping/reusing a posting identity', () => {
+    const nativeNumber = Number;
+    function boundedNumber(value: unknown) {
+      return nativeNumber(value);
+    }
+    Object.setPrototypeOf(boundedNumber, nativeNumber);
+    Object.defineProperty(boundedNumber, 'MAX_SAFE_INTEGER', { value: 1 });
+    vi.stubGlobal('Number', boundedNumber);
+    click('reset');
+    expect(get('notice').textContent).toContain('Session counter exhausted');
+    expect(worker.postMessage.mock.calls.filter(([data]) => data.type === 'start')).toHaveLength(1);
+  });
+  function saturate() {
+    click('measurements-json');
+    click('save');
+    root.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
+    pointer('pointerdown');
+    for (let point = 0; point < 30; point++) pointer('pointermove', 151 + point, 150);
+    pointer('pointermove', 190, 150);
+    pointer('pointerup');
+  }
+  it('D9-A1 reserves C inside30 pending places, stalls processing and rejects256 replacement refills under36 owners', async () => {
+    const bridge = ownershipBridge();
+    bridge.blockProcessing();
+    saturate();
+    expect(bridge.records.size).toBe(1);
+    expect(bridge.counts).toMatchObject({ E: 1, S: 0, C: 0, L: 1 });
+    click('reset');
+    const admitted = { ...bridge.counts };
+    for (let attempt = 0; attempt < 256; attempt++) {
+      click('reset');
+      await loadText('{"invalid":true}');
+      click('measurements-csv');
+      click('save');
+      pointer('pointerdown');
+      pointer('pointerup');
+      expect(bridge.records.size).toBe(1);
+      expect(bridge.counts).toEqual(admitted);
+    }
+    bridge.processAll();
+    expect(bridge.records.size).toBe(0);
+    expect(bridge.latestFrame.frame.stats.tick).toBe(0);
+    expect(bridge.latestFrame.frame.interventions.entries).toEqual([]);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(get<HTMLButtonElement>('save').disabled).toBe(false);
+    expect(bridge.counts.maximum).toBe(1);
+    expect(bridge.counts.maximum).toBeLessThanOrEqual(36);
+  });
+  it('D9-A2 holds real serialized results across256 successful and failed replacement barriers without refilling', async () => {
+    vi.useFakeTimers();
+    const bridge = ownershipBridge(),
+      captures = vi.spyOn(Ecosystem.prototype, 'measurements'),
+      saves = vi.spyOn(Ecosystem.prototype, 'save');
+    bridge.holdTerminals((data) => ['save', 'export-measurements'].includes(data.operation));
+    const anchor = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    for (let replacement = 0; replacement < 256; replacement++) {
+      const operation = replacement % 2 ? 'save' : 'export-measurements';
+      click(operation === 'save' ? 'save' : 'measurements-json');
+      const [id, record] = [...bridge.records][0];
+      expect(record.command.type).toBe(operation);
+      const lifecycle = bridge.counts.L;
+      if (replacement % 2) await loadText('{"invalid":true}');
+      else click('reset');
+      for (let refill = 0; refill < 2; refill++) {
+        click('measurements-json');
+        click('measurements-csv');
+        click('save');
+        pointer('pointerdown');
+        pointer('pointerup');
+        set('nutrients', '11');
+      }
+      expect(bridge.records.size).toBe(1);
+      expect(bridge.counts.L).toBe(lifecycle);
+      expect(bridge.records.get(id)).toBe(record);
+      bridge.deliverAll();
+      expect(bridge.counts.L).toBe(lifecycle + 1);
+      expect(bridge.records.size).toBe(0);
+      vi.advanceTimersByTime(1000);
+    }
+    expect(bridge.counts).toMatchObject({ E: 128, S: 128, L: 257, maximum: 1 });
+    expect(captures).toHaveBeenCalledTimes(128);
+    expect(saves).toHaveBeenCalledTimes(128);
+    expect(anchor).toHaveBeenCalledTimes(128);
+    expect(bridge.counts.maximum).toBeLessThanOrEqual(36);
+  });
+  it.each(
+    ['reset', 'valid-load', 'invalid-last-log', 'same-tick-failure'].flatMap((replacement) =>
+      ['old-first', 'lifecycle-first'].map((order) => ({ replacement, order })),
+    ),
+  )(
+    'D9-A3/A8 drains predecessor E/S/M/C before %j without stale effects or a scheduler wake',
+    async ({ replacement, order }) => {
+      vi.useFakeTimers();
+      const bridge = ownershipBridge();
+      bridge.advance();
+      paint(0);
+      bridge.holdTerminals();
+      root.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
+      pointer('pointerdown');
+      pointer('pointerup');
+      const first = [...bridge.records.keys()][0];
+      click('measurements-json');
+      click('save');
+      set('nutrients', '7');
+      root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
+      const initialLifecycle = bridge.counts.L;
+      if (replacement === 'reset') click('reset');
+      else {
+        const candidate = new Ecosystem();
+        if (replacement === 'invalid-last-log') {
+          candidate.changeSettings({ nutrients: 7 });
+          const file = candidate.save();
+          file.interventions.entries[0].sequence = 2;
+          await loadText(JSON.stringify(file));
+        } else
+          await loadText(replacement === 'valid-load' ? JSON.stringify(candidate.save()) : '{}');
+      }
+      expect(bridge.counts.L).toBe(initialLifecycle);
+      expect(bridge.records.size).toBe(1);
+      if (order === 'lifecycle-first') {
+        const before = get('notice').textContent;
+        bridge.emit({
+          ...bridge.records.get(first)!.terminal,
+          type: 'loaded',
+          operation: 'load',
+          commandId: first + 100,
+        });
+        expect(bridge.records.size).toBe(1);
+        expect(get('notice').textContent).toBe(before);
+      }
+      bridge.deliverAll();
+      expect(bridge.counts.L).toBe(initialLifecycle + 1);
+      expect(bridge.records.size).toBe(0);
+      expect(bridge.callbackCount).toBe(
+        replacement === 'reset' || replacement === 'valid-load' ? 1 : 0,
+      );
+      if (replacement === 'reset' || replacement === 'valid-load')
+        expect(bridge.latestFrame.frame.interventions.entries).toEqual([]);
+      else
+        expect(
+          bridge.latestFrame.frame.interventions.entries.map((entry: any) => entry.kind),
+        ).toEqual(['paint', 'settings', 'shock']);
+      expect(URL.createObjectURL).toHaveBeenCalledTimes(replacement === 'reset' ? 0 : 2);
+      vi.advanceTimersByTime(1000);
+      expect(get<HTMLButtonElement>('save').disabled).toBe(false);
+    },
+  );
+  it('D9-A10 preserves both pins and focus on failed complete import and resets only after successful equal-tick replacement', async () => {
+    ownershipBridge();
+    const world = new Ecosystem(DEFAULTS, false);
+    for (let tick = 0; tick < 60; tick++) world.step();
+    world.changeSettings({ nutrients: 7 });
+    await loadText(JSON.stringify(world.save()));
+    click('ecosystem-tab');
+    paint(0);
+    set('telemetry-sample', '30', 'change');
+    set('telemetry-intervention', '1', 'change');
+    get('telemetry-intervention').focus();
+    const corrupt = world.save() as any;
+    delete corrupt.interventions;
+    await loadText(JSON.stringify(corrupt));
+    paint(0);
+    expect(get<HTMLSelectElement>('telemetry-sample').value).toBe('30');
+    expect(get<HTMLSelectElement>('telemetry-intervention').value).toBe('1');
+    expect(document.activeElement).toBe(get('telemetry-intervention'));
+    await loadText(JSON.stringify(world.save()));
+    paint(0);
+    expect(get<HTMLSelectElement>('telemetry-sample').value).toBe('latest');
+    expect(get<HTMLSelectElement>('telemetry-intervention').value).toBe('latest');
+  });
+  it('D9-A4 rejects duplicate and wrong tuple receipts without retiring a newer export owner', () => {
+    const bridge = ownershipBridge();
+    bridge.holdTerminals();
+    click('measurements-json');
+    const first = [...bridge.records.keys()][0],
+      old = bridge.records.get(first)!.terminal;
+    click('reset');
+    expect(bridge.counts.L).toBe(1);
+    bridge.deliverAll();
+    click('measurements-csv');
+    const current = [...bridge.records.keys()][0],
+      receipt = bridge.records.get(current)!.terminal;
+    for (const wrong of [
+      old,
+      { ...old, type: 'error', message: 'obsolete error' },
+      { ...receipt, operation: 'save' },
+      { ...receipt, format: 'json' },
+      { ...receipt, runId: receipt.runId - 1 },
+      { ...receipt, commandId: current + 100 },
+      { ...receipt, requestId: current },
+      { ...receipt, strokeId: 1 },
+      { type: 'frame', runId: receipt.runId - 1 },
+      null,
+    ])
+      bridge.emit(wrong);
+    expect(bridge.records.size).toBe(1);
+    expect(get<HTMLButtonElement>('measurements-json').disabled).toBe(true);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    bridge.deliver(current);
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    bridge.emit(receipt);
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    'export-measurements',
+    'save',
+    'begin-stroke',
+    'paint',
+    'placement',
+    'settings',
+    'shock',
+    'end-stroke',
+    'start',
+    'load',
+  ])(
+    'D9-A4 preserves newer %s ownership against every wrong header, duplicate and unrelated receipt',
+    async (target) => {
+      vi.useFakeTimers();
+      const bridge = ownershipBridge(),
+        operation = target === 'placement' ? 'paint' : target;
+      bridge.holdTerminals((data) => data.operation === operation);
+      vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+      async function action() {
+        if (target === 'export-measurements') click('measurements-json');
+        else if (target === 'save') click('save');
+        else if (target === 'start') click('reset');
+        else if (target === 'load') await loadText(JSON.stringify(new Ecosystem().save()));
+        else if (target === 'settings')
+          set('nutrients', get<HTMLInputElement>('nutrients').value === '7' ? '3' : '7');
+        else if (target === 'shock')
+          root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
+        else {
+          root
+            .querySelector<HTMLButtonElement>(
+              '[data-tool="' + (target === 'placement' ? 'plant' : 'food') + '"]',
+            )!
+            .click();
+          pointer('pointerdown', 50, 50);
+          pointer('pointerup');
+        }
+      }
+      await action();
+      const first = [...bridge.records.keys()][0],
+        old = bridge.records.get(first)!.terminal;
+      bridge.deliverAll();
+      vi.advanceTimersByTime(1000);
+      await action();
+      const id = [...bridge.records.keys()][0],
+        receipt = bridge.records.get(id)!.terminal;
+      for (const wrong of [
+        old,
+        { ...old, type: 'error', message: 'duplicate error' },
+        {
+          ...old,
+          type: 'error',
+          fatal: true,
+          message: 'stale correlated fatal',
+          runId: receipt.runId,
+        },
+        { ...receipt, operation: operation === 'save' ? 'export-measurements' : 'save' },
+        { ...receipt, operation: undefined },
+        { ...receipt, runId: receipt.runId - 1 },
+        { ...receipt, format: receipt.format === 'csv' ? 'json' : 'csv' },
+        { ...receipt, strokeId: 999 },
+        { ...receipt, commandId: undefined },
+        { ...receipt, requestId: id },
+        { ...receipt, commandId: id + 1000 },
+        ...['snapshot', 'progress', 'flow-ack'].map((type) => ({
+          type,
+          runId: receipt.runId,
+          commandId: id,
+        })),
+      ]) {
+        bridge.emit(wrong);
+        expect(bridge.records.get(id)?.terminal).toBe(receipt);
+        expect(get('run-state').textContent).not.toBe('STOPPED');
+      }
+      const posts = { ...bridge.counts };
+      for (let entry = 0; entry < 31; entry++) set('nutrients', entry % 2 ? '1' : '2');
+      expect(bridge.records.size).toBe(1);
+      expect(bridge.counts).toEqual(posts);
+      bridge.deliverAll();
+      expect(bridge.records.size).toBe(0);
+      expect(bridge.counts.maximum).toBeLessThanOrEqual(36);
+    },
+  );
+  it.each(['end-first', 'paint-first'])(
+    'D9-A5 keeps paint and reserved C independent under attempted %s delivery',
+    (order) => {
+      const bridge = ownershipBridge();
+      bridge.holdTerminals();
+      root.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
+      pointer('pointerdown');
+      pointer('pointerup');
+      const begin = [...bridge.records.keys()][0];
+      bridge.deliver(begin);
+      const paintId = [...bridge.records.keys()][0],
+        receipt = bridge.records.get(paintId)!.terminal;
+      if (order === 'end-first')
+        bridge.emit({ ...receipt, operation: 'end-stroke', commandId: paintId + 1 });
+      pointer('pointerdown', 170, 150);
+      pointer('pointerup');
+      expect(bridge.records.size).toBe(1);
+      expect(bridge.counts.C).toBe(0);
+      bridge.deliver(paintId);
+      const end = [...bridge.records.keys()][0];
+      expect(bridge.records.get(end)!.command.type).toBe('end-stroke');
+      bridge.emit(receipt);
+      pointer('pointerdown', 170, 150);
+      pointer('pointerup');
+      expect(bridge.counts.C).toBe(1);
+      bridge.deliver(end);
+      pointer('pointerdown', 170, 150);
+      pointer('pointerup');
+      bridge.deliverAll();
+      expect(bridge.records.size).toBe(0);
+      expect(bridge.counts.C).toBe(2);
+      expect(bridge.counts.M).toBe(5);
+      expect(bridge.latestFrame.frame.interventions.entries.length).toBe(2);
+    },
+  );
+  it('D9-A6/A7 keeps fatal-flagged native work charged until exact results or actual endpoint termination', () => {
+    const bridge = ownershipBridge();
+    bridge.holdTerminals();
+    saturate();
+    bridge.emit({ type: 'error', runId: 1, fatal: true, message: 'injected tick failure' });
+    expect(bridge.records.size).toBe(1);
+    click('reset');
+    expect(bridge.records.size).toBe(1);
+    expect(bridge.counts.L).toBe(1);
+    dispose();
+    expect(bridge.counts.terminated).toBe(1);
+    expect(bridge.records.size).toBe(0);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+  it('D9-A6 handles messageerror through EventTarget before abandoning physical ownership', () => {
+    const bridge = ownershipBridge();
+    bridge.holdTerminals();
+    saturate();
+    bridge.endpoint.dispatchEvent(new MessageEvent('messageerror'));
+    expect(bridge.counts.terminated).toBe(1);
+    expect(bridge.records.size).toBe(0);
+    expect(get('run-state').textContent).toBe('STOPPED');
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+});
 function nearDeath(): WorldFile {
   const world = new Ecosystem({ ...DEFAULTS, climate: 0, nutrients: 0 }, false);
   const organism = world.spawn(
@@ -439,6 +1386,7 @@ describe('owned command admission and real-worker interleavings', () => {
         runId: command.runId,
         commandId: command.commandId,
         code: 'invalid-command',
+        operation: 'start',
         message: 'cannot start',
       },
     } as MessageEvent);
@@ -449,6 +1397,11 @@ describe('owned command admission and real-worker interleavings', () => {
     const invalid = [
       null,
       { type: 'unknown' },
+      { type: 'begin-stroke', strokeId: 0, tool: 'food', radius: 0 },
+      { type: 'begin-stroke', strokeId: 1, tool: 'plant', radius: 0 },
+      { type: 'begin-stroke', strokeId: 1, tool: 'food', radius: 9 },
+      { type: 'end-stroke', strokeId: 0 },
+      { type: 'export-measurements', format: 'html' },
       { type: 'start', settings: DEFAULTS },
       { type: 'load', text: {} },
       { type: 'snapshot', display: 1 },
@@ -723,8 +1676,10 @@ describe('owned command admission and real-worker interleavings', () => {
     const view = viewport(get<HTMLCanvasElement>('world'), { zoom: 1, x: 0, y: 0 });
     const location = point(get<HTMLCanvasElement>('world'), { zoom: 1, x: 0, y: 0 }, 150, 150)!;
     expect(view.scale).toBeGreaterThan(0);
-    expected.settings.mutation = 0.2;
-    expected.paint('plant', location.x, location.y, 2, founder(0));
+    expected.changeSettings({ mutation: 0.2 });
+    const placement = expected.paint('plant', location.x, location.y, 2, founder(0));
+    if (placement.placement)
+      expected.appendIntervention({ kind: 'placement', detail: placement.placement });
     set('preference', '0.9');
     click('clear-design');
     const imported = serializeBlueprint({ name: 'B', description: '', genome: founder(2) });
@@ -780,12 +1735,12 @@ describe('owned command admission and real-worker interleavings', () => {
     const downloaded = URL.createObjectURL.mock.calls[0][0] as Blob;
     const file = JSON.parse(await downloaded.text());
     expect(file.settings).toEqual({ ...DEFAULTS, mutation: 0.2 });
-    expect(harness.save()).toEqual({
-      ...candidate,
-      settings: { ...candidate.settings, nutrients: 7 },
-    });
+    const expected = Ecosystem.load(JSON.stringify(candidate));
+    expected.changeSettings({ nutrients: 7 });
+    expect(harness.save()).toEqual(expected.save());
   });
   it('downloads a posted obsolete-generation Save once before reseeding without taking its notice', async () => {
+    vi.useFakeTimers();
     const harness = realWorker(true);
     harness.deliver();
     click('pause');
@@ -818,6 +1773,7 @@ describe('owned command admission and real-worker interleavings', () => {
     worker.onmessage!({ data: saved } as MessageEvent);
     expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
     harness.deliver();
+    vi.advanceTimersByTime(1000);
     click('save');
     harness.deliver();
     expect(get('notice').textContent).toContain('World saved');
@@ -1147,7 +2103,7 @@ describe('actual grid-free telemetry transport composition', () => {
         window.dispatchEvent(new Event('pointerup'));
       }
       harness.deliver();
-      expect(worker.commands.mock.calls.at(-1)![0].type).toBe(type);
+      expect(worker.commands.mock.calls.some(([command]) => command.type === type)).toBe(true);
       const before = harness.save(),
         queued = harness.tasks[0];
       expect(displays).toHaveBeenCalledTimes(1);
@@ -1396,6 +2352,24 @@ describe('actual grid-free telemetry transport composition', () => {
 });
 
 describe('ecosystem desk', () => {
+  it('reuses mounted output nodes and changes text only when the displayed value changes', () => {
+    const population = get('population'),
+      observer = new MutationObserver(() => {}),
+      query = vi.spyOn(root, 'querySelector');
+    observer.observe(population, { childList: true, characterData: true, subtree: true });
+    emit();
+    expect(population.textContent).toBe(String(sample.stats.population));
+    expect(observer.takeRecords()).toEqual([]);
+    emit();
+    expect(observer.takeRecords()).toEqual([]);
+    const changed = structuredClone(sample);
+    changed.stats.population++;
+    emit(changed);
+    expect(population.textContent).toBe(String(changed.stats.population));
+    expect(observer.takeRecords().length).toBeGreaterThan(0);
+    expect(query).not.toHaveBeenCalled();
+    observer.disconnect();
+  });
   it('starts with Pan and Organism selected without changing the world when dragged', () => {
     expect(get('world').dataset.tool).toBe('pan');
     expect(root.querySelector('button[data-tool="pan"]')!.getAttribute('aria-pressed')).toBe(
@@ -2100,6 +3074,7 @@ describe('standalone blueprint files', () => {
         if (worker.pendingCommand) worker.emit({ type: 'loaded', settings: DEFAULTS });
         upload({ size: 1, text: async () => 'world' });
         await flush();
+        worker.emit({ type: 'loaded', settings: DEFAULTS });
       }
       if (action === 'picker') click('import-blueprint');
       if (action === 'cancel') input().dispatchEvent(new Event('cancel'));
@@ -2381,14 +3356,12 @@ describe('display-only retained-world races', () => {
         );
         paint(0);
         expect(worker.commands.mock.calls).toHaveLength(commands);
-        const expected = {
-          ...before,
-          settings: {
-            ...before.settings,
-            ...(multiple ? { mutation: 0.37, climate: 0.25 } : {}),
-            nutrients: 7,
-          },
-        };
+        const reference = Ecosystem.load(JSON.stringify(before));
+        reference.changeSettings({
+          nutrients: 7,
+          ...(multiple ? { mutation: 0.37, climate: 0.25 } : {}),
+        });
+        const expected = reference.save();
         expect(harness.save()).toEqual(before);
         harness.deliver();
         expect(get<HTMLInputElement>('nutrients').value).toBe('7');
@@ -2440,6 +3413,8 @@ describe('display-only retained-world races', () => {
     set('mutation', '0.31');
     const imported = nearDeath();
     imported.settings.seed = 123;
+    imported.interventions.originSettings.seed = 123;
+    imported.interventions.prefixSettings.seed = 123;
     await loadText(JSON.stringify(imported));
     set('nutrients', '3');
     set('nutrients', '7');
@@ -2451,7 +3426,9 @@ describe('display-only retained-world races', () => {
     expect(get<HTMLInputElement>('mutation').value).toBe(String(imported.settings.mutation));
     expect(get('nutrients-value').textContent).toBe('7%');
     expect(get('climate-value').textContent).toBe('25%');
-    expect(harness.save()).toEqual({ ...imported, settings: expected });
+    const reference = Ecosystem.load(JSON.stringify(imported));
+    reference.changeSettings({ nutrients: 7, climate: 0.25 });
+    expect(harness.save()).toEqual(reference.save());
     click('reset');
     expect(worker.commands.mock.calls.at(-1)![0]).toMatchObject({ settings: expected });
     harness.deliver();
@@ -2470,6 +3447,12 @@ describe('display-only retained-world races', () => {
       await loadText('{}');
       const recovery = harness.outbox.find((data) => data.type === 'error');
       set('nutrients', '7');
+      if (boundary !== 'dispose') {
+        if (boundary === 'reset') click('reset');
+        else await loadText(JSON.stringify(nearDeath()));
+        expect(get('notice').textContent).toContain('capacity busy');
+        worker.onmessage!({ data: recovery } as MessageEvent);
+      }
       if (boundary === 'reset') click('reset');
       else if (boundary === 'load') await loadText(JSON.stringify(nearDeath()));
       else dispose();
@@ -2522,6 +3505,7 @@ describe('display-only retained-world races', () => {
         harness.deliver();
         const before = harness.save();
         const pending = harness.tasks.length;
+
         const paths = chart.paths.length;
         await loadText('{}');
         const beforeDisplay = root.innerHTML;
@@ -2617,6 +3601,7 @@ describe('display-only retained-world races', () => {
       harness.deliver();
       await loadText('{}');
       const recovery = harness.outbox.splice(0)[0];
+      worker.onmessage!({ data: recovery } as MessageEvent);
       if (replacement === 'reset') {
         set('seed', '99');
         click('reset');
