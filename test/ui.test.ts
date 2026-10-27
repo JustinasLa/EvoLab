@@ -747,6 +747,69 @@ describe('explicit bounded local library', () => {
     },
   );
 
+  it.each(['refresh', 'delete', 'repair'] as const)(
+    'revokes %s refresh publication and followups across connection invalidation without releasing native ownership',
+    async (action) => {
+      const original = encodeRecord(draft('target'), 1);
+      const neighbor = encodeRecord(draft('neighbor'), 1);
+      storage.values.set(
+        first,
+        action === 'repair' ? JSON.stringify({ ...JSON.parse(original), revision: 0 }) : original,
+      );
+      storage.values.set(second, neighbor);
+      await open();
+      if (action === 'refresh')
+        storage.values.set(third, encodeRecord(draft('not yet displayed'), 1));
+      else if (action === 'repair')
+        root.querySelector<HTMLButtonElement>(`[data-repair-id="${first}"]`)!.click();
+      else click('library-delete');
+      storage.faults.completionStall = 'readonly';
+      click(action === 'refresh' ? 'library-refresh' : 'library-confirm');
+      await flush();
+      const committed = [...storage.values];
+      if (action !== 'refresh') {
+        expect(committed).toEqual([[second, neighbor]]);
+        expect(get('library-status').textContent).toContain('Write committed');
+      }
+      const owner = storage.current;
+      const transactions = storage.connection.transaction.mock.calls.length;
+      const rows = get('library-rows').innerHTML;
+      document.body.tabIndex = -1;
+      document.body.focus();
+      document.body.removeAttribute('tabindex');
+      storage.faults.abortThrow = true;
+      storage.connection.onversionchange();
+      await flush();
+      expect(get('library-status').textContent).toContain('Another tab changed');
+      const status = get('library-status').textContent;
+      expect(owner.native.abort).toHaveBeenCalledOnce();
+      expect(owner.native.oncomplete).toBeTypeOf('function');
+      click('library-refresh');
+      await flush();
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+      const captureEffects = vi.spyOn(get('capture-selected'), 'setAttribute');
+      delete storage.faults.completionStall;
+      delete storage.faults.abortThrow;
+      owner.releaseCompletion();
+      await flush();
+      expect(owner.native.oncomplete).toBeNull();
+      expect(get('library-status').textContent).toBe(status);
+      if (action !== 'refresh') expect(status).toContain('Write committed');
+      expect(get('library-rows').innerHTML).toBe(rows);
+      expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
+      expect(document.activeElement).toBe(document.body);
+      expect(captureEffects).not.toHaveBeenCalled();
+      expect([...storage.values]).toEqual(committed);
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+      click('library-refresh');
+      await flush();
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions + 1);
+      expect(get('library-status').textContent).toContain('Library refreshed');
+      expect(get('library-rows').children).toHaveLength(committed.length);
+      expect([...storage.values]).toEqual(committed);
+    },
+  );
+
   it('keeps timed-out native ownership, refuses busy replacement, and reports terminal connection state', async () => {
     vi.useFakeTimers();
     storage.values.set(first, encodeRecord(draft(), 1));

@@ -99,6 +99,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   let librarySelection = 0;
   let libraryRequest = 0;
   let libraryWorking: 'refresh' | 'write' | 'load' | undefined;
+  let libraryRefreshOutcome = '';
   let refreshNeeded = false;
   const rowSignatures = new WeakMap<HTMLElement, string | undefined>();
   let candidate: LibraryCandidate | undefined;
@@ -134,12 +135,14 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   const library = createLibrary({
     invalidated: () => {
       refreshNeeded = false;
+      libraryRequest++;
+      libraryWorking = undefined;
       if (replacement?.kind === 'library') cancelReplacement('the library connection changed.');
     },
     status: (message) => {
       if (!alive) return;
       cancelDialog('Library connection or operation changed.');
-      libraryStatus(message);
+      libraryStatus(libraryRefreshOutcome ? `${libraryRefreshOutcome} ${message}` : message);
       updateCapture();
       drainRefresh();
     },
@@ -369,6 +372,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     }
     refreshNeeded = false;
     libraryWorking = 'refresh';
+    libraryRefreshOutcome = outcome;
     const request = ++libraryRequest,
       selection = librarySelection;
     libraryStatus(outcome || 'Reading local library…');
@@ -389,6 +393,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     } finally {
       if (request === libraryRequest) {
         libraryWorking = undefined;
+        libraryRefreshOutcome = '';
         updateCapture();
         drainRefresh();
       }
@@ -411,6 +416,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       return;
     }
     libraryWorking = 'write';
+    libraryRefreshOutcome = '';
     updateCapture();
     const focusOwner = document.activeElement;
     const request = ++libraryRequest;

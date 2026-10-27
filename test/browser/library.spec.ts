@@ -576,6 +576,135 @@ test('native read completion cannot resurrect an older designer replacement afte
   });
 });
 
+for (const action of ['refresh', 'delete', 'repair'] as const) {
+  test(`versionchange revokes native ${action} refresh delivery and followup ownership`, async ({
+    page,
+  }, info) => {
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await deliveryProbe(page);
+    const before = await fixture(page);
+    const original = encodeRecord(candidate('target'), 1);
+    const neighbor = encodeRecord(candidate('neighbor'), 1);
+    const stored: [string, unknown][] = [
+      [
+        first,
+        action === 'repair' ? JSON.stringify({ ...JSON.parse(original), revision: 0 }) : original,
+      ],
+      [second, neighbor],
+    ];
+    await database(page, stored);
+    await openLibrary(page);
+    const design = await download(page, '#export-blueprint');
+    if (action === 'refresh') {
+      const added: [string, string] = [third, encodeRecord(candidate('not yet displayed'), 1)];
+      await database(page, [added]);
+      stored.push(added);
+    } else
+      await page
+        .locator(action === 'repair' ? `[data-repair-id="${first}"]` : '#library-delete')
+        .click();
+    await page.evaluate(() => {
+      (window as any).libraryProbe.holdDatabaseMode = 'readonly';
+    });
+    await page.locator(action === 'refresh' ? '#library-refresh' : '#library-confirm').click();
+    await expect
+      .poll(() => page.evaluate(() => (window as any).libraryProbe.heldDatabase.length))
+      .toBe(1);
+    if (action !== 'refresh')
+      await expect(page.locator('#library-status')).toContainText('Write committed');
+    const rows = await page.locator('#library-rows').innerHTML();
+    const transactions = await page.evaluate(
+      () => (window as any).libraryProbe.databaseTransactions,
+    );
+    await page.evaluate(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+      document.body.removeAttribute('tabindex');
+    });
+    const upgrade = await page.evaluate(
+      (name) =>
+        new Promise((resolve, reject) => {
+          const request = indexedDB.open(name, 2);
+          let versions: number[] = [];
+          request.onupgradeneeded = (event) => {
+            versions = [event.oldVersion, event.newVersion!];
+            request.transaction!.abort();
+          };
+          request.onerror = (event) => {
+            event.preventDefault();
+            resolve({ versions, error: request.error?.name });
+          };
+          request.onsuccess = () => {
+            request.result.close();
+            reject(new Error('Expected upgrade abort'));
+          };
+        }),
+      LIBRARY_DATABASE,
+    );
+    expect(upgrade).toEqual({ versions: [1, 2], error: 'AbortError' });
+    await expect(page.locator('#library-status')).toContainText('Another tab changed');
+    const status = await page.locator('#library-status').textContent();
+    await page.locator('#library-refresh').evaluate((button: HTMLButtonElement) => button.click());
+    expect(await page.evaluate(() => (window as any).libraryProbe.databaseTransactions)).toBe(
+      transactions,
+    );
+    expect(await page.evaluate(() => (window as any).libraryProbe.heldDatabase.length)).toBe(1);
+    await page.evaluate(() => {
+      const capture = document.querySelector('#capture-selected')!;
+      const nativeSetAttribute = capture.setAttribute;
+      (window as any).lateCaptureUpdates = 0;
+      capture.setAttribute = function (...args) {
+        (window as any).lateCaptureUpdates++;
+        nativeSetAttribute.apply(this, args);
+      };
+    });
+    await releaseDatabase(page);
+    await expect(page.locator('#library-status')).toHaveText(status!);
+    if (action !== 'refresh') expect(status).toContain('Write committed');
+    expect(await page.locator('#library-rows').innerHTML()).toBe(rows);
+    await expect(page.locator('#library-dialog')).toBeHidden();
+    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+    expect(await page.evaluate(() => (window as any).lateCaptureUpdates)).toBe(0);
+    expect(await page.evaluate(() => (window as any).libraryProbe.databaseTransactions)).toBe(
+      transactions,
+    );
+    const surviving = action === 'refresh' ? stored : [[second, neighbor]];
+    expect(await database(page)).toEqual(surviving);
+    expect(await download(page, '#export-blueprint')).toEqual(design);
+    expect(await pausedSave(page)).toEqual(before);
+    await page.screenshot({
+      path: info.outputPath(`library-${action}-refresh-versionchange.png`),
+      fullPage: true,
+    });
+    await page.locator('#library-refresh').click();
+    await expect(page.locator('#library-status')).toContainText('Library refreshed');
+    await expect(page.locator('#library-rows > li')).toHaveCount(surviving.length);
+    expect(await database(page)).toEqual(surviving);
+    expect(errors).toEqual([]);
+    await info.attach(`native-${action}-refresh-versionchange.json`, {
+      contentType: 'application/json',
+      body: JSON.stringify({
+        action,
+        upgrade,
+        actualNativeVersionchange: true,
+        upgradeAbortedWithoutSchemaChange: true,
+        completedReadonlyDeliveryHeld: true,
+        nativeOwnerRetainedUntilTerminalDelivery: true,
+        staleSnapshotAndFollowupSuppressed: true,
+        status,
+        exactSurvivingRows: surviving,
+        explicitRetrySucceeded: true,
+        pageErrors: errors,
+        designerSha256: createHash('sha256').update(design).digest('hex'),
+        ecologicalSha256: createHash('sha256').update(before).digest('hex'),
+        limits:
+          'Real IndexedDB versionchange with completed callback delivery held by instrumentation; not physical slow disk.',
+      }),
+    });
+  });
+}
+
 for (const phase of ['initial', 'final']) {
   test(`Organism departure cancels the ${phase} native library read without releasing its pending owner or stealing focus`, async ({
     page,
