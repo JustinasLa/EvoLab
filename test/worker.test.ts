@@ -1,7 +1,13 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { startWorker, type Scope } from '../src/worker';
 import { Ecosystem } from '../src/ecosystem';
 import { legacyV3 } from './fixtures/telemetry';
+import {
+  observerWorld,
+  extendedObserverWorld,
+  withoutObserverExtensions,
+} from './fixtures/observers';
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
 import {
   DEFAULTS,
@@ -530,6 +536,231 @@ describe('bounded long-run transport', () => {
     harness.advance();
     expect(harness.tasks).toHaveLength(0);
   });
+  it('bounds maximal real-engine known-field controls and 180-sample telemetry without restricting full saves', () => {
+    const file = observerWorld(1600, true),
+      harness = workerHarness(),
+      selected = file.organisms.at(-1)!;
+    harness.send({
+      type: 'start',
+      settings: DEFAULTS,
+      display: { epoch: 0, enabled: false, visible: true },
+    });
+    harness.load(file, 2);
+    harness.send({ type: 'inspect', x: selected.x, y: selected.y });
+    harness.send({ type: 'run-to', targetTick: 1_000_000_000 });
+    harness.send({ type: 'pause' });
+    const state = harness.state(),
+      source = harness.source(),
+      size = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength,
+      controlBytes = size(state),
+      telemetryBytes = size(source);
+    expect(state.world.stats.population).toBe(1600);
+    expect(state.world.stats.top).toHaveLength(5);
+    expect(state.world.stats.top.every((species: any) => species.genome.cells.length === 16)).toBe(
+      true,
+    );
+    expect(state.selected.genome.cells).toHaveLength(16);
+    expect(state.selected.ancestry).toHaveLength(8);
+    expect(state.selected.age).toBe(100000);
+    expect(state.target).toMatchObject({ status: 'suspended', targetTick: 1_000_000_000 });
+    expect(source.telemetry.samples).toHaveLength(180);
+    for (const sample of source.telemetry.samples) {
+      expect(sample.cellCounts).toHaveLength(6);
+      expect(sample.adaptation.preferenceBins).toHaveLength(10);
+      expect(Object.keys(sample.energy)).toHaveLength(9);
+      expect(Object.keys(sample.deaths)).toHaveLength(3);
+    }
+    expect(controlBytes).toBeLessThanOrEqual(32 * 1024);
+    expect(telemetryBytes).toBeLessThanOrEqual(256 * 1024);
+    expect(harness.saveText()).toBe(JSON.stringify(file));
+    process.stdout.write(
+      'MAXIMAL_OBSERVER_BYTES ' +
+        JSON.stringify({
+          fixture:
+            'Real 1600-organism/16-cell boundary expanded to 180 schema-valid sizing intervals, with upper-range counters/traits; not an uninterrupted ecological trajectory',
+          population: 1600,
+          top: 5,
+          topCells: 16,
+          selectedCells: 16,
+          ancestry: 8,
+          samples: 180,
+          controlBytes,
+          telemetryBytes,
+          completeSaveBytes: size(file),
+          stateKeys: Object.keys(state),
+          sampleKeys: Object.keys(source.telemetry.samples[0]),
+        }) +
+        '\n',
+    );
+  });
+  it.each(
+    ['settings', 'organism', 'genome', 'cell', 'all'].flatMap((surface) =>
+      ([1, 4, 12] as const).flatMap((speed) =>
+        Array.from({ length: 5 }, (_, window) => ({
+          surface,
+          speed,
+          from: window * 24,
+          through: (window + 1) * 24,
+        })),
+      ),
+    ),
+  )(
+    'preserves literal observer twins and full extension saves at $surface / speed $speed on every batch in $from–$through of 120 ticks',
+    ({ surface, speed, from, through }) => {
+      const file = observerWorld(),
+        extended = extendedObserverWorld(file, surface),
+        reference = Ecosystem.load(JSON.stringify(file)),
+        extendedReference = Ecosystem.load(JSON.stringify(extended)),
+        plain = workerHarness(),
+        extra = workerHarness(),
+        selected = file.organisms.at(-1)!,
+        surfaces = new Map<string, { bytes: number; sha256: string }>();
+      let expectedSaves: [string, string] | undefined;
+      const size = (text: string) => new TextEncoder().encode(text).byteLength,
+        identical = (label: string, left: unknown, right: unknown) => {
+          const text = JSON.stringify(right);
+          expect(text).toBe(JSON.stringify(left));
+          expect(text).not.toContain('observerExtension');
+          surfaces.set(label, {
+            bytes: size(text),
+            sha256: createHash('sha256').update(text).digest('hex'),
+          });
+        },
+        pair = (command: any) => {
+          const first = plain.send(command),
+            second = extra.send(command);
+          if (command.type === 'save') {
+            identical('saved-state', { ...first, text: undefined }, { ...second, text: undefined });
+            expect(first.text).toBe(expectedSaves?.[0] ?? JSON.stringify(reference.save()));
+            expect(second.text).toBe(
+              expectedSaves?.[1] ?? JSON.stringify(extendedReference.save()),
+            );
+          } else identical(first.type, first, second);
+          return [first, second];
+        },
+        poison = (value: any): void => {
+          if (!value || typeof value !== 'object') return;
+          if (ArrayBuffer.isView(value)) {
+            value.fill(9);
+            return;
+          }
+          for (const [key, child] of Object.entries(value)) {
+            if (child && typeof child === 'object') poison(child);
+            else value[key] = typeof child === 'number' ? -777 : 'caller mutation';
+          }
+          if (Array.isArray(value)) value.push({ callerMutation: true });
+        };
+      const extendedBytes = size(JSON.stringify(extended));
+      expect(extendedBytes).toBeLessThan(WORLD_MAX_BYTES);
+      expect(extendedBytes - size(JSON.stringify(file))).toBeGreaterThanOrEqual(96 * 1024);
+      pair({
+        type: 'start',
+        settings: DEFAULTS,
+        display: { epoch: 0, enabled: false, visible: true },
+      });
+      const callerOwned = structuredClone(extended),
+        initial = [plain.load(file, 2), extra.load(callerOwned, 2)];
+      poison(callerOwned);
+      identical('loaded', initial[0], initial[1]);
+      pair({ type: 'pause' });
+      pair({ type: 'inspect', x: selected.x, y: selected.y });
+      const first = pair({ type: 'snapshot', display: true }),
+        earlierFrame = extra.last('frame'),
+        second = pair({ type: 'snapshot', display: true }),
+        frame = extra.last('frame'),
+        secondBytes = JSON.stringify(second[1]),
+        frameBytes = JSON.stringify(frame);
+      identical('frame', plain.last('frame'), frame);
+      expect(first[1].state.selected.ancestry).not.toBe(second[1].state.selected.ancestry);
+      expect(first[1].state.selected.genome.cells).not.toBe(second[1].state.selected.genome.cells);
+      expect(first[1].state.world.stats.top[0].genome.cells).not.toBe(
+        second[1].state.world.stats.top[0].genome.cells,
+      );
+      expect(first[1].telemetry.telemetry.samples[0].energy).not.toBe(
+        second[1].telemetry.telemetry.samples[0].energy,
+      );
+      poison(initial[1]);
+      poison(first[1]);
+      poison(earlierFrame);
+      expect(JSON.stringify(second[1])).toBe(secondBytes);
+      expect(JSON.stringify(frame)).toBe(frameBytes);
+      pair({ type: 'save' });
+      const direct = extendedReference.frame(),
+        saved = JSON.stringify(extendedReference.save());
+      poison(direct);
+      expect(JSON.stringify(extendedReference.save())).toBe(saved);
+      pair({ type: 'snapshot', display: true });
+      identical('frame-after-mutation', plain.last('frame'), extra.last('frame'));
+      pair({ type: 'settings', settings: { forbidden: 1 } });
+      const recovery = extra.last('error');
+      expect(recovery.code).toBe('invalid-command');
+      identical('recovery', plain.last('error'), recovery);
+      poison(recovery);
+      pair({ type: 'save' });
+      pair({ type: 'load', runId: 3, text: '{}' });
+      expect(extra.last('error').code).toBe('load-failed');
+      identical('load-recovery', plain.last('error'), extra.last('error'));
+      poison(extra.last('error'));
+      pair({ type: 'save' });
+      pair({ type: 'speed', value: speed });
+      pair({ type: 'resume' });
+      for (let tick = 0; tick < through; tick += speed) {
+        plain.advance();
+        extra.advance();
+        for (let step = 0; step < speed; step++) {
+          reference.step();
+          extendedReference.step();
+        }
+        if (tick + speed < from) continue;
+        const plainExpected = reference.save(),
+          extraExpected = extendedReference.save();
+        expectedSaves = [JSON.stringify(plainExpected), JSON.stringify(extraExpected)];
+        if (tick < from) {
+          pair({ type: 'save' });
+          continue;
+        }
+        const before = pair({ type: 'save' });
+        pair({ type: 'inspect', x: selected.x, y: selected.y });
+        pair({ type: 'snapshot', display: false });
+        identical('progress', plain.last('progress'), extra.last('progress'));
+        const after = pair({ type: 'save' });
+        expect(after[0].text).toBe(before[0].text);
+        expect(after[1].text).toBe(before[1].text);
+        expect(JSON.stringify(withoutObserverExtensions(extraExpected))).toBe(expectedSaves[0]);
+        expect(plain.tasks).toHaveLength(1);
+        expect(extra.tasks).toHaveLength(1);
+      }
+      pair({ type: 'pause' });
+      identical('terminal', plain.last('control'), extra.last('control'));
+      const final = pair({ type: 'save' });
+      expect(extra.transferStats).toEqual(plain.transferStats);
+      expect(extra.transferStats.duplicates).toBe(0);
+      expect(extra.transferStats.detached).toBe(extra.transferStats.buffers);
+      process.stdout.write(
+        'EXTENSION_OBSERVER_TWINS ' +
+          JSON.stringify({
+            surface,
+            speed,
+            trajectoryTicks: 120,
+            prefixTicks: from,
+            coveredThroughTick: through,
+            observedBatches: (through - from) / speed,
+            extendedBytes,
+            plainSaveBytes: size(final[0].text),
+            extendedSaveBytes: size(final[1].text),
+            plainSaveSHA256: createHash('sha256').update(final[0].text).digest('hex'),
+            extendedSaveSHA256: createHash('sha256').update(final[1].text).digest('hex'),
+            surfaces: Object.fromEntries(surfaces),
+            transferStats: extra.transferStats,
+            mutation:
+              'loaded/control/frame, selected ancestry/genome/cells, top genomes/cells, settings, every telemetry sample/pending ledger/count/bin, direct real-engine frame and recovery; later responses/saves/evolution unchanged',
+          }) +
+          '\n',
+      );
+      plain.dispose();
+      extra.dispose();
+    },
+  );
   it('projects only recursively known detached observations while complete saves retain arbitrary validated extensions', () => {
     const file: any = new Ecosystem().save();
     file.settings.extension = 'settings-extension';
