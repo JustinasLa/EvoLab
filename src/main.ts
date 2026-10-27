@@ -6,6 +6,9 @@ import {
   WIDTH,
   HEIGHT,
   WORLD_MAX_BYTES,
+  MANUAL_CAPACITY,
+  STROKE_COMMAND_CAPACITY,
+  integer,
   clamp,
   founder,
   speciesName,
@@ -18,6 +21,9 @@ import {
   type Tool,
   type CellType,
   type PlaybackState,
+  type PaintTool,
+  type TrackedOperation,
+  type MeasurementFormat,
 } from './model';
 import { draw, genomeSvg, markup, organismHtml, point, viewport, type Camera } from './view';
 import { createTelemetryView } from './telemetry-view';
@@ -30,11 +36,18 @@ import {
 
 export function mount(root: HTMLElement, worker: Worker): () => void {
   root.innerHTML = markup;
-  const get = <T extends HTMLElement>(id: string): T => root.querySelector<T>(`#${id}`)!;
+  const elements = new Map(
+    [...root.querySelectorAll<HTMLElement>('[id]')].map((element) => [element.id, element]),
+  );
+  const get = <T extends HTMLElement>(id: string): T => elements.get(id) as T;
   const canvas = get<HTMLCanvasElement>('world'),
     buffer = document.createElement('canvas');
   const camera: Camera = { zoom: 1, x: 0, y: 0 };
   let settingsEdits: Partial<Settings> = {};
+  let confirmedSettings = { ...DEFAULTS };
+  let settledSettings: Partial<Settings> = {};
+  const latestSettingId: Partial<Record<keyof Settings, number>> = {};
+  const settledSettingId: Partial<Record<keyof Settings, number>> = {};
   let settings = { ...DEFAULTS },
     runId = 0,
     paused = false,
@@ -59,10 +72,326 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     updates = 0;
   const telemetry = createTelemetryView(root);
   const text = (id: string, value: string): void => {
-    get(id).textContent = value;
+    const element = get(id);
+    if (element.textContent !== value) element.textContent = value;
   };
   const notice = (message: string): void => text('notice', message);
   const send = (data: object): void => worker.postMessage(data);
+  type Owner = {
+    id: number;
+    run: number;
+    operation: TrackedOperation;
+    applicable: boolean;
+    format?: MeasurementFormat;
+    strokeId?: number;
+    completing: boolean;
+    failed: boolean;
+    setting?: { key: 'mutation' | 'nutrients' | 'climate'; value: number };
+  };
+  const owners = new Map<number, Owner>();
+  type Download = { url: string; timer?: ReturnType<typeof setTimeout> };
+  const downloads: Partial<Record<'save' | 'export-measurements', Download>> = {};
+  let postingId = 0,
+    strokeId = 0,
+    terminated = false,
+    worldRead = false,
+    readGeneration = 0;
+  let closeLease: { run: number; strokeId: number; posted: boolean } | null = null;
+  let localStroke: { id: number; tool: PaintTool; radius: number; count: number } | null = null;
+  let ownerPointer: number | null = null;
+  let availabilityState = -1;
+  const isManual = (operation: TrackedOperation): boolean =>
+    ['begin-stroke', 'paint', 'settings', 'shock'].includes(operation);
+  const hasOwner = (operation: TrackedOperation): boolean =>
+    [...owners.values()].some((owner) => owner.operation === operation);
+  const lifecycleBusy = (): boolean => hasOwner('start') || hasOwner('load');
+  const manualCount = (): number =>
+    [...owners.values()].filter((owner) => isManual(owner.operation)).length;
+  function availability(): void {
+    const unavailable = terminated || stopped || lifecycleBusy(),
+      exportBlocked =
+        unavailable || hasOwner('export-measurements') || !!downloads['export-measurements'],
+      saveBlocked = unavailable || hasOwner('save') || !!downloads.save,
+      state = Number(exportBlocked) + Number(saveBlocked) * 2;
+    if (state === availabilityState) return;
+    availabilityState = state;
+    for (const format of ['json', 'csv'])
+      get<HTMLButtonElement>(`measurements-${format}`).disabled = exportBlocked;
+    get<HTMLButtonElement>('save').disabled = saveBlocked;
+  }
+  function clearDownload(
+    operation: 'save' | 'export-measurements',
+    owned = downloads[operation],
+  ): void {
+    if (!owned || downloads[operation] !== owned) return;
+    delete downloads[operation];
+    if (owned.timer !== undefined) clearTimeout(owned.timer);
+    URL.revokeObjectURL(owned.url);
+    if (alive) availability();
+  }
+  function invalidate(keepRun?: number): void {
+    for (const owner of owners.values()) if (owner.run !== keepRun) owner.applicable = false;
+    clearDownload('save');
+    clearDownload('export-measurements');
+  }
+  function terminate(): void {
+    invalidate();
+    if (!terminated) {
+      worker.terminate();
+      terminated = true;
+      owners.clear();
+      closeLease = null;
+    }
+    localStroke = null;
+    ownerPointer = null;
+    dragging = false;
+    if (alive) availability();
+  }
+  function admissible(operation: TrackedOperation): boolean {
+    if (
+      !alive ||
+      terminated ||
+      postingId >=
+        Number.MAX_SAFE_INTEGER -
+          (closeLease && !closeLease.posted && operation !== 'end-stroke' ? 1 : 0) ||
+      (stopped && operation !== 'start' && operation !== 'load' && operation !== 'end-stroke')
+    ) {
+      if (alive) notice('Ecosystem transport unavailable; no new action admitted.');
+      return false;
+    }
+    const busy =
+      operation === 'start' || operation === 'load'
+        ? lifecycleBusy()
+        : operation === 'end-stroke'
+          ? false
+          : operation === 'settings'
+            ? manualCount() >= MANUAL_CAPACITY
+            : lifecycleBusy() ||
+              (isManual(operation)
+                ? manualCount() >= MANUAL_CAPACITY
+                : hasOwner(operation) || !!downloads[operation as 'save' | 'export-measurements']);
+    if (busy)
+      notice(
+        'Worker capacity busy. Earlier admitted actions may still complete; try a new action after they drain.',
+      );
+    return !busy;
+  }
+  function postTracked(
+    operation: TrackedOperation,
+    payload: Record<string, unknown> = {},
+    requestedRun = runId,
+  ): boolean {
+    if (!admissible(operation)) return false;
+    const owner: Owner = {
+      id: ++postingId,
+      run: requestedRun,
+      operation,
+      applicable: true,
+      completing: false,
+      failed: false,
+      ...(payload.format ? { format: payload.format as MeasurementFormat } : {}),
+      ...(payload.strokeId ? { strokeId: payload.strokeId as number } : {}),
+    };
+    if (operation === 'settings') {
+      const [key, value] = Object.entries(payload.settings as object)[0];
+      owner.setting = { key: key as 'mutation' | 'nutrients' | 'climate', value: value as number };
+      latestSettingId[key as keyof Settings] = owner.id;
+    }
+    owners.set(owner.id, owner);
+    availability();
+    try {
+      send({
+        type: operation,
+        ...payload,
+        runId: requestedRun,
+        ...(['begin-stroke', 'paint', 'settings', 'shock', 'end-stroke'].includes(operation)
+          ? { commandId: owner.id }
+          : { requestId: owner.id }),
+      });
+      return operation !== 'settings' || !owner.failed;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'DataCloneError') owners.delete(owner.id);
+      else terminate();
+      if (alive) notice('Could not post this action. No automatic retry was queued.');
+      availability();
+      return false;
+    }
+  }
+  function endStroke(): void {
+    dragging = false;
+    ownerPointer = null;
+    localStroke = null;
+    const lease = closeLease;
+    if (!lease || lease.posted) return;
+    lease.posted = true;
+    if (!postTracked('end-stroke', { strokeId: lease.strokeId }, lease.run)) {
+      terminate();
+      stop();
+    }
+  }
+  function download(owner: Owner, data: any): void {
+    const operation = owner.operation as 'save' | 'export-measurements';
+    if (
+      typeof data.text !== 'string' ||
+      !integer(data.completedTick, 0, 1e9) ||
+      !integer(data.seed, 0, 4294967295) ||
+      data.text.length > WORLD_MAX_BYTES ||
+      !integer(data.byteLength, 0, WORLD_MAX_BYTES) ||
+      new TextEncoder().encode(data.text).byteLength !== data.byteLength
+    )
+      throw new Error('Invalid completed download payload; no download created.');
+    const anchor = document.createElement('a');
+    let lease: Download | undefined,
+      dispatched = false;
+    try {
+      const format = owner.format ?? 'json';
+      const url = URL.createObjectURL(
+        new Blob([data.text], {
+          type: format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json;charset=utf-8',
+        }),
+      );
+      lease = { url };
+      downloads[operation] = lease;
+      anchor.href = url;
+      anchor.download =
+        operation === 'save'
+          ? `evolab-world-${data.seed}.json`
+          : `evolab-measurements-${data.seed}-tick-${data.completedTick}.${format}`;
+      document.body.append(anchor);
+      anchor.click();
+      const owned = lease;
+      lease.timer = setTimeout(() => clearDownload(operation, owned), 1000);
+      dispatched = true;
+      notice(
+        operation === 'save'
+          ? 'World saved, including every organism and its ancestry.'
+          : `Download requested: retained observations as of completed tick ${data.completedTick}.`,
+      );
+    } finally {
+      anchor.remove();
+      if (!dispatched && lease) clearDownload(operation, lease);
+    }
+  }
+  function terminal(data: any): boolean {
+    const kinds = ['saved', 'measurement-exported', 'manual-result', 'started', 'loaded'];
+    if (
+      !kinds.includes(data.type) &&
+      !(data.type === 'error' && typeof data.operation === 'string')
+    )
+      return false;
+    const operation = data.operation as TrackedOperation,
+      manual = ['begin-stroke', 'paint', 'settings', 'shock', 'end-stroke'].includes(operation),
+      id = manual ? data.commandId : data.requestId,
+      owner = owners.get(id);
+    const expected =
+      operation === 'save'
+        ? 'saved'
+        : operation === 'export-measurements'
+          ? 'measurement-exported'
+          : operation === 'start'
+            ? 'started'
+            : operation === 'load'
+              ? 'loaded'
+              : 'manual-result';
+    if (
+      !owner ||
+      owner.completing ||
+      owner.operation !== operation ||
+      owner.run !== data.runId ||
+      owner.format !== data.format ||
+      owner.strokeId !== data.strokeId ||
+      (manual ? data.requestId !== undefined : data.commandId !== undefined) ||
+      (data.type !== 'error' && data.type !== expected)
+    )
+      return true;
+    owner.completing = true;
+    try {
+      if (!alive || !owner.applicable || owner.run !== runId) return true;
+      if (data.type === 'error') {
+        owner.failed = true;
+        settleSetting(owner, false);
+        if (typeof data.message !== 'string' || data.message.length > 512)
+          throw new Error('Invalid worker error payload.');
+        if (data.fatal) {
+          invalidate();
+          stop();
+        } else if (data.recovery && (operation === 'load' || operation === 'start')) {
+          stopped = false;
+          renderSettings(data.recovery.settings);
+          renderPlayback(data.recovery.playback);
+          renderFrame(data.recovery.frame, data.recovery.selected, true);
+        }
+        notice(data.message);
+      } else if (data.type === 'started' || data.type === 'loaded') {
+        if (
+          !integer(data.completedTick, 0, 1e9) ||
+          !validSettings(data.settings) ||
+          data.seed !== data.settings.seed
+        )
+          throw new Error('Invalid lifecycle terminal.');
+        stopped = false;
+        renderSettings(data.settings);
+        renderPlayback(data.playback);
+        telemetry.reset();
+        updates = 0;
+        if (data.type === 'started') {
+          selected = null;
+          frame = undefined;
+          notice('');
+        } else {
+          notice('World restored. Playback follows Pause on extinction.');
+        }
+      } else if (data.type === 'manual-result') {
+        if (
+          !['applied', 'no-op', 'rejected'].includes(data.status) ||
+          !integer(data.completedTick, 0, 1e9) ||
+          (data.rowSequence !== null && !integer(data.rowSequence, 1, Number.MAX_SAFE_INTEGER))
+        )
+          throw new Error('Invalid manual completion payload.');
+        owner.failed = data.status === 'rejected';
+        settleSetting(owner, !owner.failed);
+        if (owner.failed)
+          notice('Worker rejected this manual action; no successful effect recorded.');
+      } else if (!stopped) download(owner, data);
+    } catch (error) {
+      owner.failed = true;
+      settleSetting(owner, false);
+      if (alive && owner.applicable && owner.run === runId)
+        notice(
+          error instanceof Error
+            ? error.message.slice(0, 512)
+            : 'Could not complete this download.',
+        );
+    } finally {
+      if (owners.get(id) === owner) owners.delete(id);
+      if (
+        operation === 'end-stroke' &&
+        closeLease?.posted &&
+        closeLease.run === owner.run &&
+        closeLease.strokeId === owner.strokeId
+      )
+        closeLease = null;
+      if (alive) availability();
+    }
+    return true;
+  }
+  function settleSetting(owner: Owner, applied: boolean): void {
+    if (!owner.setting) return;
+    const { key, value } = owner.setting;
+    if (applied && owner.id > (settledSettingId[key] ?? 0)) {
+      settledSettingId[key] = owner.id;
+      settledSettings[key] = value;
+      confirmedSettings[key] = value;
+    } else if (!applied && latestSettingId[key] === owner.id) {
+      delete settingsEdits[key];
+      settings[key] = confirmedSettings[key];
+      get<HTMLInputElement>(key).value = String(settings[key]);
+      text(
+        `${key}-value`,
+        key === 'nutrients' ? `${settings[key]}%` : `${Math.round(settings[key] * 100)}%`,
+      );
+    }
+  }
   function renderPlayback(playback: PlaybackState): void {
     if (stopped) return;
     paused = playback.paused;
@@ -89,8 +418,10 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     );
   }
   function renderSettings(next: Settings): void {
-    settings = { ...next, ...settingsEdits };
+    confirmedSettings = { ...next, ...settledSettings };
+    settings = { ...confirmedSettings, ...settingsEdits };
     settingsEdits = {};
+    settledSettings = {};
     for (const id of ['seed', 'mutation', 'nutrients', 'climate'] as const)
       get<HTMLInputElement>(id).value = String(settings[id]);
     text('mutation-value', `${Math.round(settings.mutation * 100)}%`);
@@ -105,6 +436,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     get<HTMLButtonElement>('step').disabled = true;
     text('run-state', 'STOPPED');
     root.classList.add('paused');
+    availability();
   }
   const tab = (name: string): void => {
     root
@@ -114,6 +446,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     get('organism-panel').hidden = name !== 'organism';
   };
   function choose(next: Tool): void {
+    endStroke();
     if (next === 'plant' && !validGenome(blueprint)) {
       notice('Draw 1–16 connected cells before placing an organism.');
       tab('organism');
@@ -165,6 +498,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     );
   }
   function copyDesign(genome: Genome): void {
+    endStroke();
     designRevision++;
     blueprint = structuredClone(genome);
     blueprintName = speciesName(genome);
@@ -206,22 +540,28 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       notice('Choose a whole-number seed from 0 to 4294967295.');
       return;
     }
-    settings = next;
+    replaceWorld('start', { settings: next });
+  }
+  function replaceWorld(operation: 'start' | 'load', payload: Record<string, unknown>): boolean {
+    if (!admissible(operation)) return false;
+    endStroke();
+    if (terminated) return false;
+    const previousRun = runId,
+      previousEdits = settingsEdits,
+      previousSettled = settledSettings;
     settingsEdits = {};
+    settledSettings = {};
     runId++;
-    telemetry.reset();
-    updates = 0;
-    stopped = false;
-    selected = null;
-    frame = undefined;
-    notice('');
-    renderPlayback({
-      paused: false,
-      pauseOnExtinction: get<HTMLInputElement>('pause-on-extinction').checked,
-      extinction: null,
-    });
-    text('world-label', `WORLD ${String(seed).padStart(4, '0')}`);
-    send({ type: 'start', settings, runId });
+    if (operation === 'start') notice('');
+    if (!postTracked(operation, payload, runId)) {
+      runId = previousRun;
+      settingsEdits = previousEdits;
+      settledSettings = previousSettled;
+      return false;
+    }
+    readGeneration++;
+    invalidate(runId);
+    return true;
   }
   function setZoom(next: number, anchorX?: number, anchorY?: number): void {
     const old = viewport(canvas, camera),
@@ -242,10 +582,78 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       get<HTMLDetailsElement>('specimen-details').open = true;
       send({ type: 'inspect', ...p });
       tab('organism');
-    } else if (tool !== 'pan')
-      send({ type: 'paint', tool, ...p, radius: brush, genome: blueprint });
+    } else if (tool !== 'pan') {
+      if (!validGenome(blueprint)) {
+        notice('Draw 1–16 connected cells before painting.');
+        return;
+      }
+      const genome: Genome = {
+        cells: blueprint.cells.map(({ x, y, type }) => ({ x, y, type })),
+        preference: blueprint.preference,
+        tolerance: blueprint.tolerance,
+        tempo: blueprint.tempo,
+      };
+      if (tool === 'plant') {
+        endStroke();
+        postTracked('paint', { tool, ...p, radius: brush, genome });
+        return;
+      }
+      const stroke = localStroke!;
+      if (
+        stroke.count >= STROKE_COMMAND_CAPACITY ||
+        !postTracked('paint', {
+          tool: stroke.tool,
+          ...p,
+          radius: stroke.radius,
+          genome,
+          strokeId: stroke.id,
+        })
+      ) {
+        endStroke();
+        notice(
+          'Partial brush stroke stopped at its command/capacity limit. Earlier admitted points may still complete.',
+        );
+      } else {
+        stroke.count++;
+        if (stroke.count === STROKE_COMMAND_CAPACITY) {
+          endStroke();
+          notice('Partial brush stroke reached 4096 commands. Start a new gesture to continue.');
+        }
+      }
+    }
   }
   canvas.addEventListener('pointerdown', (event) => {
+    if (
+      ownerPointer !== null ||
+      (event.button !== undefined && event.button !== 0) ||
+      event.isPrimary === false
+    )
+      return;
+    if (tool !== 'pan' && tool !== 'inspect' && (lifecycleBusy() || stopped || terminated)) {
+      notice('World replacement or transport is not ready for editing.');
+      return;
+    }
+    if (
+      ['food', 'wall', 'erase'].includes(tool) &&
+      (closeLease ||
+        manualCount() > MANUAL_CAPACITY - 2 ||
+        postingId > Number.MAX_SAFE_INTEGER - 3 ||
+        strokeId === Number.MAX_SAFE_INTEGER)
+    ) {
+      notice('Brush capacity busy. A fresh pointer press is required after earlier work drains.');
+      return;
+    }
+    if (['food', 'wall', 'erase'].includes(tool)) {
+      const id = ++strokeId;
+      closeLease = { run: runId, strokeId: id, posted: false };
+      localStroke = { id, tool: tool as PaintTool, radius: brush, count: 0 };
+      if (!postTracked('begin-stroke', { strokeId: id, tool, radius: brush })) {
+        closeLease = null;
+        localStroke = null;
+        return;
+      }
+    }
+    ownerPointer = event.pointerId;
     dragging = true;
     lastX = event.clientX;
     lastY = event.clientY;
@@ -253,7 +661,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     act(event);
   });
   canvas.addEventListener('pointermove', (event) => {
-    if (!dragging) return;
+    if (!dragging || event.pointerId !== ownerPointer) return;
     if (tool === 'pan') {
       camera.x += event.clientX - lastX;
       camera.y += event.clientY - lastY;
@@ -262,11 +670,14 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     lastX = event.clientX;
     lastY = event.clientY;
   });
-  const release = (): void => {
-    dragging = false;
+  const release = (event: Event): void => {
+    if ('pointerId' in event && event.pointerId !== ownerPointer) return;
+    endStroke();
   };
   window.addEventListener('pointerup', release);
   window.addEventListener('pointercancel', release);
+  window.addEventListener('blur', release);
+  canvas.addEventListener('lostpointercapture', release);
   canvas.addEventListener(
     'wheel',
     (event) => {
@@ -321,29 +732,40 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   });
   for (const id of ['mutation', 'nutrients', 'climate'] as const)
     get(id).addEventListener('input', () => {
-      settings[id] = Number(get<HTMLInputElement>(id).value);
+      endStroke();
+      const value = Number(get<HTMLInputElement>(id).value);
+      if (
+        !validSettings({ ...settings, [id]: value }) ||
+        !postTracked('settings', { settings: { [id]: value } })
+      ) {
+        get<HTMLInputElement>(id).value = String(settings[id]);
+        return;
+      }
+      settings[id] = value;
       settingsEdits[id] = settings[id];
       text(
         `${id}-value`,
         id === 'nutrients' ? `${settings[id]}%` : `${Math.round(settings[id] * 100)}%`,
       );
-      send({ type: 'settings', settings: { [id]: settings[id] } });
     });
   get('brush').addEventListener('input', () => {
+    endStroke();
     brush = Number(get<HTMLInputElement>('brush').value);
     text('brush-value', `${brush} cells`);
   });
   get('preference').addEventListener('input', () => {
+    endStroke();
     designRevision++;
     blueprint.preference = Number(get<HTMLInputElement>('preference').value);
     text('preference-value', `${Math.round(blueprint.preference * 40)}°`);
   });
   get('reset').addEventListener('click', reset);
-  root
-    .querySelectorAll<HTMLButtonElement>('[data-shock]')
-    .forEach((b) =>
-      b.addEventListener('click', () => send({ type: 'shock', kind: b.dataset.shock })),
-    );
+  root.querySelectorAll<HTMLButtonElement>('[data-shock]').forEach((b) =>
+    b.addEventListener('click', () => {
+      endStroke();
+      postTracked('shock', { kind: b.dataset.shock });
+    }),
+  );
   root.querySelectorAll<HTMLButtonElement>('[data-cell]').forEach((b) =>
     b.addEventListener('click', () => {
       cellType = Number(b.dataset.cell) as CellType;
@@ -356,6 +778,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   get('editor').addEventListener('click', (event) => {
     const b = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-x]');
     if (!b) return;
+    endStroke();
     designRevision++;
     const x = Number(b.dataset.x),
       y = Number(b.dataset.y),
@@ -367,6 +790,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     editor();
   });
   get('clear-design').addEventListener('click', () => {
+    endStroke();
     designRevision++;
     blueprint = founder(0);
     blueprintName = BLUEPRINT_DEFAULT_NAME;
@@ -413,6 +837,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       }
       if (!current()) return;
       const imported = parseBlueprint(content);
+      endStroke();
       blueprint = imported.genome;
       blueprintName = imported.name;
       blueprintDescription = imported.description;
@@ -445,23 +870,42 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   });
   get('help').addEventListener('click', () => get<HTMLDialogElement>('help-dialog').showModal());
   get('close-help').addEventListener('click', () => get<HTMLDialogElement>('help-dialog').close());
-  get('save').addEventListener('click', () => send({ type: 'save' }));
-  get('load').addEventListener('click', () => get<HTMLInputElement>('file').click());
+  get('save').addEventListener('click', () => postTracked('save'));
+  for (const format of ['json', 'csv'] as const)
+    get(`measurements-${format}`).addEventListener('click', () =>
+      postTracked('export-measurements', { format }),
+    );
+  get('load').addEventListener('click', () => {
+    readGeneration++;
+    get<HTMLInputElement>('file').value = '';
+    get<HTMLInputElement>('file').click();
+  });
+  get('file').addEventListener('cancel', () => {
+    readGeneration++;
+    get<HTMLInputElement>('file').value = '';
+  });
   get('file').addEventListener('change', async () => {
     const input = get<HTMLInputElement>('file'),
-      file = input.files?.[0];
+      file = input.files?.[0],
+      generation = ++readGeneration,
+      capturedRun = runId;
     if (!file) return;
+    if (worldRead) {
+      notice('A native world-file read is still outstanding. No second read was started.');
+      input.value = '';
+      return;
+    }
+    const current = (): boolean => alive && generation === readGeneration && capturedRun === runId;
+    worldRead = true;
     try {
       if (file.size > WORLD_MAX_BYTES) throw new Error('World file exceeds 2.5 MB.');
-      const text = await file.text();
-      if (alive) {
-        settingsEdits = {};
-        send({ type: 'load', text, runId: ++runId });
-      }
+      const content = await file.text();
+      if (current() && replaceWorld('load', { text: content })) input.value = '';
     } catch (error) {
-      if (alive) notice(error instanceof Error ? error.message : 'Could not read this world.');
+      if (current()) notice(error instanceof Error ? error.message : 'Could not read this world.');
     } finally {
-      input.value = '';
+      worldRead = false;
+      if (generation === readGeneration) input.value = '';
     }
   });
   const keyboard = (event: KeyboardEvent): void => {
@@ -540,10 +984,15 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     }
   }
   worker.onmessage = ({ data }) => {
-    if (!alive || data.runId !== runId) return;
+    if (!alive || terminated) return;
+    if (!data || typeof data !== 'object') return;
+    if (terminal(data)) return;
+    if (data.runId !== runId) return;
     if (data.type === 'error') {
-      if (data.fatal) stop();
-      else if (data.recovery && !stopped) {
+      if (data.fatal) {
+        invalidate();
+        stop();
+      } else if (data.recovery && !stopped) {
         renderSettings(data.recovery.settings);
         renderPlayback(data.recovery.playback);
         renderFrame(data.recovery.frame, data.recovery.selected, true);
@@ -555,34 +1004,18 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       renderPlayback(data.playback);
       return;
     }
-    if (data.type === 'loaded') {
-      stopped = false;
-      renderSettings(data.settings);
-      telemetry.reset();
-      updates = 0;
-      renderPlayback(data.playback);
-      notice('World restored. Playback follows Pause on extinction.');
-      return;
-    }
-    if (data.type === 'saved') {
-      const url = URL.createObjectURL(new Blob([data.text], { type: 'application/json' })),
-        a = document.createElement('a');
-      a.href = url;
-      a.download = `evolab-world-${settings.seed}.json`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      notice('World saved, including every organism and its ancestry.');
-      return;
-    }
-    if (data.type !== 'frame') return;
+    if (data.type !== 'frame' || stopped) return;
     renderPlayback(data.playback);
     renderFrame(data.frame, data.selected);
   };
-  worker.onerror = () => {
+  const workerFailed = (): void => {
     if (!alive) return;
     notice('The ecosystem worker stopped. Reload the page to restart.');
+    terminate();
     stop();
   };
+  worker.onerror = workerFailed;
+  worker.addEventListener('messageerror', workerFailed);
   function render(): void {
     telemetry.render();
     if (dirty && frame) {
@@ -598,13 +1031,16 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   animation = requestAnimationFrame(render);
   return () => {
     alive = false;
+    readGeneration++;
     telemetry.dispose();
     cancelAnimationFrame(animation);
-    worker.terminate();
+    terminate();
     window.removeEventListener('keydown', keyboard);
     window.removeEventListener('resize', resize);
     window.removeEventListener('pointerup', release);
     window.removeEventListener('pointercancel', release);
+    window.removeEventListener('blur', release);
+    canvas.removeEventListener('lostpointercapture', release);
   };
 }
 const root = document.getElementById('app');

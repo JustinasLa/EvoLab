@@ -57,6 +57,165 @@ afterEach(() => {
 });
 
 describe('bounded model-dependent telemetry presentation', () => {
+  it('presents each real manual kind without inventing samples and redraws same-tick coalesced portions', () => {
+    const world = new Ecosystem(DEFAULTS, false),
+      paint = (x: number, sequence: number | null = null) =>
+        world.recordPaint(world.paint('food', x, 1, 0, founder(0)), 'food', 0, x, 1, sequence);
+    const sequence = paint(1)!;
+    show(world.frame());
+    expect(get('telemetry-intervention-details').textContent).toContain('Successful commands1');
+    paint(2, sequence);
+    show(world.frame());
+    expect(get('telemetry-intervention-details').textContent).toContain('Successful commands2');
+    expect(get('telemetry-plots').querySelector('svg')).toBeNull();
+    const placement = world.paint('plant', 30, 30, 0, founder(0)).placement!;
+    world.appendIntervention({ kind: 'placement', detail: placement });
+    show(world.frame());
+    expect(get('telemetry-intervention-details').textContent).toContain('not reproductive birth');
+    world.changeSettings({ nutrients: 7 });
+    show(world.frame());
+    expect(get('telemetry-intervention-details').textContent).toContain('5 → 7');
+    const before = { offset: world.eventOffset, until: world.eventUntil };
+    world.shock('heat');
+    world.appendIntervention({
+      kind: 'shock',
+      detail: {
+        kind: 'heat',
+        before,
+        after: { offset: world.eventOffset, until: world.eventUntil },
+      },
+    });
+    show(world.frame());
+    expect(get('telemetry-intervention-details').textContent).toContain('Before stored event');
+    choose('telemetry-intervention', '1');
+    expect(get('telemetry-status').textContent).toContain('Selected manual action 1');
+    choose('telemetry-intervention', 'latest');
+    expect(get('telemetry-status').textContent).toContain(
+      'Following latest retained manual action',
+    );
+  });
+  it('clips only drawing, discloses before/after/crossing effects and keeps manual and sample pins independent', () => {
+    const world = new Ecosystem(DEFAULTS, false),
+      sequence = world.recordPaint(
+        world.paint('food', 1, 1, 0, founder(0)),
+        'food',
+        0,
+        1,
+        1,
+        null,
+      )!;
+    advance(world, 61);
+    world.recordPaint(world.paint('food', 2, 1, 0, founder(0)), 'food', 0, 2, 1, sequence);
+    world.changeSettings({ nutrients: 7 });
+    const before = world.save();
+    show(world.frame());
+    choose('telemetry-sample', '30');
+    choose('telemetry-intervention', '1');
+    expect(get<HTMLSelectElement>('telemetry-sample').value).toBe('30');
+    expect(get('telemetry-intervention-summary').textContent).toContain('crossing its edges');
+    const highlight = root.querySelector('[data-manual-sequence="1"]')!;
+    expect(highlight.textContent).toContain('continues beyond edge');
+    expect(get('telemetry-intervention-details').textContent).toContain('0–61');
+    expect(world.save()).toEqual(before);
+    expect(
+      [...root.querySelectorAll('svg[data-start-tick]')].every(
+        (plot) =>
+          plot.getAttribute('data-start-tick') === '30' &&
+          plot.getAttribute('data-end-tick') === '60',
+      ),
+    ).toBe(true);
+    show(world.frame(), 2);
+    expect(get<HTMLSelectElement>('telemetry-intervention').value).toBe('1');
+    controller.reset();
+    show(world.frame(), 2);
+    expect(get<HTMLSelectElement>('telemetry-intervention').value).toBe('latest');
+  });
+  it('draws unselected crossing strokes without inventing clipped-edge anchors or disturbing either pin', () => {
+    const world = new Ecosystem(DEFAULTS, false),
+      sequence = world.recordPaint(
+        world.paint('food', 1, 1, 0, founder(0)),
+        'food',
+        0,
+        1,
+        1,
+        null,
+      )!;
+    advance(world, 45);
+    world.recordPaint(world.paint('food', 2, 1, 0, founder(0)), 'food', 0, 2, 1, sequence);
+    world.changeSettings({ nutrients: 6 });
+    advance(world, 16);
+    world.changeSettings({ nutrients: 7 });
+    const before = JSON.stringify(world.save());
+    show(world.frame());
+    choose('telemetry-sample', '30');
+    for (const selection of ['2', 'latest']) {
+      choose('telemetry-intervention', selection);
+      get('telemetry-intervention').focus();
+      for (const view of ['population', 'food', 'adaptation']) {
+        choose('telemetry-view', view);
+        expect(document.activeElement).toBe(get('telemetry-intervention'));
+        expect(get<HTMLSelectElement>('telemetry-sample').value).toBe('30');
+        expect(get<HTMLSelectElement>('telemetry-intervention').value).toBe(selection);
+        expect(root.querySelector('[data-manual-sequence="1"]')).toBeNull();
+        for (const strip of root.querySelectorAll('.telemetry-manual-strip')) {
+          const span = strip.querySelector('[data-first-tick="0"]')!;
+          expect(span.getAttribute('data-last-tick')).toBe('45');
+          expect(span.getAttribute('data-anchor-tick')).toBe('none');
+          expect(span.getAttribute('data-clipped-first-tick')).toBe('30');
+          expect(span.getAttribute('data-clipped-last-tick')).toBe('45');
+          expect(span.getAttribute('d')).toMatch(/^M50,15H[\d.]+$/);
+          expect(span.textContent).toContain('after completed ticks 0–45');
+          expect(span.textContent).toContain(
+            'clipped for drawing only, continues beyond plotted domain',
+          );
+          expect(strip.querySelectorAll('.telemetry-manual-density').length).toBeLessThanOrEqual(
+            32,
+          );
+          expect(strip.querySelector('[data-first-tick="61"]')).toBeNull();
+        }
+        for (const plot of root.querySelectorAll('svg[data-start-tick]')) {
+          expect(plot.getAttribute('data-start-tick')).toBe('30');
+          expect(plot.getAttribute('data-end-tick')).toBe('60');
+        }
+        expect(root.querySelectorAll('*').length).toBeLessThan(2000);
+      }
+    }
+    expect(JSON.stringify(world.save())).toBe(before);
+  });
+  it('bounds128 same-tick markers/options and honestly falls back when a selected sequence is evicted', () => {
+    const world = new Ecosystem({ ...DEFAULTS, nutrients: 0 }, false);
+    advance(world, 60);
+    for (let entry = 0; entry < 128; entry++)
+      world.changeSettings({ nutrients: entry % 2 ? 0 : 1 });
+    show(world.frame());
+    expect(get<HTMLSelectElement>('telemetry-intervention').options).toHaveLength(129);
+    const strips = root.querySelectorAll('.telemetry-manual-strip');
+    expect(strips.length).toBeGreaterThan(0);
+    for (const strip of strips) {
+      for (const id of strip.getAttribute('aria-labelledby')!.split(' '))
+        expect(root.querySelector(`#${id}`)?.textContent).toBeTruthy();
+      expect(strip.querySelectorAll('.telemetry-manual-density')).toHaveLength(1);
+      expect(strip.querySelector('[data-count="128"]')!.textContent).toContain('sequences 1–128');
+    }
+    expect(root.querySelectorAll('*').length).toBeLessThan(2000);
+    choose('telemetry-intervention', '1');
+    get('telemetry-intervention').focus();
+    world.changeSettings({ nutrients: 1 });
+    show(world.frame());
+    expect(get<HTMLSelectElement>('telemetry-intervention').value).toBe('2');
+    expect(get('telemetry-status').textContent).toContain(
+      'Manual sequence 1 is no longer retained',
+    );
+    expect(document.activeElement).toBe(get('telemetry-intervention'));
+    expect(get('telemetry-intervention-summary').textContent).toContain(
+      '1 evicted through tick 60',
+    );
+    controller.dispose();
+    choose('telemetry-intervention', 'latest');
+    expect(get('telemetry-status').textContent).toContain(
+      'Manual sequence 1 is no longer retained',
+    );
+  });
   it('shows no synthetic initial point and defers hidden sources until reveal', () => {
     const world = new Ecosystem(),
       before = world.save();
@@ -81,7 +240,7 @@ describe('bounded model-dependent telemetry presentation', () => {
       sample = frame.telemetry.samples[0];
     expect(eventRate(sample, 2)).toBe(12);
     show(frame);
-    const plots = root.querySelectorAll<SVGSVGElement>('#telemetry svg');
+    const plots = root.querySelectorAll<SVGSVGElement>('#telemetry svg[data-start-tick]');
     expect(plots).toHaveLength(2);
     expect(plots[0].dataset.startTick).toBe('25');
     expect(plots[0].dataset.endTick).toBe('30');
@@ -136,7 +295,7 @@ describe('bounded model-dependent telemetry presentation', () => {
     advance(world, 30);
     show(world.frame());
     choose('telemetry-view', 'adaptation');
-    expect(root.querySelectorAll('#telemetry svg')).toHaveLength(3);
+    expect(root.querySelectorAll('#telemetry svg:not(.telemetry-manual-strip)')).toHaveLength(3);
     expect(root.querySelectorAll('[data-bin]')).toHaveLength(10);
     expect(
       [...root.querySelectorAll('[data-bin]')].map((bar) => Number(bar.getAttribute('data-count'))),

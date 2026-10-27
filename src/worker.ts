@@ -1,7 +1,10 @@
 import { Ecosystem } from './ecosystem';
+import { serializeMeasurements } from './measurement-export';
 import {
   WORLD_MAX_BYTES,
+  STROKE_COMMAND_CAPACITY,
   validSettings,
+  knownSettings,
   validGenome,
   integer,
   index,
@@ -9,6 +12,7 @@ import {
   type PlaybackState,
   type ExtinctionSummary,
   type LoadFailureResponse,
+  type PaintTool,
 } from './model';
 
 export interface Scope {
@@ -28,6 +32,28 @@ export function startWorker(
     selected = 0;
   let pauseOnExtinction = true,
     extinction: ExtinctionSummary | null = null;
+  let postingWatermark = 0;
+  let stroke: {
+    id: number;
+    tool: PaintTool;
+    radius: number;
+    sequence: number | null;
+    count: number;
+  } | null = null;
+  const tracked = new Set([
+    'start',
+    'load',
+    'save',
+    'export-measurements',
+    'begin-stroke',
+    'end-stroke',
+    'paint',
+    'settings',
+    'shock',
+  ]);
+  const manual = new Set(['begin-stroke', 'end-stroke', 'paint', 'settings', 'shock']);
+  const errorText = (error: unknown): string =>
+    (error instanceof Error ? error.message : String(error)).slice(0, 512);
   const playback = (): PlaybackState => ({
     paused,
     pauseOnExtinction,
@@ -47,7 +73,7 @@ export function startWorker(
     scope.postMessage({
       type: 'error',
       runId,
-      message: error instanceof Error ? error.message : String(error),
+      message: errorText(error),
       ...(fatal ? { fatal: true } : {}),
     });
   }
@@ -68,7 +94,12 @@ export function startWorker(
   function queue(): void {
     if (!queued) {
       queued = true;
-      defer(tick, 40);
+      try {
+        defer(tick, 40);
+      } catch (error) {
+        queued = false;
+        throw error;
+      }
     }
   }
   function tick(): void {
@@ -91,7 +122,57 @@ export function startWorker(
     }
   }
   scope.onmessage = ({ data }) => {
+    if (!data || typeof data !== 'object') return;
+    const correlated = tracked.has(data.type),
+      isManual = manual.has(data.type),
+      id = isManual ? data.commandId : data.requestId,
+      strokeOwned =
+        data.type === 'begin-stroke' ||
+        data.type === 'end-stroke' ||
+        (data.type === 'paint' && data.tool !== 'plant');
+    const owner = {
+      operation: data.type,
+      runId: data.runId,
+      ...(isManual ? { commandId: id } : { requestId: id }),
+      ...(data.type === 'export-measurements' ? { format: data.format } : {}),
+      ...(strokeOwned ? { strokeId: data.strokeId } : {}),
+    };
+    if (correlated) {
+      if (
+        !integer(id, 1, Number.MAX_SAFE_INTEGER) ||
+        !integer(data.runId, 0, Number.MAX_SAFE_INTEGER) ||
+        (isManual ? data.requestId !== undefined : data.commandId !== undefined) ||
+        (strokeOwned && !integer(data.strokeId, 1, Number.MAX_SAFE_INTEGER)) ||
+        (data.type === 'export-measurements' && !['csv', 'json'].includes(data.format)) ||
+        id <= postingWatermark
+      )
+        return;
+      postingWatermark = id;
+    }
+    let settled = false;
+    const complete = (response: any): void => {
+      scope.postMessage(response);
+      settled = true;
+    };
+    const result = (
+      status: 'applied' | 'no-op' | 'rejected',
+      rowSequence: number | null = null,
+    ): void =>
+      complete({
+        type: 'manual-result',
+        ...owner,
+        status,
+        completedTick: world!.tick,
+        rowSequence,
+      });
     try {
+      if (
+        correlated &&
+        data.type !== 'start' &&
+        data.type !== 'load' &&
+        (!world || data.runId !== runId)
+      )
+        throw new Error('Rejected obsolete ecosystem request.');
       if (data.type === 'start') {
         if (!validSettings(data.settings)) throw new Error('Invalid ecosystem settings.');
         world = new Ecosystem(data.settings);
@@ -99,33 +180,50 @@ export function startWorker(
         paused = false;
         selected = 0;
         extinction = null;
+        stroke = null;
+        complete({
+          type: 'started',
+          ...owner,
+          completedTick: world.tick,
+          seed: world.settings.seed,
+          settings: knownSettings(world.settings),
+          playback: playback(),
+        });
         send();
         queue();
       } else if (data.type === 'load') {
         runId = data.runId;
+        stroke = null;
         let restored: Ecosystem;
         try {
           restored = Ecosystem.load(data.text);
         } catch (error) {
-          if (!world) report(error);
+          if (!world) scope.postMessage({ type: 'error', ...owner, message: errorText(error) });
           else {
             try {
               const frame = world.frame();
               const response: LoadFailureResponse = {
                 type: 'error',
                 runId,
-                message: error instanceof Error ? error.message : String(error),
+                operation: 'load',
+                requestId: id,
+                message: errorText(error),
                 recovery: {
                   frame,
                   selected: world.organisms.get(selected) ?? null,
-                  settings: { ...world.settings },
+                  settings: knownSettings(world.settings),
                   playback: playback(),
                 },
               };
               scope.postMessage(response, [frame.cells.buffer, frame.ids.buffer]);
             } catch (failure) {
               paused = true;
-              report(failure, true);
+              scope.postMessage({
+                type: 'error',
+                ...owner,
+                message: errorText(failure),
+                fatal: true,
+              });
             }
           }
           return;
@@ -135,10 +233,12 @@ export function startWorker(
         selected = 0;
         extinction = world.organisms.size ? null : { tick: world.tick, cause: 'empty-import' };
         reconcile(world.organisms.size);
-        scope.postMessage({
+        complete({
           type: 'loaded',
-          runId,
-          settings: world.settings,
+          ...owner,
+          completedTick: world.tick,
+          seed: world.settings.seed,
+          settings: knownSettings(world.settings),
           playback: playback(),
         });
         send();
@@ -158,33 +258,109 @@ export function startWorker(
         acknowledge();
       } else if (data.type === 'speed') {
         if ([1, 4, 12].includes(data.value)) speed = data.value;
+      } else if (data.type === 'begin-stroke' && world) {
+        if (stroke || !['food', 'wall', 'erase'].includes(data.tool) || !integer(data.radius, 0, 8))
+          throw new Error('Invalid or overlapping brush stroke.');
+        stroke = {
+          id: data.strokeId,
+          tool: data.tool,
+          radius: data.radius,
+          sequence: null,
+          count: 0,
+        };
+        result('applied');
+      } else if (data.type === 'end-stroke' && world) {
+        const matched = stroke?.id === data.strokeId;
+        if (matched) stroke = null;
+        result(matched ? 'applied' : 'no-op');
       } else if (data.type === 'settings' && world) {
-        const next: Settings = { ...world.settings, ...data.settings };
-        if (validSettings(next)) world.settings = next;
-      } else if (
-        data.type === 'paint' &&
-        world &&
-        ['food', 'wall', 'erase', 'plant'].includes(data.tool) &&
-        integer(data.x, 0, 239) &&
-        integer(data.y, 0, 155) &&
-        integer(data.radius, 0, 8) &&
-        validGenome(data.genome)
-      ) {
+        stroke = null;
+        if (!data.settings || typeof data.settings !== 'object' || Array.isArray(data.settings))
+          throw new Error('Invalid manual settings patch.');
+        const sequence = world.changeSettings(data.settings);
+        result(sequence === null ? 'no-op' : 'applied', sequence);
+        if (sequence !== null) send();
+      } else if (data.type === 'paint' && world) {
+        if (
+          !['food', 'wall', 'erase', 'plant'].includes(data.tool) ||
+          !integer(data.x, 0, 239) ||
+          !integer(data.y, 0, 155) ||
+          !integer(data.radius, 0, 8) ||
+          !validGenome(data.genome)
+        )
+          throw new Error('Invalid manual paint command.');
+        if (data.tool === 'plant') stroke = null;
+        else if (
+          !stroke ||
+          stroke.id !== data.strokeId ||
+          stroke.tool !== data.tool ||
+          stroke.radius !== data.radius ||
+          stroke.count >= STROKE_COMMAND_CAPACITY
+        )
+          throw new Error('Rejected closed or exhausted brush stroke.');
+        world.requireInterventionCapacity(data.tool !== 'plant' && stroke!.sequence !== null);
+        if (stroke) stroke.count++;
         const population = world.organisms.size;
-        world.paint(data.tool, data.x, data.y, data.radius, data.genome);
+        const outcome = world.paint(data.tool, data.x, data.y, data.radius, data.genome);
+        let sequence: number | null = null;
+        if (outcome.placement)
+          sequence = world.appendIntervention({ kind: 'placement', detail: outcome.placement });
+        else if (stroke) {
+          const previous = stroke.sequence;
+          sequence = world.recordPaint(
+            outcome,
+            stroke.tool,
+            stroke.radius,
+            data.x,
+            data.y,
+            previous,
+          );
+          stroke.sequence = sequence;
+          if (!outcome.changedBrushCells && !outcome.removedOrganisms) sequence = null;
+        }
         reconcile(population);
+        result(sequence === null ? 'no-op' : 'applied', sequence);
         send();
       } else if (data.type === 'inspect' && world) {
         selected = world.occupied[index(data.x, data.y)];
         send();
-      } else if (data.type === 'shock' && world && ['cold', 'heat'].includes(data.kind)) {
+      } else if (data.type === 'shock' && world) {
+        stroke = null;
+        if (!['cold', 'heat'].includes(data.kind) || world.tick + 900 > 1e9)
+          throw new Error('Invalid climate shock.');
+        const before = { offset: world.eventOffset, until: world.eventUntil };
+        world.requireInterventionCapacity();
         world.shock(data.kind);
+        const after = { offset: world.eventOffset, until: world.eventUntil },
+          changed = before.offset !== after.offset || before.until !== after.until;
+        const sequence = changed
+          ? world.appendIntervention({ kind: 'shock', detail: { kind: data.kind, before, after } })
+          : null;
+        result(sequence === null ? 'no-op' : 'applied', sequence);
         send();
       } else if (data.type === 'save' && world) {
-        const text = JSON.stringify(world.save());
-        if (new TextEncoder().encode(text).byteLength > WORLD_MAX_BYTES)
+        const text = JSON.stringify(world.save()),
+          byteLength = new TextEncoder().encode(text).byteLength;
+        if (byteLength > WORLD_MAX_BYTES)
           throw new Error('World file exceeds 2.5 MB. World preserved; no download created.');
-        scope.postMessage({ type: 'saved', runId, text });
+        complete({
+          type: 'saved',
+          ...owner,
+          completedTick: world.tick,
+          seed: world.settings.seed,
+          byteLength,
+          text,
+        });
+      } else if (data.type === 'export-measurements' && world) {
+        const source = world.measurements(stroke?.sequence ?? null),
+          payload = serializeMeasurements(source, data.format);
+        complete({
+          type: 'measurement-exported',
+          ...owner,
+          completedTick: source.snapshot.completedTick,
+          seed: source.snapshot.seed,
+          ...payload,
+        });
       } else if (data.type === 'step' && world && paused) {
         const population = world.organisms.size;
         world.step();
@@ -192,7 +368,40 @@ export function startWorker(
         send();
       } else if (data.type === 'snapshot') send();
     } catch (error) {
-      report(error);
+      if (settled) {
+        paused = true;
+        report(
+          new Error(
+            `The action completed, but publishing or scheduling failed. World preserved; import a world or reseed to recover. ${errorText(error)}`,
+          ),
+          true,
+        );
+      } else if (correlated && data.type === 'start' && world) {
+        runId = data.runId;
+        stroke = null;
+        try {
+          const frame = world.frame();
+          scope.postMessage(
+            {
+              type: 'error',
+              ...owner,
+              message: errorText(error),
+              recovery: {
+                frame,
+                selected: world.organisms.get(selected) ?? null,
+                settings: knownSettings(world.settings),
+                playback: playback(),
+              },
+            },
+            [frame.cells.buffer, frame.ids.buffer],
+          );
+        } catch (failure) {
+          paused = true;
+          scope.postMessage({ type: 'error', ...owner, message: errorText(failure), fatal: true });
+        }
+      } else if (correlated)
+        scope.postMessage({ type: 'error', ...owner, message: errorText(error) });
+      else report(error);
     }
   };
 }
