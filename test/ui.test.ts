@@ -1020,6 +1020,24 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe('ecosystem desk', () => {
+  it('reuses mounted output nodes and changes text only when the displayed value changes', () => {
+    const population = get('population'),
+      observer = new MutationObserver(() => {}),
+      query = vi.spyOn(root, 'querySelector');
+    observer.observe(population, { childList: true, characterData: true, subtree: true });
+    emit();
+    expect(population.textContent).toBe(String(sample.stats.population));
+    expect(observer.takeRecords().length).toBeGreaterThan(0);
+    emit();
+    expect(observer.takeRecords()).toEqual([]);
+    const changed = structuredClone(sample);
+    changed.stats.population++;
+    emit(changed);
+    expect(population.textContent).toBe(String(changed.stats.population));
+    expect(observer.takeRecords().length).toBeGreaterThan(0);
+    expect(query).not.toHaveBeenCalled();
+    observer.disconnect();
+  });
   it('starts with Pan and Organism selected without changing the world when dragged', () => {
     expect(get('world').dataset.tool).toBe('pan');
     expect(root.querySelector('button[data-tool="pan"]')!.getAttribute('aria-pressed')).toBe(

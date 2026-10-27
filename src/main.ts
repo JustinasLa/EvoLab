@@ -36,7 +36,10 @@ import {
 
 export function mount(root: HTMLElement, worker: Worker): () => void {
   root.innerHTML = markup;
-  const get = <T extends HTMLElement>(id: string): T => root.querySelector<T>(`#${id}`)!;
+  const elements = new Map(
+    [...root.querySelectorAll<HTMLElement>('[id]')].map((element) => [element.id, element]),
+  );
+  const get = <T extends HTMLElement>(id: string): T => elements.get(id) as T;
   const canvas = get<HTMLCanvasElement>('world'),
     buffer = document.createElement('canvas');
   const camera: Camera = { zoom: 1, x: 0, y: 0 };
@@ -69,7 +72,8 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     updates = 0;
   const telemetry = createTelemetryView(root);
   const text = (id: string, value: string): void => {
-    get(id).textContent = value;
+    const element = get(id);
+    if (element.textContent !== value) element.textContent = value;
   };
   const notice = (message: string): void => text('notice', message);
   const send = (data: object): void => worker.postMessage(data);

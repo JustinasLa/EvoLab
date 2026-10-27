@@ -77,6 +77,7 @@ export function createTelemetryView(root: HTMLElement) {
     manualDetails = get('telemetry-intervention-details'),
     plots = get('telemetry-plots'),
     details = get('telemetry-details'),
+    summary = get('telemetry-summary'),
     status = get('telemetry-status');
   let source: Frame | undefined,
     sourceKey = '',
@@ -638,8 +639,7 @@ export function createTelemetryView(root: HTMLElement) {
         manual = frame.interventions,
         latestManual = manual.entries.at(-1),
         key = `${run}/${telemetry.originTick}/${telemetry.adaptationOriginTick}/${samples.length}/${first?.tick}/${last?.tick}/${manual.originTick}/${manual.originKind}/${manual.totalEntries}/${latestManual?.sequence}/${latestManual?.kind === 'paint' ? latestManual.detail.successfulCommands : ''}`;
-      get('telemetry-summary').textContent =
-        `World tick ${frame.stats.tick}; ${last ? `latest sample tick ${last.tick}; retained ticks ${first!.tick}–${last.tick}; ${samples.length} of at most ${TELEMETRY_CAPACITY} samples` : 'no recorded samples'}. Samples every ${TELEMETRY_INTERVAL_TICKS} completed ticks. Current live values can differ after paused editing. No synthetic initial, latest or extinction point.`;
+      summary.textContent = `World tick ${frame.stats.tick}; ${last ? `latest sample tick ${last.tick}; retained ticks ${first!.tick}–${last.tick}; ${samples.length} of at most ${TELEMETRY_CAPACITY} samples` : 'no recorded samples'}. Samples every ${TELEMETRY_INTERVAL_TICKS} completed ticks. Current live values can differ after paused editing. No synthetic initial, latest or extinction point.`;
       if (key === sourceKey) return;
       sourceKey = key;
       if (selectedTick !== null && !samples.some((sample) => sample.tick === selectedTick)) {
@@ -690,8 +690,7 @@ export function createTelemetryView(root: HTMLElement) {
       manualSummary.textContent = 'Waiting for authoritative manual history.';
       manualSelect.replaceChildren(new Option('No retained manual actions', 'latest'));
       manualSelect.disabled = true;
-      get('telemetry-summary').textContent =
-        'Waiting for the new world’s authoritative observations.';
+      summary.textContent = 'Waiting for the new world’s authoritative observations.';
       sampleSelect.replaceChildren(new Option('No recorded samples', 'latest'));
       sampleSelect.disabled = true;
       status.textContent = '';
