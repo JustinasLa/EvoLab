@@ -545,6 +545,100 @@ describe('owned command admission and real-worker interleavings', () => {
       expect(get('target-status').textContent).toContain('reached');
     }
   });
+  it.each(['past', 'busy'] as const)(
+    'publishes one live diagnostic for a %s target rejection without moving focus',
+    (kind) => {
+      const harness = realWorker(true);
+      harness.deliver();
+      click('pause');
+      harness.deliver();
+      if (kind === 'past') {
+        click('step');
+        harness.deliver();
+      } else {
+        set('target-tick', '120');
+        click('run-to-tick');
+        harness.deliver();
+        click('pause');
+        harness.deliver();
+      }
+      const regions = [get('notice'), get('target-status')],
+        publications = regions.map((region) => vi.spyOn(region, 'textContent', 'set'));
+      for (const region of regions) expect(region.getAttribute('role')).toBe('status');
+      const diagnostic =
+        kind === 'past'
+          ? 'That absolute tick has already passed.'
+          : 'Cancel the active target before starting another.';
+      get('target-tick').focus();
+      set('target-tick', kind === 'past' ? '0' : '150');
+      click('run-to-tick');
+      const rejection = harness.outbox.find((data) => data.type === 'error');
+      expect(rejection.message).toBe(diagnostic);
+      harness.deliver();
+      expect(
+        publications.flatMap((spy) => spy.mock.calls).filter(([message]) => message === diagnostic),
+      ).toHaveLength(1);
+      expect(get('target-status').textContent).toBe(diagnostic);
+      expect(document.activeElement).toBe(get('target-tick'));
+    },
+  );
+  it.each(['past', 'busy'] as const)(
+    'does not publish an older %s rejection over a newer queued target presentation',
+    (kind) => {
+      const harness = realWorker(true);
+      harness.deliver();
+      click('pause');
+      harness.deliver();
+      if (kind === 'past') {
+        click('step');
+        harness.deliver();
+      } else {
+        set('target-tick', '120');
+        click('run-to-tick');
+        harness.deliver();
+        click('pause');
+        harness.deliver();
+      }
+      const publications = [get('notice'), get('target-status')].map((region) =>
+        vi.spyOn(region, 'textContent', 'set'),
+      );
+      get('target-tick').focus();
+      set('target-tick', kind === 'past' ? '0' : '150');
+      click('run-to-tick');
+      const older = harness.outbox.splice(
+        harness.outbox.findIndex((data) => data.type === 'error'),
+        1,
+      )[0];
+      set('target-tick', '180');
+      click('run-to-tick');
+      const pending = get('target-status').textContent;
+      worker.onmessage!({ data: older } as MessageEvent);
+      expect(get('target-status').textContent).toBe(pending);
+      expect(
+        publications
+          .flatMap((spy) => spy.mock.calls)
+          .filter(([message]) => message === older.message),
+      ).toHaveLength(0);
+      harness.deliver();
+      if (kind === 'past') {
+        expect(get('target-details').textContent).toContain('absolute target 180');
+        expect(get('target-status').textContent).toContain('running');
+        expect(
+          publications
+            .flatMap((spy) => spy.mock.calls)
+            .filter(([message]) => message === older.message),
+        ).toHaveLength(0);
+      } else {
+        expect(get('target-status').textContent).toBe(older.message);
+        expect(
+          publications
+            .flatMap((spy) => spy.mock.calls)
+            .filter(([message]) => message === older.message),
+        ).toHaveLength(1);
+      }
+      expect(document.activeElement).toBe(get('target-tick'));
+    },
+  );
   it('keeps a newer queued target request pending until its own correlated rejection', () => {
     const harness = realWorker(true);
     harness.deliver();

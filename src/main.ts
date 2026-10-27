@@ -1148,8 +1148,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         telemetry.update({ status: 'unavailable' });
       }
       if (data.type === 'error') {
-        notice(data.message);
-        if (completion.type === 'run-to' && !targetTicket) text('target-status', data.message);
+        if (completion.type === 'run-to') {
+          if (!targetTicket) text('target-status', data.message);
+        } else notice(data.message);
       } else if (data.type === 'loaded')
         notice('World restored. Playback follows Pause on extinction.');
     }
