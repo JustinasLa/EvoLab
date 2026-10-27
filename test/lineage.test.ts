@@ -196,6 +196,55 @@ describe('strict bounded archive candidate validation', () => {
 });
 
 describe('archive field and genotype validation', () => {
+  it('rejects contradictory metadata, counts, ordering, origins and retained-event facts', () => {
+    const world = empty();
+    world.spawn(genome(), 1, 1);
+    world.spawn(genome(), 2, 1);
+    const base = world.save();
+    const changes: ((file: any) => void)[] = [
+      (file) => file.lineageArchive.living.reverse(),
+      (file) => file.lineageArchive.living.push(file.lineageArchive.living[0]),
+      (file) => file.lineageArchive.living.pop(),
+      (file) => (file.lineageArchive.living[0].liveCount = 2),
+      (file) => (file.lineageArchive.living[0].peakCount = 1601),
+      (file) => (file.lineageArchive.living[0].extinctTick = 0),
+      (file) => (file.lineageArchive.living[0].createdTick = null),
+      (file) => (file.lineageArchive.living[0].origin = 'legacy-unknown'),
+      (file) => (file.lineageArchive.living[0].origin = 'founder'),
+      (file) => (file.lineageArchive.living[0].parentId = 1),
+      (file) => (file.lineageArchive.living[0].peakKind = 'unknown'),
+      (file) => (file.lineageArchive.summaries[0].peakCount = 2),
+      (file) => (file.lineageArchive.summaries[0].admittedTick = -1),
+      (file) => (file.lineageArchive.summaries[0].foundingGenome.preference = 2),
+      (file) => (file.lineageArchive.summaries[0].genomeStatus = 'legacy-unknown'),
+      (file) => (file.lineageArchive.summaries[0].foundingGenome.tempo = 3),
+      (file) => (file.lineageArchive.events[0].origin = 'mutation'),
+      (file) => (file.lineageArchive.events[0].parentId = 1),
+      (file) => (file.lineageArchive.events[0].origin = 'legacy-unknown'),
+      (file) => (file.lineageArchive.events[0] = extinct(file.organisms[0].species, 0)),
+      (file) => file.lineageArchive.events.shift(),
+      (file) => (file.lineageArchive.summariesPruned = true),
+      (file) => (file.lineageArchive.eventsPruned = true),
+    ];
+    for (const change of changes) {
+      const invalid = structuredClone(base);
+      change(invalid);
+      rejects(invalid);
+    }
+    const pruned = evidence([]);
+    for (const watermark of [-1, 1, null, 0.5]) {
+      const invalid = structuredClone(pruned);
+      invalid.lineageArchive.eventsEvictedThroughTick = watermark;
+      rejects(invalid);
+    }
+    const dates = evidence([], [knownSummary(5, 0, 0)]);
+    dates.lineageArchive.summaries.at(-1)!.admittedTick = 1;
+    rejects(dates);
+    for (const parentId of [6, 7]) {
+      const invalid = evidence([created(6, 0, parentId), extinct(6, 0)]);
+      rejects(invalid);
+    }
+  });
   it('rejects every missing/extra record key and malformed bounded collections', () => {
     const world = empty();
     const placed = world.spawn(genome(), 1, 1)!;
@@ -292,6 +341,66 @@ describe('archive field and genotype validation', () => {
 });
 
 describe('bounded observed lineage lifecycle', () => {
+  it('keeps clone counts after detail eviction and re-admits only on actual final extinction', () => {
+    const world = empty(),
+      first = world.spawn(genome(), 1, 1)!;
+    const second = world.spawn(genome(), 2, 1, first.species)!;
+    for (let position = 0; position < 256; position++)
+      world.spawn(genome(), position % WIDTH, Math.floor(position / WIDTH) + 10);
+    const before = world.lineageSnapshot();
+    expect(before.summaries.some((row) => row.id === first.species)).toBe(false);
+    const third = world.spawn(genome(), 3, 1, first.species, first)!;
+    world.kill(first, 'manual');
+    expect(world.lineageSnapshot().summaries).toEqual(before.summaries);
+    expect(world.lineageSnapshot().living[0]).toMatchObject({ liveCount: 2, peakCount: 3 });
+    world.kill(second, 'age');
+    world.kill(third, 'energy');
+    expect(world.lineageSnapshot().summaries.at(-1)).toMatchObject({
+      id: first.species,
+      peakCount: 3,
+      liveCount: 0,
+      genomeStatus: 'pruned',
+      foundingGenome: null,
+    });
+    expect(reload(world).save()).toEqual(world.save());
+    const legacy = Ecosystem.load(JSON.stringify(legacyV5(world.save())));
+    const oldest = [...legacy.organisms.values()][0];
+    legacy.spawn(genome(), 5, 5);
+    legacy.step();
+    legacy.kill(oldest, 'manual');
+    expect(legacy.lineageSnapshot().summaries.at(-1)).toMatchObject({
+      id: oldest.species,
+      genomeStatus: 'legacy-unknown',
+      admittedTick: 1,
+      extinctTick: 1,
+    });
+    expect(reload(legacy).save()).toEqual(legacy.save());
+  });
+
+  it('accepts the last valid tick/allocator endpoints without hiding the existing numeric continuation limit', () => {
+    const file = legacyV5(empty().save());
+    file.tick = 1_000_000_000;
+    file.nextSpecies = 999_999_999;
+    file.nextId = 999_999_999;
+    file.telemetry.originTick = file.tick;
+    file.telemetry.adaptationOriginTick = file.tick;
+    file.telemetry.pending.fromTick = file.tick;
+    const world = Ecosystem.load(JSON.stringify(file));
+    const placed = world.spawn(genome(), 1, 1)!;
+    expect(placed.species).toBe(999_999_999);
+    expect(placed.id).toBe(999_999_999);
+    expect(world.nextSpecies).toBe(1_000_000_000);
+    expect(world.nextId).toBe(1_000_000_000);
+    expect(reload(world).save()).toEqual(world.save());
+    world.step();
+    world.kill(placed, 'manual');
+    expect(world.tick).toBe(1_000_000_001);
+    expect(world.lineageSnapshot().summaries[0]).toMatchObject({
+      createdTick: 1_000_000_000,
+      extinctTick: 1_000_000_001,
+    });
+    expect(() => reload(world)).toThrow('ecosystem');
+  });
   it.each([2, 3, 4, 5])(
     'preserves uninterrupted ecology, order and permitted extensions across v%s boundaries',
     (version) => {

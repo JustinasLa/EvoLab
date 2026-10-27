@@ -1783,15 +1783,15 @@ for (const version of [2, 3, 4, 5, 6] as const) {
     expect(jsonBytes.toString()).not.toContain('retainedExtension');
     expect(json.windows.samples.retainedCount).toBe(version === 2 ? 0 : 180);
     expect(json.windows.manual).toMatchObject({
-      retainedCount: version === 5 ? 128 : 0,
+      retainedCount: version >= 5 ? 128 : 0,
       capacity: 128,
-      originKind: version === 5 ? 'fresh' : 'legacy-import',
+      originKind: version >= 5 ? 'fresh' : 'legacy-import',
       coverage: 'applied-portions-only',
     });
-    expect(json.windows.settings.unknownEvictedPrefix).toBe(version === 5);
+    expect(json.windows.settings.unknownEvictedPrefix).toBe(version >= 5);
     for (const view of ['population', 'food', 'adaptation'])
       await page.locator('#telemetry-view').selectOption(view);
-    if (version === 5) {
+    if (version >= 5) {
       const sequence = String(expected.interventions.entries[0].sequence),
         sample = String(expected.telemetry.samples.at(-2)!.tick),
         layouts: object[] = [];
