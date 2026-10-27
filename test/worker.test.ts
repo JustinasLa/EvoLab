@@ -606,7 +606,7 @@ describe('bounded long-run transport', () => {
     ),
   )(
     'preserves literal observer twins and full extension saves at $surface / speed $speed on every batch in $from–$through of 120 ticks',
-    ({ surface, speed, from, through }) => {
+    async ({ surface, speed, from, through }) => {
       const file = observerWorld(),
         extended = extendedObserverWorld(file, surface),
         reference = Ecosystem.load(JSON.stringify(file)),
@@ -729,6 +729,7 @@ describe('bounded long-run transport', () => {
         expect(JSON.stringify(withoutObserverExtensions(extraExpected))).toBe(expectedSaves[0]);
         expect(plain.tasks).toHaveLength(1);
         expect(extra.tasks).toHaveLength(1);
+        await new Promise((resolve) => setTimeout(resolve, 50));
       }
       pair({ type: 'pause' });
       identical('terminal', plain.last('control'), extra.last('control'));
