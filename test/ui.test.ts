@@ -1185,6 +1185,7 @@ describe('actual grid-free telemetry transport composition', () => {
       harness.deliver();
       expect(harness.save()).toEqual(migrated);
     }
+    const reference = Ecosystem.load(JSON.stringify(harness.save()));
     get<HTMLInputElement>('pause-on-extinction').checked = false;
     get('pause-on-extinction').dispatchEvent(new Event('change'));
     harness.deliver();
@@ -1193,10 +1194,14 @@ describe('actual grid-free telemetry transport composition', () => {
     set('target-tick', '90');
     click('run-to-tick');
     harness.deliver();
-    while (harness.save().tick < 90) {
+    while (harness.tasks.length) {
+      expect(harness.tasks).toHaveLength(1);
       harness.advance();
       harness.deliver();
     }
+    while (reference.tick < 90) reference.step();
+    expect(harness.save()).toEqual(reference.save());
+    expect(get('tick').textContent).toBe('TICK 90');
     click('ecosystem-tab');
     set('telemetry-sample', '30', 'change');
     get('telemetry-sample').focus();
@@ -1204,12 +1209,17 @@ describe('actual grid-free telemetry transport composition', () => {
     set('target-tick', '5430');
     click('run-to-tick');
     harness.deliver();
-    while (harness.save().tick < 5430) {
+    while (harness.tasks.length) {
+      expect(harness.tasks).toHaveLength(1);
       harness.advance();
       harness.deliver();
     }
+    while (reference.tick < 5430) reference.step();
+    const completed = harness.save();
+    expect(completed).toEqual(reference.save());
+    expect(get('tick').textContent).toBe('TICK 5,430');
     paint(0);
-    expect(harness.save().telemetry.samples).toHaveLength(180);
+    expect(completed.telemetry.samples).toHaveLength(180);
     expect(get<HTMLSelectElement>('telemetry-sample').value).toBe('60');
     expect(get('telemetry-status').textContent).toContain('30');
     expect(document.activeElement).toBe(get('telemetry-sample'));
