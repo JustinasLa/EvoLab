@@ -1022,7 +1022,6 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       anchor.href = url;
       anchor.download = `evolab-world-${data.state.settings.seed}.json`;
       anchor.click();
-      notice('World saved, including every organism and its ancestry.');
     } finally {
       anchor.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -1134,6 +1133,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     if (data.type === 'saved') {
       try {
         download(data);
+        if (current) notice('World saved, including every organism and its ancestry.');
       } catch {
         if (current) notice('Could not download this world. Try saving again.');
       }

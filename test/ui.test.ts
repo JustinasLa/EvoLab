@@ -574,6 +574,43 @@ describe('owned command admission and real-worker interleavings', () => {
       settings: { ...candidate.settings, nutrients: 7 },
     });
   });
+  it('downloads a posted obsolete-generation Save once before reseeding without taking its notice', async () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    const before = harness.save();
+    const events: string[] = [],
+      original = worker.postMessage.getMockImplementation()!;
+    worker.postMessage.mockImplementation((command) => {
+      if (command.type !== 'flow-ack') events.push(command.type);
+      original(command);
+    });
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      events.push(this.download);
+    });
+    click('save');
+    set('seed', '99');
+    click('reset');
+    const newerNotice = get('notice').textContent;
+    expect(events).toEqual(['save']);
+    const saved = harness.outbox.splice(
+      harness.outbox.findIndex((data) => data.type === 'saved'),
+      1,
+    )[0];
+    worker.onmessage!({ data: saved } as MessageEvent);
+    expect(events).toEqual(['save', 'evolab-world-42.json', 'start']);
+    expect(get('notice').textContent).toBe(newerNotice);
+    expect(JSON.parse(await (URL.createObjectURL.mock.calls[0][0] as Blob).text())).toEqual(before);
+    worker.onmessage!({ data: saved } as MessageEvent);
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    harness.deliver();
+    click('save');
+    harness.deliver();
+    expect(get('notice').textContent).toContain('World saved');
+  });
   it.each(
     [false, true].flatMap((frameFirst) =>
       ['valid', 'invalid', 'empty'].map((candidate) => ({ frameFirst, candidate })),
