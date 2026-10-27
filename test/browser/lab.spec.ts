@@ -127,13 +127,13 @@ test('literal v3 telemetry migrates through the file input and real worker befor
   page,
 }, testInfo) => {
   await observeTelemetry(page);
-  const reference = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0, mutation: 0 }, false),
-    genome: Genome = {
-      cells: [{ x: 0, y: 0, type: 7 }],
-      preference: 0.1234567890123456,
-      tolerance: 0.4567890123456789,
-      tempo: 2,
-    };
+  let reference = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0, mutation: 0 }, false);
+  const genome: Genome = {
+    cells: [{ x: 0, y: 0, type: 7 }],
+    preference: 0.1234567890123456,
+    tolerance: 0.4567890123456789,
+    tempo: 2,
+  };
   reference.spawn(genome, 20, 20);
   reference.spawn({ ...genome, preference: 0.9876543210987654, tolerance: 0.3 }, 40, 40);
   for (const organism of reference.organisms.values()) organism.energy = 8;
@@ -142,19 +142,8 @@ test('literal v3 telemetry migrates through the file input and real worker befor
   reference.paint('erase', 40, 40, 0, genome);
   const fixture = legacyV3(reference.save()),
     input = Buffer.from(JSON.stringify(fixture)),
-    expected = (): WorldFile => {
-      const saved = reference.save();
-      return {
-        ...saved,
-        telemetry: {
-          ...saved.telemetry,
-          adaptationOriginTick: fixture.tick,
-          samples: saved.telemetry.samples.map((sample) =>
-            sample.tick <= fixture.tick ? { ...sample, adaptation: null } : sample,
-          ),
-        },
-      };
-    };
+    expected = (): WorldFile => reference.save();
+  reference = Ecosystem.load(input.toString('utf8'));
   expect(fixture.version).toBe(3);
   expect(fixture.telemetry.version).toBe(1);
   expect(fixture.telemetry).not.toHaveProperty('adaptationOriginTick');
@@ -213,7 +202,7 @@ test('literal v3 telemetry migrates through the file input and real worker befor
   const target = await coordinate(page, 80, 80);
   await page.mouse.click(target.x, target.y);
   await expect(page.locator('#population')).toHaveText('1');
-  reference.paint('plant', 80, 80, 0, genome);
+  referenceManualPaint(reference, 'plant', 80, 80, 0, genome);
   await stepTo(page, 90);
   advance(reference, 25);
   const measuredBytes = await downloadPausedWorld(page),
@@ -916,6 +905,18 @@ async function downloadMeasurements(page: import('@playwright/test').Page, forma
     new RegExp(`^evolab-measurements-\\d+-tick-\\d+\\.${format}$`),
   );
   return bytes;
+}
+function referenceManualPaint(
+  world: Ecosystem,
+  tool: 'food' | 'wall' | 'erase' | 'plant',
+  x: number,
+  y: number,
+  radius: number,
+  genome: Genome,
+) {
+  const outcome = world.paint(tool, x, y, radius, genome);
+  if (outcome.placement) world.appendIntervention({ kind: 'placement', detail: outcome.placement });
+  else if (tool !== 'plant') world.recordPaint(outcome, tool, radius, x, y, null);
 }
 function restoreMeasurementZeros(envelope: any) {
   const paths = envelope.negativeZeroPaths as string[];
@@ -1988,7 +1989,7 @@ test('blueprint imports retain telemetry until explicit placement and preserve s
   const target = await coordinate(page, 80, 80);
   await page.mouse.click(target.x, target.y);
   await expect(page.locator('#population')).toHaveText(String(before.organisms.length + 1));
-  reference.paint('plant', 80, 80, 0, payload.genome);
+  referenceManualPaint(reference, 'plant', 80, 80, 0, payload.genome);
   const placed = JSON.parse((await downloadWorld(page)).toString()) as WorldFile;
   expect(placed).toEqual(reference.save());
   expect(placed.telemetry).toEqual(before.telemetry);
@@ -2053,14 +2054,14 @@ test('blueprint designer preserves manual extinction and revives without resumin
   await page.locator('#plant-design').click();
   const target = await coordinate(page, 80, 80);
   await page.mouse.click(target.x, target.y);
-  reference.paint('plant', 80, 80, 0, genome);
+  referenceManualPaint(reference, 'plant', 80, 80, 0, genome);
   await expect(page.locator('#population')).toHaveText('1');
   await page.locator('#brush').evaluate((input: HTMLInputElement) => {
     input.value = '0';
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
   await paintCell(page, 'erase', 80, 80);
-  reference.paint('erase', 80, 80, 0, genome);
+  referenceManualPaint(reference, 'erase', 80, 80, 0, genome);
   await expect(page.locator('#population')).toHaveText('0');
   await expectPausedWorld(page, 90);
   await expect(page.locator('#extinction-summary')).toContainText('Last removal: manual erasure.');
@@ -2084,7 +2085,7 @@ test('blueprint designer preserves manual extinction and revives without resumin
   await expect(page.locator('#extinction-summary')).toContainText('Last removal: manual erasure.');
   await page.locator('#plant-design').click();
   await page.mouse.click(target.x, target.y);
-  reference.paint('plant', 80, 80, 0, genome);
+  referenceManualPaint(reference, 'plant', 80, 80, 0, genome);
   await expect(page.locator('#population')).toHaveText('1');
   await expect(page.locator('#extinction-summary')).toBeHidden();
   await expectPausedWorld(page, 90);
