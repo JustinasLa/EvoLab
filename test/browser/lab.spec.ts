@@ -1275,18 +1275,16 @@ test('D9-A7 actual native termination precedes abandonment of36 held receipts an
   expect(fresh.snapshot.seed).toBe(DEFAULTS.seed);
   expect(downloads).toBe(1);
   expect(await page.evaluate(() => window.measurementGate.counts.L)).toBe(1);
-  await test
-    .info()
-    .attach('native-endpoint-incarnation.json', {
-      contentType: 'application/json',
-      body: JSON.stringify({
-        held,
-        oldNativeTerminations: 1,
-        freshDownloads: downloads,
-        limitation:
-          'messageerror signal injected by test; real native terminate method and new native construction forwarded unchanged. This is endpoint-abandonment evidence; mount-disposer/late-file callback permutations are separately unit-bridged, not OS crash evidence.',
-      }),
-    });
+  await test.info().attach('native-endpoint-incarnation.json', {
+    contentType: 'application/json',
+    body: JSON.stringify({
+      held,
+      oldNativeTerminations: 1,
+      freshDownloads: downloads,
+      limitation:
+        'messageerror signal injected by test; real native terminate method and new native construction forwarded unchanged. This is endpoint-abandonment evidence; mount-disposer/late-file callback permutations are separately unit-bridged, not OS crash evidence.',
+    }),
+  });
 });
 for (const version of [2, 3, 4, 5] as const) {
   test(`measurement bytes preserve genuine world${version} migration,180 samples and truthful manual windows`, async ({
