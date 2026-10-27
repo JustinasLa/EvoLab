@@ -1156,6 +1156,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       desiredView.visible &&
       (pendingFrame || frame)
     ) {
+      const consumed = pendingFrame;
       if (pendingFrame) {
         frame = pendingFrame.frame;
         displayedRevision = pendingFrame.state.revision;
@@ -1166,8 +1167,8 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       draw(canvas, buffer, frame!, camera, thermal, displayedSelected);
       dirty = false;
       freshness();
-      if (heldDisplay) {
-        const token = heldDisplay;
+      if (consumed) {
+        const token = consumed;
         heldDisplay = null;
         displayWatermark = token.sequence;
         worker.postMessage({

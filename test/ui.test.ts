@@ -609,6 +609,48 @@ describe('owned command admission and real-worker interleavings', () => {
       expect(get('habitat-freshness').textContent).toContain('tick 0');
     },
   );
+  it.each(['retained', 'valid', 'invalid'])(
+    'never acknowledges a discarded pending frame by redrawing cached habitat after %s replacement',
+    async (candidate) => {
+      const displays = vi.spyOn(Ecosystem.prototype, 'display');
+      const harness = realWorker(true);
+      harness.deliver();
+      paint(0);
+      harness.deliver();
+      if (candidate !== 'retained') {
+        await loadText(
+          candidate === 'invalid' ? '{}' : JSON.stringify(new Ecosystem(DEFAULTS).save()),
+        );
+        harness.deliver();
+        paint(0);
+        harness.deliver();
+      }
+      harness.advance();
+      const pending = harness.outbox.find((data) => data.type === 'frame');
+      expect(pending).toBeDefined();
+      harness.deliver();
+      set('speed', '12', 'change');
+      expect(harness.outbox.some((data) => data.type === 'control')).toBe(true);
+      get<HTMLInputElement>('render-habitat').checked = false;
+      get('render-habitat').dispatchEvent(new Event('change'));
+      const before = displays.mock.calls.length;
+      const acknowledgements = () =>
+        worker.postMessage.mock.calls.filter(
+          ([data]) =>
+            data.type === 'flow-ack' &&
+            data.channel === 'display' &&
+            data.sequence === pending.sequence,
+        );
+      expect(acknowledgements()).toHaveLength(0);
+      paint(0);
+      expect(acknowledgements()).toHaveLength(0);
+      expect(displays).toHaveBeenCalledTimes(before);
+      harness.deliver();
+      expect(acknowledgements()).toHaveLength(1);
+      expect(displays).toHaveBeenCalledTimes(before);
+      expect(harness.save().tick).toBe(pending.state.world.stats.tick);
+    },
+  );
   it('retains a newly admitted target dependency while startup proof is still held', () => {
     const harness = realWorker(true);
     set('target-tick', '120');
