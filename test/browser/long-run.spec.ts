@@ -18,10 +18,13 @@ import {
   type WorldFile,
 } from '../../src/model';
 import { serializeBlueprint } from '../../src/blueprint';
+import { fortyTest, runFortyControls } from './forty-control-fixture';
 
 const referenceAssets = new Map<string, string>();
 let workerAsset: string, styleAsset: string;
+let bundlePreparationMs = 0;
 test.beforeAll(async () => {
+  const began = performance.now();
   const output = await build({
     configFile: false,
     logLevel: 'silent',
@@ -45,6 +48,7 @@ test.beforeAll(async () => {
   const assets = await readdir('dist/assets');
   workerAsset = assets.find((name) => /^worker-.*\.js$/.test(name))!;
   styleAsset = assets.find((name) => /^index-.*\.css$/.test(name))!;
+  bundlePreparationMs = performance.now() - began;
 });
 
 type Counters = {
@@ -138,20 +142,32 @@ globalThis.postMessage=(data,transfer)=>{if(data.type==='frame'||data.type==='pr
 ${instrumented}`;
 }
 
-async function observe(page: Page, instrument = true): Promise<void> {
-  await page.route('**/__reference/**', (route) => {
-    const path = new URL(route.request().url()).pathname.split('/__reference/')[1];
-    return route.fulfill({
-      contentType: 'application/javascript',
-      body: referenceAssets.get(path)!,
-    });
-  });
+async function observe(
+  page: Page,
+  instrument = true,
+  fixtureInit = '',
+  within: <T>(action: () => Promise<T>) => Promise<T> = (action) => action(),
+): Promise<void> {
+  await within(() =>
+    page.route('**/__reference/**', (route) => {
+      const path = new URL(route.request().url()).pathname.split('/__reference/')[1];
+      return within(() =>
+        route.fulfill({
+          contentType: 'application/javascript',
+          body: referenceAssets.get(path)!,
+        }),
+      );
+    }),
+  );
   if (instrument)
-    await page.route('**/worker-*.js', async (route) => {
-      const response = await route.fetch();
-      await route.fulfill({ response, body: instrumentWorker(await response.text()) });
-    });
-  await page.addInitScript(() => {
+    await within(() =>
+      page.route('**/worker-*.js', async (route) => {
+        const response = await within(() => route.fetch());
+        const source = await within(() => response.text());
+        await within(() => route.fulfill({ response, body: instrumentWorker(source) }));
+      }),
+    );
+  const initialize = () => {
     window.longRun = {
       state: null,
       receipt: null,
@@ -232,8 +248,10 @@ async function observe(page: Page, instrument = true): Promise<void> {
                     commandId: delivery.data.commandId,
                     state: delivery.data.state,
                   };
-                if (delivery.data.type === 'loaded' && !delivery.data.state.playback.paused)
+                if (delivery.data.type === 'loaded' && !delivery.data.state.playback.paused) {
+                  window.fortyFixture?.check(window.fortyFixture.epoch);
                   document.getElementById('pause')!.click();
+                }
               };
               const evidence = window.longRun;
               if (evidence.omitSources && event.data.telemetry) {
@@ -280,7 +298,10 @@ async function observe(page: Page, instrument = true): Promise<void> {
         return worker;
       },
     });
-  });
+  };
+  await within(() =>
+    page.addInitScript({ content: `(${initialize.toString()})();${fixtureInit}` }),
+  );
 }
 
 function fixture(population: number): WorldFile {
@@ -543,97 +564,22 @@ test('real admitted plant retains its complete anatomy through a later designer 
 });
 
 for (const population of [64, 1600]) {
-  test(`forty real control barriers population=${population}`, async ({
-    page,
-    browser,
-  }, testInfo) => {
-    await observe(page);
-    await page.goto('/');
-    const file = fixture(population);
-    await load(page, file, true, 12);
-    const records: object[] = [],
-      inputLatencies: number[] = [],
-      settlingLatencies: number[] = [],
-      revealLatencies: number[] = [];
-    for (let interaction = -2; interaction < 40; interaction++) {
-      await page.locator('#world').scrollIntoViewIfNeeded();
-      await page.waitForFunction(() => window.longRun.state?.display.visible);
-      const kind = ['cancel-target', 'pause', 'reveal', 'speed'][(interaction + 4) % 4];
-      if (kind === 'cancel-target' || kind === 'pause') {
-        await page.evaluate(() => {
-          document.querySelector<HTMLInputElement>('#target-tick')!.value = String(
-            window.longRun.state!.world.stats.tick + 1000000,
-          );
-          document.getElementById('run-to-tick')!.click();
-        });
-        await page.waitForFunction(() => window.longRun.state?.target?.status === 'running');
-      } else if (kind === 'reveal') {
-        await page.evaluate(() => document.getElementById('render-habitat')!.click());
-        await settle(page);
-        await page.locator('#world').scrollIntoViewIfNeeded();
-        await page.waitForFunction(() => window.longRun.state?.display.visible);
-      }
-      const record = await control(page, kind);
-      const download = await downloadWorld(page),
-        saved = download.world;
-      const savedAt = await page.evaluate(() => performance.now());
-      if (kind !== 'speed') expect(saved.tick).toBe(record.receipt.state.world.stats.tick);
-      if (interaction >= 0) {
-        const inputAck = record.receipt.receivedAt - record.inputAt;
-        inputLatencies.push(inputAck);
-        if (kind === 'cancel-target' || kind === 'pause')
-          settlingLatencies.push(savedAt - record.inputAt);
-        if (kind === 'reveal') revealLatencies.push(record.drawnAt - record.inputAt);
-        records.push({
-          interaction,
-          kind,
-          ...record,
-          inputAck,
-          renderedProgressMs: record.renderedAt - record.inputAt,
-          savedAt,
-          savedTick: saved.tick,
-          savedSHA256: createHash('sha256').update(download.raw).digest('hex'),
-          rawSaveBytes: download.raw.byteLength,
-        });
-      }
-      if (kind === 'pause') {
-        await page.evaluate(() => document.getElementById('cancel-target')!.click());
-        await settle(page);
-      }
-    }
-    const distribution = (values: number[]) => {
-      const ordered = [...values].sort((left, right) => left - right);
-      return {
-        median: ordered[Math.floor(ordered.length / 2)],
-        p95: ordered[Math.ceil(ordered.length * 0.95) - 1],
-        max: ordered.at(-1),
-      };
-    };
-    const measured = {
-      inputAckMs: distribution(inputLatencies),
-      savedSettleMs: distribution(settlingLatencies),
-      freshRevealMs: distribution(revealLatencies),
-    };
-    const counters = await page.evaluate(() => window.longRun.counters);
-    await attachEvidence(testInfo, 'forty-control-evidence', {
-      ...runtime(),
-      browser: browser.version(),
-      population,
-      project: testInfo.project.name,
-      measured,
-      counters,
-      records,
-      limitations:
-        'Actual native controls receive programmatic DOM events with canvas in view; timings are not a human reaction or physical-device measurement. Saves are real native downloads. Separate existing browser tests exercise actual pointer/keyboard coordinates. Saturated latency has no foreground guarantee.',
-    });
-    expect(records).toHaveLength(40);
-    expect(counters!.maxScheduled).toBe(1);
-    if (population === 64) {
-      expect(measured.inputAckMs.p95).toBeLessThan(150);
-      expect(measured.savedSettleMs.p95).toBeLessThan(250);
-      expect(measured.freshRevealMs.p95).toBeLessThan(250);
-    }
-  });
+  fortyTest(
+    `forty real control barriers population=${population}`,
+    async ({ page, browser, fortyFramework }, testInfo) => {
+      await runFortyControls({
+        page,
+        browser,
+        testInfo,
+        framework: fortyFramework,
+        bundlePreparationMs,
+        population,
+        makeFixture: () => fixture(population),
+        observe: (init, within) => observe(page, true, init, within),
+        exactReference: (file, tick) => exactReference(page, file, tick),
+      });
+    },
+  );
 }
 
 test('native long-run controls fit narrow layouts, extreme ticks and zoom-equivalent width', async ({
