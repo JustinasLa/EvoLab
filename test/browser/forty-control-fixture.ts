@@ -24,8 +24,10 @@ type FrameworkTiming = {
   bodyStartedAt?: number;
   bodyEndedAt?: number;
   acceptanceElapsedMs?: number;
+  invalidate?: (error: unknown) => void;
+  body?: Promise<void>;
 };
-export const fortyTest = test.extend<{ fortyFramework: FrameworkTiming }>({
+export const fortyTest = test.extend<{ fortyFramework: FrameworkTiming; fortyOwnership: void }>({
   fortyFramework: [
     async ({}, use, testInfo) => {
       // Automatic fixtures without page dependencies start before page/context setup.
@@ -50,6 +52,25 @@ export const fortyTest = test.extend<{ fortyFramework: FrameworkTiming }>({
         ),
       );
       await testInfo.attach('forty-framework-timing', { path, contentType: 'application/json' });
+    },
+    { auto: true },
+  ],
+  fortyOwnership: [
+    async ({ page, fortyFramework }, use, testInfo) => {
+      try {
+        await use();
+      } finally {
+        // This fixture depends on page, so teardown runs BEFORE page/context
+        // teardown. Playwright may have raced the body on a timeout: invalidate
+        // immediately, terminate owned resources, then settle that exact body.
+        if (fortyFramework.invalidate && fortyFramework.bodyEndedAt === undefined) {
+          fortyFramework.invalidate(
+            testInfo.errors[0] ?? new Error('Framework interrupted the acceptance body.'),
+          );
+          await page.close({ runBeforeUnload: false }).catch(() => {});
+        }
+        await fortyFramework.body?.catch(() => {});
+      }
     },
     { auto: true },
   ],
@@ -253,7 +274,10 @@ class Fence {
   windowDeadline = Infinity;
   reason: unknown;
   private timer: ReturnType<typeof setTimeout>;
-  constructor(readonly page: Page) {
+  constructor(
+    readonly page: Page,
+    readonly interrupted: () => unknown = () => undefined,
+  ) {
     this.timer = setTimeout(
       () => this.invalidate(new Error('Measured overall acceptance deadline exceeded.')),
       TOTAL_MS,
@@ -267,6 +291,8 @@ class Fence {
     );
   }
   check(): void {
+    const interruption = this.interrupted();
+    if (this.active && interruption) this.invalidate(interruption);
     if (this.active && performance.now() >= Math.min(this.deadline, this.windowDeadline))
       this.invalidate(new Error('Measured acceptance/window deadline exceeded.'));
     if (!this.active) throw this.reason;
@@ -352,6 +378,7 @@ type Operation = {
   rawPath?: string;
   rawBytes?: number;
   rawSHA256?: string;
+  nativeBytesComplete?: boolean;
   savedAt?: number;
   savedTick?: number;
   equalities: string[];
@@ -378,8 +405,13 @@ export async function runFortyControls(options: {
   exactReference: (file: WorldFile, tick: number) => Promise<string>;
 }): Promise<void> {
   const { page, browser, testInfo, framework, population } = options;
-  const fence = new Fence(page); // Acceptance starts before any fixture work.
+  const fence = new Fence(page, () =>
+    testInfo.status === 'timedOut' || testInfo.status === 'interrupted'
+      ? (testInfo.errors[0] ?? new Error('Framework interrupted the acceptance body.'))
+      : undefined,
+  ); // Acceptance starts before any fixture work.
   framework.bodyStartedAt = fence.startedAt;
+  framework.invalidate = (error) => fence.invalidate(error);
   testInfo.setTimeout(TOTAL_MS);
   const context = page.context(),
     mainFrame = page.mainFrame();
@@ -447,7 +479,15 @@ export async function runFortyControls(options: {
       acceptanceElapsedMs: acceptedElapsedMs ?? performance.now() - fence.startedAt,
       finalMeasuredEndpoint:
         'forty-framework-timing.json acceptanceElapsedMs includes the final evidence write, attachment, browser fence invalidation and assertions',
-      windows,
+      windows: windows.map((observation) => ({
+        ...observation,
+        nativeSaves: operations.filter(
+          (op) => op.window === observation.index && op.nativeBytesComplete,
+        ).length,
+        incompleteOperations: operations
+          .filter((op) => op.window === observation.index && op.status !== 'checked')
+          .map((op) => op.id),
+      })),
     },
     framework: {
       sharedBeforeAllBundleMs: options.bundlePreparationMs,
@@ -463,7 +503,8 @@ export async function runFortyControls(options: {
     },
     counts: {
       operations: operations.length,
-      nativeSaves: operations.filter((op) => op.rawPath).length,
+      nativeSaves: operations.filter((op) => op.nativeBytesComplete).length,
+      rawArtifacts: operations.filter((op) => op.rawPath).length,
       checkedSaves: operations.filter((op) => op.expectedType === 'save' && op.status === 'checked')
         .length,
       retainedRecords: records.length,
@@ -599,7 +640,11 @@ export async function runFortyControls(options: {
         ({ epoch, id, kind }) => {
           const f = window.fortyFixture;
           f.check(epoch);
-          if (f.phase !== id) throw new Error('Operation dispatch ownership changed.');
+          if (!f.samples[id] || f.samples[id].dispatchAt !== undefined)
+            throw new Error('Missing or duplicate operation dispatch ownership.');
+          // An offered control can own admission before its target preparation.
+          // Reclaim its exact pending ID without restarting any timestamp.
+          f.phase = id;
           f.samples[id].dispatchAt = performance.now();
           if (kind === 'speed') {
             const select = document.querySelector<HTMLSelectElement>('#speed')!;
@@ -689,6 +734,11 @@ export async function runFortyControls(options: {
     fence.check();
     op.status = 'checked';
     op.runnerCompletedMs = performance.now() - fence.startedAt;
+    if (op.window !== null && op.expectedType === 'save')
+      windows[op.window].saves = operations.filter(
+        (entry) =>
+          entry.window === op.window && entry.expectedType === 'save' && entry.status === 'checked',
+      ).length;
     await checkpoint();
   };
   const action = async (
@@ -697,8 +747,10 @@ export async function runFortyControls(options: {
     kind: string,
     expectedType: string,
     admission = false,
+    offered?: Operation,
   ) => {
-    const op = await begin(role, interaction, expectedType);
+    const op = offered ?? (await begin(role, interaction, expectedType));
+    activeOperation = op;
     if (admission) await ready(op);
     await dispatch(op, kind);
     const receipt = await terminal(op);
@@ -748,6 +800,7 @@ export async function runFortyControls(options: {
       };
       await fence.wait(read);
       fence.streams.delete(stream);
+      op.nativeBytesComplete = true;
       const raw = Buffer.concat(chunks);
       // This endpoint follows completion of native bytes. Sampling transport is
       // deliberately included in saved-settle; no earlier saved receipt replaces it.
@@ -954,7 +1007,14 @@ export async function runFortyControls(options: {
                     const kind = ['cancel-target', 'pause', 'reveal', 'speed'][
                       (interaction + 4) % 4
                     ];
+                    let offered: Operation | undefined;
                     if (kind === 'cancel-target' || kind === 'pause') {
+                      // Prior-Save admission belongs before starting the next
+                      // target. Waiting with a live target would add a lease's
+                      // worth of ecology to every preparation. Preserve both
+                      // offered/readiness endpoints through preparation.
+                      offered = await begin('primary-control', interaction, kind);
+                      await ready(offered);
                       await action('run-to-preparation', interaction, 'run-to-tick', 'run-to');
                       await poll(() => window.longRun.state?.target?.status === 'running');
                     } else if (kind === 'reveal') {
@@ -968,7 +1028,8 @@ export async function runFortyControls(options: {
                       interaction,
                       kind,
                       kind === 'reveal' ? 'display-view' : kind,
-                      true,
+                      !offered,
+                      offered,
                     );
                     const inputAt = receipt.dispatchAt!;
                     if (kind === 'reveal')
@@ -1182,7 +1243,12 @@ export async function runFortyControls(options: {
   } catch (error) {
     fence.invalidate(error); // Synchronous before any cleanup await.
     status = 'incomplete';
-    originalError = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    originalError =
+      error instanceof Error
+        ? (error.stack ?? error.message)
+        : typeof error === 'object' && error !== null
+          ? JSON.stringify(error)
+          : String(error);
     if (activeOperation && activeOperation.status !== 'checked') {
       activeOperation.status = 'failed/interrupted';
       activeOperation.error = originalError;

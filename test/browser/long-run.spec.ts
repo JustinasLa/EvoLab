@@ -567,7 +567,7 @@ for (const population of [64, 1600]) {
   fortyTest(
     `forty real control barriers population=${population}`,
     async ({ page, browser, fortyFramework }, testInfo) => {
-      await runFortyControls({
+      fortyFramework.body = runFortyControls({
         page,
         browser,
         testInfo,
@@ -578,6 +578,7 @@ for (const population of [64, 1600]) {
         observe: (init, within) => observe(page, true, init, within),
         exactReference: (file, tick) => exactReference(page, file, tick),
       });
+      await fortyFramework.body;
     },
   );
 }
