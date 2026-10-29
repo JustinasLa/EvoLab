@@ -12,6 +12,7 @@ import {
 } from '../src/model';
 import { advance, legacyV3, legacyV4, legacyV5 } from './fixtures/telemetry';
 import { cpus, platform, totalmem } from 'node:os';
+import { admissionGenome, contradictoryPruning, sameTickLineages } from './fixtures/lineage';
 
 const genome = (): Genome => ({
   cells: [{ x: 0, y: 0, type: 7 }],
@@ -56,6 +57,15 @@ function evidence(events: LineageEvent[], rows: LineageSummary[] = [], watermark
     { kind: 'created', id: row.id, tick: watermark, origin: 'manual', parentId: null },
     { kind: 'extinct', id: row.id, tick: watermark },
   ]);
+  // Metadata whose admission event is in the evicted prefix must precede the
+  // filler admissions with retained events. Keep the supplied facts/events and
+  // original chronology assertions intact while constructing a consistent FIFO.
+  const prefixRows = rows.filter(
+    (row) =>
+      row.admittedTick === watermark &&
+      (row.origin === 'legacy-unknown' ||
+        !events.some((event) => event.kind === 'created' && event.id === row.id)),
+  );
   saved.lineageArchive = {
     version: 1,
     originKind: 'fresh',
@@ -64,7 +74,11 @@ function evidence(events: LineageEvent[], rows: LineageSummary[] = [], watermark
     eventsPruned: true,
     eventsEvictedThroughTick: watermark,
     living: [],
-    summaries: [...filler.slice(rows.length), ...rows],
+    summaries: [
+      ...prefixRows,
+      ...filler.slice(rows.length),
+      ...rows.filter((row) => !prefixRows.includes(row)),
+    ],
     events: [...fillerEvents.slice(events.length), ...events],
   };
   return saved;
@@ -82,6 +96,126 @@ function rejects(saved: WorldFile): void {
 }
 
 describe('strict bounded archive candidate validation', () => {
+  it('C16-R1-001 requires eviction provenance for known and provable legacy readmissions', () => {
+    for (const legacy of [false, true]) {
+      const invalid = contradictoryPruning(legacy);
+      expect(invalid.lineageArchive.summariesPruned).toBe(false);
+      rejects(invalid);
+      invalid.lineageArchive.summariesPruned = true;
+      rejects(invalid); // Provenance still requires the full 256-row ring.
+    }
+    const world = empty();
+    const placed = world.spawn(genome(), 1, 1)!;
+    // An initial legacy placeholder may die at the import tick without eviction.
+    const imported = Ecosystem.load(JSON.stringify(legacyV5(world.save())));
+    imported.kill(imported.organisms.get(placed.id)!, 'manual');
+    expect(reload(imported).save()).toEqual(imported.save());
+    expect(imported.lineageSnapshot().summariesPruned).toBe(false);
+  });
+
+  it('C16-R1-002 rejects same-tick creation/extinction FIFO inversions and continues actual overflow', () => {
+    const world = sameTickLineages();
+    const invalid = world.save();
+    [invalid.lineageArchive.summaries[0], invalid.lineageArchive.summaries[1]] = [
+      invalid.lineageArchive.summaries[1],
+      invalid.lineageArchive.summaries[0],
+    ];
+    rejects(invalid);
+    const restored = reload(world);
+    for (const candidate of [world, restored]) {
+      candidate.spawn(admissionGenome(), 40, 40);
+      expect(candidate.lineageSnapshot().summaries[0].id).toBe(6);
+      candidate.kill(candidate.organisms.get(1)!, 'manual');
+      candidate.kill(candidate.organisms.get(2)!, 'manual');
+    }
+    expect(restored.save()).toEqual(world.save());
+    expect(
+      world
+        .lineageSnapshot()
+        .summaries.slice(-2)
+        .map((row) => row.genomeStatus),
+    ).toEqual(['pruned', 'pruned']);
+    const inverted = world.save(),
+      summaries = inverted.lineageArchive.summaries;
+    [summaries[254], summaries[255]] = [summaries[255], summaries[254]];
+    rejects(inverted);
+    const continued = reload(restored);
+    for (const candidate of [world, continued]) {
+      candidate.spawn(genome(), 80, 80);
+      candidate.step();
+    }
+    expect(continued.save()).toEqual(world.save());
+  });
+
+  it('C16-R1-002 uses retained watermark-prefix facts while preserving genuinely lost order', () => {
+    const world = sameTickLineages();
+    for (const organism of [...world.organisms.values()].reverse()) world.kill(organism, 'manual');
+    const placed = world.spawn(genome(), 40, 40)!;
+    world.kill(placed, 'manual');
+    const valid = world.save();
+    expect(valid.lineageArchive.eventsEvictedThroughTick).toBe(0);
+    expect(valid.lineageArchive.summaries[0].id).toBe(6);
+    expect(
+      valid.lineageArchive.events.some((event) => event.kind === 'created' && event.id === 6),
+    ).toBe(false);
+    expect(reload(world).save()).toEqual(valid);
+    const inverted = structuredClone(valid);
+    [inverted.lineageArchive.summaries[0], inverted.lineageArchive.summaries[1]] = [
+      inverted.lineageArchive.summaries[1],
+      inverted.lineageArchive.summaries[0],
+    ];
+    rejects(inverted); // The missing creation precedes every retained event at W.
+    const uncertain = structuredClone(valid);
+    // Both missing creation events are in the same evicted prefix; their mutual
+    // order is unavailable.
+    uncertain.lineageArchive.events.shift();
+    uncertain.lineageArchive.events.push(extinct(1999, 0));
+    uncertain.nextSpecies = 2000;
+    [uncertain.lineageArchive.summaries[0], uncertain.lineageArchive.summaries[1]] = [
+      uncertain.lineageArchive.summaries[1],
+      uncertain.lineageArchive.summaries[0],
+    ];
+    expect(Ecosystem.load(JSON.stringify(uncertain)).save()).toEqual(uncertain);
+  });
+
+  it('C16-R1-002 keeps initial legacy admissions before events and permits uncertain same-tick readmission', () => {
+    for (const later of [false, true]) {
+      const world = Ecosystem.load(JSON.stringify(legacyV5(sameTickLineages().save())));
+      if (later) world.step();
+      world.spawn(genome(), 40, 40);
+      world.kill(world.organisms.get(1)!, 'manual');
+      expect(world.lineageSnapshot().summaries.at(-1)).toMatchObject({
+        id: 5,
+        genomeStatus: 'legacy-unknown',
+        admittedTick: later ? 1 : 0,
+      });
+      const restored = reload(world);
+      expect(restored.save()).toEqual(world.save());
+      const inverted = world.save(),
+        summaries = inverted.lineageArchive.summaries;
+      if (later) {
+        // A later extinction is a provable readmission after the retained creation.
+        [summaries[254], summaries[255]] = [summaries[255], summaries[254]];
+        rejects(inverted);
+      } else {
+        // At origin the same row could instead be an original placeholder.
+        [summaries[254], summaries[255]] = [summaries[255], summaries[254]];
+        expect(Ecosystem.load(JSON.stringify(inverted)).save()).toEqual(inverted);
+        const impossible = world.save();
+        [impossible.lineageArchive.summaries[0], impossible.lineageArchive.summaries[254]] = [
+          impossible.lineageArchive.summaries[254],
+          impossible.lineageArchive.summaries[0],
+        ];
+        rejects(impossible); // Living initial placeholders must precede known creations.
+      }
+      for (const candidate of [world, restored]) {
+        candidate.spawn(genome(), 80, 80);
+        candidate.step();
+      }
+      expect(restored.save()).toEqual(world.save());
+    }
+  });
+
   it('F1/F2 requires transitions strictly after the watermark, including observed legacy deaths', () => {
     const world = empty();
     advance(world, 80);

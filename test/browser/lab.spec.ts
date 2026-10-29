@@ -19,6 +19,7 @@ import { writeFile } from 'node:fs/promises';
 import { cpus, platform, totalmem } from 'node:os';
 import { Ecosystem } from '../../src/ecosystem';
 import { advance, legacyV3, legacyV4, legacyV5 } from '../fixtures/telemetry';
+import { admissionGenome, contradictoryPruning, sameTickLineages } from '../fixtures/lineage';
 
 declare global {
   interface Window {
@@ -2025,6 +2026,97 @@ async function recordLineageDownload(
     contentType: 'application/json',
   });
 }
+
+test('lineage correction rejects provenance and same-tick FIFO contradictions without changing native complete saves', async ({
+  page,
+}, testInfo) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  const source = new Ecosystem({ ...DEFAULTS, mutation: 0, climate: 0, nutrients: 0 }, false);
+  source.spawn(admissionGenome(), 40, 40);
+  advance(source, 31);
+  const swapped = sameTickLineages().save();
+  [swapped.lineageArchive.summaries[0], swapped.lineageArchive.summaries[1]] = [
+    swapped.lineageArchive.summaries[1],
+    swapped.lineageArchive.summaries[0],
+  ];
+  await page.goto('/');
+  await requestPause(page);
+  await importTelemetryWorld(page, source.save());
+  await page.getByTitle('Inspect organism (I)').click();
+  const at = await coordinate(page, 40, 40);
+  await page.mouse.click(at.x, at.y);
+  await expect(page.locator('#inspector')).toContainText('Organism 1');
+  const before = await downloadPausedWorld(page);
+  expect(JSON.parse(before.toString())).toEqual(source.save());
+  await recordLineageDownload(testInfo, 'lineage-correction-before', before);
+  for (const [label, invalid] of [
+    ['known-pruning', contradictoryPruning(false)],
+    ['legacy-pruning', contradictoryPruning(true)],
+    ['same-tick-order', swapped],
+  ] as const) {
+    const input = Buffer.from(JSON.stringify(invalid));
+    await page
+      .locator('#file')
+      .setInputFiles({ name: `${label}.json`, mimeType: 'application/json', buffer: input });
+    await expect(page.locator('#notice')).toHaveText('Invalid ecosystem lineage archive.');
+    await expect(page.locator('#inspector')).toContainText('Organism 1');
+    const after = await downloadPausedWorld(page);
+    expect(after).toEqual(before);
+    await recordLineageDownload(testInfo, `lineage-correction-${label}-input`, input);
+    await recordLineageDownload(testInfo, `lineage-correction-${label}-recovery`, after);
+  }
+  await page.getByTitle('Advance one tick while paused').click();
+  await expectPausedWorld(page, 32);
+  source.step();
+  const continued = await downloadPausedWorld(page);
+  expect(JSON.parse(continued.toString())).toEqual(source.save());
+  await recordLineageDownload(testInfo, 'lineage-correction-rejection-continuation', continued);
+  expect(errors).toEqual([]);
+});
+
+test('lineage correction preserves actual same-tick overflow and extinction readmission through native reload and continuation', async ({
+  page,
+}, testInfo) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  const reference = sameTickLineages();
+  reference.spawn(admissionGenome(), 40, 40);
+  reference.kill(reference.organisms.get(1)!, 'manual');
+  reference.kill(reference.organisms.get(2)!, 'manual');
+  expect(
+    reference
+      .lineageSnapshot()
+      .summaries.slice(-2)
+      .map((row) => row.genomeStatus),
+  ).toEqual(['pruned', 'pruned']);
+  await page.goto('/');
+  await requestPause(page);
+  await importTelemetryWorld(page, reference.save());
+  const before = await downloadPausedWorld(page);
+  expect(JSON.parse(before.toString())).toEqual(reference.save());
+  await importTelemetryWorld(page, JSON.parse(before.toString()));
+  await paintCell(page, 'plant', 80, 80);
+  referenceManualPaint(reference, 'plant', 80, 80, 0, founder(0));
+  await expect(page.locator('#population')).toHaveText('256');
+  await page.getByTitle('Advance one tick while paused').click();
+  await expectPausedWorld(page, 1);
+  reference.step();
+  const continued = await downloadPausedWorld(page),
+    state = JSON.parse(continued.toString()) as WorldFile;
+  expect(state).toEqual(reference.save());
+  expect(state.lineageArchive.summaries[0].id).toBe(9);
+  await importTelemetryWorld(page, state);
+  await page.getByTitle('Advance one tick while paused').click();
+  await expectPausedWorld(page, 2);
+  reference.step();
+  const reloaded = await downloadPausedWorld(page);
+  expect(JSON.parse(reloaded.toString())).toEqual(reference.save());
+  await recordLineageDownload(testInfo, 'lineage-correction-valid-overflow', before);
+  await recordLineageDownload(testInfo, 'lineage-correction-valid-continuation', continued);
+  await recordLineageDownload(testInfo, 'lineage-correction-valid-reload-step', reloaded);
+  expect(errors).toEqual([]);
+});
 
 test('lineage v5 unknown history survives real extinction, native v6 reload and the next exact Step', async ({
   page,

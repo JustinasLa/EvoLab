@@ -328,8 +328,10 @@ function validateArchive(
       requireArchive(
         row.genomeStatus === 'legacy-unknown'
           ? row.origin === 'legacy-unknown' &&
-              (row.admittedTick === state.originTick || row.admittedTick === row.extinctTick)
+              (row.admittedTick === state.originTick ||
+                (state.summariesPruned && row.admittedTick === row.extinctTick))
           : row.genomeStatus === 'pruned' &&
+              state.summariesPruned &&
               row.origin !== 'legacy-unknown' &&
               row.liveCount === 0 &&
               row.admittedTick === row.extinctTick,
@@ -418,7 +420,7 @@ function validateArchive(
     (first.tick === second.tick &&
       (first.position === null ||
         second.position === null ||
-        (first.position === -1 && second.position === -1) ||
+        (first.position < 0 && first.position === second.position) ||
         first.position < second.position));
   for (const entry of facts.values()) {
     const origin = entry.row?.origin ?? entry.created?.origin;
@@ -431,6 +433,30 @@ function validateArchive(
     const parentExtinction = transition(parent, 'extinct');
     if (parentCreation) requireArchive(before(parentCreation, childCreation));
     if (parentExtinction) requireArchive(before(childCreation, parentExtinction));
+  }
+  let previousAdmission: { tick: number; position: number | null } | undefined;
+  for (const summary of state.summaries) {
+    const entry = facts.get(summary.id)!;
+    // Import placeholders precede all observed events, including an evicted prefix.
+    // At the import tick an extinct legacy row may instead be a readmission.
+    // Choose the earliest possible admission consistent with earlier summaries;
+    // genuinely unknown legacy/prefix order must not become invented history.
+    const initialLegacy =
+      summary.origin === 'legacy-unknown' && summary.admittedTick === state.originTick;
+    const readmittedLegacy =
+      initialLegacy &&
+      state.summariesPruned &&
+      summary.extinctTick === state.originTick &&
+      previousAdmission?.tick === state.originTick &&
+      previousAdmission.position !== null &&
+      previousAdmission.position > -2;
+    const admission =
+      initialLegacy && !readmittedLegacy
+        ? { tick: state.originTick, position: -2 }
+        : transition(entry, summary.genomeStatus === 'retained' ? 'created' : 'extinct')!;
+    if (previousAdmission) requireArchive(before(previousAdmission, admission));
+    // Keep the last provable position across intervening uncertain admissions.
+    if (admission.position !== null) previousAdmission = admission;
   }
   return {
     version: 1,

@@ -3,6 +3,7 @@ import { startWorker, type Scope } from '../src/worker';
 import { Ecosystem } from '../src/ecosystem';
 import { legacyV3, legacyV4, legacyV5 } from './fixtures/telemetry';
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
+import { contradictoryPruning, sameTickLineages } from './fixtures/lineage';
 import {
   DEFAULTS,
   WIDTH,
@@ -1464,6 +1465,35 @@ describe('integrated extinction and telemetry', () => {
 });
 
 describe('failed-load retained-world recovery', () => {
+  it('C16-R1 rejects both pruning provenance variants and same-tick FIFO inversion with complete save preservation', () => {
+    const swapped = sameTickLineages().save();
+    [swapped.lineageArchive.summaries[0], swapped.lineageArchive.summaries[1]] = [
+      swapped.lineageArchive.summaries[1],
+      swapped.lineageArchive.summaries[0],
+    ];
+    const harness = workerHarness();
+    harness.load(terminalWorld(12));
+    harness.send({ type: 'pause' });
+    harness.advance(); // Settle the already queued callback while paused.
+    harness.send({ type: 'inspect', x: 40, y: 40 });
+    const before = harness.saveText(),
+      control = Ecosystem.load(before);
+    let runId = 1;
+    for (const invalid of [contradictoryPruning(false), contradictoryPruning(true), swapped]) {
+      harness.send({ type: 'load', runId: ++runId, text: JSON.stringify(invalid) });
+      expect(harness.last('error')).toMatchObject({
+        runId,
+        operation: 'load',
+        message: 'Invalid ecosystem lineage archive.',
+        recovery: { selected: { id: control.save().organisms[0].id }, playback: { paused: true } },
+      });
+      expect(harness.saveText()).toBe(before);
+      expect(harness.tasks).toHaveLength(0);
+    }
+    harness.send({ type: 'step' });
+    control.step();
+    expect(harness.save()).toEqual(control.save());
+  });
   it('rejects corrupt current archive atomically and keeps exact full-save recovery and future ordering', () => {
     const harness = workerHarness();
     harness.load(terminalWorld(12));
