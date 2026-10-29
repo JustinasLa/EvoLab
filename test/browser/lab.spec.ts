@@ -2048,6 +2048,7 @@ test('lineage correction rejects provenance and same-tick FIFO contradictions wi
   await page.mouse.click(at.x, at.y);
   await expect(page.locator('#inspector')).toContainText('Organism 1');
   const before = await downloadPausedWorld(page);
+  advance(source, JSON.parse(before.toString()).tick - source.tick);
   expect(JSON.parse(before.toString())).toEqual(source.save());
   await recordLineageDownload(testInfo, 'lineage-correction-before', before);
   for (const [label, invalid] of [
@@ -2067,7 +2068,7 @@ test('lineage correction rejects provenance and same-tick FIFO contradictions wi
     await recordLineageDownload(testInfo, `lineage-correction-${label}-recovery`, after);
   }
   await page.getByTitle('Advance one tick while paused').click();
-  await expectPausedWorld(page, 32);
+  await expectPausedWorld(page, source.tick + 1);
   source.step();
   const continued = await downloadPausedWorld(page);
   expect(JSON.parse(continued.toString())).toEqual(source.save());
@@ -2080,6 +2081,7 @@ test('lineage correction preserves actual same-tick overflow and extinction read
 }, testInfo) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  await observeTelemetry(page);
   const reference = sameTickLineages();
   reference.spawn(admissionGenome(), 40, 40);
   reference.kill(reference.organisms.get(1)!, 'manual');
@@ -2094,21 +2096,24 @@ test('lineage correction preserves actual same-tick overflow and extinction read
   await requestPause(page);
   await importTelemetryWorld(page, reference.save());
   const before = await downloadPausedWorld(page);
+  advance(reference, JSON.parse(before.toString()).tick - reference.tick);
   expect(JSON.parse(before.toString())).toEqual(reference.save());
   await importTelemetryWorld(page, JSON.parse(before.toString()));
+  advance(reference, (await telemetryFrame(page)).stats.tick - reference.tick);
   await paintCell(page, 'plant', 80, 80);
   referenceManualPaint(reference, 'plant', 80, 80, 0, founder(0));
   await expect(page.locator('#population')).toHaveText('256');
   await page.getByTitle('Advance one tick while paused').click();
-  await expectPausedWorld(page, 1);
+  await expectPausedWorld(page, reference.tick + 1);
   reference.step();
   const continued = await downloadPausedWorld(page),
     state = JSON.parse(continued.toString()) as WorldFile;
   expect(state).toEqual(reference.save());
   expect(state.lineageArchive.summaries[0].id).toBe(9);
   await importTelemetryWorld(page, state);
+  advance(reference, (await telemetryFrame(page)).stats.tick - reference.tick);
   await page.getByTitle('Advance one tick while paused').click();
-  await expectPausedWorld(page, 2);
+  await expectPausedWorld(page, reference.tick + 1);
   reference.step();
   const reloaded = await downloadPausedWorld(page);
   expect(JSON.parse(reloaded.toString())).toEqual(reference.save());
