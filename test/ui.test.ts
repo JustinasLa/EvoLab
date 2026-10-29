@@ -1984,6 +1984,214 @@ describe('owned command admission and real-worker interleavings', () => {
     expect(commands.filter((command) => command.type === 'speed')).toHaveLength(1);
     expect(get<HTMLSelectElement>('speed').value).toBe('12');
   });
+  it.each(['settings', 'speed', 'pause-on-extinction', 'run-to'])(
+    'retires a queued nonposted %s and completes its admitted Save without extra events or ticks',
+    (operation) => {
+      const harness = realWorker(true);
+      harness.deliver();
+      click('pause');
+      harness.deliver();
+      const before = harness.save();
+      click('refresh-habitat');
+      const terminal = harness.outbox.splice(
+        harness.outbox.findIndex((data) => data.operation === 'snapshot'),
+        1,
+      )[0];
+      harness.deliver(); // Consume unrelated stream events BEFORE admission.
+      expect(harness.outbox).toHaveLength(0);
+      const post = worker.postMessage.getMockImplementation()!;
+      let attempts = 0;
+      worker.postMessage.mockImplementation((data) => {
+        if (data.type === operation) {
+          attempts++;
+          throw new DOMException('proven nonpost', 'DataCloneError');
+        }
+        post(data);
+      });
+      const start = worker.commands.mock.calls.length;
+      if (operation === 'settings') set('nutrients', '7');
+      if (operation === 'speed') set('speed', '12', 'change');
+      if (operation === 'pause-on-extinction') click('pause-on-extinction');
+      if (operation === 'run-to') {
+        set('target-tick', '120');
+        click('run-to-tick');
+        click('cancel-target'); // Depends on the rejected target, not a real worker target.
+      }
+      click('save');
+      expect(worker.commands.mock.calls).toHaveLength(start);
+      worker.onmessage!({ data: terminal } as MessageEvent);
+      // Only the held terminal was delivered. No stream/input/timer/RAF or
+      // ecological callback is available to rescue a stranded queue.
+      const saved = harness.outbox.find((data) => data.type === 'saved');
+      expect(saved).toBeDefined();
+      expect(JSON.parse(saved.text)).toEqual(before);
+      expect(attempts).toBe(1);
+      expect(worker.commands.mock.calls.slice(start).map(([data]) => data.type)).toEqual(['save']);
+      expect(get<HTMLInputElement>('nutrients').value).toBe(String(before.settings.nutrients));
+      expect(get<HTMLSelectElement>('speed').value).toBe('4');
+      expect(get<HTMLInputElement>('pause-on-extinction').checked).toBe(true);
+      expect(get('target-status').textContent).not.toContain('pending');
+      expect(get<HTMLButtonElement>('cancel-target').disabled).toBe(true);
+      harness.deliver(); // Only necessary admitted-successor receipts/flow ACKs.
+      expect(attempts).toBe(1);
+      expect(get('run-state').textContent).toBe('PAUSED');
+    },
+  );
+  it('keeps newer settings and target ownership across failed tickets and Save barriers', () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    click('refresh-habitat');
+    const held = harness.outbox.splice(
+      harness.outbox.findIndex((data) => data.operation === 'snapshot'),
+      1,
+    )[0];
+    harness.deliver();
+    const post = worker.postMessage.getMockImplementation()!;
+    let failedSettings = false,
+      failedTarget = false;
+    worker.postMessage.mockImplementation((data) => {
+      if (
+        (data.type === 'settings' && !failedSettings) ||
+        (data.type === 'run-to' && !failedTarget)
+      ) {
+        if (data.type === 'settings') failedSettings = true;
+        else failedTarget = true;
+        throw new DOMException('proven nonpost', 'DataCloneError');
+      }
+      post(data);
+    });
+    set('nutrients', '7');
+    set('target-tick', '120');
+    click('run-to-tick');
+    click('cancel-target');
+    click('save'); // Keeps independent later edits out of the rejected settings segment.
+    set('nutrients', '3');
+    set('target-tick', '0');
+    click('run-to-tick');
+    worker.onmessage!({ data: held } as MessageEvent);
+    expect(get<HTMLInputElement>('nutrients').value).toBe('3');
+    expect(get('target-status').textContent).toContain('pending');
+    harness.deliver();
+    expect(get<HTMLInputElement>('nutrients').value).toBe('3');
+    expect(get('target-status').textContent).toContain('reached');
+    expect(
+      worker.commands.mock.calls.filter(([data]) => data.type === 'cancel-target'),
+    ).toHaveLength(0);
+    expect(harness.save().settings.nutrients).toBe(3);
+  });
+  it.each(['begin-stroke', 'end-stroke'])(
+    'retires a queued nonposted %s without leaking stroke-dependent work',
+    (operation) => {
+      const harness = realWorker(true);
+      harness.deliver();
+      click('pause');
+      harness.deliver();
+      const before = harness.save();
+      click('refresh-habitat');
+      const held = harness.outbox.splice(
+        harness.outbox.findIndex((data) => data.operation === 'snapshot'),
+        1,
+      )[0];
+      harness.deliver();
+      const post = worker.postMessage.getMockImplementation()!;
+      let attempts = 0;
+      worker.postMessage.mockImplementation((data) => {
+        if (data.type === operation) {
+          attempts++;
+          throw new DOMException('proven nonpost', 'DataCloneError');
+        }
+        post(data);
+      });
+      root.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
+      pointer('pointerdown');
+      pointer('pointermove', 152, 152);
+      pointer('pointerup');
+      click('save');
+      const start = worker.commands.mock.calls.length;
+      worker.onmessage!({ data: held } as MessageEvent);
+      harness.deliver();
+      expect(attempts).toBe(1);
+      if (operation === 'begin-stroke') {
+        expect(worker.commands.mock.calls.slice(start).map(([data]) => data.type)).toEqual([
+          'save',
+        ]);
+        expect(harness.save()).toEqual(before);
+        expect(worker.terminate).not.toHaveBeenCalled();
+      } else {
+        expect(worker.terminate).toHaveBeenCalledTimes(1);
+        expect(get('run-state').textContent).toBe('STOPPED');
+        expect(worker.commands.mock.calls.slice(start).some(([data]) => data.type === 'save')).toBe(
+          false,
+        );
+      }
+    },
+  );
+  it('boundedly drains a full nonposting queue without retrying or admitting beyond its cap', () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    click('refresh-habitat');
+    const held = harness.outbox.splice(
+      harness.outbox.findIndex((data) => data.operation === 'snapshot'),
+      1,
+    )[0];
+    harness.deliver();
+    const post = worker.postMessage.getMockImplementation()!;
+    let attempts = 0;
+    worker.postMessage.mockImplementation((data) => {
+      if (data.type === 'snapshot') {
+        attempts++;
+        throw new DOMException('proven nonpost', 'DataCloneError');
+      }
+      post(data);
+    });
+    for (let i = 0; i < 29; i++) click('refresh-habitat');
+    click('save');
+    click('refresh-habitat');
+    expect(get('notice').textContent).toContain('Controls busy');
+    click('pause'); // The one reserved lifecycle slot is still independent.
+    worker.onmessage!({ data: held } as MessageEvent);
+    expect(attempts).toBe(29);
+    expect(harness.outbox.some((data) => data.type === 'saved')).toBe(true);
+    harness.deliver();
+    expect(attempts).toBe(29);
+    expect(get('run-state').textContent).toBe('PAUSED');
+  });
+  it('keeps a load behind the admitted Save after nonposting and retains authoritative recovery', async () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    const before = harness.save();
+    click('refresh-habitat');
+    const held = harness.outbox.splice(
+      harness.outbox.findIndex((data) => data.operation === 'snapshot'),
+      1,
+    )[0];
+    harness.deliver();
+    const post = worker.postMessage.getMockImplementation()!;
+    worker.postMessage.mockImplementation((data) => {
+      if (data.type === 'settings') throw new DOMException('proven nonpost', 'DataCloneError');
+      post(data);
+    });
+    const start = worker.commands.mock.calls.length;
+    set('nutrients', '7');
+    click('save');
+    await loadText('{}');
+    worker.onmessage!({ data: held } as MessageEvent);
+    expect(worker.commands.mock.calls.slice(start).map(([data]) => data.type)).toEqual(['save']);
+    expect(JSON.parse(harness.outbox.find((data) => data.type === 'saved').text)).toEqual(before);
+    harness.deliver();
+    expect(worker.commands.mock.calls.slice(start).map(([data]) => data.type)).toEqual([
+      'save',
+      'load',
+    ]);
+    expect(get('run-state').textContent).toBe('PAUSED');
+    expect(harness.save()).toEqual(before);
+  });
   it('serializes candidate reads and keeps only the latest waiting read, cancelling unposted candidates', async () => {
     const harness = realWorker(true);
     harness.deliver();

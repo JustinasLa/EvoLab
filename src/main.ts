@@ -350,7 +350,12 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     });
   }
   function pump(): void {
-    if (!alive || terminated || posted) return;
+    // Only proven nonposts continue here. The admitted queue is bounded to
+    // 32 intents; a rejected action is retired, never put back or retried.
+    for (let remaining = 33; remaining > 0; remaining--) if (!postNext()) return;
+  }
+  function postNext(): boolean {
+    if (!alive || terminated || posted) return false;
     const previousRun = runId,
       previousEstablished = establishedRun;
     const start = pending[0]?.payload.type === 'start';
@@ -367,12 +372,12 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         commandId: wireId,
       };
       worker.postMessage({ type: 'display-view', view, runId, commandId: wireId });
-      return;
+      return false;
     }
     const entry = pending.shift();
     if (!entry) {
       releaseDiscard();
-      return;
+      return false;
     }
     let payload = entry.payload;
     if (payload.type === 'cancel-target' && entry.cancelTicket) {
@@ -422,7 +427,30 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         runId = previousRun;
         establishedRun =
           previousEstablished ?? (latestState && acceptedRun === previousRun ? previousRun : null);
+        for (const key of ['mutation', 'nutrients', 'climate'] as const)
+          if (pendingSettings[key]?.ticket === entry.ticket) {
+            delete pendingSettings[key];
+            delete settingsEdits[key];
+          }
+        if (pendingSpeed?.ticket === entry.ticket) pendingSpeed = null;
+        if (pendingExtinction?.ticket === entry.ticket) pendingExtinction = null;
+        if (entry.targetTicket) {
+          // A dependent Cancel has no worker target to cancel. Independent
+          // later actions retain their original FIFO positions and payloads.
+          for (let index = pending.length - 1; index >= 0; index--)
+            if (pending[index].cancelTicket === entry.targetTicket) pending.splice(index, 1);
+          if (targetTicket === entry.targetTicket) {
+            targetTicket = undefined;
+            targetTransition = '';
+            text('target-status', '');
+          }
+        }
         if (payload.type === 'begin-stroke') {
+          for (let index = pending.length - 1; index >= 0; index--) {
+            const queued = pending[index].payload;
+            if ('strokeId' in queued && queued.strokeId === payload.strokeId)
+              pending.splice(index, 1);
+          }
           closeLease = null;
           localStroke = null;
           ownerPointer = null;
@@ -432,14 +460,24 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           accept(latestState);
           renderSettings(latestState.settings);
           renderPlayback(latestState.playback);
+          get<HTMLSelectElement>('speed').value = String(pendingSpeed?.value ?? latestState.speed);
+        }
+        // A posted begin owns a real worker stroke. If its close cannot post,
+        // termination remains the only honest release of that reservation.
+        if (payload.type === 'end-stroke') {
+          terminate();
+          stop();
         }
         availability();
+        notice('Could not post this action. No automatic retry was queued.');
+        return true;
       } else {
         terminate();
         stop();
       }
       notice('Could not post this action. No automatic retry was queued.');
     }
+    return false;
   }
   function send(data: any): boolean {
     if (

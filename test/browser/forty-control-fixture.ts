@@ -25,6 +25,7 @@ type FrameworkTiming = {
   bodyStartedAt?: number;
   bodyEndedAt?: number;
   acceptanceElapsedMs?: number;
+  measuredEndpoint?: MeasuredEndpoint;
   invalidate?: (error: unknown) => void;
   body?: Promise<void>;
 };
@@ -46,6 +47,9 @@ export const fortyTest = test.extend<{ fortyFramework: FrameworkTiming; fortyOwn
               timing.bodyEndedAt === undefined ? null : endedAt - timing.bodyEndedAt,
             fixtureTotalMs: endedAt - timing.startedAt,
             acceptanceElapsedMs: timing.acceptanceElapsedMs ?? null,
+            measuredEndpoint: timing.measuredEndpoint ?? null,
+            acceptanceRule:
+              'Accepted only by this exact Playwright test result with status passed and its forty-measured-endpoint annotation. This framework timing file and every checkpoint are provisional, never independent completion evidence.',
             note: 'Framework page/context setup and after-hooks/teardown are outside acceptance and supply no workload allowance. Shared beforeAll bundle preparation is reported in the case evidence.',
           },
           null,
@@ -411,6 +415,66 @@ class Fence {
   }
 }
 
+type MeasuredEndpoint = {
+  status: 'measured-endpoint-reached';
+  acceptanceElapsedMs: number;
+  evidenceSHA256: string;
+};
+
+// Checkpoints and attachments remain incomplete even if the process dies at
+// any await below. The sole final outcome is the framework's eventual test
+// result, qualified by the synchronous measured-endpoint annotation. Reporting
+// that result later never supplies additional acceptance work.
+export async function finalizeFortyEvidence(options: {
+  checkpoint: () => Promise<string>;
+  attach: () => Promise<void>;
+  invalidateBrowser: () => Promise<void>;
+  finish: () => number;
+  publish: (endpoint: MeasuredEndpoint) => void;
+}): Promise<void> {
+  const evidenceSHA256 = await options.checkpoint();
+  await options.attach();
+  await options.invalidateBrowser();
+  const acceptanceElapsedMs = options.finish();
+  options.publish({ status: 'measured-endpoint-reached', acceptanceElapsedMs, evidenceSHA256 });
+}
+
+function describeFailure(error: unknown): string {
+  try {
+    return error instanceof Error ? (error.stack ?? error.message) : String(error);
+  } catch {
+    return 'Unprintable reporting failure';
+  }
+}
+
+// No failure-only reporting step may replace the original acceptance error,
+// including cleanup, path creation, hashing, partial writes or serialization.
+export async function salvageFortyFailure(
+  original: unknown,
+  actions: Iterable<{ phase: string; run: () => Promise<unknown> }>,
+  secondaryErrors: { phase: string; error: string }[],
+): Promise<never> {
+  try {
+    for (const action of actions) {
+      try {
+        await action.run();
+      } catch (error) {
+        secondaryErrors.push({ phase: action.phase, error: describeFailure(error) });
+      }
+    }
+  } finally {
+    // Keep reporting errors available even when the final receipt itself
+    // cannot be persisted. Frozen/non-object originals still rethrow exactly.
+    try {
+      if (original instanceof Error && Object.isExtensible(original))
+        Object.defineProperty(original, 'reportingErrors', { value: [...secondaryErrors] });
+    } catch {
+      /* Secondary diagnostics must never interfere with the original error. */
+    }
+    throw original;
+  }
+}
+
 type Operation = {
   sequence: number;
   id: string;
@@ -484,6 +548,7 @@ export async function runFortyControls(options: {
     originalError: string | undefined,
     cleanupMs = 0;
   let counters: unknown, measured: unknown, acceptedElapsedMs: number | undefined;
+  const secondaryErrors: { phase: string; error: string }[] = [];
   const provenance = sourceProvenance();
   const { head, base, checkoutHead } = provenance;
   const sourceHashes = Object.fromEntries(
@@ -511,6 +576,9 @@ export async function runFortyControls(options: {
     schema: 1,
     status,
     originalError,
+    secondaryErrors,
+    acceptanceRule:
+      'Provisional/incomplete checkpoint only. Acceptance requires the exact Playwright test result to pass with a forty-measured-endpoint annotation binding this file SHA256 to its measured endpoint. No checkpoint or timing file independently claims completion.',
     head,
     base,
     sourceProvenance: provenance,
@@ -528,7 +596,7 @@ export async function runFortyControls(options: {
       windowMs: WINDOW_MS,
       acceptanceElapsedMs: acceptedElapsedMs ?? performance.now() - fence.startedAt,
       finalMeasuredEndpoint:
-        'forty-framework-timing.json acceptanceElapsedMs includes the final evidence write, attachment, browser fence invalidation and assertions',
+        'Playwright forty-measured-endpoint annotation: includes the final evidence write, attachment, browser fence invalidation and assertions; conditional on the exact test passing',
       windows: windows.map((observation) => ({
         ...observation,
         nativeSaves: operations.filter(
@@ -576,6 +644,7 @@ export async function runFortyControls(options: {
     const text = JSON.stringify(evidence(), null, 2);
     await fence.wait(() => writeFile(`${evidencePath}.tmp`, text, { signal: fence.abort.signal }));
     await fence.wait(() => rename(`${evidencePath}.tmp`, evidencePath));
+    return createHash('sha256').update(text).digest('hex');
   };
   const identity = async () => {
     const result = await fence.wait(() =>
@@ -1265,58 +1334,77 @@ export async function runFortyControls(options: {
       expect(distribution(settlingLatencies).p95).toBeLessThan(250);
       expect(distribution(revealLatencies).p95).toBeLessThan(250);
     }
-    await checkpoint();
-    fence.check();
-    acceptedElapsedMs = performance.now() - fence.startedAt;
-    expect(acceptedElapsedMs).toBeLessThanOrEqual(TOTAL_MS);
-    status = 'complete';
-    await checkpoint();
-    await fence.wait(() =>
-      testInfo.attach('forty-control-evidence', {
-        path: evidencePath,
-        contentType: 'application/json',
-      }),
-    );
-    await fence.wait(() =>
-      page.evaluate((epoch) => {
-        const f = window.fortyFixture;
-        f.check(epoch);
-        f.active = false;
-      }, fence.epoch),
-    );
-    fence.check();
-    acceptedElapsedMs = performance.now() - fence.startedAt;
-    expect(acceptedElapsedMs).toBeLessThanOrEqual(TOTAL_MS);
-    framework.acceptanceElapsedMs = acceptedElapsedMs;
-    // No async acceptance work follows the measured final assertion.
-    fence.finish();
+    await finalizeFortyEvidence({
+      checkpoint,
+      attach: () =>
+        fence.wait(() =>
+          testInfo.attach('forty-control-evidence', {
+            path: evidencePath,
+            contentType: 'application/json',
+          }),
+        ),
+      invalidateBrowser: () =>
+        fence.wait(() =>
+          page.evaluate((epoch) => {
+            const f = window.fortyFixture;
+            f.check(epoch);
+            f.active = false;
+          }, fence.epoch),
+        ),
+      finish: () => {
+        fence.check();
+        acceptedElapsedMs = performance.now() - fence.startedAt;
+        expect(acceptedElapsedMs).toBeLessThanOrEqual(TOTAL_MS);
+        fence.finish();
+        return acceptedElapsedMs;
+      },
+      publish: (endpoint) => {
+        framework.acceptanceElapsedMs = endpoint.acceptanceElapsedMs;
+        framework.measuredEndpoint = endpoint;
+        testInfo.annotations.push({
+          type: 'forty-measured-endpoint',
+          description: JSON.stringify({ ...endpoint, head, base, sourceHashes }),
+        });
+      },
+    });
   } catch (error) {
     fence.invalidate(error); // Synchronous before any cleanup await.
     status = 'incomplete';
-    originalError =
-      error instanceof Error
-        ? (error.stack ?? error.message)
-        : typeof error === 'object' && error !== null
-          ? JSON.stringify(error)
-          : String(error);
+    originalError = describeFailure(error);
     if (activeOperation && activeOperation.status !== 'checked') {
       activeOperation.status = 'failed/interrupted';
       activeOperation.error = originalError;
     }
-    cleanupMs = await fence.closeFailure();
-    for (const [id, bytes] of partialBuffers) {
-      const op = operations.find((op) => op.id === id)!;
-      op.rawPath = testInfo.outputPath(`partial-${id}.bin`);
-      op.rawSHA256 = createHash('sha256').update(bytes).digest('hex');
-      await writeFile(op.rawPath, bytes);
-    }
-    // Failure-only serialization uses retained data and elapsed cleanup. It
-    // never reads the browser, completes a download or publishes success.
-    await writeFile(
-      testInfo.outputPath('forty-control-failure.json'),
-      JSON.stringify(evidence(), null, 2),
-    ).catch(() => {});
-    throw error;
+    await salvageFortyFailure(
+      error,
+      [
+        {
+          phase: 'cleanup',
+          run: async () => {
+            cleanupMs = await fence.closeFailure();
+          },
+        },
+        ...[...partialBuffers].map(([id, bytes]) => ({
+          phase: `partial-${id}`,
+          run: async () => {
+            const op = operations.find((op) => op.id === id)!;
+            const path = testInfo.outputPath(`partial-${id}.bin`);
+            op.rawSHA256 = createHash('sha256').update(bytes).digest('hex');
+            await writeFile(path, bytes);
+            op.rawPath = path;
+          },
+        })),
+        {
+          phase: 'failure-receipt',
+          run: () =>
+            writeFile(
+              testInfo.outputPath('forty-control-failure.json'),
+              JSON.stringify(evidence(), null, 2),
+            ),
+        },
+      ],
+      secondaryErrors,
+    );
   } finally {
     page.off('framenavigated', onNavigation);
     page.off('close', onClose);
