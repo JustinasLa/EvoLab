@@ -102,8 +102,11 @@ declare global {
   }
 }
 
-async function observeTerrainNative(page: import('@playwright/test').Page): Promise<void> {
-  await page.addInitScript(() => {
+async function observeTerrainNative(
+  page: import('@playwright/test').Page,
+  pauseAt: 'lifecycle-post' | 'lifecycle-receipt' = 'lifecycle-post',
+): Promise<void> {
+  await page.addInitScript((pauseAt) => {
     window.terrainNative = {
       frame: null,
       frameRunId: null,
@@ -126,6 +129,7 @@ async function observeTerrainNative(page: import('@playwright/test').Page): Prom
             requestId: number;
             postedSequence: number;
             received: boolean;
+            pausePostedSequence: number | null;
           } | null = null,
           awaitingPause: Window['terrainNative']['lifecycle'][number] | null = null;
         worker.postMessage = new Proxy(worker.postMessage, {
@@ -138,8 +142,16 @@ async function observeTerrainNative(page: import('@playwright/test').Page): Prom
                 requestId: messages[0].requestId,
                 postedSequence: ++sequence,
                 received: false,
+                pausePostedSequence: null,
               };
               awaitingPause = null;
+              // B1–B3 retain their required tick-0 reset Save. B7/B8 instead
+              // opt into the separate receipt-driven protocol below.
+              if (pauseAt === 'lifecycle-post' && window.terrainNative.pauseOnLifecycle) {
+                pendingLifecycle.pausePostedSequence = ++sequence;
+                Reflect.apply(post, receiver, [{ type: 'pause' }]);
+                window.terrainNative.fifoPauses++;
+              }
             }
             return result;
           },
@@ -184,16 +196,22 @@ async function observeTerrainNative(page: import('@playwright/test').Page): Prom
               completedTick: data.completedTick,
               postedSequence: posted.postedSequence,
               receivedSequence: ++sequence,
-              pausePostedSequence: null,
+              pausePostedSequence: posted.pausePostedSequence,
               pauseAcknowledgedSequence: null,
               pageStateBeforePause: null,
             };
             evidence.lifecycle.push(receipt);
             if (evidence.lifecycle.length > 4) evidence.lifecycle.shift();
+            if (posted.pausePostedSequence !== null) awaitingPause = receipt;
             // Run after this genuine message finishes dispatching to the application.
             // This ordinary timer does not replace or shorten any Worker timer.
             setTimeout(() => {
-              if (pendingLifecycle !== posted || !evidence.pauseOnLifecycle) return;
+              if (
+                pauseAt !== 'lifecycle-receipt' ||
+                pendingLifecycle !== posted ||
+                !evidence.pauseOnLifecycle
+              )
+                return;
               receipt.pageStateBeforePause = document.getElementById('run-state')!.textContent;
               receipt.pausePostedSequence = ++sequence;
               awaitingPause = receipt;
@@ -205,7 +223,7 @@ async function observeTerrainNative(page: import('@playwright/test').Page): Prom
         return worker;
       },
     });
-  });
+  }, pauseAt);
 }
 
 async function terrainNativeFrame(page: import('@playwright/test').Page) {
@@ -530,7 +548,7 @@ test('terrain controls and reset dialog remain keyboard-accessible without view-
 test('D22-R1-001 native genuine legacy extensions survive three actual saves, resumed loads and exact paused Step', async ({
   page,
 }) => {
-  await observeTerrainNative(page);
+  await observeTerrainNative(page, 'lifecycle-receipt');
   await page.goto('/');
   const original = JSON.parse(readFileSync('test/fixtures/terrain/legacy5-opaque.json', 'utf8'));
   const reference = Ecosystem.load(JSON.stringify(original));
@@ -570,7 +588,7 @@ test('D22-R1-001 native accepted-cap legacy migration fails outbound nonfatally 
   page,
 }, testInfo) => {
   await observeMeasurementOwnership(page);
-  await observeTerrainNative(page);
+  await observeTerrainNative(page, 'lifecycle-receipt');
   await page.goto('/');
   const original = JSON.parse(readFileSync('test/fixtures/terrain/legacy5-opaque.json', 'utf8'));
   original.organisms[0].padding = '';
