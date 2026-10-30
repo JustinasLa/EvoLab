@@ -88,6 +88,22 @@ declare global {
       releaseFrame: () => void;
       failEndpoint: () => void;
     };
+    nativeLease: {
+      posts: {
+        stream: string;
+        requestId: number;
+        runId: number;
+        at: number;
+        monotonicMs: number;
+      }[];
+      dispatches: {
+        stream: string;
+        requestId: number;
+        filename: string;
+        at: number;
+        monotonicMs: number;
+      }[];
+    };
     refugePixels: { tick: number; climate: number; offset: number; colors: number[][] } | null;
     telemetryEvidence: { frame: Frame | null; points: number[][]; loadText: string | null };
     telemetryPerformance: {
@@ -104,6 +120,126 @@ declare global {
     };
   }
 }
+
+// Passive, bounded evidence for the 22 added executions. Native posting,
+// anchor activation, driver download events and complete reads retain their
+// ordinary implementation and clocks; no lease or scheduling timer is replaced.
+const nativeLeaseRecords = new WeakMap<
+  import('@playwright/test').Page,
+  {
+    requests: { stream: string; at: number }[];
+    downloads: { filename: string; at: number }[];
+    reads: { filename: string; bytes: number; at: number }[];
+  }
+>();
+const leaseCase = (title: string) =>
+  /^B23-/.test(title) ||
+  /^native post-success (refuge-mode|paint-refuge|clear-refuges) /.test(title) ||
+  title.includes('genuine world7 migration');
+function leaseRequest(page: import('@playwright/test').Page, stream: string) {
+  const records = nativeLeaseRecords.get(page);
+  if (!records) return;
+  if (records.requests.length === 32) throw new Error('Native lease request evidence exceeded32');
+  records.requests.push({ stream, at: Date.now() });
+}
+function leaseRead(page: import('@playwright/test').Page, filename: string, bytes: Buffer) {
+  const records = nativeLeaseRecords.get(page);
+  if (!records) return;
+  if (records.reads.length === 32) throw new Error('Native complete-read evidence exceeded32');
+  records.reads.push({ filename, bytes: bytes.length, at: Date.now() });
+}
+test.beforeEach(async ({ page }, info) => {
+  if (!leaseCase(info.title)) return;
+  const records = { requests: [], downloads: [], reads: [] } as NonNullable<
+    ReturnType<typeof nativeLeaseRecords.get>
+  >;
+  nativeLeaseRecords.set(page, records);
+  page.on('download', (download) => {
+    if (records.downloads.length === 32) throw new Error('Native download evidence exceeded32');
+    records.downloads.push({ filename: download.suggestedFilename(), at: Date.now() });
+  });
+  await page.addInitScript(() => {
+    const evidence = (window.nativeLease = { posts: [], dispatches: [] } as Window['nativeLease']);
+    Worker.prototype.postMessage = new Proxy(Worker.prototype.postMessage, {
+      apply(post, worker, args) {
+        const result = Reflect.apply(post, worker, args),
+          command = args[0];
+        if (command?.type === 'save' || command?.type === 'export-measurements') {
+          if (evidence.posts.length === 32) throw new Error('Native post evidence exceeded32');
+          evidence.posts.push({
+            stream: command.type === 'save' ? 'save' : 'measurement',
+            requestId: command.requestId,
+            runId: command.runId,
+            at: Date.now(),
+            monotonicMs: performance.now(),
+          });
+        }
+        return result;
+      },
+    });
+    document.addEventListener(
+      'click',
+      (event) => {
+        const link = event.target;
+        if (!(link instanceof HTMLAnchorElement) || !link.href.startsWith('blob:')) return;
+        const stream = link.download.startsWith('evolab-world-')
+          ? 'save'
+          : link.download.startsWith('evolab-measurements-')
+            ? 'measurement'
+            : null;
+        if (!stream) return;
+        if (evidence.dispatches.length === 32)
+          throw new Error('Native dispatch evidence exceeded32');
+        const posted = evidence.posts.findLast((entry) => entry.stream === stream);
+        evidence.dispatches.push({
+          stream,
+          requestId: posted?.requestId ?? -1,
+          filename: link.download,
+          at: Date.now(),
+          monotonicMs: performance.now(),
+        });
+      },
+      true,
+    );
+  });
+});
+test.afterEach(async ({ page }, info) => {
+  const records = nativeLeaseRecords.get(page);
+  if (!records) return;
+  const browser = await page.evaluate(() => window.nativeLease),
+    intervals = ['save', 'measurement'].flatMap((stream) => {
+      const dispatches = browser.dispatches.filter((entry) => entry.stream === stream);
+      return dispatches.slice(1).map((entry, position) => ({
+        stream,
+        fromRequest: dispatches[position].requestId,
+        toRequest: entry.requestId,
+        milliseconds: entry.monotonicMs - dispatches[position].monotonicMs,
+      }));
+    });
+  await info.attach('native-download-lease-times.json', {
+    contentType: 'application/json',
+    body: JSON.stringify({
+      browser,
+      driver: records,
+      intervals,
+      naturalLeaseMilliseconds: 1000,
+      qualification:
+        'Observed real native posts, blob-link dispatches, driver downloads and complete stream reads. Independent-stream intervals can overlap other work; these are not additional serial idle waits.',
+    }),
+  });
+  expect(browser.dispatches.length).toBe(records.downloads.length);
+  expect(records.reads.length).toBe(records.downloads.length);
+  expect(records.requests.length).toBe(records.reads.length);
+  for (const entry of browser.dispatches) {
+    expect(entry.requestId).toBeGreaterThan(0);
+    expect(
+      browser.posts.some(
+        (posted) => posted.requestId === entry.requestId && posted.stream === entry.stream,
+      ),
+    ).toBe(true);
+  }
+  nativeLeaseRecords.delete(page);
+});
 
 async function observeTerrainNative(
   page: import('@playwright/test').Page,
@@ -229,20 +365,29 @@ async function observeTerrainNative(
   }, pauseAt);
 }
 
-async function terrainNativeFrame(page: import('@playwright/test').Page) {
+async function terrainNativeFrame(page: import('@playwright/test').Page, recoveryRun?: number) {
   await expect
     .poll(() =>
-      page.evaluate(() => {
+      page.evaluate((recoveryRun) => {
         const evidence = window.terrainNative,
-          lifecycle = evidence.lifecycle.at(-1);
+          lifecycle = evidence.lifecycle.at(-1),
+          acknowledged =
+            recoveryRun === undefined
+              ? typeof lifecycle?.pauseAcknowledgedSequence === 'number'
+              : evidence.errors.some(
+                  (error) =>
+                    error.operation === 'load' &&
+                    error.runId === recoveryRun &&
+                    error.recovery?.playback.paused,
+                );
         return (
           !!evidence.frame &&
-          evidence.frameRunId === lifecycle?.runId &&
-          typeof lifecycle?.pauseAcknowledgedSequence === 'number' &&
+          evidence.frameRunId === (recoveryRun ?? lifecycle?.runId) &&
+          acknowledged &&
           evidence.playback?.paused &&
           document.getElementById('run-state')?.textContent === 'PAUSED'
         );
-      }),
+      }, recoveryRun),
     )
     .toBe(true);
   return page.evaluate(() => {
@@ -1833,15 +1978,19 @@ async function coordinate(
   );
 }
 async function downloadWorld(page: import('@playwright/test').Page): Promise<Buffer> {
+  leaseRequest(page, 'save');
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Save world' }).click();
   const download = await downloadPromise,
     stream = await download.createReadStream(),
     chunks: Buffer[] = [];
   for await (const chunk of stream) chunks.push(chunk);
-  return Buffer.concat(chunks);
+  const bytes = Buffer.concat(chunks);
+  leaseRead(page, download.suggestedFilename(), bytes);
+  return bytes;
 }
 async function downloadMeasurements(page: import('@playwright/test').Page, format: 'json' | 'csv') {
+  leaseRequest(page, 'measurement');
   const pending = page.waitForEvent('download');
   await page.locator(`#measurements-${format}`).click();
   const download = await pending,
@@ -1849,6 +1998,7 @@ async function downloadMeasurements(page: import('@playwright/test').Page, forma
     chunks: Buffer[] = [];
   for await (const chunk of stream) chunks.push(chunk);
   const bytes = Buffer.concat(chunks);
+  leaseRead(page, download.suggestedFilename(), bytes);
   expect(download.suggestedFilename()).toMatch(
     new RegExp(`^evolab-measurements-\\d+-tick-\\d+\\.${format}$`),
   );
@@ -4244,9 +4394,16 @@ async function refugePaint(
     { x, y, zoom },
   );
   await page.mouse.click(anchor.x, anchor.y);
+  // The ordinary end-stroke receipt follows the paint result and any frame
+  // on the same native FIFO channel, including rejected/no-op dabs.
   await expect
-    .poll(() => page.evaluate(() => window.terrainNative.manual?.commandId ?? 0))
-    .toBeGreaterThan(previous);
+    .poll(() =>
+      page.evaluate((previous) => {
+        const terminal = window.terrainNative.manual;
+        return terminal?.operation === 'end-stroke' && terminal.commandId > previous;
+      }, previous),
+    )
+    .toBe(true);
 }
 
 async function refugeProtocol(page: import('@playwright/test').Page, receiptDriven = true) {
@@ -4439,12 +4596,16 @@ test('B23-4 capacity and late-load rejection preserve full state while stale man
     buffer: Buffer.from(JSON.stringify(bad)),
   });
   await expect(page.locator('#notice')).toContainText('Invalid painted temperature cell');
+  const recoveryRun = await page.evaluate(() => window.terrainNative.errors.at(-1).runId);
   const retained = await terrainSave(page, 'capacity-recovered.json');
   expect(retained).toEqual(before);
   await expect.poll(() => page.evaluate(() => window.terrainNative.selected?.id)).toBe(1);
   await page.locator('#step').click();
   reference.step();
-  expect((await terrainNativeFrame(page)).frame).toEqual(terrainExpectedFrame(reference));
+  await expect(page.locator('#tick')).toHaveText(`TICK ${reference.tick.toLocaleString()}`);
+  expect((await terrainNativeFrame(page, recoveryRun)).frame).toEqual(
+    terrainExpectedFrame(reference),
+  );
   await page.evaluate(() => {
     window.measurementGate.deliveryBlocked = true;
   });
