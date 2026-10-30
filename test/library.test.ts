@@ -448,8 +448,9 @@ describe('native event ownership and transactions', () => {
     const library = createLibrary({ factory: () => native.factory, randomId });
     await library.open();
     native.faults.requestError = 'ConstraintError';
-    native.faults.abortThrow = true;
+    native.faults.txStall = true;
     const writing = library.mutate({ type: 'create', candidate: candidate() }, settled);
+    native.current.native.abort.mockImplementation(() => {});
     const rejected = expect(writing).rejects.toMatchObject({ code: 'collision' });
     await pending();
     native.connection.onversionchange();
