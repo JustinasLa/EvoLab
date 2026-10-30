@@ -304,7 +304,7 @@ describe('bounded retained measurement codec', () => {
     });
     expect(csv(serializeMeasurements(world.measurements(), 'csv').text)).toHaveLength(311);
     expect(decode(serializeMeasurements(world.measurements(), 'csv').text)).toEqual(actual);
-    const { interventions: _log, ...saved } = world.save(),
+    const { interventions: _log, terrain: _terrain, ...saved } = world.save(),
       legacy = Ecosystem.load(JSON.stringify({ ...saved, version: 4 }));
     const imported = measurementEnvelope(legacy.measurements());
     expect(imported.windows.settings).toMatchObject({

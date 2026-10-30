@@ -33,6 +33,7 @@ declare global {
       saved: number;
       manual: any | null;
       pauseOnLifecycle: boolean;
+      fifoPauses: number;
     };
     publicationFault: {
       arm: () => Promise<void>;
@@ -100,6 +101,7 @@ async function observeTerrainNative(page: import('@playwright/test').Page): Prom
       saved: 0,
       manual: null,
       pauseOnLifecycle: true,
+      fifoPauses: 0,
     };
     window.Worker = new Proxy(window.Worker, {
       construct(target, args, newTarget) {
@@ -107,8 +109,13 @@ async function observeTerrainNative(page: import('@playwright/test').Page): Prom
         worker.postMessage = new Proxy(worker.postMessage, {
           apply(post, receiver, messages) {
             const result = Reflect.apply(post, receiver, messages);
-            if (messages[0].type === 'start' && window.terrainNative.pauseOnLifecycle)
+            if (
+              (messages[0].type === 'start' || messages[0].type === 'load') &&
+              window.terrainNative.pauseOnLifecycle
+            ) {
               Reflect.apply(post, receiver, [{ type: 'pause' }]);
+              window.terrainNative.fifoPauses++;
+            }
             return result;
           },
         });
@@ -133,8 +140,6 @@ async function observeTerrainNative(page: import('@playwright/test').Page): Prom
               runId: data.runId,
             });
             if (evidence.lifecycle.length > 4) evidence.lifecycle.shift();
-            if (data.type === 'loaded' && evidence.pauseOnLifecycle && !data.playback.paused)
-              queueMicrotask(() => document.getElementById('pause')!.click());
           }
         });
         return worker;
@@ -465,6 +470,16 @@ test('D22-R1-001 native genuine legacy extensions survive three actual saves, re
   );
   expect(loads).toHaveLength(2);
   expect(loads.every((entry) => !entry.paused)).toBe(true);
+  expect(await page.evaluate(() => window.terrainNative.fifoPauses)).toBe(3);
+  await test.info().attach('native-opaque-protocol.json', {
+    body: JSON.stringify({
+      loads,
+      ordinaryFifoPauses: await page.evaluate(() => window.terrainNative.fifoPauses),
+      protocol:
+        'Each actual start/load post is followed by an explicit ordinary pause on the same real Worker endpoint. Load is processed first and emits its genuine resumed receipt; pause then precedes any scheduled ecology batch. No engine, timer, lifecycle terminal or file bytes are replaced.',
+    }),
+    contentType: 'application/json',
+  });
 });
 
 test('D22-R1-001 native accepted-cap legacy migration fails outbound nonfatally with no download and exact retained selection/Step', async ({
@@ -521,6 +536,8 @@ test('D22-R1-001 native accepted-cap legacy migration fails outbound nonfatally 
       failure,
       ownersBefore,
       successfulDownloads: downloads,
+      lifecycle: await page.evaluate(() => window.terrainNative.lifecycle),
+      ordinaryFifoPauses: await page.evaluate(() => window.terrainNative.fifoPauses),
       frameIsNotCompleteWorld: true,
     }),
     contentType: 'application/json',
@@ -892,19 +909,7 @@ function telemetryScenario(
     for (const living of [...world.organisms.values()]) world.kill(living, 'manual');
   }
   if (state === 'legacy') {
-    const saved = world.save(),
-      { adaptationOriginTick: _origin, ...telemetry } = saved.telemetry;
-    world = Ecosystem.load(
-      JSON.stringify({
-        ...saved,
-        version: 3,
-        telemetry: {
-          ...telemetry,
-          version: 1,
-          samples: telemetry.samples.map(({ adaptation: _adaptation, ...sample }) => sample),
-        },
-      }),
-    );
+    world = Ecosystem.load(JSON.stringify(legacyV3(world.save())));
     world.spawn(founder(0), 50, 50);
     for (let tick = 0; tick < 30; tick++) world.step();
     for (const living of [...world.organisms.values()]) world.kill(living, 'manual');
@@ -1521,12 +1526,22 @@ async function importTelemetryWorld(
   world: object,
   waitForExtinction = false,
 ): Promise<void> {
+  const observedRun = await page.evaluate(
+    () => window.terrainNative?.lifecycle.at(-1)?.runId ?? null,
+  );
   await page.locator('#file').setInputFiles({
     name: 'telemetry-world.json',
     mimeType: 'application/json',
     buffer: Buffer.from(JSON.stringify(world)),
   });
   await expect(page.locator('#notice')).toContainText('World restored');
+  if (observedRun !== null) {
+    await expect
+      .poll(() => page.evaluate(() => window.terrainNative.lifecycle.at(-1)?.runId ?? 0))
+      .toBeGreaterThan(observedRun);
+    await terrainNativeFrame(page);
+    return;
+  }
   if (waitForExtinction) await expect(page.locator('#run-state')).toHaveText('PAUSED');
   else if (await page.getByRole('button', { name: 'Ⅱ Pause', exact: true }).isVisible())
     await pause(page);
@@ -2051,6 +2066,7 @@ test('D9-A7 actual native termination precedes abandonment of36 held receipts an
     for (let point = 0; point < 31; point++) pointer('pointermove');
     pointer('pointerup');
     document.getElementById('reset')!.click();
+    document.getElementById('confirm-reset')!.click();
   });
   await expect.poll(() => page.evaluate(() => window.measurementGate.counts.completedL)).toBe(2);
   expect(await page.evaluate(() => window.measurementGate.pending.size)).toBe(36);
@@ -2158,7 +2174,10 @@ test('D9-A10 native file reads stay single-owner through cancellation, reset and
   await expect(page.locator('#notice')).toContainText('No second read was started');
   expect(await page.evaluate(() => window.measurementReadGate.counts.calls)).toBe(readsBefore + 1);
   await page.locator('#file').dispatchEvent('cancel');
-  await page.evaluate(() => document.getElementById('reset')!.click());
+  await page.evaluate(() => {
+    document.getElementById('reset')!.click();
+    document.getElementById('confirm-reset')!.click();
+  });
   await requestPause(page);
   const reset = await downloadPausedWorld(page);
   await page.evaluate(() => {
@@ -2172,6 +2191,7 @@ test('D9-A10 native file reads stay single-owner through cancellation, reset and
     window.measurementGate.deliveryBlocked = true;
     window.measurementGate.holdLifecycle = true;
     document.getElementById('reset')!.click();
+    document.getElementById('confirm-reset')!.click();
   });
   await expect
     .poll(() => page.evaluate(() => window.measurementGate.counts.completedL))
@@ -2415,7 +2435,10 @@ for (const mode of ['processing', 'delivery'] as const) {
             files.items.add(new File(['{}'], 'invalid-world.json', { type: 'application/json' }));
             input.files = files.files;
             input.dispatchEvent(new Event('change'));
-          } else document.getElementById('reset')!.click();
+          } else {
+            document.getElementById('reset')!.click();
+            document.getElementById('confirm-reset')!.click();
+          }
           await completion;
           for (const id of ['measurements-json', 'measurements-csv', 'save'])
             document.getElementById(id)!.click();
@@ -3426,7 +3449,7 @@ test.describe('pause on total extinction', () => {
     const expected = reference.save();
     await expect(page.getByRole('button', { name: 'Save world' })).toBeDisabled();
     await page.evaluate('window.recoveryDelivery.release()');
-    await expect(page.locator('#notice')).toContainText('version 2, 3, 4 or 5');
+    await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5 or 6');
     await expect(page.locator('#nutrients')).toHaveValue('7');
     await expect(page.locator('#nutrients-value')).toHaveText('7%');
     await expect(page.locator('#mutation-value')).toHaveText('37%');
@@ -3541,7 +3564,7 @@ for (const terminalTick of [90, 91]) {
       expect(populations).toHaveLength(3);
       await expectPopulationChart(page, populations);
       await importWorld(page, { ...terminal, version: 99 } as unknown as WorldFile);
-      await expect(page.locator('#notice')).toContainText('version 2, 3, 4 or 5');
+      await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5 or 6');
       expect(await readWorld(page)).toEqual(terminal);
       await expectPopulationChart(page, populations);
       await page.waitForTimeout(160);

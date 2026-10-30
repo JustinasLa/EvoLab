@@ -276,6 +276,11 @@ describe('approved seeded terrain, opaque extension and exact continuation contr
     ];
     for (const terrain of badRecipes)
       expect(() => Ecosystem.load(JSON.stringify({ ...saved, terrain }))).toThrow();
+    const nonfiniteTerrain = JSON.stringify({
+      ...saved,
+      terrain: { ...saved.terrain, seed: 'literal-infinity' },
+    }).replace('"literal-infinity"', '1e999');
+    expect(() => Ecosystem.load(nonfiniteTerrain)).toThrow('wall recipe');
     const corrupt = (edit: (file: any) => void) => {
       const candidate = structuredClone(saved);
       edit(candidate);

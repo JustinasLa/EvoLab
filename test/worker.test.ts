@@ -684,7 +684,12 @@ describe('correlated manual/export worker protocol', () => {
 describe('worker control and persistence', () => {
   it('rejects oversized outbound UTF-8 saves nonfatally without download, truncation or scheduling changes', () => {
     const original = new Ecosystem().save(),
-      { telemetry: _telemetry, interventions: _interventions, ...ecology } = original;
+      {
+        telemetry: _telemetry,
+        interventions: _interventions,
+        terrain: _terrain,
+        ...ecology
+      } = original;
     const file = {
       ...ecology,
       version: 2,

@@ -260,6 +260,7 @@ select {
 }
 .workspace {
   display: grid;
+  min-width: 0;
   grid-template-columns: minmax(0, 1fr) 360px;
   gap: 12px;
   padding: 12px;
