@@ -17,6 +17,39 @@
   --radius: 6px;
   --mono: 'DM Mono', monospace;
 }
+.terrain-controls {
+  margin-block: 16px;
+  padding-block: 12px;
+  border-block: 1px solid var(--border);
+}
+.terrain-controls label,
+.terrain-controls select,
+.terrain-controls input[type='number'] {
+  display: block;
+  width: 100%;
+}
+.terrain-follow {
+  margin-block: 10px;
+}
+.terrain-preview {
+  margin: 12px 0;
+}
+.terrain-preview canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+}
+.terrain-preview figcaption,
+#terrain-committed,
+#reset-payload {
+  overflow-wrap: anywhere;
+}
+.reset-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 * {
   box-sizing: border-box;
 }
@@ -227,6 +260,7 @@ select {
 }
 .workspace {
   display: grid;
+  min-width: 0;
   grid-template-columns: minmax(0, 1fr) 360px;
   gap: 12px;
   padding: 12px;

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount } from '../src/main';
 import { draw, genomeSvg, organismHtml, point, viewport } from '../src/view';
 import { Ecosystem } from '../src/ecosystem';
+import { DEFAULT_TERRAIN } from '../src/terrain';
 import { DEFAULTS, founder, type Frame, type PlaybackState, type WorldFile } from '../src/model';
 import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../src/blueprint';
 import { startWorker, type Scope } from '../src/worker';
@@ -16,6 +17,7 @@ class WorkerStub extends EventTarget {
         completedTick: 0,
         seed: data.settings.seed,
         settings: data.settings,
+        terrain: data.terrain,
       });
     if (['begin-stroke', 'end-stroke', 'paint', 'settings', 'shock'].includes(data.type))
       this.emit({
@@ -56,6 +58,7 @@ class WorkerStub extends EventTarget {
     if (data.playback) this.playback = data.playback;
     this.onmessage?.({
       data: {
+        terrain: { ...DEFAULT_TERRAIN },
         playback: this.playback,
         runId:
           runId ??
@@ -72,7 +75,10 @@ const world = new Ecosystem(),
   sample = world.frame(),
   organism = [...world.organisms.values()][0];
 const get = <T extends HTMLElement>(id: string): T => root.querySelector(`#${id}`)!;
-const click = (id: string) => get(id).click();
+const click = (id: string) => {
+  get(id).click();
+  if (id === 'reset' && get<HTMLDialogElement>('reset-dialog').open) get('confirm-reset').click();
+};
 const set = (id: string, value: string, event = 'input') => {
   get<HTMLInputElement>(id).value = value;
   get(id).dispatchEvent(new Event(event));
@@ -1020,6 +1026,158 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe('ecosystem desk', () => {
+  it('confirms every user reset with a frozen payload, cancellation focus and no ecological command on cancellation', () => {
+    click('ecosystem-tab');
+    root.querySelector<HTMLDetailsElement>('.world-settings')!.open = true;
+    const before = worker.postMessage.mock.calls.length;
+    get('reset').click();
+    expect(get<HTMLDialogElement>('reset-dialog').open).toBe(true);
+    expect(document.activeElement).toBe(get('cancel-reset'));
+    expect(worker.postMessage.mock.calls).toHaveLength(before);
+    get('reset-dialog').dispatchEvent(new Event('cancel', { cancelable: true }));
+    expect(get<HTMLDialogElement>('reset-dialog').open).toBe(false);
+    expect(document.activeElement).toBe(get('reset'));
+    expect(worker.postMessage.mock.calls).toHaveLength(before);
+    get('reset').click();
+    set('seed', '99');
+    set('terrain-preset', 'open-field', 'change');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space' }));
+    expect(worker.postMessage.mock.calls).toHaveLength(before);
+    get('confirm-reset').click();
+    expect(worker.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'start', settings: DEFAULTS, terrain: DEFAULT_TERRAIN }),
+    );
+    expect(get<HTMLSelectElement>('terrain-preset').value).toBe('open-field');
+    expect(get('terrain-draft-status').textContent).toContain('Unapplied');
+    expect(get('terrain-committed').textContent).toContain('Porous ridges');
+  });
+  it('validates draft seed bounds without posting, and invalidates reset confirmation on load and disposal', () => {
+    get<HTMLInputElement>('terrain-follow').checked = false;
+    get('terrain-follow').dispatchEvent(new Event('change'));
+    expect(get('terrain-seed-label').hidden).toBe(false);
+    for (const seed of ['-1', '4294967296', '0.5', '']) {
+      set('terrain-seed', seed);
+      const before = worker.postMessage.mock.calls.length;
+      click('regenerate-walls');
+      get('reset').click();
+      expect(get('notice').textContent).toContain('valid wall recipe');
+      expect(worker.postMessage.mock.calls).toHaveLength(before);
+      expect(get('terrain-preview-caption').textContent).toContain('unavailable');
+    }
+    set('terrain-seed', '4294967295');
+    get('reset').click();
+    expect(get('reset-payload').textContent).toContain('4294967295');
+    click('load');
+    expect(get<HTMLDialogElement>('reset-dialog').open).toBe(false);
+    get('confirm-reset').click();
+    expect(worker.postMessage.mock.calls).toHaveLength(1);
+    get('reset').click();
+    dispose();
+    get('reset').click();
+    expect(get<HTMLDialogElement>('reset-dialog').open).toBe(false);
+    set('terrain-seed', '0');
+    expect(worker.postMessage.mock.calls).toHaveLength(1);
+  });
+  it('separates immutable wall owners from newer drafts and preserves paused selected real ecology through clear/no-op/regenerate', () => {
+    const bridge = ownershipBridge();
+    bridge.holdTerminals();
+    click('clear-walls');
+    const first = [...bridge.records.values()].find(
+      (record) => record.command.type === 'clear-walls',
+    )!;
+    expect(first.command).toMatchObject({ action: 'clear', runId: 1 });
+    bridge.emit({ ...first.terminal, action: 'regenerate' });
+    expect(get('notice').textContent).not.toContain('Wall action applied');
+    bridge.deliver(first.command.commandId);
+    expect(get('notice').textContent).toContain('Wall action applied');
+    set('terrain-preset', 'chambered-refuges', 'change');
+    get<HTMLInputElement>('terrain-follow').checked = false;
+    get('terrain-follow').dispatchEvent(new Event('change'));
+    set('terrain-seed', '0');
+    click('regenerate-walls');
+    const pending = [...bridge.records.values()].find(
+      (record) => record.command.type === 'regenerate-walls',
+    )!;
+    for (const extra of [
+      { action: 'clear' },
+      { resolvedSeed: 1 },
+      { recipe: { ...pending.command.recipe, seed: 1 } },
+      { recipe: null },
+      { requestId: pending.command.commandId },
+    ])
+      bridge.emit({ ...pending.terminal, ...extra });
+    expect(get('terrain-committed').textContent).toContain('Porous ridges');
+    set('terrain-preset', 'open-field', 'change');
+    bridge.deliver(pending.command.commandId);
+    expect(get('terrain-committed').textContent).toContain('Chambered refuges');
+    expect(get<HTMLSelectElement>('terrain-preset').value).toBe('open-field');
+    expect(get('run-state').textContent).toBe('PAUSED');
+    click('clear-walls');
+    bridge.deliverAll();
+    click('clear-walls');
+    bridge.deliverAll();
+    expect(get('notice').textContent).toContain('unchanged');
+    click('regenerate-walls');
+    bridge.deliverAll();
+    expect(get('terrain-committed').textContent).toContain('Open field');
+    expect(get('terrain-draft-status').textContent).toContain('matches');
+  });
+  it('requires exact current wall metadata and echoes even for correlated errors, without consuming other native owners', () => {
+    const bridge = ownershipBridge();
+    bridge.holdTerminals();
+    set('terrain-preset', 'open-field', 'change');
+    click('regenerate-walls');
+    const pending = [...bridge.records.values()][0];
+    bridge.emit({ ...pending.terminal, terrain: null });
+    expect(get('notice').textContent).toContain('Invalid completed wall recipe');
+    bridge.deliver(pending.command.commandId);
+    click('regenerate-walls');
+    const next = [...bridge.records.values()][0];
+    bridge.emit({ ...next.terminal, terrain: { ...DEFAULT_TERRAIN } });
+    expect(get('notice').textContent).toContain('differs');
+    bridge.deliver(next.command.commandId);
+    click('clear-walls');
+    const rejected = [...bridge.records.values()][0];
+    bridge.emit({
+      type: 'error',
+      operation: 'clear-walls',
+      runId: 1,
+      commandId: rejected.command.commandId,
+      action: 'regenerate',
+      message: 'wrong echo',
+    });
+    bridge.deliver(rejected.command.commandId);
+    expect(get('notice').textContent).toContain('unchanged');
+    click('clear-walls');
+    const error = [...bridge.records.values()][0];
+    bridge.emit({
+      type: 'error',
+      operation: 'clear-walls',
+      runId: 1,
+      commandId: error.command.commandId,
+      action: 'clear',
+      message: 'matching wall error',
+    });
+    expect(get('notice').textContent).toBe('matching wall error');
+    bridge.deliver(error.command.commandId);
+  });
+  it('keeps newer terrain drafts through rejected real imports and revokes old wall results across reset', async () => {
+    const bridge = ownershipBridge();
+    bridge.holdTerminals();
+    click('clear-walls');
+    const old = [...bridge.records.values()][0];
+    await loadText('{}');
+    set('terrain-preset', 'open-field', 'change');
+    const load = [...bridge.records.values()].find((record) => record.command.type === 'load')!;
+    bridge.deliver(load.command.requestId);
+    expect(get('terrain-committed').textContent).toContain('Porous ridges');
+    expect(get<HTMLSelectElement>('terrain-preset').value).toBe('open-field');
+    bridge.deliver(old.command.commandId);
+    expect(get<HTMLSelectElement>('terrain-preset').value).toBe('open-field');
+    get('reset').click();
+    get('cancel-reset').click();
+    expect(bridge.records.size).toBe(0);
+  });
   it('reuses mounted output nodes and changes text only when the displayed value changes', () => {
     const population = get('population'),
       observer = new MutationObserver(() => {}),
@@ -1091,6 +1249,7 @@ describe('ecosystem desk', () => {
     expect(worker.postMessage).toHaveBeenCalledWith({
       type: 'start',
       settings: DEFAULTS,
+      terrain: DEFAULT_TERRAIN,
       runId: 1,
       requestId: 1,
     });

@@ -1,4 +1,5 @@
 import { Ecosystem } from './ecosystem';
+import { DEFAULT_TERRAIN, resolvedTerrainSeed, validTerrain } from './terrain';
 import { serializeMeasurements } from './measurement-export';
 import {
   WORLD_MAX_BYTES,
@@ -50,8 +51,18 @@ export function startWorker(
     'paint',
     'settings',
     'shock',
+    'clear-walls',
+    'regenerate-walls',
   ]);
-  const manual = new Set(['begin-stroke', 'end-stroke', 'paint', 'settings', 'shock']);
+  const manual = new Set([
+    'begin-stroke',
+    'end-stroke',
+    'paint',
+    'settings',
+    'shock',
+    'clear-walls',
+    'regenerate-walls',
+  ]);
   const errorText = (error: unknown): string =>
     (error instanceof Error ? error.message : String(error)).slice(0, 512);
   const playback = (): PlaybackState => ({
@@ -136,6 +147,16 @@ export function startWorker(
       ...(isManual ? { commandId: id } : { requestId: id }),
       ...(data.type === 'export-measurements' ? { format: data.format } : {}),
       ...(strokeOwned ? { strokeId: data.strokeId } : {}),
+      ...(data.type === 'clear-walls' ? { action: 'clear' } : {}),
+      ...(data.type === 'regenerate-walls'
+        ? {
+            action: 'regenerate',
+            ...(validTerrain(data.recipe) ? { recipe: { ...data.recipe } } : {}),
+            ...(integer(data.resolvedSeed, 0, 4294967295)
+              ? { resolvedSeed: data.resolvedSeed }
+              : {}),
+          }
+        : {}),
     };
     if (correlated) {
       if (
@@ -149,7 +170,8 @@ export function startWorker(
         return;
       postingWatermark = id;
     }
-    let settled = false;
+    let settled = false,
+      terrainApplied = false;
     const complete = (response: any): void => {
       scope.postMessage(response);
       settled = true;
@@ -157,6 +179,7 @@ export function startWorker(
     const result = (
       status: 'applied' | 'no-op' | 'rejected',
       rowSequence: number | null = null,
+      extra: Record<string, unknown> = {},
     ): void =>
       complete({
         type: 'manual-result',
@@ -164,6 +187,7 @@ export function startWorker(
         status,
         completedTick: world!.tick,
         rowSequence,
+        ...extra,
       });
     try {
       if (
@@ -175,7 +199,9 @@ export function startWorker(
         throw new Error('Rejected obsolete ecosystem request.');
       if (data.type === 'start') {
         if (!validSettings(data.settings)) throw new Error('Invalid ecosystem settings.');
-        world = new Ecosystem(data.settings);
+        const terrain = data.terrain === undefined ? DEFAULT_TERRAIN : data.terrain;
+        if (!validTerrain(terrain)) throw new Error('Invalid wall recipe.');
+        world = new Ecosystem(data.settings, true, { terrain });
         runId = data.runId;
         paused = false;
         selected = 0;
@@ -187,6 +213,7 @@ export function startWorker(
           completedTick: world.tick,
           seed: world.settings.seed,
           settings: knownSettings(world.settings),
+          terrain: { ...world.terrain },
           playback: playback(),
         });
         send();
@@ -239,6 +266,8 @@ export function startWorker(
           completedTick: world.tick,
           seed: world.settings.seed,
           settings: knownSettings(world.settings),
+          terrain: { ...world.terrain },
+          ...(JSON.parse(data.text).version < 6 ? { terrainMigration: true } : {}),
           playback: playback(),
         });
         send();
@@ -280,6 +309,27 @@ export function startWorker(
         const sequence = world.changeSettings(data.settings);
         result(sequence === null ? 'no-op' : 'applied', sequence);
         if (sequence !== null) send();
+      } else if ((data.type === 'clear-walls' || data.type === 'regenerate-walls') && world) {
+        stroke = null;
+        const action = data.type === 'clear-walls' ? 'clear' : 'regenerate';
+        if (
+          data.action !== action ||
+          (action === 'clear'
+            ? data.recipe !== undefined || data.resolvedSeed !== undefined
+            : !validTerrain(data.recipe) ||
+              data.resolvedSeed !== resolvedTerrainSeed(data.recipe, world.settings.seed))
+        )
+          throw new Error('Invalid wall action payload or resolved terrain seed.');
+        const outcome = world.changeTerrain(
+          action,
+          action === 'regenerate' ? data.recipe : undefined,
+        );
+        terrainApplied = outcome.rowSequence !== null;
+        result(terrainApplied ? 'applied' : 'no-op', outcome.rowSequence, {
+          detail: outcome.detail,
+          terrain: { ...world.terrain },
+        });
+        send();
       } else if (data.type === 'paint' && world) {
         if (
           !['food', 'wall', 'erase', 'plant'].includes(data.tool) ||
@@ -368,7 +418,7 @@ export function startWorker(
         send();
       } else if (data.type === 'snapshot') send();
     } catch (error) {
-      if (settled) {
+      if (settled || terrainApplied) {
         paused = true;
         report(
           new Error(

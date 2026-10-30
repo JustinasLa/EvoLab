@@ -3,6 +3,7 @@ import { Ecosystem } from '../src/ecosystem';
 import { DEFAULTS, founder, type Frame, type WorldFileV3 } from '../src/model';
 import { markup } from '../src/view';
 import { createTelemetryView, eventRate, stressPercent } from '../src/telemetry-view';
+import { legacyV3 } from './fixtures/telemetry';
 
 let root: HTMLElement, controller: ReturnType<typeof createTelemetryView>, width: number;
 const advance = (world: Ecosystem, ticks: number) => {
@@ -19,17 +20,7 @@ function show(frame: Frame, run = 1) {
   controller.render();
 }
 function legacy(world: Ecosystem): WorldFileV3 {
-  const saved = world.save(),
-    { adaptationOriginTick: _origin, ...telemetry } = saved.telemetry;
-  return {
-    ...saved,
-    version: 3,
-    telemetry: {
-      ...telemetry,
-      version: 1,
-      samples: telemetry.samples.map(({ adaptation: _adaptation, ...sample }) => sample),
-    },
-  };
+  return legacyV3(world.save());
 }
 beforeEach(() => {
   width = 300;
@@ -57,6 +48,23 @@ afterEach(() => {
 });
 
 describe('bounded model-dependent telemetry presentation', () => {
+  it('renders exact terrain details separately from climate shocks and discloses unknown prior geometry', () => {
+    const world = new Ecosystem();
+    const cleared = world.changeTerrain('clear');
+    show(world.frame());
+    expect(get('telemetry-intervention-details').textContent).toContain('Wall actionclear');
+    expect(get('telemetry-intervention-details').textContent).toContain(
+      String(cleared.detail.removedWalls),
+    );
+    expect(get('telemetry-intervention-details').textContent).toContain(
+      'Terrain history before the first retained wall action is unknown',
+    );
+    expect(get('telemetry-intervention-details').textContent).not.toContain('Climate shock');
+    world.changeTerrain('regenerate', { version: 1, preset: 'chambered-refuges', seed: 0 });
+    show(world.frame());
+    expect(get('telemetry-intervention-details').textContent).toContain('chambered-refuges');
+    expect(get('telemetry-intervention-details').textContent).toContain('Walls added');
+  });
   it('presents each real manual kind without inventing samples and redraws same-tick coalesced portions', () => {
     const world = new Ecosystem(DEFAULTS, false),
       paint = (x: number, sequence: number | null = null) =>
@@ -233,7 +241,7 @@ describe('bounded model-dependent telemetry presentation', () => {
 
   it('uses actual five-tick coverage, exact rates, stock units, a single endpoint, names and headers', () => {
     const saved = new Ecosystem().save();
-    const { telemetry: _telemetry, ...ecology } = saved;
+    const { telemetry: _telemetry, interventions: _log, terrain: _terrain, ...ecology } = saved;
     const world = Ecosystem.load(JSON.stringify({ ...ecology, version: 2, tick: 25 }));
     advance(world, 5);
     const frame = world.frame(),
@@ -389,7 +397,12 @@ describe('bounded model-dependent telemetry presentation', () => {
       },
     );
     controller = createTelemetryView(root);
-    const { telemetry: _telemetry, ...saved } = new Ecosystem(DEFAULTS, false).save();
+    const {
+      telemetry: _telemetry,
+      interventions: _log,
+      terrain: _terrain,
+      ...saved
+    } = new Ecosystem(DEFAULTS, false).save();
     const world = Ecosystem.load(JSON.stringify({ ...saved, version: 2, tick: 999_999_870 }));
     advance(world, 90);
     show(world.frame());

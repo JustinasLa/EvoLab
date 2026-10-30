@@ -1,0 +1,54 @@
+{
+  "provenance": "Independent inverse-coordinate cell membership oracle; only frozen baseline Random is imported. No terrain generator or Ecosystem code is called. Six seeds, exactly26 RNG draws each.",
+  "baseline": "9712426e3f22b7cb6791e24850e964b605674a0f",
+  "fixtures": [
+    {
+      "seed": 0,
+      "shiftX": 15,
+      "shiftY": 0,
+      "verticalDoors": [15, 12, 22, 25, 27, 28, 22, 26, 15, 11, 36, 21],
+      "horizontalDoors": [36, 34, 40, 33, 30, 12, 17, 40, 20, 11, 39, 44],
+      "maskSha256": "ec3e1ebbf5ed224f8f3247aeccadfd83ea623e134936ae0561a7064ba90a9d6e"
+    },
+    {
+      "seed": 1,
+      "shiftX": 37,
+      "shiftY": 0,
+      "verticalDoors": [24, 39, 38, 16, 27, 31, 21, 39, 22, 23, 12, 20],
+      "horizontalDoors": [17, 14, 27, 10, 23, 38, 19, 15, 9, 25, 31, 39],
+      "maskSha256": "a4277ab605ad664517c9814e0b77d3c9d8c887d02d1813b6744ef215c8f4bcb7"
+    },
+    {
+      "seed": 42,
+      "shiftX": 36,
+      "shiftY": 23,
+      "verticalDoors": [35, 29, 13, 24, 16, 27, 35, 23, 15, 36, 31, 17],
+      "horizontalDoors": [15, 28, 35, 32, 8, 26, 41, 10, 31, 9, 18, 10],
+      "maskSha256": "3feb53c6c928b3c690e51097e139c28b68d5ee16cf38f247266620b12ad3a13c"
+    },
+    {
+      "seed": 100,
+      "shiftX": 12,
+      "shiftY": 16,
+      "verticalDoors": [25, 36, 25, 29, 8, 24, 15, 24, 28, 14, 12, 15],
+      "horizontalDoors": [22, 46, 10, 28, 17, 16, 36, 30, 42, 12, 33, 35],
+      "maskSha256": "854d8b0196e75e569a16b326bb90622c125efaa4f7e33927dd864c872718e000"
+    },
+    {
+      "seed": 123,
+      "shiftX": 47,
+      "shiftY": 9,
+      "verticalDoors": [23, 15, 20, 34, 35, 37, 33, 21, 27, 39, 14, 8],
+      "horizontalDoors": [31, 22, 28, 31, 16, 28, 35, 14, 9, 12, 29, 40],
+      "maskSha256": "337e2a264361a490f1ae018bb912910489c20ea5d5b37c4a113cc674bce76cb9"
+    },
+    {
+      "seed": 4294967295,
+      "shiftX": 53,
+      "shiftY": 9,
+      "verticalDoors": [30, 38, 35, 25, 29, 23, 12, 39, 35, 14, 18, 31],
+      "horizontalDoors": [27, 38, 44, 12, 13, 23, 44, 44, 39, 42, 12, 11],
+      "maskSha256": "82214ecd898c3a793482fe7dfd4b3a46aa8e7a3ad7a522cc9f4176a76deb9a14"
+    }
+  ]
+}

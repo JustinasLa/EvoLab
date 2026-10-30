@@ -158,6 +158,28 @@ function decode(text: string): any {
 }
 
 describe('bounded retained measurement codec', () => {
+  it('uses envelope2 and exact terrain metadata/detail without expanding numeric settings or changing CSV columns', () => {
+    const world = new Ecosystem();
+    (world.settings as any).retained = { literal: 'unmeasured opaque value' };
+    world.changeTerrain('clear');
+    world.changeTerrain('regenerate', { version: 1, preset: 'open-field', seed: -0 });
+    const source = world.measurements(),
+      envelope = measurementEnvelope(source);
+    expect(envelope.version).toBe(2);
+    expect(envelope.rules.version).toBe(1);
+    expect(envelope.snapshot.worldVersion).toBe(6);
+    expect(envelope.snapshot.terrain).toEqual(world.terrain);
+    expect(envelope.snapshot.settings).toEqual(DEFAULTS);
+    expect(envelope.negativeZeroPaths).toContain('/snapshot/terrain/seed');
+    const encoded = serializeMeasurements(source, 'csv');
+    expect(csv(encoded.text)[0]).toEqual([...MEASUREMENT_COLUMNS]);
+    expect(encoded.text).not.toContain('unmeasured opaque value');
+    const details = csv(encoded.text).filter((row) => row[0] === 's:intervention');
+    expect(details).toHaveLength(2);
+    expect(decode(encoded.text).interventions).toEqual(source.interventions);
+    envelope.snapshot.terrain.seed = 99;
+    expect(Object.is(world.terrain.seed, -0)).toBe(true);
+  });
   it.each([
     '',
     's:literal',
@@ -282,7 +304,7 @@ describe('bounded retained measurement codec', () => {
     });
     expect(csv(serializeMeasurements(world.measurements(), 'csv').text)).toHaveLength(311);
     expect(decode(serializeMeasurements(world.measurements(), 'csv').text)).toEqual(actual);
-    const { interventions: _log, ...saved } = world.save(),
+    const { interventions: _log, terrain: _terrain, ...saved } = world.save(),
       legacy = Ecosystem.load(JSON.stringify({ ...saved, version: 4 }));
     const imported = measurementEnvelope(legacy.measurements());
     expect(imported.windows.settings).toMatchObject({
