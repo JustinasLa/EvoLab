@@ -142,6 +142,37 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe('correlated manual/export worker protocol', () => {
+  it('retains an admitted historical opaque expansion when complete outbound Save exceeds 2.5 MB nonfatally', () => {
+    let retained!: Ecosystem;
+    const frame = Ecosystem.prototype.frame;
+    vi.spyOn(Ecosystem.prototype, 'frame').mockImplementation(function (this: Ecosystem) {
+      retained = this;
+      return frame.call(this);
+    });
+    const original = JSON.parse(baselineFixtures['world5-extras.json']);
+    original.organisms[0].genome.expanding = Array(300000).fill(null);
+    const text = JSON.stringify(original);
+    expect(new TextEncoder().encode(text).length).toBeLessThan(WORLD_MAX_BYTES);
+    const harness = workerHarness();
+    harness.send({ type: 'load', runId: 1, text });
+    expect(harness.last('loaded')).toBeDefined();
+    harness.send({ type: 'pause' });
+    const before = JSON.stringify(retained.save()),
+      genome = JSON.stringify(retained.save().organisms[0].genome);
+    expect(new TextEncoder().encode(before).length).toBeGreaterThan(WORLD_MAX_BYTES);
+    const error = harness.send({ type: 'save' });
+    expect(error).toMatchObject({
+      type: 'error',
+      operation: 'save',
+      message: expect.stringContaining('2.5 MB'),
+    });
+    expect(error).not.toHaveProperty('fatal');
+    expect(JSON.stringify(retained.save())).toBe(before);
+    harness.send({ type: 'step' });
+    expect(retained.tick).toBe(original.tick + 1);
+    expect(JSON.stringify(retained.save().organisms[0].genome)).toBe(genome);
+    expect(harness.last().playback.paused).toBe(true);
+  });
   it.each(['selected', 'recovery'])(
     'detaches full passive inherited payload in %s native responses',
     (boundary) => {

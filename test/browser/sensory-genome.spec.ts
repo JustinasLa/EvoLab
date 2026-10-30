@@ -427,8 +427,10 @@ test('B6 read-only inactive disclosure fits four widths and observation/camera/k
     await page.getByLabel('Blueprint name', { exact: true }).fill('Read only λ');
     await page.locator('#zoom-in').click();
     await page.locator('#zoom-out').click();
+    await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
     await page.locator('#thermal').click();
     await page.locator('#thermal').click();
+    await page.getByRole('tab', { name: 'Organism', exact: true }).click();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );

@@ -1852,6 +1852,8 @@ for (const version of [2, 3, 4, 5, 6] as const) {
     }
     await page.locator('#thermal').click();
     expect(await downloadPausedWorld(page)).toEqual(before);
+    await expect(page.locator('#save')).toBeEnabled();
+    await expect.poll(() => page.evaluate(() => window.sensoryNative.activeUrls.size)).toBe(0);
     await test.info().attach('measurement-downloads.json', {
       contentType: 'application/json',
       body: JSON.stringify({

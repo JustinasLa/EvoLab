@@ -5,6 +5,7 @@ import { writeFile } from 'node:fs/promises';
 interface Receipt {
   index: number;
   filename: string;
+  url: string;
   bytes: number;
   sha256: string;
   startedMs: number;
@@ -16,6 +17,7 @@ interface Evidence {
   streams: Map<Download, Promise<Buffer>>;
   receipts: Receipt[];
   errors: string[];
+  streamReads: { download: number; startedMs: number; returnedMs?: number; endedMs?: number }[];
 }
 const evidence = new WeakMap<Page, Evidence>();
 
@@ -42,6 +44,7 @@ export function registerNativeEvidence(): void {
       streams: new Map(),
       receipts: [],
       errors: [],
+      streamReads: [],
     };
     evidence.set(page, state);
     page.on('pageerror', (error) => state.errors.push(error.message));
@@ -50,27 +53,44 @@ export function registerNativeEvidence(): void {
     });
     page.on('download', (download) => {
       const index = state.streams.size + 1,
-        startedMs = performance.now() - state.started;
+        startedMs = performance.now() - state.started,
+        info = test.info(),
+        originalRead = download.createReadStream.bind(download);
+      download.createReadStream = async () => {
+        const record = {
+          download: index,
+          startedMs: performance.now() - state.started,
+        } as Evidence['streamReads'][number];
+        state.streamReads.push(record);
+        const stream = await originalRead();
+        record.returnedMs = performance.now() - state.started;
+        stream.once('end', () => {
+          record.endedMs = performance.now() - state.started;
+        });
+        return stream;
+      };
       const stream = (async () => {
         const chunks: Buffer[] = [],
           native = await download.createReadStream();
         for await (const chunk of native) chunks.push(chunk);
         const bytes = Buffer.concat(chunks),
           filename = download.suggestedFilename();
-        const path = test.info().outputPath(`native-${index}-${filename.replace(/[^\w.-]/g, '_')}`);
+        const path = info.outputPath(`native-${index}-${filename.replace(/[^\w.-]/g, '_')}`);
         await writeFile(path, bytes);
         state.receipts.push({
           index,
           filename,
+          url: download.url(),
           bytes: bytes.length,
           sha256: createHash('sha256').update(bytes).digest('hex'),
           startedMs,
           completedMs: performance.now() - state.started,
           path,
         });
-        await test
-          .info()
-          .attach(`native-${index}-${filename}`, { path, contentType: 'application/json' });
+        await info.attach(`native-${index}-${filename}`, {
+          path,
+          contentType: filename.endsWith('.csv') ? 'text/csv' : 'application/json',
+        });
         return bytes;
       })();
       state.streams.set(download, stream);
@@ -125,10 +145,13 @@ export function registerNativeEvidence(): void {
               };
               if (id !== undefined) state.pending.set(`${data.runId}:${id}`, record);
               const bytes = new TextEncoder().encode(JSON.stringify(data));
-              record.payloadBytes = bytes.length;
+              record.payloadJSONBytes = bytes.length;
+              record.transferredBufferLengths = Object.values(data)
+                .filter((value) => value instanceof ArrayBuffer)
+                .map((value) => (value as ArrayBuffer).byteLength);
               state.hashTasks.push(
                 crypto.subtle.digest('SHA-256', bytes).then((digest) => {
-                  record.payloadSHA256 = Array.from(new Uint8Array(digest), (byte) =>
+                  record.payloadJSONSHA256 = Array.from(new Uint8Array(digest), (byte) =>
                     byte.toString(16).padStart(2, '0'),
                   ).join('');
                 }),
@@ -148,9 +171,17 @@ export function registerNativeEvidence(): void {
               requestId: data.requestId,
               commandId: data.commandId,
               completedTick: data.completedTick,
-              tick: data.frame?.stats.tick,
-              selected: data.selected?.id ?? null,
-              paused: data.playback?.paused,
+              tick: data.frame?.stats.tick ?? data.recovery?.frame.stats.tick,
+              selected: data.selected?.id ?? data.recovery?.selected?.id ?? null,
+              paused: data.playback?.paused ?? data.recovery?.playback.paused,
+              recovery: data.recovery
+                ? {
+                    selected: data.recovery.selected?.id ?? null,
+                    paused: data.recovery.playback.paused,
+                    tick: data.recovery.frame.stats.tick,
+                    settings: data.recovery.settings,
+                  }
+                : undefined,
               byteLength: data.byteLength,
               message: data.message,
               fatal: data.fatal,
@@ -195,16 +226,18 @@ export function registerNativeEvidence(): void {
         })
         .catch((error) => ({ unavailable: String(error) }));
     }
-    await info.attach('native-resource-ledger.json', {
-      contentType: 'application/json',
-      body: JSON.stringify(
+    const path = info.outputPath('native-resource-ledger.json');
+    await writeFile(
+      path,
+      JSON.stringify(
         {
           title: info.title,
           project: info.project.name,
           status: info.status,
           durationMs: performance.now() - state.started,
           downloads: state.receipts,
-          nativeStreamReads: state.streams.size,
+          nativeStreamReads: state.streamReads.length,
+          streamReads: state.streamReads,
           streams: settlements.map((settlement) => settlement.status),
           errors: state.errors,
           native,
@@ -212,7 +245,8 @@ export function registerNativeEvidence(): void {
         null,
         2,
       ),
-    });
+    );
+    await info.attach('native-resource-ledger.json', { path, contentType: 'application/json' });
   });
 }
 
@@ -261,5 +295,7 @@ export function assertNativeStreams(page: Page, downloads: number): void {
 }
 
 export async function attachWorld(info: TestInfo, label: string, world: unknown): Promise<void> {
-  await info.attach(label, { body: JSON.stringify(world), contentType: 'application/json' });
+  const path = info.outputPath(label);
+  await writeFile(path, JSON.stringify(world));
+  await info.attach(label, { path, contentType: 'application/json' });
 }
