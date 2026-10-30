@@ -285,6 +285,31 @@ describe('passive inherited sensory data and reversible compatibility', () => {
       }
     },
   );
+  it('preserves retained and type-changed cell metadata, removes only deleted cells and gives new cells no inherited extras', () => {
+    const source = founder(1),
+      observed = new Set<string>();
+    source.cells.forEach((cell, offset) => {
+      cell.legacyExtensions = [['identity', [['number', offset]]]];
+    });
+    source.legacyExtensions = [['whole', [['boolean', false]]]];
+    source.behavior = evolved(tables[80]);
+    const before = structuredClone(source);
+    for (let seed = 1; seed <= 100; seed++) {
+      const changed = mutate(source, new Random(seed));
+      expect(changed.behavior).toEqual(source.behavior);
+      expect(changed.legacyExtensions).toEqual(source.legacyExtensions);
+      for (const cell of changed.cells) {
+        const retained = source.cells.find((old) => old.x === cell.x && old.y === cell.y);
+        expect(cell.legacyExtensions).toEqual(retained?.legacyExtensions);
+        if (retained && cell.type !== retained.type) observed.add('type');
+        if (!retained) observed.add('new');
+      }
+      if (changed.cells.length < source.cells.length) observed.add('removed');
+      if (changed.cells[0].legacyExtensions) changed.cells[0].legacyExtensions[0][1] = [['null']];
+      expect(source).toEqual(before);
+    }
+    expect([...observed].sort()).toEqual(['new', 'removed', 'type']);
+  });
   const historicalCases = [
     ...[42, 7, 1].flatMap((seed) =>
       [0, 0.12].flatMap((mutation) =>

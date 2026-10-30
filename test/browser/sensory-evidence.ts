@@ -253,6 +253,13 @@ export async function nativeSummary(page: Page): Promise<any> {
   });
 }
 
+export function assertNativeStreams(page: Page, downloads: number): void {
+  const state = evidence.get(page)!;
+  expect(state.streams.size).toBe(downloads);
+  expect(state.receipts).toHaveLength(downloads);
+  expect(state.errors).toEqual([]);
+}
+
 export async function attachWorld(info: TestInfo, label: string, world: unknown): Promise<void> {
   await info.attach(label, { body: JSON.stringify(world), contentType: 'application/json' });
 }

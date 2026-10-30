@@ -21,6 +21,7 @@ import {
   nativeDownload,
   nativeSummary,
   registerNativeEvidence,
+  assertNativeStreams,
 } from './sensory-evidence';
 
 registerNativeEvidence();
@@ -40,13 +41,11 @@ async function pauseReady(page: Page): Promise<void> {
 
 async function importPaused(page: Page, text: string): Promise<number> {
   const previous = (await nativeSummary(page)).responses.length;
-  await page
-    .locator('#file')
-    .setInputFiles({
-      name: 'sensory-world.json',
-      mimeType: 'application/json',
-      buffer: Buffer.from(text),
-    });
+  await page.locator('#file').setInputFiles({
+    name: 'sensory-world.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(text),
+  });
   await expect(page.locator('#notice')).toContainText('World restored');
   const native = await nativeSummary(page),
     loaded = native.responses.slice(previous).find((response: any) => response.type === 'loaded');
@@ -77,13 +76,11 @@ async function emptyHabitat(page: Page): Promise<Ecosystem> {
 
 async function importBlueprint(page: Page, text: string): Promise<void> {
   await page.getByRole('tab', { name: 'Organism', exact: true }).click();
-  await page
-    .locator('#blueprint-file')
-    .setInputFiles({
-      name: 'sensory-blueprint.json',
-      mimeType: 'application/json',
-      buffer: Buffer.from(text),
-    });
+  await page.locator('#blueprint-file').setInputFiles({
+    name: 'sensory-blueprint.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(text),
+  });
   await expect(page.locator('#notice')).toContainText('Blueprint loaded into the designer');
 }
 
@@ -126,6 +123,7 @@ async function inspect(page: Page, x: number, y: number, id: number): Promise<vo
 }
 
 async function clean(page: Page, info: TestInfo, downloads: number): Promise<void> {
+  assertNativeStreams(page, downloads);
   const native = await nativeSummary(page);
   expect(native.pending).toEqual([]);
   expect(native.activeUrls).toEqual([]);
@@ -144,8 +142,13 @@ async function clean(page: Page, info: TestInfo, downloads: number): Promise<voi
 test('B1 genuine blueprint1 migrates passively through complete native exports and paused placement', async ({
   page,
 }, info) => {
-  const reference = await emptyHabitat(page),
-    old = JSON.parse(baselineFixtures['blueprint1.json']);
+  const old = JSON.parse(baselineFixtures['blueprint1.json']);
+  const deepText = baselineFixtures[`${info.project.name}-deepest-supported-world5.json`];
+  const reference = Ecosystem.load(deepText);
+  await page.goto('/');
+  await pauseReady(page);
+  const completed = await importPaused(page, deepText);
+  advance(reference, completed - reference.tick);
   expect(rawWorld(await nativeDownload(page))).toEqual(reference.save());
   await importBlueprint(page, baselineFixtures['blueprint1.json']);
   await expect(page.locator('#behavior-status')).toHaveText(
@@ -159,7 +162,7 @@ test('B1 genuine blueprint1 migrates passively through complete native exports a
     version: 2,
     genome: { ...old.genome, behavior: { version: 1, mode: 'legacy' } },
   });
-  await plant(page, reference, blueprint.genome);
+  await plant(page, reference, blueprint.genome, 220, 140);
   expect(rawWorld(await nativeDownload(page))).toEqual(reference.save());
   await page.locator('#step').click();
   reference.step();
@@ -230,13 +233,11 @@ test('B3 strict malformed blueprint2 never defaults a missing reaction or change
     posts = (await nativeSummary(page)).posts.length;
   const malformed = JSON.parse(valid);
   delete malformed.genome.behavior.reactions.dangerous;
-  await page
-    .locator('#blueprint-file')
-    .setInputFiles({
-      name: 'incomplete-v2.json',
-      mimeType: 'application/json',
-      buffer: Buffer.from(JSON.stringify(malformed)),
-    });
+  await page.locator('#blueprint-file').setInputFiles({
+    name: 'incomplete-v2.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(malformed)),
+  });
   await expect(page.locator('#notice')).toContainText('valid temperature and tempo traits');
   await expect(page.locator('#blueprint-name')).toHaveValue(original.name);
   await expect(page.locator('#blueprint-description')).toHaveValue(original.description);
@@ -270,13 +271,11 @@ test('B4 malformed last current genome rejects atomically with native selected r
     reactions: { food: 'ignore', wall: 'ignore', harmless: 'ignore', dangerous: 'CHASE' as never },
   };
   const responses = (await nativeSummary(page)).responses.length;
-  await page
-    .locator('#file')
-    .setInputFiles({
-      name: 'malformed-current.json',
-      mimeType: 'application/json',
-      buffer: Buffer.from(JSON.stringify(malformed)),
-    });
+  await page.locator('#file').setInputFiles({
+    name: 'malformed-current.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(malformed)),
+  });
   await expect(page.locator('#notice')).toContainText('organism');
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
   await expect(page.locator('#inspector')).toContainText(`Organism ${selected.id}`);
