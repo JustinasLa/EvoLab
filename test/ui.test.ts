@@ -2135,7 +2135,7 @@ describe('authoritative playback presentation', () => {
       harness.deliver();
       expect(get<HTMLInputElement>('pause-on-extinction').checked).toBe(preference);
       const { lineageArchive: _lineageArchive, ...historical } = nearDeath();
-      const empty = { ...historical, version: 5 };
+      const empty = { ...historical, version: 7 };
       empty.organisms = [];
       await loadText(JSON.stringify(empty));
       harness.deliver();
