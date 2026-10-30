@@ -42,6 +42,8 @@ export const emptyRefuges = (): RefugeField => ({
   units: new Int8Array(WIDTH * HEIGHT),
   nonzeroCells: 0,
 });
+const hasPaint = (field: RefugePlane): boolean =>
+  'nonzeroCells' in field ? field.nonzeroCells !== 0 : field.units.some(Boolean);
 
 export function parseRefuges(value: unknown): RefugeField {
   const field = value as RefugeFile;
@@ -82,8 +84,9 @@ export function parseRefuges(value: unknown): RefugeField {
 
 export function refugeFile(field: RefugePlane): RefugeFile {
   const cells: [number, number][] = [];
-  for (let position = 0; position < field.units.length; position++)
-    if (field.units[position] !== 0) cells.push([position, field.units[position]]);
+  if (hasPaint(field))
+    for (let position = 0; position < field.units.length; position++)
+      if (field.units[position] !== 0) cells.push([position, field.units[position]]);
   return { version: 1, enabled: field.enabled, cells };
 }
 
@@ -92,12 +95,14 @@ export function refugeSummary(field: RefugePlane): RefugeSummary {
     maximumUnits = 0,
     sumUnits = 0,
     nonzeroCells = 0;
-  for (const units of field.units) {
-    minimumUnits = Math.min(minimumUnits, units);
-    maximumUnits = Math.max(maximumUnits, units);
-    sumUnits += units;
-    if (units !== 0) nonzeroCells++;
-  }
+  if (hasPaint(field))
+    for (const units of field.units)
+      if (units !== 0) {
+        minimumUnits = Math.min(minimumUnits, units);
+        maximumUnits = Math.max(maximumUnits, units);
+        sumUnits += units;
+        nonzeroCells++;
+      }
   return {
     version: 1,
     enabled: field.enabled,

@@ -158,6 +158,67 @@ function decode(text: string): any {
 }
 
 describe('bounded retained measurement codec', () => {
+  it.each([
+    [false, false],
+    [true, false],
+    [true, true],
+    [false, true],
+  ])(
+    'curates thermal mode=%s, paint=%s and all distinct manual details identically in JSON and CSV',
+    (enabled, painted) => {
+      const world = new Ecosystem();
+      (world.settings as any).thermalRefuges = { privateOpaqueValue: true };
+      world.changeRefugeMode(true);
+      world.paintRefuge({ rulesVersion: 1, tool: 'warm', radius: 0, units: 4 }, 0, 0);
+      world.paintRefuge({ rulesVersion: 1, tool: 'cool', radius: 0, units: -8 }, 1, 0);
+      if (!painted) world.clearRefuges();
+      world.changeRefugeMode(enabled);
+      const before = world.save(),
+        source = world.measurements(),
+        json = restore(JSON.parse(serializeMeasurements(source, 'json').text)),
+        decoded = decode(serializeMeasurements(source, 'csv').text);
+      expect(decoded).toEqual(json);
+      expect(json).toMatchObject({
+        version: 3,
+        rules: { version: 2 },
+        snapshot: {
+          worldVersion: 7,
+          thermalRefuges: {
+            version: 1,
+            enabled,
+            nonzeroCells: painted ? 2 : 0,
+            capacity: 4096,
+            unitsPerNormalized: 100,
+            minimumUnits: painted ? -8 : 0,
+            maximumUnits: painted ? 4 : 0,
+            sumUnits: painted ? -4 : 0,
+          },
+        },
+        interventions: { version: 3 },
+      });
+      expect(Object.keys(json.snapshot.thermalRefuges)).toEqual([
+        'version',
+        'enabled',
+        'nonzeroCells',
+        'capacity',
+        'unitsPerNormalized',
+        'minimumUnits',
+        'maximumUnits',
+        'sumUnits',
+      ]);
+      expect(json.snapshot.settings).toEqual(DEFAULTS);
+      expect(json.interventions.entries.map((entry: any) => entry.kind)).toContain('refuge-mode');
+      expect(json.interventions.entries.map((entry: any) => entry.kind)).toContain('refuge-paint');
+      if (!painted)
+        expect(json.interventions.entries.map((entry: any) => entry.kind)).toContain(
+          'refuge-clear',
+        );
+      expect(json.windows.interpretation).toContain('not historical modes or thermal dose');
+      source.snapshot.thermalRefuges.nonzeroCells = 4096;
+      source.interventions.entries.length = 0;
+      expect(world.save()).toEqual(before);
+    },
+  );
   it('uses envelope3 and exact terrain metadata/detail without expanding numeric settings or changing CSV columns', () => {
     const world = new Ecosystem();
     (world.settings as any).retained = { literal: 'unmeasured opaque value' };

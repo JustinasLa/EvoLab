@@ -681,7 +681,7 @@ export function createTelemetryView(root: HTMLElement) {
         last = samples.at(-1),
         manual = frame.interventions,
         latestManual = manual.entries.at(-1),
-        key = `${run}/${telemetry.originTick}/${telemetry.adaptationOriginTick}/${samples.length}/${first?.tick}/${last?.tick}/${manual.originTick}/${manual.originKind}/${manual.totalEntries}/${latestManual?.sequence}/${latestManual?.kind === 'paint' ? latestManual.detail.successfulCommands : ''}`;
+        key = `${run}/${telemetry.originTick}/${telemetry.adaptationOriginTick}/${samples.length}/${first?.tick}/${last?.tick}/${manual.originTick}/${manual.originKind}/${manual.totalEntries}/${latestManual?.sequence}/${latestManual?.kind === 'paint' || latestManual?.kind === 'refuge-paint' ? latestManual.detail.successfulCommands : ''}`;
       summary.textContent = `World tick ${frame.stats.tick}; ${last ? `latest sample tick ${last.tick}; retained ticks ${first!.tick}–${last.tick}; ${samples.length} of at most ${TELEMETRY_CAPACITY} samples` : 'no recorded samples'}. Samples every ${TELEMETRY_INTERVAL_TICKS} completed ticks. Current live values can differ after paused editing. No synthetic initial, latest or extinction point.`;
       if (key === sourceKey) return;
       sourceKey = key;

@@ -1,6 +1,15 @@
 import { describe, it, expect } from 'vitest';
+import assert from 'node:assert/strict';
 import { Ecosystem } from '../src/ecosystem';
-import { DEFAULTS, WIDTH, HEIGHT, index, temperature, type RefugeBrush } from '../src/model';
+import {
+  DEFAULTS,
+  WIDTH,
+  HEIGHT,
+  index,
+  positions,
+  temperature,
+  type RefugeBrush,
+} from '../src/model';
 import {
   emptyRefuges,
   parseRefuges,
@@ -139,6 +148,111 @@ describe('painted temperature mechanics and genuine accepted-base equivalence', 
     expect(localTemperature(0, 0, 0, 0, 0, field(true, [[0, 25]]))).toBe(0.75);
     expect(activeRefugeUnits(field(false, [[0, 25]]), 0, 0)).toBe(0);
   });
+  it.each([
+    [WIDTH / 4, 0, 0.32, -32, 1.22],
+    [(WIDTH * 3) / 4, HEIGHT / 2, -0.32, 32, -0.22],
+  ])(
+    'brings raw out-of-range climate back inside before clamping at %s,%s',
+    (x, y, offset, units, raw) => {
+      const result = temperature(x, y, 0, 1, offset, units);
+      expect(result).toBeCloseTo(raw + units / 100, 15);
+      expect(result).not.toBe(
+        Math.max(0, Math.min(1, temperature(x, y, 0, 1, offset) + units / 100)),
+      );
+    },
+  );
+  it('uses only the anchor for all leaves of a rotated body, not the painted footprint', () => {
+    const original = JSON.parse(input('threshold-0.75-open'));
+    original.organisms[0].rotation = 1;
+    const text = JSON.stringify(original),
+      anchor = Ecosystem.load(text),
+      footprint = Ecosystem.load(text),
+      reference = acceptedReference(text),
+      metabolic = acceptedReference(
+        JSON.stringify({ ...original, eventOffset: 0.25, eventUntil: 900 }),
+      ),
+      body = original.organisms[0];
+    anchor.thermalRefuges = field(true, [[index(body.x, body.y), 25]]);
+    footprint.thermalRefuges = field(
+      true,
+      positions(body)
+        .filter((position) => position !== index(body.x, body.y))
+        .sort((left, right) => left - right)
+        .map((position) => [position, -25]),
+    );
+    for (const world of [anchor, footprint, reference, metabolic]) world.step();
+    expect(predecessor(footprint.save())).toEqual(reference.save());
+    expect(predecessor(anchor.save())).toEqual({
+      ...metabolic.save(),
+      eventOffset: 0,
+      eventUntil: 0,
+    });
+    expect(anchor.save().births).toBe(1);
+    expect(footprint.save().births).toBe(0);
+  });
+  it.each([1, 2])(
+    'expires the global event exactly at tick eventUntil=%s while retaining local units',
+    (until) => {
+      const original = JSON.parse(input('armor-survival'));
+      original.eventOffset = 0.32;
+      original.eventUntil = until;
+      original.organisms[0].energy = 1;
+      const world = Ecosystem.load(JSON.stringify(original));
+      world.thermalRefuges = field(true, [[index(120, 78), -25]]);
+      world.step();
+      const raw = 0.5 + (1 < until ? 0.32 : 0),
+        local = Math.max(0, Math.min(1, raw - 0.25)),
+        stress = Math.max(0, Math.abs(local - 0.75) - 0.125),
+        spent = 0.012 + stress * 0.2;
+      expect(world.save().organisms[0].energy).toBe(1 - spent);
+      expect(world.frame().offset).toBe(1 < until ? 0.32 : 0);
+      expect(localTemperature(120, 78, 1, 0, world.frame().offset, world.thermalRefuges)).toBe(
+        local,
+      );
+    },
+  );
+  for (const seed of [0, 42, 123])
+    for (const units of [-25, 25])
+      it(`retains genuine founder ecology and active-field shock/reload continuation for seed ${seed}, units ${units}`, () => {
+        const text = input(`seed-${seed}-open-field`),
+          control = Ecosystem.load(text),
+          reference = acceptedReference(text),
+          active = Ecosystem.load(text);
+        expect(active.save().organisms).toHaveLength(1);
+        expect(active.save().food).toEqual([]);
+        active.changeRefugeMode(true);
+        active.paintRefuge(brush(units, 8), 120, 78);
+        advance(active, 330);
+        advance(control, 330);
+        for (let tick = 0; tick < 330; tick++) reference.step();
+        expect(predecessor(control.save())).toEqual(reference.save());
+        const beforeShock = { offset: active.eventOffset, until: active.eventUntil };
+        active.shock('heat');
+        active.appendIntervention({
+          kind: 'shock',
+          detail: {
+            kind: 'heat',
+            before: beforeShock,
+            after: { offset: active.eventOffset, until: active.eventUntil },
+          },
+        });
+        const reloaded = Ecosystem.load(JSON.stringify(active.save()));
+        for (const world of [active, reloaded]) advance(world, 1270);
+        advance(control, 1270);
+        for (let tick = 330; tick < 1600; tick++) reference.step();
+        expect(active.save()).toEqual(reloaded.save());
+        expect(predecessor(control.save())).toEqual(reference.save());
+        expect(active.save().tick).toBe(1600);
+        expect(active.save().thermalRefuges.cells.length).toBe(197);
+        expect(active.save().eventUntil).toBe(1230);
+        for (const organism of active.organisms.values())
+          for (const position of positions(organism)) {
+            expect(active.walls[position]).toBe(0);
+            expect(active.occupied[position]).toBe(organism.id);
+          }
+        expect(active.telemetry.pending.energy.offspringGranted).toBeGreaterThanOrEqual(0);
+        expect(active.telemetry.samples).toHaveLength(53);
+      });
   it('performs wrapped additive saturating and cancellation dabs without mutating candidates', () => {
     const world = new Ecosystem(DEFAULTS, false);
     world.changeRefugeMode(true);
@@ -209,12 +323,12 @@ function identicalRecords(actual: unknown, expected: unknown): void {
   while (pending.length) {
     const [left, right] = pending.pop()!;
     if (right && typeof right === 'object') {
-      expect(left !== null && typeof left === 'object').toBe(true);
+      assert(left !== null && typeof left === 'object');
       const keys = Object.keys(right);
-      expect(Object.keys(left as object)).toEqual(keys);
-      expect(Array.isArray(left)).toBe(Array.isArray(right));
+      assert.deepEqual(Object.keys(left as object), keys);
+      assert.equal(Array.isArray(left), Array.isArray(right));
       for (const key of keys) pending.push([(left as any)[key], (right as any)[key]]);
-    } else expect(Object.is(left, right)).toBe(true);
+    } else assert(Object.is(left, right));
   }
 }
 
@@ -264,21 +378,19 @@ describe('strict owned field and history, without narrowing historically open re
         else identicalRecords(predecessor(Ecosystem.load(text).save()), original);
       }
     });
-  it('retains saturated real bounds, every new-name opaque collision, and nested cap migration without stripping', () => {
-    for (const name of [
-      'capture-attempt3/inputs/saturated-1600x16-ancestry8-history180-128.json',
-      'capture-attempt3/inputs/natural-full-180-128.json',
-      'native-depth-direct/inputs/desktop-combined-1087.json',
-      'capture-direct/inputs/native-cap-v5.json',
-    ]) {
-      const text = fixtureText(name),
-        reference = acceptedReference(text),
-        world = Ecosystem.load(text);
-      identicalRecords(predecessor(world.save()), reference.save());
-      world.step();
-      reference.step();
-      identicalRecords(predecessor(world.save()), reference.save());
-    }
+  it.each([
+    'capture-attempt3/inputs/saturated-1600x16-ancestry8-history180-128.json',
+    'capture-attempt3/inputs/natural-full-180-128.json',
+    'native-depth-direct/inputs/desktop-combined-1087.json',
+    'capture-direct/inputs/native-cap-v5.json',
+  ])('retains complete saturated/raw/cap state %s without stripping', (name) => {
+    const text = fixtureText(name),
+      reference = acceptedReference(text),
+      world = Ecosystem.load(text);
+    identicalRecords(predecessor(world.save()), reference.save());
+    world.step();
+    reference.step();
+    identicalRecords(predecessor(world.save()), reference.save());
   });
   const invalidFields: unknown[] = [
     null,

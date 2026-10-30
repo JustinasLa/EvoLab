@@ -52,6 +52,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     [...root.querySelectorAll<HTMLElement>('[id]')].map((element) => [element.id, element]),
   );
   const get = <T extends HTMLElement>(id: string): T => elements.get(id) as T;
+  const refugeButtons = [...root.querySelectorAll<HTMLButtonElement>('[data-refuge-tool]')];
   const canvas = get<HTMLCanvasElement>('world'),
     buffer = document.createElement('canvas');
   const camera: Camera = { zoom: 1, x: 0, y: 0 };
@@ -162,16 +163,15 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         unavailable || hasOwner('export-measurements') || !!downloads['export-measurements'],
       saveBlocked = unavailable || hasOwner('save') || !!downloads.save,
       state = Number(exportBlocked) + Number(saveBlocked) * 2;
-    for (const action of ['clear-walls', 'regenerate-walls'])
-      get<HTMLButtonElement>(action).disabled = unavailable || manualCount() >= MANUAL_CAPACITY;
-    get<HTMLInputElement>('refuge-enabled').disabled =
-      unavailable || manualCount() >= MANUAL_CAPACITY;
-    get<HTMLButtonElement>('clear-refuges').disabled =
-      unavailable || manualCount() >= MANUAL_CAPACITY;
-    root.querySelectorAll<HTMLButtonElement>('[data-refuge-tool]').forEach((button) => {
-      button.disabled =
-        unavailable || !confirmedRefuges.enabled || manualCount() >= MANUAL_CAPACITY;
-    });
+    const manualBlocked = unavailable || manualCount() >= MANUAL_CAPACITY;
+    for (const action of ['clear-walls', 'regenerate-walls', 'refuge-enabled', 'clear-refuges']) {
+      const control = get<HTMLButtonElement | HTMLInputElement>(action);
+      if (control.disabled !== manualBlocked) control.disabled = manualBlocked;
+    }
+    for (const button of refugeButtons) {
+      const disabled = manualBlocked || !confirmedRefuges.enabled;
+      if (button.disabled !== disabled) button.disabled = disabled;
+    }
     text(
       'refuge-pending',
       hasOwner('refuge-mode') || hasOwner('clear-refuges') || hasOwner('paint-refuge')
@@ -672,6 +672,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       .querySelectorAll<HTMLButtonElement>('button[data-tool]')
       .forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === tool)));
     canvas.dataset.tool = tool;
+    get<HTMLInputElement>('refuge-intensity').disabled = tool === 'erase-temperature';
     if (tool === 'plant') tab('organism');
     const painting = ['food', 'wall', 'erase'].includes(tool) || refugeTool(tool);
     get('brush-control').hidden = !painting;
@@ -1246,7 +1247,9 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   });
   const keyboard = (event: KeyboardEvent): void => {
     if (
-      (event.target instanceof HTMLElement && event.target.matches('input,select,textarea')) ||
+      (event.target instanceof HTMLElement &&
+        (event.target.matches('input,select,textarea') ||
+          (event.code === 'Space' && event.target.matches('button')))) ||
       event.ctrlKey ||
       event.metaKey ||
       event.altKey ||
@@ -1354,6 +1357,10 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       return;
     }
     if (data.type !== 'frame' || stopped) return;
+    if (integer(data.refugeModeId, 0, Number.MAX_SAFE_INTEGER)) {
+      if (data.refugeModeId < settledRefugeId) return;
+      settledRefugeId = data.refugeModeId;
+    }
     renderPlayback(data.playback);
     renderFrame(data.frame, data.selected);
   };

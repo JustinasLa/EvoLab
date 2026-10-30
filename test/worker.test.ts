@@ -36,6 +36,9 @@ function sender(scope: Scope) {
     'shock',
     'clear-walls',
     'regenerate-walls',
+    'refuge-mode',
+    'paint-refuge',
+    'clear-refuges',
   ];
   function raw(data: any): void {
     const tracked = [...manual, 'start', 'load', 'save', 'export-measurements'].includes(data.type);
@@ -311,6 +314,178 @@ describe('terrain worker ownership, literal migration and nonfatal size preserva
     expect(harness.last().selected).toEqual(migrated.save().organisms[0]);
   });
 });
+describe('painted temperature native protocol', () => {
+  function thermalHarness() {
+    const harness = workerHarness();
+    let commandId = 0;
+    const send = (type: string, payload: object = {}, runId = 1) => {
+      const manual = [
+        'refuge-mode',
+        'paint-refuge',
+        'clear-refuges',
+        'begin-stroke',
+        'end-stroke',
+      ].includes(type);
+      const message = {
+        type,
+        runId,
+        ...payload,
+        ...(manual
+          ? { commandId: ++commandId }
+          : ['start', 'load', 'save'].includes(type)
+            ? { requestId: ++commandId }
+            : {}),
+      };
+      harness.scope.onmessage!({ data: message } as MessageEvent);
+      return message;
+    };
+    const save = () => {
+      send('save');
+      return JSON.parse(harness.last('saved').text) as WorldFile;
+    };
+    send('start', { settings: DEFAULTS });
+    send('pause');
+    return { ...harness, send, save };
+  }
+  const brush = { rulesVersion: 1 as const, tool: 'warm' as const, radius: 1, units: 4 };
+  it.each([1, 4, 12])(
+    'keeps paused edits, exact Step and one running callback at cadence %i',
+    (speed) => {
+      const harness = thermalHarness(),
+        reference = new Ecosystem();
+      harness.send('speed', { value: speed });
+      harness.send('refuge-mode', { rulesVersion: 1, enabled: true });
+      reference.changeRefugeMode(true);
+      harness.send('begin-stroke', { ...brush, strokeId: 8 });
+      const command = harness.send('paint-refuge', { ...brush, strokeId: 8, x: 0, y: 0 });
+      const outcome = reference.paintRefuge(brush, 0, 0);
+      expect(harness.last('manual-result')).toMatchObject({
+        ...command,
+        type: 'manual-result',
+        status: 'applied',
+        ...outcome,
+      });
+      expect(harness.save()).toEqual(reference.save());
+      expect(Object.prototype.toString.call(harness.last().frame.thermalRefuges.units)).toBe(
+        '[object Int8Array]',
+      );
+      harness.send('end-stroke', { strokeId: 8 });
+      harness.send('step');
+      reference.step();
+      expect(harness.save()).toEqual(reference.save());
+      harness.send('resume');
+      harness.advance();
+      advanceReference(reference, speed);
+      harness.send('pause');
+      expect(harness.save()).toEqual(reference.save());
+      expect(harness.tasks).toHaveLength(1);
+      harness.send('refuge-mode', { rulesVersion: 1, enabled: false });
+      reference.changeRefugeMode(false);
+      harness.send('clear-refuges', { rulesVersion: 1 });
+      reference.clearRefuges();
+      expect(harness.save()).toEqual(reference.save());
+      expect(harness.transferStats.buffers).toBe(harness.transferStats.batches * 3);
+      expect(harness.transferStats.duplicates).toBe(0);
+    },
+  );
+  function advanceReference(world: Ecosystem, ticks: number) {
+    for (let tick = 0; tick < ticks; tick++) world.step();
+  }
+  it('rejects malformed, mismatched, stale, duplicate and closed commands with exact echoes and no changes', () => {
+    const harness = thermalHarness();
+    const before = harness.save();
+    harness.send('paint-refuge', { ...brush, strokeId: 8, x: 0, y: 0 });
+    expect(harness.last('error').message).toContain('closed');
+    expect(harness.save()).toEqual(before);
+    harness.send('refuge-mode', { rulesVersion: 2, enabled: true });
+    expect(harness.last('error').operation).toBe('refuge-mode');
+    harness.send('clear-refuges', { rulesVersion: 2 });
+    expect(harness.last('error').operation).toBe('clear-refuges');
+    harness.send('refuge-mode', { rulesVersion: 1, enabled: true });
+    harness.send('begin-stroke', { ...brush, strokeId: 8 });
+    for (const payload of [
+      { ...brush, units: 8 },
+      { ...brush, tool: 'cool', units: -4 },
+      { ...brush, radius: 0 },
+      { ...brush, rulesVersion: 2 },
+      { ...brush, x: 240 },
+    ]) {
+      const state = harness.save();
+      harness.send('paint-refuge', { x: 0, y: 0, strokeId: 8, ...payload });
+      expect(harness.last('error').operation).toBe('paint-refuge');
+      expect(harness.save()).toEqual(state);
+    }
+    const command = harness.send('paint-refuge', { ...brush, strokeId: 8, x: 0, y: 0 });
+    const applied = harness.save();
+    harness.scope.onmessage!({ data: command } as MessageEvent);
+    expect(harness.save()).toEqual(applied);
+    harness.send('paint-refuge', { ...brush, strokeId: 8, x: 0, y: 0 }, 0);
+    expect(harness.save()).toEqual(applied);
+    harness.send('refuge-mode', { rulesVersion: 1, enabled: false });
+    const disabled = harness.save();
+    harness.send('paint-refuge', { ...brush, strokeId: 8, x: 0, y: 0 });
+    expect(harness.save()).toEqual(disabled);
+  });
+  it('counts all 4096 valid dabs including saturation no-ops and reserves no row for the 4097th rejection', () => {
+    const harness = thermalHarness();
+    harness.send('refuge-mode', { rulesVersion: 1, enabled: true });
+    const config = { ...brush, radius: 0, units: 32, strokeId: 9 };
+    harness.send('begin-stroke', config);
+    for (let dab = 0; dab < 4096; dab++) harness.send('paint-refuge', { ...config, x: 0, y: 0 });
+    expect(harness.last('manual-result')).toMatchObject({
+      status: 'no-op',
+      rowSequence: null,
+      nonzeroCells: 1,
+    });
+    const before = harness.save();
+    harness.send('paint-refuge', { ...config, x: 1, y: 0 });
+    expect(harness.last('error').message).toContain('exhausted');
+    expect(harness.save()).toEqual(before);
+    expect(before.interventions.entries.at(-1)).toMatchObject({
+      detail: { successfulCommands: 1, changedBrushCells: 1 },
+    });
+  });
+  it.each(['refuge-mode', 'paint-refuge', 'clear-refuges'])(
+    'reports truthful applied-before-terminal-publication failure for %s',
+    (operation) => {
+      const harness = thermalHarness(),
+        reference = new Ecosystem();
+      if (operation !== 'refuge-mode') {
+        harness.send('refuge-mode', { rulesVersion: 1, enabled: true });
+        reference.changeRefugeMode(true);
+      }
+      if (operation === 'clear-refuges') {
+        harness.send('begin-stroke', { ...brush, strokeId: 8 });
+        harness.send('paint-refuge', { ...brush, strokeId: 8, x: 0, y: 0 });
+        reference.paintRefuge(brush, 0, 0);
+      }
+      if (operation === 'paint-refuge') harness.send('begin-stroke', { ...brush, strokeId: 8 });
+      const publish = harness.scope.postMessage;
+      let thrown = false;
+      harness.scope.postMessage = (data, transfer) => {
+        if (!thrown && data.operation === operation) {
+          thrown = true;
+          throw new Error('terminal publication failed');
+        }
+        publish(data, transfer);
+      };
+      if (operation === 'refuge-mode') {
+        harness.send(operation, { rulesVersion: 1, enabled: true });
+        reference.changeRefugeMode(true);
+      } else if (operation === 'paint-refuge') {
+        harness.send(operation, { ...brush, strokeId: 8, x: 0, y: 0 });
+        reference.paintRefuge(brush, 0, 0);
+      } else {
+        harness.send(operation, { rulesVersion: 1 });
+        reference.clearRefuges();
+      }
+      expect(harness.last('error')).toMatchObject({ fatal: true });
+      expect(harness.last('error').message).toContain('The action completed');
+      expect(harness.last('error')).not.toHaveProperty('operation');
+      expect(harness.save()).toEqual(reference.save());
+    },
+  );
+});
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
@@ -334,6 +509,9 @@ describe('correlated manual/export worker protocol', () => {
           'shock',
           'clear-walls',
           'regenerate-walls',
+          'refuge-mode',
+          'paint-refuge',
+          'clear-refuges',
         ].includes(type)
           ? 'commandId'
           : 'requestId']: ++posting,
@@ -353,6 +531,9 @@ describe('correlated manual/export worker protocol', () => {
       'shock',
       'clear-walls',
       'regenerate-walls',
+      'refuge-mode',
+      'paint-refuge',
+      'clear-refuges',
     ].flatMap((operation) =>
       ['frame-build', 'frame-publication'].flatMap((fault) =>
         (operation === 'initial-start' ? [false] : [false, true]).map((pending) => [
@@ -390,6 +571,29 @@ describe('correlated manual/export worker protocol', () => {
         targetRun = ['start', 'load'].includes(operation) ? 2 : 1,
         publish = harness.scope.postMessage,
         originalFrame = Ecosystem.prototype.frame;
+      if (operation === 'paint-refuge' || operation === 'clear-refuges') {
+        harness.post('refuge-mode', { rulesVersion: 1, enabled: true });
+        reference.changeRefugeMode(true);
+        if (operation === 'clear-refuges') {
+          harness.post('begin-stroke', {
+            strokeId: 20,
+            rulesVersion: 1,
+            tool: 'warm',
+            radius: 0,
+            units: 4,
+          });
+          harness.post('paint-refuge', {
+            strokeId: 20,
+            rulesVersion: 1,
+            tool: 'warm',
+            radius: 0,
+            units: 4,
+            x: 1,
+            y: 1,
+          });
+          reference.paintRefuge({ rulesVersion: 1, tool: 'warm', radius: 0, units: 4 }, 1, 1);
+        }
+      }
       vi.spyOn(Ecosystem.prototype, 'frame').mockImplementation(function (this: Ecosystem) {
         if (armed && fault === 'frame-build') {
           armed = false;
@@ -429,6 +633,17 @@ describe('correlated manual/export worker protocol', () => {
             after: { offset: reference.eventOffset, until: reference.eventUntil },
           },
         });
+      } else if (operation === 'refuge-mode') {
+        harness.post('refuge-mode', { rulesVersion: 1, enabled: true });
+        reference.changeRefugeMode(true);
+      } else if (operation === 'clear-refuges') {
+        harness.post('clear-refuges', { rulesVersion: 1 });
+        reference.clearRefuges();
+      } else if (operation === 'paint-refuge') {
+        const brush = { rulesVersion: 1 as const, tool: 'warm' as const, radius: 0, units: 4 };
+        harness.post('begin-stroke', { ...brush, strokeId: 21 });
+        harness.post('paint-refuge', { ...brush, strokeId: 21, x: 1, y: 1 });
+        reference.paintRefuge(brush, 1, 1);
       } else if (operation === 'clear-walls' || operation === 'regenerate-walls') {
         const action = operation === 'clear-walls' ? 'clear' : 'regenerate';
         const recipe = { version: 1 as const, preset: 'chambered-refuges' as const, seed: 0 };

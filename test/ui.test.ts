@@ -243,7 +243,16 @@ function ownershipBridge(mountFunction = mount, beforePublish: (data: any) => vo
   };
 }
 describe('post-success publication failures with real ecology and independent physical owners', () => {
-  it.each(['start', 'load', 'settings', 'paint', 'shock'])(
+  it.each([
+    'start',
+    'load',
+    'settings',
+    'paint',
+    'shock',
+    'refuge-mode',
+    'paint-refuge',
+    'clear-refuges',
+  ])(
     'shows an independent stopped failure after one successful %s and recovers the applied world explicitly',
     async (operation) => {
       let armed = false,
@@ -270,12 +279,24 @@ describe('post-success publication failures with real ecology and independent ph
       });
       bridge.advance();
       expect(bridge.callbackCount).toBe(0);
+      if (operation === 'paint-refuge' || operation === 'clear-refuges') {
+        click('refuge-enabled');
+        if (operation === 'clear-refuges') {
+          root.querySelector<HTMLButtonElement>('[data-tool="warm"]')!.click();
+          pointer('pointerdown', 50, 50);
+          pointer('pointerup');
+        }
+      }
       bridge.holdTerminals();
       click('measurements-json');
       click('save');
       set('mutation', '0.2');
-      if (operation === 'paint') {
-        root.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
+      if (operation === 'paint' || operation === 'paint-refuge') {
+        root
+          .querySelector<HTMLButtonElement>(
+            `[data-tool="${operation === 'paint' ? 'food' : 'warm'}"]`,
+          )!
+          .click();
         pointer('pointerdown', 50, 50);
       } else {
         root.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
@@ -300,6 +321,8 @@ describe('post-success publication failures with real ecology and independent ph
       if (operation === 'start') click('reset');
       else if (operation === 'load') await loadText(JSON.stringify(candidate.save()));
       else if (operation === 'settings') set('nutrients', '7');
+      else if (operation === 'refuge-mode') click('refuge-enabled');
+      else if (operation === 'clear-refuges') click('clear-refuges');
       else if (operation === 'shock')
         root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
       else {
@@ -319,6 +342,15 @@ describe('post-success publication failures with real ecology and independent ph
       if (operation === 'start') reference = new Ecosystem(command.settings);
       else if (operation === 'load') reference = candidate;
       else if (operation === 'settings') reference.changeSettings(command.settings);
+      else if (operation === 'refuge-mode') reference.changeRefugeMode(command.enabled);
+      else if (operation === 'clear-refuges') reference.clearRefuges();
+      else if (operation === 'paint-refuge')
+        reference.paintRefuge(
+          command,
+          command.x,
+          command.y,
+          reference.save().interventions.entries.at(-1)!.sequence,
+        );
       else if (operation === 'shock') {
         const before = { offset: reference.eventOffset, until: reference.eventUntil };
         reference.shock(command.kind);
@@ -2498,5 +2530,217 @@ describe('pixel rendering and view transforms', () => {
     expect(genomeSvg(founder(0))).toContain('svg');
     expect(organismHtml(null, sample)).toContain('Click any');
     expect(organismHtml(organism, sample)).toContain('Preferred');
+  });
+});
+
+describe('explicit painted temperature controls and authoritative views', () => {
+  it('does not let held earlier mode receipts or frames revert a newer authoritative frame', () => {
+    const bridge = ownershipBridge();
+    bridge.holdTerminals((data) => data.operation === 'refuge-mode');
+    click('refuge-enabled');
+    const firstId = [...bridge.records.keys()][0],
+      earlierFrame = structuredClone(bridge.latestFrame);
+    click('refuge-enabled');
+    const secondId = [...bridge.records.keys()].at(-1)!;
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(false);
+    expect(bridge.latestFrame.refugeModeId).toBe(secondId);
+    bridge.deliver(firstId);
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(false);
+    bridge.emit(earlierFrame);
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(false);
+    bridge.deliver(secondId);
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(false);
+    expect(bridge.records.size).toBe(0);
+  });
+  it('keeps authoritative mode during pending delivery, rejects wrong echoes and drains the matching owner once', () => {
+    const bridge = ownershipBridge();
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(false);
+    bridge.holdTerminals((data) => data.operation === 'refuge-mode');
+    click('refuge-enabled');
+    const [id, record] = [...bridge.records].find(
+      ([, record]) => record.command.type === 'refuge-mode',
+    )!;
+    expect(get('refuge-pending').textContent).toContain('Pending');
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(true);
+    bridge.emit({ ...record.terminal, enabled: false });
+    expect(get('refuge-pending').textContent).toContain('Pending');
+    bridge.deliver(id);
+    expect(get('refuge-pending').textContent).toBe('');
+    expect(get('notice').textContent).toContain('applied');
+    bridge.holdTerminals(() => false);
+    click('refuge-enabled');
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(false);
+    bridge.emit(record.terminal);
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(false);
+  });
+  it('paints temperature independently of invalid designer anatomy and freezes each stroke configuration', () => {
+    const bridge = ownershipBridge();
+    click('refuge-enabled');
+    root.querySelector<HTMLButtonElement>('[data-x="4"][data-y="4"]')!.click();
+    set('brush', '1');
+    set('refuge-intensity', '25');
+    root.querySelector<HTMLButtonElement>('[data-tool="warm"]')!.click();
+    pointer('pointerdown', 50, 50);
+    pointer('pointermove', 60, 50);
+    set('refuge-intensity', '4');
+    pointer('pointermove', 70, 50);
+    pointer('pointerup');
+    const history = bridge.latestFrame.frame.interventions.entries;
+    expect(history.at(-1)).toMatchObject({
+      kind: 'refuge-paint',
+      detail: { rulesVersion: 1, units: 25, radius: 1, successfulCommands: 2 },
+    });
+    root.querySelector<HTMLButtonElement>('[data-tool="cool"]')!.click();
+    pointer('pointerdown');
+    pointer('pointerup');
+    expect(bridge.latestFrame.frame.interventions.entries.at(-1)).toMatchObject({
+      detail: { tool: 'cool', units: -4 },
+    });
+    root.querySelector<HTMLButtonElement>('[data-tool="erase-temperature"]')!.click();
+    expect(get<HTMLInputElement>('refuge-intensity').disabled).toBe(true);
+    pointer('pointerdown');
+    pointer('pointerup');
+    expect(bridge.latestFrame.frame.interventions.entries.at(-1)).toMatchObject({
+      detail: { tool: 'erase-temperature', units: 0 },
+    });
+    get<HTMLInputElement>('refuge-intensity').type = 'number';
+    set('refuge-intensity', '33');
+    expect(get('notice').textContent).toContain('whole-number');
+    expect(bridge.records.size).toBe(0);
+  });
+  it('retains inactive stored paint, clears only temperature and truthfully distinguishes no-op actions', () => {
+    const bridge = ownershipBridge();
+    click('refuge-enabled');
+    root.querySelector<HTMLButtonElement>('[data-tool="warm"]')!.click();
+    pointer('pointerdown');
+    pointer('pointerup');
+    const before = bridge.latestFrame.frame;
+    click('refuge-enabled');
+    expect(get('refuge-summary').textContent).toContain('Disabled · stored paint');
+    const disabledTool = root.querySelector<HTMLButtonElement>('button[data-tool="warm"]')!;
+    expect(disabledTool.disabled).toBe(true);
+    disabledTool.disabled = false;
+    disabledTool.click();
+    expect(get('notice').textContent).toContain('Enable painted temperature');
+    pointer('pointerdown');
+    pointer('pointerup');
+    expect(get('notice').textContent).toContain('disabled');
+    click('clear-refuges');
+    expect(get('refuge-summary').textContent).toContain('Disabled · empty');
+    expect(bridge.latestFrame.frame.stats).toEqual(before.stats);
+    expect(bridge.latestFrame.frame.cells).toEqual(before.cells);
+    click('clear-refuges');
+    expect(get('notice').textContent).toContain('unchanged');
+  });
+  it('restores imported mode and failed-load field atomically without posting draft intensity as settings', async () => {
+    const harness = realWorker();
+    harness.deliver();
+    const candidate = new Ecosystem();
+    candidate.changeRefugeMode(true);
+    candidate.paintRefuge({ rulesVersion: 1, tool: 'warm', radius: 0, units: 25 }, 120, 78);
+    await loadText(JSON.stringify(candidate.save()));
+    harness.deliver();
+    expect(get('notice').textContent).toContain('Imported painted field');
+    set('refuge-intensity', '31');
+    const before = harness.save(),
+      calls = worker.postMessage.mock.calls.length;
+    await loadText(
+      JSON.stringify({
+        ...before,
+        thermalRefuges: { ...before.thermalRefuges, cells: [[37440, 4]] },
+      }),
+    );
+    harness.deliver();
+    expect(harness.save()).toEqual(before);
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(true);
+    expect(get<HTMLInputElement>('refuge-intensity').value).toBe('31');
+    expect(worker.postMessage.mock.calls.slice(calls).map(([command]) => command.type)).toEqual([
+      'load',
+    ]);
+    click('pause');
+    harness.deliver();
+    click('step');
+    harness.deliver();
+    candidate.step();
+    expect(harness.save()).toEqual(candidate.save());
+  });
+  it('shares all32 manual owners and the reserved close lease without retrying rejected thermal points', () => {
+    const bridge = ownershipBridge();
+    click('refuge-enabled');
+    root.querySelector<HTMLButtonElement>('[data-tool="warm"]')!.click();
+    bridge.blockProcessing();
+    pointer('pointerdown');
+    for (let point = 0; point < 32; point++) pointer('pointermove', 50 + point, 50);
+    pointer('pointerup');
+    expect(bridge.records.size).toBe(33);
+    expect(bridge.counts.M).toBe(33);
+    expect(bridge.counts.C).toBe(1);
+    expect(get('notice').textContent).toContain('Partial temperature stroke');
+    bridge.processAll();
+    expect(bridge.records.size).toBe(0);
+    const count = bridge.counts.M;
+    expect(get('refuge-pending').textContent).toBe('');
+    expect(bridge.counts.M).toBe(count);
+  });
+  it('stops an injected four-command thermal UI ceiling without modifying real production limits', async () => {
+    vi.resetModules();
+    vi.doMock('../src/model', async (original) => ({
+      ...(await original<object>()),
+      STROKE_COMMAND_CAPACITY: 4,
+    }));
+    const { mount: boundedMount } = await import('../src/main');
+    vi.doUnmock('../src/model');
+    const bridge = ownershipBridge(boundedMount);
+    click('refuge-enabled');
+    root.querySelector<HTMLButtonElement>('[data-tool="warm"]')!.click();
+    pointer('pointerdown');
+    for (let command = 1; command < 4; command++) pointer('pointermove');
+    pointer('pointermove');
+    pointer('pointerup');
+    expect(bridge.counts).toMatchObject({ M: 6, C: 1 });
+    expect(bridge.latestFrame.frame.interventions.entries.at(-1).detail.successfulCommands).toBe(4);
+    expect(bridge.records.size).toBe(0);
+  });
+  it('presents all three distinct manual thermal detail kinds without treating them as shocks', () => {
+    const bridge = ownershipBridge();
+    click('refuge-enabled');
+    root.querySelector<HTMLButtonElement>('[data-tool="warm"]')!.click();
+    pointer('pointerdown');
+    pointer('pointerup');
+    click('clear-refuges');
+    for (const entry of bridge.latestFrame.frame.interventions.entries) {
+      set('telemetry-intervention', String(entry.sequence), 'change');
+      paint(0);
+      const detail = get('telemetry').textContent;
+      expect(detail).toContain('Rules version');
+      if (entry.kind === 'refuge-paint') expect(detail).toContain('not a replay');
+      if (entry.kind === 'refuge-clear') expect(detail).toContain('Mode unchanged');
+    }
+  });
+  it('uses exact authoritative normalized anchor input in inspection and temperature pixels, preserving functional colors', () => {
+    const candidate = new Ecosystem({ ...DEFAULTS, climate: 0 }, false);
+    candidate.spawn(
+      { cells: [{ x: 0, y: 0, type: 7 }], preference: 0.75, tolerance: 0.125, tempo: 5 },
+      120,
+      78,
+    );
+    candidate.changeRefugeMode(true);
+    candidate.paintRefuge({ rulesVersion: 1, tool: 'warm', radius: 0, units: 25 }, 120, 78);
+    const frame = candidate.frame(),
+      selected = candidate.save().organisms[0];
+    expect(organismHtml(selected, frame)).toContain('0.75');
+    expect(organismHtml(selected, frame)).toContain('+0.25 (25 units)');
+    const canvas = get<HTMLCanvasElement>('world'),
+      buffer = document.createElement('canvas'),
+      context = buffer.getContext('2d')!,
+      putImageData = vi.fn();
+    context.putImageData = putImageData;
+    draw(canvas, buffer, frame, { zoom: 1, x: 0, y: 0 }, true, 0);
+    const image = putImageData.mock.calls.at(-1)![0];
+    expect(Array.from(image.data.slice(0, 3))).toEqual([28, 31, 40]);
+    const position = (78 * 240 + 120) * 4;
+    expect(Array.from(image.data.slice(position, position + 3))).not.toEqual([37, 25, 30]);
+    candidate.changeRefugeMode(false);
+    expect(organismHtml(selected, candidate.frame())).toContain('0 (0 units)');
   });
 });

@@ -36,7 +36,8 @@ export function startWorker(
     selected = 0;
   let pauseOnExtinction = true,
     extinction: ExtinctionSummary | null = null;
-  let postingWatermark = 0;
+  let postingWatermark = 0,
+    refugeModeId = 0;
   let stroke: {
     id: number;
     tool: StrokeTool;
@@ -105,6 +106,7 @@ export function startWorker(
       {
         type: 'frame',
         runId,
+        refugeModeId,
         frame,
         selected: world.organisms.get(selected) ?? null,
         playback: playback(),
@@ -230,6 +232,7 @@ export function startWorker(
         const terrain = data.terrain === undefined ? DEFAULT_TERRAIN : data.terrain;
         if (!validTerrain(terrain)) throw new Error('Invalid wall recipe.');
         world = new Ecosystem(data.settings, true, { terrain });
+        refugeModeId = id;
         runId = data.runId;
         paused = false;
         selected = 0;
@@ -289,6 +292,7 @@ export function startWorker(
           return;
         }
         world = restored;
+        refugeModeId = id;
         paused = false;
         selected = 0;
         extinction = world.organisms.size ? null : { tick: world.tick, cause: 'empty-import' };
@@ -357,6 +361,7 @@ export function startWorker(
         if (data.rulesVersion !== 1 || typeof data.enabled !== 'boolean')
           throw new Error('Invalid painted temperature mode payload.');
         const sequence = world.changeRefugeMode(data.enabled);
+        refugeModeId = id;
         terrainApplied = sequence !== null;
         result(sequence === null ? 'no-op' : 'applied', sequence, {
           nonzeroCells: world.thermalRefuges.nonzeroCells,
@@ -387,7 +392,7 @@ export function startWorker(
         if (outcome.rowSequence !== null) stroke.sequence = outcome.rowSequence;
         terrainApplied = outcome.rowSequence !== null;
         result(terrainApplied ? 'applied' : 'no-op', outcome.rowSequence, outcome);
-        send();
+        if (terrainApplied) send();
       } else if (data.type === 'settings' && world) {
         stroke = null;
         if (!data.settings || typeof data.settings !== 'object' || Array.isArray(data.settings))
