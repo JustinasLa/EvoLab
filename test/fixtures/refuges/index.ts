@@ -44,3 +44,27 @@ export function predecessor(saved: WorldFile): WorldFileV6 {
     },
   };
 }
+
+// Compare object boundaries without normalizing raw Infinity or signed zero.
+// Iteration also preserves the captured deep-path coverage without recursion.
+export function identicalRecords(actual: unknown, expected: unknown): void {
+  const pending: [unknown, unknown][] = [[actual, expected]];
+  while (pending.length) {
+    const [left, right] = pending.pop()!;
+    if (right && typeof right === 'object') {
+      assert(left !== null && typeof left === 'object');
+      assert.notEqual(left, right, 'Independent snapshots must be detached');
+      assert.equal(Object.getPrototypeOf(left), Object.getPrototypeOf(right));
+      const keys = Reflect.ownKeys(right);
+      assert.deepEqual(Reflect.ownKeys(left), keys);
+      for (const key of keys) {
+        assert(Object.hasOwn(left, key));
+        const actualProperty = Object.getOwnPropertyDescriptor(left, key)!;
+        const expectedProperty = Object.getOwnPropertyDescriptor(right, key)!;
+        for (const flag of ['enumerable', 'configurable', 'writable', 'get', 'set'] as const)
+          assert.equal(actualProperty[flag], expectedProperty[flag]);
+        pending.push([actualProperty.value, expectedProperty.value]);
+      }
+    } else assert(Object.is(left, right));
+  }
+}

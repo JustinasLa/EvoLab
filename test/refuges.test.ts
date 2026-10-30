@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import assert from 'node:assert/strict';
 import { Ecosystem } from '../src/ecosystem';
 import {
   DEFAULTS,
@@ -20,7 +19,7 @@ import {
   activeRefugeUnits,
   validRefugeBrush,
 } from '../src/refuges';
-import { acceptedReference, fixtureText, predecessor } from './fixtures/refuges';
+import { acceptedReference, fixtureText, predecessor, identicalRecords } from './fixtures/refuges';
 import { advance } from './fixtures/telemetry';
 
 const brush = (units = 4, radius = 0): RefugeBrush => ({
@@ -318,20 +317,6 @@ describe('painted temperature mechanics and genuine accepted-base equivalence', 
   });
 });
 
-function identicalRecords(actual: unknown, expected: unknown): void {
-  const pending: [unknown, unknown][] = [[actual, expected]];
-  while (pending.length) {
-    const [left, right] = pending.pop()!;
-    if (right && typeof right === 'object') {
-      assert(left !== null && typeof left === 'object');
-      const keys = Object.keys(right);
-      assert.deepEqual(Object.keys(left as object), keys);
-      assert.equal(Array.isArray(left), Array.isArray(right));
-      for (const key of keys) pending.push([(left as any)[key], (right as any)[key]]);
-    } else assert(Object.is(left, right));
-  }
-}
-
 describe('strict owned field and history, without narrowing historically open records', () => {
   for (const location of ['settings', 'organism', 'genome', 'cell'])
     for (const family of ['overflow', 'signed', 'prototype'])
@@ -342,6 +327,31 @@ describe('strict owned field and history, without narrowing historically open re
             ),
             reference = acceptedReference(text),
             world = Ecosystem.load(text);
+          const parsed = JSON.parse(text);
+          identicalRecords(structuredClone(parsed), parsed);
+          identicalRecords(predecessor(world.save()), reference.save());
+          const detached = world.save();
+          identicalRecords(detached, world.save());
+          const records = [
+            detached.settings,
+            detached.organisms[0],
+            detached.organisms[0].genome,
+            detached.organisms[0].genome.cells[0],
+          ];
+          for (const record of records) {
+            Object.defineProperty(record, '__proto__', {
+              value: { changed: true },
+              configurable: true,
+            });
+            Object.defineProperty(record, 'constructor', {
+              value: { changed: true },
+              configurable: true,
+            });
+            Object.defineProperty(record, 'prototype', {
+              value: { changed: true },
+              configurable: true,
+            });
+          }
           identicalRecords(predecessor(world.save()), reference.save());
           const current = JSON.stringify(world.save()),
             original = JSON.stringify(reference.save()),

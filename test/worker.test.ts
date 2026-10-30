@@ -4,6 +4,7 @@ import { Ecosystem } from '../src/ecosystem';
 import { legacyV3, legacyV4, legacyV5, legacyV6 } from './fixtures/telemetry';
 import { DEFAULT_TERRAIN } from '../src/terrain';
 import { readFileSync } from 'node:fs';
+import { acceptedReference, fixtureText, predecessor, identicalRecords } from './fixtures/refuges';
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
 import {
   DEFAULTS,
@@ -142,6 +143,73 @@ function workerHarness(startFunction = startWorker) {
     },
   };
 }
+describe('frozen raw boundary admission and recovery', () => {
+  it.each(['known-climate-overflow', 'known-energy-negative-overflow'])(
+    'rejects original raw %s before replacement and preserves independent exact Step',
+    (name) => {
+      const text = fixtureText(`capture-boundaries-attempt2/inputs/${name}.json`);
+      expect(text).toContain(name === 'known-climate-overflow' ? '1e999' : '-1e999');
+      expect(() => acceptedReference(text)).toThrow();
+      const original = fixtureText('capture-direct/inputs/direct-organism-prototype-v6.json'),
+        reference = acceptedReference(original),
+        harness = workerHarness();
+      harness.send({ type: 'load', runId: 1, text: original });
+      harness.send({ type: 'pause' });
+      harness.send({ type: 'inspect', x: 120, y: 78 });
+      const before = harness.saveText(),
+        queued = harness.tasks.length,
+        count = harness.responseCount;
+      identicalRecords(harness.last().selected, reference.save().organisms[0]);
+      harness.send({ type: 'load', runId: 2, text });
+      expect(harness.responseCount).toBe(count + 1);
+      const error = harness.last('error');
+      expect(error).toMatchObject({
+        runId: 2,
+        operation: 'load',
+        recovery: { playback: { paused: true } },
+      });
+      expect(error).not.toHaveProperty('fatal');
+      expect(harness.tasks).toHaveLength(queued);
+      identicalRecords(error.recovery.selected, reference.save().organisms[0]);
+      identicalRecords(error.recovery.settings, reference.save().settings);
+      expect(harness.saveText()).toBe(before);
+      expect(predecessor(harness.save())).toEqual(JSON.parse(JSON.stringify(reference.save())));
+      harness.send({ type: 'step' });
+      reference.step();
+      expect(predecessor(harness.save())).toEqual(JSON.parse(JSON.stringify(reference.save())));
+      identicalRecords(harness.last().selected, reference.save().organisms[0]);
+    },
+  );
+  for (const location of ['settings', 'organism', 'genome', 'cell'])
+    for (const family of ['overflow', 'signed', 'prototype'])
+      it(`retains native structured-clone ${location} ${family} descriptors and detached ownership`, () => {
+        const text = fixtureText(`capture-direct/inputs/direct-${location}-${family}-v6.json`),
+          reference = acceptedReference(text),
+          harness = workerHarness();
+        harness.send({ type: 'load', runId: 1, text });
+        harness.send({ type: 'pause' });
+        harness.send({ type: 'inspect', x: 120, y: 78 });
+        const settings = harness.last('loaded').settings,
+          selected = harness.last().selected;
+        // Lifecycle settings intentionally expose only the four known UI fields.
+        const { seed, mutation, nutrients, climate } = reference.save().settings;
+        identicalRecords(settings, { seed, mutation, nutrients, climate });
+        identicalRecords(selected, reference.save().organisms[0]);
+        for (const record of [settings, selected, selected.genome, selected.genome.cells[0]])
+          Object.defineProperty(record, '__proto__', {
+            value: { changed: true },
+            configurable: true,
+          });
+        harness.send({ type: 'snapshot' });
+        identicalRecords(harness.last().selected, reference.save().organisms[0]);
+        expect(predecessor(harness.save())).toEqual(JSON.parse(JSON.stringify(reference.save())));
+        harness.send({ type: 'step' });
+        reference.step();
+        identicalRecords(harness.last().selected, reference.save().organisms[0]);
+        expect(predecessor(harness.save())).toEqual(JSON.parse(JSON.stringify(reference.save())));
+      });
+});
+
 describe('terrain worker ownership, literal migration and nonfatal size preservation', () => {
   it.each([1, 4, 12])(
     'keeps wall operations, paused Step and running callbacks exact at speed %i',
