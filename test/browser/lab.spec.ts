@@ -26,9 +26,21 @@ declare global {
   interface Window {
     terrainNative: {
       frame: Frame | null;
+      frameRunId: number | null;
       selected: any;
       playback: any;
-      lifecycle: { type: string; paused: boolean; runId: number }[];
+      lifecycle: {
+        type: string;
+        paused: boolean;
+        runId: number;
+        requestId: number;
+        completedTick: number;
+        postedSequence: number;
+        receivedSequence: number;
+        pausePostedSequence: number | null;
+        pauseAcknowledgedSequence: number | null;
+        pageStateBeforePause: string | null;
+      }[];
       errors: any[];
       saved: number;
       manual: any | null;
@@ -94,6 +106,7 @@ async function observeTerrainNative(page: import('@playwright/test').Page): Prom
   await page.addInitScript(() => {
     window.terrainNative = {
       frame: null,
+      frameRunId: null,
       selected: null,
       playback: null,
       lifecycle: [],
@@ -106,15 +119,27 @@ async function observeTerrainNative(page: import('@playwright/test').Page): Prom
     window.Worker = new Proxy(window.Worker, {
       construct(target, args, newTarget) {
         const worker: Worker = Reflect.construct(target, args, newTarget);
+        let sequence = 0,
+          pendingLifecycle: {
+            operation: string;
+            runId: number;
+            requestId: number;
+            postedSequence: number;
+            received: boolean;
+          } | null = null,
+          awaitingPause: Window['terrainNative']['lifecycle'][number] | null = null;
         worker.postMessage = new Proxy(worker.postMessage, {
           apply(post, receiver, messages) {
             const result = Reflect.apply(post, receiver, messages);
-            if (
-              (messages[0].type === 'start' || messages[0].type === 'load') &&
-              window.terrainNative.pauseOnLifecycle
-            ) {
-              Reflect.apply(post, receiver, [{ type: 'pause' }]);
-              window.terrainNative.fifoPauses++;
+            if (messages[0].type === 'start' || messages[0].type === 'load') {
+              pendingLifecycle = {
+                operation: messages[0].type,
+                runId: messages[0].runId,
+                requestId: messages[0].requestId,
+                postedSequence: ++sequence,
+                received: false,
+              };
+              awaitingPause = null;
             }
             return result;
           },
@@ -123,23 +148,58 @@ async function observeTerrainNative(page: import('@playwright/test').Page): Prom
           const evidence = window.terrainNative;
           if (data.type === 'frame') {
             evidence.frame = data.frame;
+            evidence.frameRunId = data.runId;
             evidence.selected = data.selected;
             evidence.playback = data.playback;
           }
-          if (data.type === 'playback') evidence.playback = data.playback;
+          if (data.type === 'playback') {
+            evidence.playback = data.playback;
+            if (awaitingPause?.runId === data.runId && data.playback.paused) {
+              awaitingPause.pauseAcknowledgedSequence = ++sequence;
+              awaitingPause = null;
+            }
+          }
           if (data.type === 'manual-result') evidence.manual = data;
           if (data.type === 'saved') evidence.saved++;
           if (data.type === 'error') {
             evidence.errors.push(data);
             if (evidence.errors.length > 4) evidence.errors.shift();
           }
-          if (data.type === 'started' || data.type === 'loaded') {
-            evidence.lifecycle.push({
+          const posted = pendingLifecycle;
+          if (
+            (data.type === 'started' || data.type === 'loaded') &&
+            posted &&
+            !posted.received &&
+            data.operation === posted.operation &&
+            data.type === (posted.operation === 'start' ? 'started' : 'loaded') &&
+            data.runId === posted.runId &&
+            data.requestId === posted.requestId
+          ) {
+            posted.received = true;
+            const receipt: Window['terrainNative']['lifecycle'][number] = {
               type: data.type,
               paused: data.playback.paused,
               runId: data.runId,
-            });
+              requestId: data.requestId,
+              completedTick: data.completedTick,
+              postedSequence: posted.postedSequence,
+              receivedSequence: ++sequence,
+              pausePostedSequence: null,
+              pauseAcknowledgedSequence: null,
+              pageStateBeforePause: null,
+            };
+            evidence.lifecycle.push(receipt);
             if (evidence.lifecycle.length > 4) evidence.lifecycle.shift();
+            // Run after this genuine message finishes dispatching to the application.
+            // This ordinary timer does not replace or shorten any Worker timer.
+            setTimeout(() => {
+              if (pendingLifecycle !== posted || !evidence.pauseOnLifecycle) return;
+              receipt.pageStateBeforePause = document.getElementById('run-state')!.textContent;
+              receipt.pausePostedSequence = ++sequence;
+              awaitingPause = receipt;
+              worker.postMessage({ type: 'pause' });
+              evidence.fifoPauses++;
+            }, 0);
           }
         });
         return worker;
@@ -151,7 +211,17 @@ async function observeTerrainNative(page: import('@playwright/test').Page): Prom
 async function terrainNativeFrame(page: import('@playwright/test').Page) {
   await expect
     .poll(() =>
-      page.evaluate(() => !!window.terrainNative.frame && window.terrainNative.playback?.paused),
+      page.evaluate(() => {
+        const evidence = window.terrainNative,
+          lifecycle = evidence.lifecycle.at(-1);
+        return (
+          !!evidence.frame &&
+          evidence.frameRunId === lifecycle?.runId &&
+          typeof lifecycle?.pauseAcknowledgedSequence === 'number' &&
+          evidence.playback?.paused &&
+          document.getElementById('run-state')?.textContent === 'PAUSED'
+        );
+      }),
     )
     .toBe(true);
   return page.evaluate(() => {
@@ -163,6 +233,19 @@ async function terrainNativeFrame(page: import('@playwright/test').Page) {
       playback: evidence.playback,
     };
   });
+}
+
+function expectReceiptDrivenTerrainPauses(lifecycle: Window['terrainNative']['lifecycle']) {
+  expect(lifecycle.length).toBeGreaterThan(0);
+  for (const receipt of lifecycle) {
+    expect(receipt.requestId).toBeGreaterThan(0);
+    expect(receipt.postedSequence).toBeLessThan(receipt.receivedSequence);
+    expect(receipt.pausePostedSequence).not.toBeNull();
+    expect(receipt.receivedSequence).toBeLessThan(receipt.pausePostedSequence!);
+    expect(receipt.pauseAcknowledgedSequence).not.toBeNull();
+    expect(receipt.pausePostedSequence!).toBeLessThan(receipt.pauseAcknowledgedSequence!);
+    expect(receipt.pageStateBeforePause).toBe('LIVE');
+  }
 }
 
 function terrainExpectedFrame(world: Ecosystem) {
@@ -465,18 +548,19 @@ test('D22-R1-001 native genuine legacy extensions survive three actual saves, re
   reference.step();
   await expect(page.locator('#tick')).toHaveText(`TICK ${reference.tick}`);
   expect(await terrainSave(page, 'opaque-successor-save3.json')).toEqual(reference.save());
-  const loads = await page.evaluate(() =>
-    window.terrainNative.lifecycle.filter((entry) => entry.type === 'loaded'),
-  );
+  const lifecycle = await page.evaluate(() => window.terrainNative.lifecycle);
+  expectReceiptDrivenTerrainPauses(lifecycle);
+  const loads = lifecycle.filter((entry) => entry.type === 'loaded');
   expect(loads).toHaveLength(2);
   expect(loads.every((entry) => !entry.paused)).toBe(true);
   expect(await page.evaluate(() => window.terrainNative.fifoPauses)).toBe(3);
   await test.info().attach('native-opaque-protocol.json', {
     body: JSON.stringify({
+      lifecycle,
       loads,
       ordinaryFifoPauses: await page.evaluate(() => window.terrainNative.fifoPauses),
       protocol:
-        'Each actual start/load post is followed by an explicit ordinary pause on the same real Worker endpoint. Load is processed first and emits its genuine resumed receipt; pause then precedes any scheduled ecology batch. No engine, timer, lifecycle terminal or file bytes are replaced.',
+        'Each actual start/load is correlated by operation, requestId and runId to its genuine resumed lifecycle receipt. After that message finishes dispatching to the application, an ordinary Pause is posted on the same real Worker endpoint and its native acknowledgement is awaited before the checkpoint. References advance independently to the observed tick. No engine, timer, lifecycle terminal or file bytes are replaced.',
     }),
     contentType: 'application/json',
   });
@@ -526,6 +610,7 @@ test('D22-R1-001 native accepted-cap legacy migration fails outbound nonfatally 
   expect(after.frame).toEqual(terrainExpectedFrame(reference));
   expect(after.selected).toEqual(reference.save().organisms[0]);
   expect(after.playback.paused).toBe(true);
+  expectReceiptDrivenTerrainPauses(await page.evaluate(() => window.terrainNative.lifecycle));
   await testInfo.attach('accepted-cap-native-state.json', {
     body: JSON.stringify({
       inputBytes: Buffer.byteLength(input),
