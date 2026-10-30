@@ -7,6 +7,8 @@ import { DEFAULTS, founder, type Frame, type PlaybackState, type WorldFile } fro
 import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../src/blueprint';
 import { startWorker, type Scope } from '../src/worker';
 import { emptyRefuges, refugeSummary } from '../src/refuges';
+import { libraryHarness } from './fixtures/library';
+import { classifyRecord, encodeRecord, libraryCandidate } from '../src/library';
 class WorkerStub extends EventTarget {
   playback: PlaybackState = { paused: false, pauseOnExtinction: true, extinction: null };
   postMessage = vi.fn((data: any) => {
@@ -988,6 +990,49 @@ function chartRecorder() {
   };
 }
 beforeEach(() => {
+  const NativeReader = FileReader;
+  vi.stubGlobal(
+    'FileReader',
+    class extends NativeReader {
+      private fake = false;
+      private ended = false;
+      private value: string | null = null;
+      override get result() {
+        return this.fake ? this.value : super.result;
+      }
+      override readAsText(file: Blob) {
+        const input = file as unknown as { text?: () => Promise<string> };
+        if (file instanceof Blob || !input.text) {
+          super.readAsText(file);
+          return;
+        }
+        this.fake = true;
+        input.text().then(
+          (value) => {
+            if (this.ended) return;
+            this.value = value;
+            this.dispatchEvent(new ProgressEvent('load'));
+            this.dispatchEvent(new ProgressEvent('loadend'));
+          },
+          () => {
+            if (this.ended) return;
+            this.dispatchEvent(new ProgressEvent('error'));
+            this.dispatchEvent(new ProgressEvent('loadend'));
+          },
+        );
+      }
+      override abort() {
+        if (!this.fake) {
+          super.abort();
+          return;
+        }
+        if (this.ended) return;
+        this.ended = true;
+        this.dispatchEvent(new ProgressEvent('abort'));
+        this.dispatchEvent(new ProgressEvent('loadend'));
+      }
+    },
+  );
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
     width: 250,
     height: 180,
@@ -1059,6 +1104,1037 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
+describe('explicit bounded local library', () => {
+  let storage: ReturnType<typeof libraryHarness>;
+  const first = '00000000-0000-4000-8000-000000000001';
+  const second = '00000000-0000-4000-8000-000000000002';
+  const third = '00000000-0000-4000-8000-000000000003';
+  const draft = (name = '<literal> name', tick?: number) =>
+    libraryCandidate(
+      founder(2),
+      name,
+      'description',
+      tick === undefined ? undefined : { captureTick: tick, seed: 42 },
+    );
+  const flush = async () => {
+    for (let phase = 0; phase < 35; phase++) await Promise.resolve();
+  };
+  const open = async () => {
+    get<HTMLDetailsElement>('local-library').open = true;
+    get('local-library').dispatchEvent(new Event('toggle'));
+    await flush();
+  };
+  const select = (id = first) =>
+    root.querySelector<HTMLButtonElement>(`[data-library-id="${id}"]`)!.click();
+  const uploadLocal = async (value: string, designer = false) => {
+    const input = get<HTMLInputElement>(designer ? 'blueprint-file' : 'library-file');
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [{ size: value.length, text: async () => value }],
+    });
+    input.dispatchEvent(new Event('change'));
+    await flush();
+  };
+  beforeEach(() => {
+    dispose();
+    storage = libraryHarness();
+    vi.stubGlobal('indexedDB', storage.factory);
+    dispose = mount(root, worker as unknown as Worker);
+    emit(sample, organism);
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  });
+
+  it('preserves current world and manual interventions through library design replacement with the real worker', async () => {
+    const harness = realWorker();
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
+    harness.deliver();
+    const before = harness.save();
+    expect(before.version).toBe(5);
+    expect(before.telemetry.version).toBe(2);
+    expect(before.interventions.version).toBe(1);
+    expect(before.interventions.entries).toHaveLength(1);
+    storage.values.set(first, encodeRecord(draft('composed design'), 1));
+    await open();
+    click('library-load');
+    await flush();
+    click('library-confirm');
+    await flush();
+    expect(get<HTMLInputElement>('blueprint-name').value).toBe('composed design');
+    click('library-delete');
+    click('library-confirm');
+    await flush();
+    expect(storage.values.size).toBe(0);
+    expect(harness.save()).toEqual(before);
+    expect(get('run-state').textContent).toBe('PAUSED');
+    expect(worker.postMessage.mock.calls.filter(([data]) => data.type === 'shock')).toHaveLength(1);
+  });
+
+  it('round-trips literal names, stable keyed focus, duplicate IDs, rename, replace and delete', async () => {
+    storage.values.set(first, encodeRecord(draft(), 1));
+    storage.values.set(second, encodeRecord(draft('neighbor'), 1));
+    await open();
+    expect(get('library-count').textContent).toContain('2 / 100');
+    select();
+    const button = root.querySelector<HTMLButtonElement>(`[data-library-id="${first}"]`)!;
+    button.focus();
+    storage.values.set(first, encodeRecord(draft('renamed elsewhere'), 2));
+    click('library-refresh');
+    await flush();
+    expect(document.activeElement).toBe(button);
+    expect(button.textContent).toContain('renamed elsewhere');
+    click('library-rename');
+    expect(get<HTMLDialogElement>('library-dialog').open).toBe(true);
+    expect(document.activeElement).toBe(get('library-cancel'));
+    set('library-rename-name', '  <b> 🌿  ');
+    click('library-confirm');
+    await flush();
+    expect(classifyRecord(first, storage.values.get(first))).toMatchObject({
+      revision: 3,
+      blueprint: { name: '  <b> 🌿  ' },
+    });
+    expect(root.querySelector('#library-rows b')).toBeNull();
+    click('library-duplicate');
+    await flush();
+    expect(storage.values.size).toBe(3);
+    const copies = [...storage.values].map(([id, token]) => classifyRecord(id, token));
+    expect(
+      copies.filter((row) => row.kind === 'valid' && row.blueprint.name === '  <b> 🌿  '),
+    ).toHaveLength(2);
+    click('library-export');
+    click('library-export');
+    expect(URL.revokeObjectURL).toHaveBeenCalled();
+    await uploadLocal(serializeBlueprint(draft('incoming').blueprint));
+    expect(get('library-candidate').hidden).toBe(false);
+    click('library-export-candidate');
+    select();
+    click('library-replace');
+    expect(get('library-dialog-description').textContent).toContain(first);
+    click('library-confirm');
+    await flush();
+    expect(classifyRecord(first, storage.values.get(first))).toMatchObject({
+      revision: 4,
+      blueprint: { name: 'incoming' },
+    });
+    click('library-delete');
+    click('library-confirm');
+    await flush();
+    expect(storage.values.has(first)).toBe(false);
+    expect(document.activeElement?.getAttribute('data-library-id')).toBe(second);
+    select(second);
+    click('library-delete');
+    click('library-cancel');
+    expect(storage.values.has(second)).toBe(true);
+    vi.useFakeTimers();
+    click('library-export');
+    vi.advanceTimersByTime(1000);
+  });
+
+  it('loads only a fresh confirmed revision and shares intent ownership with designer files', async () => {
+    storage.values.set(first, encodeRecord(draft('library design'), 1));
+    await open();
+    click('library-load');
+    await flush();
+    expect(get<HTMLDialogElement>('library-dialog').open).toBe(true);
+    await uploadLocal(serializeBlueprint(draft('new designer intent').blueprint), true);
+    expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
+    click('library-confirm');
+    await flush();
+    expect(get<HTMLInputElement>('blueprint-name').value).toBe('new designer intent');
+    click('library-load');
+    await flush();
+    click('library-confirm');
+    await flush();
+    expect(get<HTMLInputElement>('blueprint-name').value).toBe('library design');
+    expect(worker.postMessage.mock.calls.some(([message]) => message.type === 'plant')).toBe(false);
+    click('library-load');
+    await flush();
+    storage.values.set(first, encodeRecord(draft('cross-tab revision'), 2));
+    click('library-confirm');
+    await flush();
+    expect(get('library-status').textContent).toContain('changed or disappeared');
+    expect(get<HTMLInputElement>('blueprint-name').value).toBe('library design');
+    click('library-load');
+    await flush();
+    expect(get('library-status').textContent).toContain('changed or disappeared');
+    click('library-refresh');
+    await flush();
+    click('library-load');
+    await flush();
+    set('blueprint-name', 'synchronous edit');
+    expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
+    click('library-load');
+    await flush();
+    get('library-dialog').dispatchEvent(new Event('cancel', { cancelable: true }));
+    expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
+  });
+
+  it.each(['initial', 'final'])(
+    'cancels a library load on Organism departure during the %s read without releasing its native owner early',
+    async (phase) => {
+      storage.values.set(first, encodeRecord(draft('must not publish'), 1));
+      await open();
+      set('blueprint-name', 'retained designer');
+      set('blueprint-description', 'retained description');
+      root.querySelector<HTMLButtonElement>('button[data-tool="inspect"]')!.click();
+      const design = get('editor').innerHTML;
+      if (phase === 'final') {
+        click('library-load');
+        await flush();
+        expect(get<HTMLDialogElement>('library-dialog').open).toBe(true);
+      }
+      storage.faults.txStall = true;
+      storage.faults.abortThrow = true;
+      click(phase === 'initial' ? 'library-load' : 'library-confirm');
+      await flush();
+      const owner = storage.current;
+      const transactions = storage.connection.transaction.mock.calls.length;
+      const ecosystem = root.querySelector<HTMLButtonElement>('[data-tab="ecosystem"]')!;
+      ecosystem.focus();
+      ecosystem.click();
+      expect(get('library-status').textContent).toContain('Load into designer cancelled');
+      expect(get('library-status').textContent).toContain('no longer visible');
+      const cancelled = get('library-status').textContent;
+      expect(owner.native.abort).toHaveBeenCalledOnce();
+      expect(owner.native.oncomplete).toBeTypeOf('function');
+      click('library-refresh');
+      await flush();
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+      expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
+      delete storage.faults.txStall;
+      delete storage.faults.abortThrow;
+      owner.complete();
+      await flush();
+      expect(owner.native.oncomplete).toBeNull();
+      expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
+      expect(get<HTMLInputElement>('blueprint-name').value).toBe('retained designer');
+      expect(get<HTMLInputElement>('blueprint-description').value).toBe('retained description');
+      expect(get('editor').innerHTML).toBe(design);
+      expect(get('ecosystem-panel').hidden).toBe(false);
+      expect(get('organism-panel').hidden).toBe(true);
+      expect(root.querySelector('button[data-tool="inspect"]')!.getAttribute('aria-pressed')).toBe(
+        'true',
+      );
+      expect(document.activeElement).toBe(ecosystem);
+      expect(get('library-status').textContent).toBe(cancelled);
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+    },
+  );
+
+  it.each(['initial', 'final'])(
+    'cancels the %s completed library read across connection invalidation until terminal delivery',
+    async (phase) => {
+      vi.useFakeTimers();
+      storage.values.set(first, encodeRecord(draft('must not publish'), 1));
+      await open();
+      set('blueprint-name', 'retained designer');
+      set('blueprint-description', 'retained description');
+      root.querySelector<HTMLButtonElement>('button[data-tool="inspect"]')!.click();
+      const design = get('editor').innerHTML;
+      if (phase === 'final') {
+        click('library-load');
+        await flush();
+        expect(get<HTMLDialogElement>('library-dialog').open).toBe(true);
+      }
+      storage.faults.completionStall = 'readonly';
+      click(phase === 'initial' ? 'library-load' : 'library-confirm');
+      await flush();
+      const owner = storage.current;
+      const transactions = storage.connection.transaction.mock.calls.length;
+      get('blueprint-description').focus();
+      storage.connection.onversionchange();
+      await flush();
+      expect(get('library-status').textContent).toContain('Another tab changed');
+      const status = get('library-status').textContent;
+      expect(owner.native.abort).toHaveBeenCalled();
+      expect(owner.native.oncomplete).toBeTypeOf('function');
+      click('library-refresh');
+      await flush();
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+      const captureEffectsAcrossDeadline = vi.spyOn(get('capture-selected'), 'setAttribute');
+      await vi.advanceTimersByTimeAsync(10001);
+      await flush();
+      expect(get('library-status').textContent).toBe(status);
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+      expect(captureEffectsAcrossDeadline).not.toHaveBeenCalled();
+      delete storage.faults.completionStall;
+      owner.releaseCompletion();
+      await flush();
+      expect(owner.native.oncomplete).toBeNull();
+      expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
+      expect(get<HTMLInputElement>('blueprint-name').value).toBe('retained designer');
+      expect(get<HTMLInputElement>('blueprint-description').value).toBe('retained description');
+      expect(get('editor').innerHTML).toBe(design);
+      expect(get('organism-panel').hidden).toBe(false);
+      expect(get('ecosystem-panel').hidden).toBe(true);
+      expect(root.querySelector('button[data-tool="inspect"]')!.getAttribute('aria-pressed')).toBe(
+        'true',
+      );
+      expect(document.activeElement).toBe(get('blueprint-description'));
+      expect(get('library-status').textContent).toBe(status);
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+      expect(captureEffectsAcrossDeadline).not.toHaveBeenCalled();
+      click('library-refresh');
+      await flush();
+      expect(get('library-status').textContent).toContain('Library refreshed');
+      click('library-load');
+      await flush();
+      expect(get<HTMLDialogElement>('library-dialog').open).toBe(true);
+      click('library-confirm');
+      await flush();
+      expect(get<HTMLInputElement>('blueprint-name').value).toBe('must not publish');
+    },
+  );
+
+  it('captures genuine observed ticks without mutating the world and preserves focus across frames', async () => {
+    const capture = get<HTMLButtonElement>('capture-selected');
+    get<HTMLDetailsElement>('specimen-details').open = true;
+    capture.focus();
+    emit({ ...sample, stats: { ...sample.stats, tick: 123 } }, organism);
+    expect(document.activeElement).toBe(capture);
+    capture.click();
+    await flush();
+    expect(storage.values.size).toBe(1);
+    const [id, value] = [...storage.values][0];
+    expect(classifyRecord(id, value)).toMatchObject({ provenance: { captureTick: 123 } });
+    expect(
+      worker.postMessage.mock.calls.some(([message]) =>
+        ['pause', 'resume', 'plant'].includes(message.type),
+      ),
+    ).toBe(false);
+    expect(get('library-selection').textContent).toContain('Observed at tick 123');
+    capture.focus();
+    emit(sample, null);
+    expect(capture.disabled).toBe(true);
+    expect(document.activeElement).toBe(get('specimen-details').querySelector('summary'));
+    emit(sample, organism);
+    capture.focus();
+    click('ecosystem-tab');
+    emit(sample, null);
+    expect(document.activeElement).toBe(get('organism-tab'));
+    emit(sample, organism);
+    click('reset');
+    expect(capture.disabled).toBe(true);
+    worker.emit({ type: 'loaded', settings: DEFAULTS });
+    expect(capture.disabled).toBe(true);
+    worker.emit({ type: 'saved', text: JSON.stringify(world.save()) });
+    expect(capture.disabled).toBe(true);
+    emit(sample, organism);
+    expect(capture.disabled).toBe(false);
+  });
+
+  it('keeps malformed/future rows read-only and rechecks repair CAS after confirmation', async () => {
+    const bad = JSON.stringify({
+      recordVersion: 1,
+      revision: 0,
+      blueprint: serializeBlueprint(draft().blueprint),
+    });
+    storage.values.set(first, bad);
+    storage.values.set(second, JSON.stringify({ recordVersion: 2, extra: true }));
+    storage.values.set('uninspectable', { payload: true });
+    await open();
+    expect(get('library-count').textContent).toContain('3 / 100');
+    expect(root.querySelector<HTMLButtonElement>(`[data-repair-id="${first}"]`)).not.toBeNull();
+    root.querySelector<HTMLButtonElement>(`[data-repair-id="${first}"]`)!.click();
+    storage.values.set(first, encodeRecord(draft('repaired elsewhere'), 1));
+    click('library-confirm');
+    await flush();
+    expect(storage.values.has(first)).toBe(true);
+    storage.values.set(first, bad);
+    click('library-refresh');
+    await flush();
+    root.querySelector<HTMLButtonElement>(`[data-repair-id="${first}"]`)!.click();
+    click('library-confirm');
+    await flush();
+    expect(storage.values.has(first)).toBe(false);
+    expect(storage.values.size).toBe(2);
+    for (const button of root.querySelectorAll<HTMLButtonElement>('#library-rows button'))
+      expect(button.disabled).toBe(true);
+  });
+
+  it.each(['insertion', 'removal', 'sole damaged row'])(
+    'repairs the stable full UUID after %s before an unchanged damaged row',
+    async (change) => {
+      const third = '00000000-0000-4000-8000-000000000003';
+      const valid = encodeRecord(draft('valid neighbor'), 1);
+      const damaged = encodeRecord(draft('damaged target'), 1).replace(
+        '"revision":1',
+        '"revision":0',
+      );
+      const neighbor = encodeRecord(draft('damaged neighbor'), 1).replace(
+        '"revision":1',
+        '"revision":-1',
+      );
+      storage.values.set(second, damaged);
+      if (change !== 'sole damaged row') storage.values.set(third, neighbor);
+      if (change !== 'insertion') storage.values.set(first, valid);
+      await open();
+      const button = root.querySelector<HTMLButtonElement>(`[data-repair-id="${second}"]`)!;
+      if (change === 'insertion') storage.values.set(first, valid);
+      else storage.values.delete(first);
+      click('library-refresh');
+      await flush();
+      expect(root.querySelector(`[data-repair-id="${second}"]`)).toBe(button);
+      const survivors = [...storage.values].filter(([id]) => id !== second);
+      button.click();
+      expect(get('library-dialog-description').textContent).toContain(`Local ID ${second}.`);
+      expect(get('library-dialog-description').textContent).not.toContain(third);
+      click('library-confirm');
+      await flush();
+      expect([...storage.values]).toEqual(survivors);
+    },
+  );
+
+  it('retains an unsaved candidate on quota/full/error and distinguishes committed refresh failure', async () => {
+    await open();
+    storage.faults.requestError = 'QuotaExceededError';
+    click('library-save');
+    await flush();
+    expect(get('library-status').textContent).toContain('storage is full');
+    expect(get('library-candidate').hidden).toBe(false);
+    click('library-save');
+    expect(get('library-status').textContent).toContain('Busy');
+    click('capture-selected');
+    expect(get('library-status').textContent).toContain('unavailable or busy');
+    click('library-import');
+    expect(get('library-status').textContent).toContain('Busy');
+    delete storage.faults.requestError;
+    click('library-add');
+    await flush();
+    expect(get('library-candidate').hidden).toBe(true);
+    storage.faults.txStall = true;
+    click('library-duplicate');
+    await flush();
+    click('library-refresh');
+    click('library-add');
+    window.dispatchEvent(new Event('focus'));
+    storage.faults.requestError = 'UnknownError';
+    storage.faults.txStall = false;
+    storage.current.complete();
+    await flush();
+    expect(get('library-status').textContent).toContain(
+      'committed outcome is unchanged; refresh failed',
+    );
+    delete storage.faults.requestError;
+    click('library-refresh');
+    await flush();
+    await uploadLocal(serializeBlueprint(draft('discard me').blueprint));
+    click('library-discard');
+    expect(get('library-candidate').hidden).toBe(true);
+    vi.mocked(URL.createObjectURL).mockImplementationOnce(() => {
+      throw new Error('download');
+    });
+    click('library-export');
+    expect(get('library-status').textContent).toContain('Could not download');
+  });
+
+  it('bounds dialogs, picker ownership, read deadlines and coalesced refresh requests', async () => {
+    vi.useFakeTimers();
+    storage.values.set(first, encodeRecord(draft(), 1));
+    await open();
+    click('library-rename');
+    vi.advanceTimersByTime(60000);
+    expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
+    click('library-delete');
+    get<HTMLDetailsElement>('local-library').open = false;
+    get('local-library').dispatchEvent(new Event('toggle'));
+    expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
+    await open();
+    click('library-load');
+    await flush();
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await flush();
+    click('library-import');
+    click('library-import');
+    get('blueprint-file').dispatchEvent(new Event('cancel'));
+    vi.advanceTimersByTime(60000);
+    expect(get('library-status').textContent).toContain('picker expired');
+    await uploadLocal(serializeBlueprint(draft().blueprint));
+    expect(get('library-candidate').hidden).toBe(true);
+    click('library-import');
+    get('library-file').dispatchEvent(new Event('cancel'));
+    const input = get<HTMLInputElement>('library-file');
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [{ size: 1, text: () => new Promise(() => {}) }],
+    });
+    input.dispatchEvent(new Event('change'));
+    click('library-refresh');
+    click('library-import');
+    vi.advanceTimersByTime(10000);
+    await flush();
+    expect(get('library-status').textContent).not.toContain('Reading local');
+    await uploadLocal('invalid');
+    expect(get('library-status').textContent).toContain('JSON');
+    click('import-blueprint');
+    get('library-file').dispatchEvent(new Event('change'));
+    get('blueprint-file').dispatchEvent(new Event('cancel'));
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [{ size: 20000, text: async () => '' }],
+    });
+    input.dispatchEvent(new Event('change'));
+    expect(get('library-status').textContent).toContain('16 KiB');
+  });
+
+  it('does not publish stale reads, commits or focus after disposal', async () => {
+    storage.values.set(first, encodeRecord(draft(), 1));
+    await open();
+    storage.faults.txStall = true;
+    click('library-load');
+    await flush();
+    click('library-refresh');
+    click('import-blueprint');
+    get('blueprint-file').dispatchEvent(new Event('cancel'));
+    await flush();
+    storage.faults.txStall = false;
+    await uploadLocal('invalid', true);
+    expect(get<HTMLInputElement>('blueprint-name').value).not.toBe('<literal> name');
+    click('library-load');
+    await flush();
+    dispose();
+    const before = root.innerHTML,
+      focus = document.activeElement;
+    storage.connection.onclose?.();
+    await flush();
+    expect(root.innerHTML).toBe(before);
+    expect(document.activeElement).toBe(focus);
+  });
+
+  it.each(
+    (['delete', 'repair'] as const).flatMap((action) =>
+      (['clear', 'remount', 'supersede'] as const).map((boundary) => ({ action, boundary })),
+    ),
+  )(
+    'suppresses old $action followups across postcommit refresh $boundary',
+    async ({ action, boundary }) => {
+      const original = encodeRecord(draft('target'), 1);
+      const neighbor = encodeRecord(draft('neighbor'), 1);
+      storage.values.set(
+        first,
+        action === 'repair' ? JSON.stringify({ ...JSON.parse(original), revision: 0 }) : original,
+      );
+      storage.values.set(second, neighbor);
+      await open();
+      if (action === 'repair')
+        root.querySelector<HTMLButtonElement>(`[data-repair-id="${first}"]`)!.click();
+      else click('library-delete');
+      storage.faults.completionStall = 'readonly';
+      click('library-confirm');
+      await flush();
+      expect([...storage.values]).toEqual([[second, neighbor]]);
+      expect(get('library-status').textContent).toContain('Write committed');
+      const owner = storage.current;
+      const oldCapture = get('capture-selected');
+      if (boundary === 'supersede') click('library-refresh');
+      else {
+        dispose();
+        root.replaceChildren();
+        if (boundary === 'remount') {
+          worker = new WorkerStub();
+          dispose = mount(root, worker as unknown as Worker);
+        }
+      }
+      document.body.tabIndex = -1;
+      document.body.focus();
+      document.body.removeAttribute('tabindex');
+      expect(document.activeElement).toBe(document.body);
+      const before = root.innerHTML;
+      const queries = vi.spyOn(root, 'querySelector');
+      const captureEffects = vi.spyOn(oldCapture, 'setAttribute');
+      delete storage.faults.completionStall;
+      owner.releaseCompletion();
+      await flush();
+      expect([...storage.values]).toEqual([[second, neighbor]]);
+      expect(document.activeElement).toBe(document.body);
+      if (boundary !== 'supersede') {
+        expect(root.innerHTML).toBe(before);
+        expect(queries).not.toHaveBeenCalled();
+        expect(captureEffects).not.toHaveBeenCalled();
+      } else {
+        expect(get('library-status').textContent).toContain('Library refreshed');
+        expect(root.querySelector(`[data-library-id="${second}"]`)).not.toBeNull();
+      }
+    },
+  );
+
+  it.each(['refresh', 'delete', 'repair'] as const)(
+    'revokes %s refresh publication and followups across connection invalidation without releasing native ownership',
+    async (action) => {
+      vi.useFakeTimers();
+      const original = encodeRecord(draft('target'), 1);
+      const neighbor = encodeRecord(draft('neighbor'), 1);
+      storage.values.set(
+        first,
+        action === 'repair' ? JSON.stringify({ ...JSON.parse(original), revision: 0 }) : original,
+      );
+      storage.values.set(second, neighbor);
+      await open();
+      if (action === 'refresh')
+        storage.values.set(third, encodeRecord(draft('not yet displayed'), 1));
+      else if (action === 'repair')
+        root.querySelector<HTMLButtonElement>(`[data-repair-id="${first}"]`)!.click();
+      else click('library-delete');
+      storage.faults.completionStall = 'readonly';
+      click(action === 'refresh' ? 'library-refresh' : 'library-confirm');
+      await flush();
+      const committed = [...storage.values];
+      if (action !== 'refresh') {
+        expect(committed).toEqual([[second, neighbor]]);
+        expect(get('library-status').textContent).toContain('Write committed');
+      }
+      const owner = storage.current;
+      const transactions = storage.connection.transaction.mock.calls.length;
+      const rows = get('library-rows').innerHTML;
+      document.body.tabIndex = -1;
+      document.body.focus();
+      document.body.removeAttribute('tabindex');
+      storage.faults.abortThrow = true;
+      storage.connection.onversionchange();
+      await flush();
+      expect(get('library-status').textContent).toContain('Another tab changed');
+      const status = get('library-status').textContent;
+      expect(owner.native.abort).toHaveBeenCalledOnce();
+      expect(owner.native.oncomplete).toBeTypeOf('function');
+      click('library-refresh');
+      await flush();
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+      const captureEffects = vi.spyOn(get('capture-selected'), 'setAttribute');
+      const captureEffectsAcrossDeadline = vi.spyOn(get('capture-selected'), 'setAttribute');
+      await vi.advanceTimersByTimeAsync(10001);
+      await flush();
+      expect(get('library-status').textContent).toBe(status);
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+      expect(captureEffectsAcrossDeadline).not.toHaveBeenCalled();
+      delete storage.faults.completionStall;
+      delete storage.faults.abortThrow;
+      owner.releaseCompletion();
+      await flush();
+      expect(owner.native.oncomplete).toBeNull();
+      expect(get('library-status').textContent).toBe(status);
+      if (action !== 'refresh') expect(status).toContain('Write committed');
+      expect(get('library-rows').innerHTML).toBe(rows);
+      expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
+      expect(document.activeElement).toBe(document.body);
+      expect(captureEffects).not.toHaveBeenCalled();
+      expect([...storage.values]).toEqual(committed);
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+      click('library-refresh');
+      await flush();
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions + 1);
+      expect(get('library-status').textContent).toContain('Library refreshed');
+      expect(get('library-rows').children).toHaveLength(committed.length);
+      expect([...storage.values]).toEqual(committed);
+    },
+  );
+
+  it.each([
+    'sole delete',
+    'disappeared',
+    'vanished next',
+    'vanished previous',
+    'vanished preferred',
+  ])('preserves deliberate no selection through repeated refresh after %s', async (scenario) => {
+    const a = encodeRecord(draft('A'), 1);
+    const b = encodeRecord(draft('B'), 1);
+    const c = encodeRecord(draft('C'), 1);
+    const unseen =
+      scenario === 'vanished preferred' ? '00000000-0000-4000-8000-000000000004' : third;
+    const expected =
+      scenario === 'vanished preferred'
+        ? [
+            [first, a],
+            [unseen, c],
+          ]
+        : [[unseen, c]];
+    storage.values.set(first, a);
+    if (scenario.startsWith('vanished')) storage.values.set(second, b);
+    if (scenario === 'vanished preferred') storage.values.set(third, c);
+    await open();
+    if (scenario === 'vanished previous' || scenario === 'vanished preferred') select(second);
+    // Simulate an unseen same-origin tab update without refreshing this snapshot.
+    storage.values.set(unseen, c);
+    if (scenario === 'disappeared') {
+      storage.values.delete(first);
+      click('library-refresh');
+    } else {
+      if (scenario === 'vanished preferred') storage.values.delete(third);
+      if (scenario === 'vanished next') storage.values.delete(second);
+      if (scenario === 'vanished previous') storage.values.delete(first);
+      click('library-delete');
+      click('library-confirm');
+    }
+    await flush();
+    expect([...storage.values]).toEqual(expected);
+    const assertNone = () => {
+      expect(get('library-selection').textContent).toBe('No selected entry.');
+      expect(root.querySelector('[data-library-id][aria-pressed="true"]')).toBeNull();
+      for (const action of ['load', 'rename', 'duplicate', 'export', 'delete'])
+        expect(get<HTMLButtonElement>(`library-${action}`).disabled).toBe(true);
+    };
+    assertNone();
+    if (scenario !== 'disappeared') expect(document.activeElement).toBe(get('library-heading'));
+    get('library-refresh').focus();
+    for (let repeat = 0; repeat < 2; repeat++) {
+      click('library-refresh');
+      await flush();
+      assertNone();
+      expect(document.activeElement).toBe(get('library-refresh'));
+    }
+    select(unseen);
+    get('library-load').focus();
+    click('library-refresh');
+    await flush();
+    expect(get('library-selection').textContent).toContain(unseen);
+    expect(get<HTMLButtonElement>('library-load').disabled).toBe(false);
+    expect(document.activeElement).toBe(get('library-load'));
+  });
+
+  it('keeps timed-out native ownership, refuses busy replacement, and reports terminal connection state', async () => {
+    vi.useFakeTimers();
+    storage.values.set(first, encodeRecord(draft(), 1));
+    await open();
+    click('library-rename');
+    (document.activeElement as HTMLElement).blur();
+    click('library-confirm');
+    await flush();
+    expect(document.activeElement).toBe(get('library-heading'));
+    click('library-delete');
+    get<HTMLButtonElement>('library-delete').disabled = true;
+    storage.connection.onversionchange();
+    await flush();
+    expect(document.activeElement).toBe(get('library-heading'));
+    expect(get('library-status').textContent).toContain('Another tab');
+    await open();
+    storage.faults.txStall = true;
+    storage.faults.abortThrow = true;
+    click('library-load');
+    await flush();
+    click('library-load');
+    expect(get('library-status').textContent).toContain('replacement not started');
+    await vi.advanceTimersByTimeAsync(10000);
+    await flush();
+    expect(get('library-status').textContent).toContain('uncertain');
+    delete storage.faults.abortThrow;
+    delete storage.faults.txStall;
+    storage.current.complete();
+    await flush();
+    click('library-refresh');
+    await flush();
+    await uploadLocal(serializeBlueprint(draft('candidate').blueprint));
+    click('library-load');
+    expect(get('library-status').textContent).toContain('replacement not started');
+    storage.faults.txStall = true;
+    click('library-add');
+    await flush();
+    click('library-add');
+    expect(get('library-status').textContent).toContain('Action not started');
+    await vi.advanceTimersByTimeAsync(10000);
+    await flush();
+    delete storage.faults.txStall;
+  });
+
+  it('uses a stable fallback for a removed invoker and ignores an already-resolved open after disposal', async () => {
+    storage.values.set(first, encodeRecord(draft(), 1));
+    await open();
+    get('library-rename').focus();
+    click('library-rename');
+    get('library-rename').remove();
+    click('library-cancel');
+    expect(document.activeElement).toBe(get('library-heading'));
+    click('library-save');
+    dispose();
+    const before = root.innerHTML;
+    await flush();
+    expect(root.innerHTML).toBe(before);
+    expect(storage.values.size).toBe(1);
+  });
+
+  it('retains focused keyed rows when an earlier key disappears and never steals a newer control focus', async () => {
+    storage.values.set(first, encodeRecord(draft(), 1));
+    storage.values.set(second, encodeRecord(draft('focused'), 1));
+    await open();
+    select(second);
+    const button = root.querySelector<HTMLButtonElement>(`[data-library-id="${second}"]`)!;
+    button.focus();
+    storage.values.delete(first);
+    click('library-refresh');
+    await flush();
+    expect(document.activeElement).toBe(button);
+    storage.faults.txStall = true;
+    click('library-delete');
+    click('library-confirm');
+    await flush();
+    get('blueprint-name').focus();
+    delete storage.faults.txStall;
+    storage.current.complete();
+    await flush();
+    expect(document.activeElement).toBe(get('blueprint-name'));
+    storage.values.set(first, encodeRecord(draft(), 1));
+    click('library-refresh');
+    await flush();
+    const remaining = root.querySelector<HTMLButtonElement>(`[data-library-id="${first}"]`)!;
+    remaining.focus();
+    storage.values.clear();
+    click('library-refresh');
+    await flush();
+    expect(document.activeElement).toBe(get('library-heading'));
+  });
+
+  it.each(
+    (['create', 'duplicate', 'rename', 'replace', 'delete', 'repair'] as const).flatMap((action) =>
+      (['write', 'refresh'] as const).map((phase) => ({ action, phase })),
+    ),
+  )(
+    'preserves newer explicit selection during $action $phase completion',
+    async ({ action, phase }) => {
+      const source = draft('target', 42);
+      const original = encodeRecord(source, 1);
+      const expected = new Map([
+        [
+          first,
+          action === 'repair' ? JSON.stringify({ ...JSON.parse(original), revision: 0 }) : original,
+        ],
+        [second, encodeRecord(draft('neighbor'), 1)],
+        [third, encodeRecord(draft('newer explicit selection'), 1)],
+      ]);
+      for (const [id, value] of expected) storage.values.set(id, value);
+      await open();
+      if (action === 'create')
+        await uploadLocal(serializeBlueprint(draft('created').blueprint), true);
+      else if (action === 'replace')
+        await uploadLocal(serializeBlueprint(draft('replacement').blueprint));
+      if (action === 'repair')
+        root.querySelector<HTMLButtonElement>(`[data-repair-id="${first}"]`)!.click();
+      else if (action === 'rename' || action === 'replace' || action === 'delete') {
+        click(`library-${action}`);
+        if (action === 'rename') set('library-rename-name', 'renamed');
+      }
+      storage.faults.completionStall = phase === 'write' ? 'readwrite' : 'readonly';
+      click(
+        action === 'create'
+          ? 'library-save'
+          : action === 'duplicate'
+            ? 'library-duplicate'
+            : 'library-confirm',
+      );
+      await flush();
+      const owner = storage.current;
+      if (action === 'create' || action === 'duplicate') {
+        const id = [...storage.values.keys()].find((id) => !expected.has(String(id)));
+        expect(id).toBeTypeOf('string');
+        expected.set(
+          String(id),
+          encodeRecord(
+            action === 'duplicate' ? source : { blueprint: draft('created').blueprint },
+            1,
+          ),
+        );
+      } else if (action === 'delete' || action === 'repair') expected.delete(first);
+      else
+        expected.set(
+          first,
+          encodeRecord(
+            action === 'rename'
+              ? { ...source, blueprint: { ...source.blueprint, name: 'renamed' } }
+              : { blueprint: draft('replacement').blueprint },
+            2,
+          ),
+        );
+      expect([...storage.values]).toEqual([...expected]);
+      select(third);
+      expect(get('library-selection').textContent).toContain('newer explicit selection');
+      document.body.tabIndex = -1;
+      document.body.focus();
+      document.body.removeAttribute('tabindex');
+      delete storage.faults.completionStall;
+      owner.releaseCompletion();
+      await flush();
+      expect([...storage.values]).toEqual([...expected]);
+      expect(get('library-selection').textContent).toContain('newer explicit selection');
+      expect(root.querySelector(`[data-library-id="${third}"]`)!.getAttribute('aria-pressed')).toBe(
+        'true',
+      );
+      expect(document.activeElement).toBe(document.body);
+      expect(get('library-count').textContent).toContain(`${expected.size} / 100`);
+      expect(get('library-status').textContent).toContain('Write committed');
+    },
+  );
+
+  it('retains an aborting native reader without queuing a rejected replacement or another deadline', async () => {
+    vi.useFakeTimers();
+    storage.values.set(first, encodeRecord(draft(), 1));
+    await open();
+    let finish!: (value: string) => void;
+    const input = get<HTMLInputElement>('blueprint-file');
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [
+        {
+          size: 1,
+          text: () =>
+            new Promise((resolve) => {
+              finish = resolve;
+            }),
+        },
+      ],
+    });
+    input.dispatchEvent(new Event('change'));
+    const abort = vi.spyOn(FileReader.prototype, 'abort').mockImplementationOnce(() => {});
+    click('library-load');
+    expect(get('library-status').textContent).toContain('native owner has not settled');
+    expect(abort).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(abort).toHaveBeenCalledTimes(1);
+    finish(serializeBlueprint(draft('old reader').blueprint));
+    await flush();
+    expect(get<HTMLInputElement>('blueprint-name').value).not.toBe('old reader');
+    click('library-load');
+    await flush();
+    expect(get<HTMLDialogElement>('library-dialog').open).toBe(true);
+  });
+
+  it.each([false, true])(
+    'revokes timed-out file publication for designer=%s while retaining and releasing only its own native reader',
+    async (designer) => {
+      vi.useFakeTimers();
+      const original = encodeRecord(draft('stored'), 1);
+      storage.values.set(first, original);
+      await open();
+      set('blueprint-name', 'retained designer');
+      const design = get('editor').innerHTML;
+      const commands = worker.postMessage.mock.calls.length;
+      const readers: FileReader[] = [];
+      const reads = vi.spyOn(FileReader.prototype, 'readAsText').mockImplementation(function (
+        this: FileReader,
+      ) {
+        readers.push(this);
+      });
+      const abort = vi.spyOn(FileReader.prototype, 'abort').mockImplementation(() => {});
+      const expired = serializeBlueprint(draft('expired candidate').blueprint);
+      const input = get<HTMLInputElement>(designer ? 'blueprint-file' : 'library-file');
+      await uploadLocal(expired, designer);
+      expect(reads).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(10000);
+      const statusId = designer ? 'designer-file-status' : 'library-status';
+      const timeout = get(statusId).textContent;
+      expect(timeout).toContain('timed out');
+      expect(abort).toHaveBeenCalledOnce();
+      const reader = readers[0];
+      const oldTerminal = reader.onloadend!;
+      Object.defineProperty(reader, 'result', { value: expired });
+      reader.dispatchEvent(new ProgressEvent('load'));
+      await flush();
+      expect(get(statusId).textContent).toBe(timeout);
+      expect(get('library-candidate').hidden).toBe(true);
+      reader.dispatchEvent(new ProgressEvent('abort'));
+      reader.dispatchEvent(new ProgressEvent('error'));
+      await flush();
+      expect(get(statusId).textContent).toBe(timeout);
+      expect(get('library-candidate').hidden).toBe(true);
+      expect(get<HTMLInputElement>('blueprint-name').value).toBe('retained designer');
+      expect(get('editor').innerHTML).toBe(design);
+      expect([...storage.values]).toEqual([[first, original]]);
+      await uploadLocal(expired, !designer);
+      expect(reads).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+      reader.dispatchEvent(new ProgressEvent('loadend'));
+      await flush();
+      expect(reader.onload).toBeNull();
+      const retry = serializeBlueprint(draft('explicit retry').blueprint);
+      await uploadLocal(retry, designer);
+      expect(reads).toHaveBeenCalledTimes(2);
+      const clearInput = vi.spyOn(input, 'value', 'set');
+      const timers = vi.getTimerCount();
+      oldTerminal.call(reader, new ProgressEvent('loadend'));
+      expect(clearInput).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(timers);
+      await uploadLocal(expired, !designer);
+      expect(reads).toHaveBeenCalledTimes(2);
+      Object.defineProperty(readers[1], 'result', { value: retry });
+      readers[1].dispatchEvent(new ProgressEvent('load'));
+      readers[1].dispatchEvent(new ProgressEvent('loadend'));
+      await flush();
+      expect(input.value).toBe('');
+      expect(get<HTMLInputElement>('blueprint-name').value).toBe(
+        designer ? 'explicit retry' : 'retained designer',
+      );
+      expect(get('library-candidate').hidden).toBe(designer);
+      if (!designer) {
+        expect(get('library-candidate-name').textContent).toBe('explicit retry');
+        expect(get('library-status').textContent).toContain('Imported an unsaved blueprint');
+      } else expect(get(statusId).textContent).toContain('loaded into designer');
+      expect([...storage.values]).toEqual([[first, original]]);
+      expect(worker.postMessage).toHaveBeenCalledTimes(commands);
+    },
+  );
+
+  it('cancels captures before native transaction admission and never relabels their tick', async () => {
+    storage.faults.openStall = true;
+    click('capture-selected');
+    click('reset');
+    storage.deliverOpen();
+    await flush();
+    expect(storage.values.size).toBe(0);
+    expect(get('library-candidate').hidden).toBe(true);
+    expect(get('library-status').textContent).toContain('before storage admission');
+    emit(sample, organism);
+    storage.faults.requestError = 'QuotaExceededError';
+    click('capture-selected');
+    await flush();
+    expect(get('library-candidate').hidden).toBe(false);
+    click('reset');
+    expect(get('library-candidate').hidden).toBe(true);
+    emit(sample, organism);
+    delete storage.faults.requestError;
+    dispose();
+    storage.faults.openStall = true;
+    dispose = mount(root, worker as unknown as Worker);
+    emit(sample, organism);
+    click('capture-selected');
+    dispose();
+    const before = root.innerHTML;
+    storage.deliverOpen();
+    await flush();
+    expect(root.innerHTML).toBe(before);
+  });
+
+  it('fails invalid candidates and bounds synchronous reader errors and designer deadlines', async () => {
+    await open();
+    set('blueprint-name', 'x'.repeat(81));
+    click('library-save');
+    expect(get('library-status').textContent).toContain('unchanged');
+    emit(sample, { ...organism, genome: { ...organism.genome, cells: [] } });
+    click('capture-selected');
+    expect(storage.values.size).toBe(0);
+    vi.useFakeTimers();
+    const input = get<HTMLInputElement>('blueprint-file');
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [{ size: 1, text: () => new Promise(() => {}) }],
+    });
+    input.dispatchEvent(new Event('change'));
+    vi.advanceTimersByTime(10000);
+    await flush();
+    expect(get('designer-file-status').textContent).toContain('timed out');
+    vi.spyOn(FileReader.prototype, 'readAsText').mockImplementationOnce(() => {
+      throw new Error('reader');
+    });
+    input.dispatchEvent(new Event('change'));
+    expect(get('designer-file-status').textContent).toContain('Could not read');
+    click('import-blueprint');
+    Object.defineProperty(input, 'files', { configurable: true, value: [] });
+    input.dispatchEvent(new Event('change'));
+    expect(get('designer-file-status').textContent).toContain('cancelled');
+  });
+});
+
 describe('ecosystem desk', () => {
   it('confirms every user reset with a frozen payload, cancellation focus and no ecological command on cancellation', () => {
     click('ecosystem-tab');
@@ -1948,6 +3024,13 @@ describe('standalone blueprint files', () => {
     await flush();
     expect(draftState()).toEqual(before);
     expect(get('notice').textContent).toBe(notice);
+    if (action === 'dispose') {
+      const rejectedRead = vi.fn();
+      uploadBlueprint({ size: 1, text: rejectedRead });
+      expect(rejectedRead).not.toHaveBeenCalled();
+      dispose = mount(root, worker as unknown as Worker);
+      emit(sample, organism);
+    }
     uploadBlueprint({
       size: 1,
       text: () =>
@@ -2358,6 +3441,7 @@ describe('display-only retained-world races', () => {
         const held = harness.outbox.splice(0);
         const paths = chart.paths.length;
         await loadText('{}');
+        expect(get<HTMLButtonElement>('capture-selected').disabled).toBe(true);
         const beforeDisplay = root.innerHTML;
         for (const data of held) worker.onmessage!({ data } as MessageEvent);
         expect(root.innerHTML).toBe(beforeDisplay);
