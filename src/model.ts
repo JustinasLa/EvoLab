@@ -4,7 +4,7 @@ export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 5;
+export const WORLD_VERSION = 6;
 export const INTERVENTION_CAPACITY = 128;
 export const MANUAL_CAPACITY = 32;
 export const STROKE_COMMAND_CAPACITY = 4096;
@@ -96,6 +96,7 @@ export interface Stats {
   top: Species[];
 }
 export interface Frame {
+  terrain: TerrainRecipe;
   cells: Uint8Array;
   ids: Int32Array;
   stats: Stats;
@@ -179,10 +180,7 @@ export interface LoadFailureResponse {
   message: string;
   recovery: RetainedWorldState;
 }
-export interface WorldFile {
-  version: 5;
-  telemetry: TelemetryState;
-  interventions: InterventionState;
+export interface WorldEcology {
   settings: Settings;
   random: number;
   tick: number;
@@ -196,12 +194,23 @@ export interface WorldFile {
   walls: number[];
   organisms: Organism[];
 }
-export type WorldFileV4 = Omit<WorldFile, 'version' | 'interventions'> & { version: 4 };
-export type WorldFileV3 = Omit<WorldFile, 'version' | 'telemetry' | 'interventions'> & {
+export interface WorldFile extends WorldEcology {
+  version: 6;
+  terrain: TerrainRecipe;
+  telemetry: TelemetryState;
+  interventions: InterventionState;
+}
+export interface WorldFileV5 extends WorldEcology {
+  version: 5;
+  telemetry: TelemetryState;
+  interventions: InterventionStateV1;
+}
+export type WorldFileV4 = WorldEcology & { version: 4; telemetry: TelemetryState };
+export type WorldFileV3 = WorldEcology & {
   version: 3;
   telemetry: TelemetryStateV1;
 };
-export type LegacyWorldFile = Omit<WorldFile, 'version' | 'telemetry' | 'interventions'> & {
+export type LegacyWorldFile = WorldEcology & {
   version: 2;
 };
 export type PaintTool = 'food' | 'wall' | 'erase';
@@ -232,7 +241,7 @@ export interface PlacementDetail extends Coordinate {
   tolerance: number;
   tempo: number;
 }
-export type InterventionEffect =
+export type InterventionEffectV1 =
   | { kind: 'paint'; detail: PaintDetail }
   | { kind: 'placement'; detail: PlacementDetail }
   | {
@@ -240,13 +249,31 @@ export type InterventionEffect =
       detail: { changes: Partial<Record<SettingKey, { before: number; after: number }>> };
     }
   | { kind: 'shock'; detail: { kind: 'cold' | 'heat'; before: ClimateEvent; after: ClimateEvent } };
-export type InterventionEntry = InterventionEffect & {
+export interface TerrainDetail {
+  action: 'clear' | 'regenerate';
+  before: TerrainRecipe;
+  after: TerrainRecipe;
+  addedWalls: number;
+  removedWalls: number;
+  removedFood: number;
+  protectedCells: number;
+}
+export type InterventionEffect = InterventionEffectV1 | { kind: 'terrain'; detail: TerrainDetail };
+export type InterventionEntryV1 = InterventionEffectV1 & {
   sequence: number;
   origin: 'manual';
   firstTick: number;
   lastTick: number;
 };
-export interface InterventionState {
+export type InterventionEntry =
+  | InterventionEntryV1
+  | (Extract<InterventionEffect, { kind: 'terrain' }> & {
+      sequence: number;
+      origin: 'manual';
+      firstTick: number;
+      lastTick: number;
+    });
+export interface InterventionStateV1 {
   version: 1;
   originTick: number;
   originKind: 'fresh' | 'legacy-import';
@@ -254,6 +281,10 @@ export interface InterventionState {
   totalEntries: number;
   evictedThroughTick: number | null;
   prefixSettings: Settings;
+  entries: InterventionEntryV1[];
+}
+export interface InterventionState extends Omit<InterventionStateV1, 'version' | 'entries'> {
+  version: 2;
   entries: InterventionEntry[];
 }
 export interface PaintOutcome {
@@ -263,7 +294,8 @@ export interface PaintOutcome {
 }
 export interface MeasurementSource {
   snapshot: {
-    worldVersion: 5;
+    worldVersion: 6;
+    terrain: TerrainRecipe;
     completedTick: number;
     seed: number;
     settings: Settings;
@@ -274,7 +306,14 @@ export interface MeasurementSource {
   interventions: InterventionState;
 }
 export type MeasurementFormat = 'csv' | 'json';
-export type ManualOperation = 'begin-stroke' | 'paint' | 'settings' | 'shock' | 'end-stroke';
+export type ManualOperation =
+  | 'begin-stroke'
+  | 'paint'
+  | 'settings'
+  | 'shock'
+  | 'end-stroke'
+  | 'clear-walls'
+  | 'regenerate-walls';
 export type TrackedOperation = ManualOperation | 'export-measurements' | 'save' | 'start' | 'load';
 export const knownSettings = ({ seed, mutation, nutrients, climate }: Settings): Settings => ({
   seed,

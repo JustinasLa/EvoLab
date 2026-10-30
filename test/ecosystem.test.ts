@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { DEFAULT_TERRAIN, generateTerrain } from '../src/terrain';
 import { Ecosystem } from '../src/ecosystem';
 import { advance, colony, ecology, legacyV3 } from './fixtures/telemetry';
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
@@ -26,6 +29,336 @@ import {
   WORLD_MAX_BYTES,
 } from '../src/model';
 const empty = () => new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0 }, false);
+describe('approved seeded terrain, opaque extension and exact continuation contracts', () => {
+  it('exposes genuine wall/gap leaf, mouth, reproduction and sensory movement opportunities without changing natural rules', () => {
+    const make = () =>
+      new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 20, climate: 0 }, false);
+    const gap = make(),
+      blocked = make();
+    for (const world of [gap, blocked]) {
+      world.spawn(single(4), 239, 78);
+      world.random.state = 7;
+    }
+    blocked.walls[index(0, 78)] = 1;
+    gap.step();
+    blocked.step();
+    expect(gap.food[index(0, 78)]).toBe(1);
+    expect(blocked.food[index(0, 78)]).toBe(0);
+    expect(gap.organisms.get(1)!.energy).toBe(blocked.organisms.get(1)!.energy);
+    for (const world of [gap, blocked]) world.spawn(single(3), 1, 78);
+    gap.step();
+    blocked.step();
+    const mouthAfterUpkeep = 9 - (0.012 + (0.3 - 0.2) * 0.025);
+    expect(gap.save().telemetry.pending.energy.mouthsGained).toBe(
+      mouthAfterUpkeep + 2.2 - mouthAfterUpkeep,
+    );
+    expect(blocked.save().telemetry.pending.energy.mouthsGained).toBe(0);
+    expect(gap.organisms.get(2)!.energy).toBeGreaterThan(blocked.organisms.get(2)!.energy);
+    const enclosed = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
+    const parent = enclosed.spawn(single(7), 20, 20)!;
+    parent.age = 32;
+    parent.energy = 100;
+    enclosed.walls.fill(1);
+    enclosed.walls[index(20, 20)] = 0;
+    const opened = Ecosystem.load(JSON.stringify(enclosed.save()));
+    opened.changeTerrain('clear');
+    enclosed.step();
+    opened.step();
+    expect(enclosed.births).toBe(0);
+    expect(enclosed.organisms.get(1)!.children).toBe(0);
+    expect(enclosed.save().telemetry.pending.energy.reproductionSpent).toBe(0);
+    expect(opened.births).toBe(1);
+    expect(opened.organisms.get(1)!.children).toBe(1);
+    expect(opened.organisms.get(2)!.energy).toBe(4.5);
+    expect(opened.save().telemetry.pending.energy.reproductionSpent).toBe(6.5);
+    const fixture = JSON.parse(
+      readFileSync('test/fixtures/terrain/chamber-oracles.json', 'utf8'),
+    ).fixtures.find((value: any) => value.seed === 42);
+    const doorX = fixture.shiftX,
+      doorY = (fixture.shiftY + fixture.verticalDoors[0] + 2) % HEIGHT;
+    const recipe = { version: 1 as const, preset: 'chambered-refuges' as const, seed: 42 };
+    const mover: Genome = {
+      cells: [
+        { x: 0, y: 0, type: 3 },
+        { x: -1, y: 0, type: 5 },
+        { x: -2, y: 0, type: 8 },
+      ],
+      preference: 0.5,
+      tolerance: 0.3,
+      tempo: 2,
+    };
+    const moving = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false, {
+      terrain: recipe,
+    });
+    moving.walls.set(generateTerrain(recipe, 42));
+    const organism = moving.spawn(mover, doorX - 1, doorY)!;
+    organism.age = 1;
+    moving.random.state = 7;
+    moving.food[index(doorX + 1, doorY)] = 1;
+    const closed = Ecosystem.load(JSON.stringify(moving.save()));
+    closed.walls[index(doorX, doorY)] = 1;
+    moving.step();
+    closed.step();
+    expect(moving.organisms.get(1)!.x).toBe(doorX);
+    expect(closed.organisms.get(1)!.x).not.toBe(doorX);
+    expect(moving.save().telemetry.pending.energy.movementSpent).toBeGreaterThan(0);
+    expect(moving.save().telemetry.pending.energy.movementSpent).toBe(
+      closed.save().telemetry.pending.energy.movementSpent,
+    );
+  });
+  const legacy = () =>
+    JSON.parse(readFileSync('test/fixtures/terrain/legacy5-opaque.json', 'utf8'));
+  it.each([0, 1, 42, 100, 123, 4294967295])(
+    'retains the complete immutable baseline trajectory for default seed %i',
+    (seed) => {
+      const fixture = JSON.parse(readFileSync(`test/fixtures/terrain/seed-${seed}.json`, 'utf8'));
+      const world = new Ecosystem({ ...DEFAULTS, seed });
+      for (const tick of [0, 30, 90, 330, 1600]) {
+        while (world.tick < tick) world.step();
+        const { terrain, ...snapshot } = world.save();
+        expect(terrain).toEqual(DEFAULT_TERRAIN);
+        if (seed === 42 && tick === 1600) {
+          expect(world.births).toBeGreaterThan(0);
+          expect(world.deaths).toBeGreaterThan(0);
+        }
+        const normalized = {
+          ...snapshot,
+          version: 5,
+          interventions: { ...snapshot.interventions, version: 1 },
+        };
+        expect(createHash('sha256').update(JSON.stringify(normalized)).digest('hex')).toBe(
+          fixture.completeSaveSha256[tick],
+        );
+      }
+    },
+  );
+  it('continues all three real one-founder ecologies through a genuine save/reload without resetting RNG', () => {
+    for (const preset of ['open-field', 'porous-ridges', 'chambered-refuges'] as const) {
+      const world = new Ecosystem(DEFAULTS, true, { terrain: { version: 1, preset, seed: 123 } });
+      const secondSeed = new Ecosystem(DEFAULTS, true, {
+        terrain: { version: 1, preset, seed: 0 },
+      });
+      const initial = world.save();
+      expect(initial.organisms).toHaveLength(1);
+      expect(initial.food).toEqual([]);
+      expect(initial.tick).toBe(0);
+      expect(initial.births).toBe(0);
+      expect(initial.deaths).toBe(0);
+      expect(initial.random).toBe(secondSeed.random.state);
+      expect(initial.organisms).toEqual(secondSeed.save().organisms);
+      advance(world, 90);
+      const restored = Ecosystem.load(JSON.stringify(world.save()));
+      advance(world, 240);
+      advance(restored, 240);
+      expect(restored.save()).toEqual(world.save());
+      for (const cell of world.save().walls) {
+        expect(world.food[cell]).toBe(0);
+        expect(world.occupied[cell]).toBe(0);
+      }
+    }
+    const extinct = new Ecosystem(DEFAULTS);
+    extinct.kill([...extinct.organisms.values()][0], 'manual');
+    advance(extinct, 90);
+    expect(extinct.organisms.size).toBe(0);
+  });
+  it('changes walls atomically, protects every rotated wrapped body cell and retains food except under final walls', () => {
+    const world = empty();
+    const body = {
+      cells: [
+        { x: 0, y: 0, type: 7 as const },
+        { x: 1, y: 0, type: 7 as const },
+        { x: 0, y: 1, type: 7 as const },
+      ],
+      preference: 0.5,
+      tolerance: 0.3,
+      tempo: 2,
+    };
+    for (const [horizontal, vertical, rotation] of [
+      [0, 0, 2],
+      [239, 100, 0],
+      [0, 70, 1],
+      [100, 155, 3],
+    ])
+      expect(world.spawn(body, horizontal, vertical, undefined, undefined, rotation)).toBeTruthy();
+    const recipe = { version: 1 as const, preset: 'chambered-refuges' as const, seed: 42 };
+    const generated = generateTerrain(recipe, world.settings.seed);
+    const anchor = generated.findIndex((value) => !!value);
+    expect(world.spawn(body, anchor % WIDTH, Math.floor(anchor / WIDTH))).toBeTruthy();
+    for (let cell = 0; cell < world.food.length; cell++)
+      if (!world.occupied[cell]) world.food[cell] = 1;
+    world.walls[index(200, 150)] = 1;
+    world.food[index(200, 150)] = 0;
+    const before = world.save(),
+      occupied = world.occupied.slice();
+    const expectedWalls = generated.map((value, cell) => (occupied[cell] ? 0 : value));
+    const result = world.changeTerrain('regenerate', recipe);
+    expect(result.rowSequence).toBe(1);
+    expect(result.detail.protectedCells).toBeGreaterThan(0);
+    expect(world.walls).toEqual(expectedWalls);
+    expect(world.occupied).toEqual(occupied);
+    const after = world.save();
+    const invariant = ({
+      terrain: _terrain,
+      walls: _walls,
+      food: _food,
+      interventions: _interventions,
+      ...snapshot
+    }: WorldFile) => snapshot;
+    expect(invariant(after)).toEqual(invariant(before));
+    expect(after.food).toEqual(before.food.filter((cell) => !expectedWalls[cell]));
+    expect(result.detail.removedFood).toBe(before.food.length - after.food.length);
+    expect(Ecosystem.load(JSON.stringify(after)).save()).toEqual(after);
+    const noOp = world.changeTerrain('regenerate', recipe);
+    expect(noOp.rowSequence).toBeNull();
+    expect(world.save()).toEqual(after);
+    const cleared = world.changeTerrain('clear');
+    expect(cleared.detail.removedWalls).toBe(after.walls.length);
+    expect(world.save().food).toEqual(after.food);
+    expect(world.terrain).toEqual(recipe);
+    expect(world.changeTerrain('clear').rowSequence).toBeNull();
+    world.changeTerrain('regenerate', { version: 1, preset: 'open-field', seed: 0 });
+    const changedRecipe = world.changeTerrain('regenerate', {
+      version: 1,
+      preset: 'open-field',
+      seed: 1,
+    });
+    expect(changedRecipe.rowSequence).not.toBeNull();
+    expect(changedRecipe.detail.addedWalls).toBe(0);
+  });
+  it('preserves D22-R1-001 opaque JSON through legacy migration, detached copies, unchanged clones and successor continuation', () => {
+    const input = legacy(),
+      world = Ecosystem.load(JSON.stringify({ ...input, ignoredRoot: { private: true } }));
+    expect(world.save()).not.toHaveProperty('ignoredRoot');
+    expect(world.save().settings).toEqual(input.settings);
+    expect(world.save().organisms).toEqual(input.organisms);
+    expect(world.save().terrain).toEqual(DEFAULT_TERRAIN);
+    expect(world.random.state).toBe(input.random);
+    const saved = world.save();
+    (saved.settings as any).retained.nested[1].value = 'changed';
+    (saved.organisms[0].genome.cells[0] as any).retained.nested[0].glyph = 'changed';
+    expect(world.save().settings).toEqual(input.settings);
+    expect(world.save().organisms).toEqual(input.organisms);
+    const clone = world.spawn(world.save().organisms[0].genome, 10, 10)!;
+    expect((clone.genome as any).retained).toEqual(input.organisms[0].genome.retained);
+    expect((clone.genome.cells[0] as any).retained).toEqual(
+      input.organisms[0].genome.cells[0].retained,
+    );
+    const restored = Ecosystem.load(JSON.stringify(world.save()));
+    advance(world, 90);
+    advance(restored, 90);
+    expect(restored.save()).toEqual(world.save());
+    expect(world.measurements().snapshot.settings).toEqual(DEFAULTS);
+    const capped = legacy();
+    capped.organisms[0].padding = '';
+    capped.organisms[0].padding = 'x'.repeat(
+      WORLD_MAX_BYTES - Buffer.byteLength(JSON.stringify(capped)),
+    );
+    expect(Buffer.byteLength(JSON.stringify(capped))).toBe(WORLD_MAX_BYTES);
+    const migrated = Ecosystem.load(JSON.stringify(capped));
+    expect(Buffer.byteLength(JSON.stringify(migrated.save()))).toBeGreaterThan(WORLD_MAX_BYTES);
+    expect(migrated.save().organisms).toEqual(capped.organisms);
+    expect(migrated.save().settings).toEqual(capped.settings);
+  });
+  it('strictly validates new recipes, retained chains, counts and current duplicates without rejecting opaque fields', () => {
+    const world = Ecosystem.load(JSON.stringify(legacy()));
+    world.changeTerrain('clear');
+    world.changeTerrain('regenerate', { version: 1, preset: 'chambered-refuges', seed: 42 });
+    const saved = world.save();
+    const badRecipes = [
+      undefined,
+      null,
+      [],
+      {},
+      { ...DEFAULT_TERRAIN, version: 2 },
+      { ...DEFAULT_TERRAIN, preset: 'unknown' },
+      { ...DEFAULT_TERRAIN, extra: 1 },
+      ...[-1, 0.5, '42', 4294967296].map((seed) => ({ ...DEFAULT_TERRAIN, seed })),
+    ];
+    for (const terrain of badRecipes)
+      expect(() => Ecosystem.load(JSON.stringify({ ...saved, terrain }))).toThrow();
+    const corrupt = (edit: (file: any) => void) => {
+      const candidate = structuredClone(saved);
+      edit(candidate);
+      expect(() => Ecosystem.load(JSON.stringify(candidate))).toThrow();
+    };
+    for (const field of ['addedWalls', 'removedWalls', 'removedFood', 'protectedCells'])
+      corrupt((file) => {
+        file.interventions.entries[1].detail[field] = -1;
+      });
+    corrupt((file) => {
+      file.interventions.entries[0].detail.after.seed = 99;
+    });
+    corrupt((file) => {
+      file.terrain.seed = 99;
+    });
+    corrupt((file) => {
+      file.interventions.entries[1].detail.before.seed = 99;
+    });
+    corrupt((file) => {
+      file.interventions.entries[1].detail.extra = 0;
+    });
+    corrupt((file) => {
+      file.interventions.entries[1].detail.removedFood = 37440;
+    });
+    corrupt((file) => {
+      file.interventions.entries[1].detail.addedWalls = 37440;
+      file.interventions.entries[1].detail.removedWalls = 1;
+    });
+    corrupt((file) => {
+      file.interventions.entries[0].detail.removedWalls = 0;
+    });
+    corrupt((file) => {
+      const detail = file.interventions.entries[1].detail;
+      detail.after = { ...detail.before };
+      detail.addedWalls = detail.removedWalls = detail.removedFood = 0;
+    });
+    corrupt((file) => {
+      file.walls.push(file.walls[0]);
+    });
+    corrupt((file) => {
+      file.food = [0, 0];
+    });
+    corrupt((file) => {
+      file.organisms[0].genome.tempo = 0;
+    });
+    corrupt((file) => {
+      file.interventions.entries[1].firstTick = 1;
+    });
+    expect(world.save()).toEqual(saved);
+    expect(
+      () => new Ecosystem(DEFAULTS, true, { terrain: { ...DEFAULT_TERRAIN, seed: -1 } }),
+    ).toThrow();
+    expect(() => world.changeTerrain('invalid' as any)).toThrow();
+  });
+  it('folds only numeric settings through terrain eviction and rejects sequence exhaustion before any physical change', () => {
+    const world = new Ecosystem(DEFAULTS);
+    for (let action = 0; action < 135; action++) {
+      if (action % 3 === 0) world.changeSettings({ nutrients: action % 2 ? 0 : 1 });
+      else if (action % 3 === 1) world.changeTerrain('clear');
+      else world.changeTerrain('regenerate');
+      if (action % 7 === 0) world.step();
+    }
+    const saved = world.save();
+    expect(saved.interventions.entries).toHaveLength(128);
+    expect(Ecosystem.load(JSON.stringify(saved)).save()).toEqual(saved);
+    saved.interventions.totalEntries = Number.MAX_SAFE_INTEGER;
+    saved.interventions.entries.forEach((entry, offset) => {
+      entry.sequence = Number.MAX_SAFE_INTEGER - 127 + offset;
+    });
+    saved.interventions.evictedThroughTick = saved.interventions.entries[0].firstTick;
+    const exhausted = Ecosystem.load(JSON.stringify(saved)),
+      before = exhausted.save();
+    expect(() =>
+      exhausted.changeTerrain('regenerate', { version: 1, preset: 'open-field', seed: 0 }),
+    ).toThrow('sequence limit');
+    expect(exhausted.save()).toEqual(before);
+    if (before.walls.length) {
+      expect(exhausted.changeTerrain('regenerate').rowSequence).toBeNull();
+      expect(() => exhausted.changeTerrain('clear')).toThrow('sequence limit');
+    } else expect(exhausted.changeTerrain('clear').rowSequence).toBeNull();
+    expect(exhausted.save()).toEqual(before);
+  });
+});
 const single = (type: CellType = 3, preference = 0.5): Genome => ({
   cells: [{ x: 0, y: 0, type }],
   preference,
@@ -197,7 +530,7 @@ describe('real bounded manual evidence and complete current-save validation', ()
         'prefixSettings',
         'entries',
       ].map((key) => (file: any) => delete file.interventions[key]),
-      ...[0, 2, '1', null].map((value) => (file: any) => (file.interventions.version = value)),
+      ...[0, 1, '2', null].map((value) => (file: any) => (file.interventions.version = value)),
       ...[-1, 0.1, 1e9, null].map(
         (value) => (file: any) => (file.interventions.originTick = value),
       ),
@@ -1615,7 +1948,7 @@ describe('measured thermal adaptation', () => {
       expect(ecology(saved)).toEqual({
         ...ecology(world.save()),
         interventions: {
-          version: 1,
+          version: 2,
           originTick: tick,
           originKind: 'legacy-import',
           originSettings: { ...world.settings },
@@ -1743,10 +2076,11 @@ describe('telemetry persistence, migration and complete candidate validation', (
             JSON.stringify({ ...file, telemetry: { untrusted: 'ignored legacy extension' } }),
           ),
           { version: _version, ...expectedEcology } = file,
-          { version: current, interventions, ...actualEcology } = ecology(world.save());
-        expect(current).toBe(5);
+          { version: current, interventions, terrain, ...actualEcology } = ecology(world.save());
+        expect(current).toBe(6);
+        expect(terrain).toEqual(DEFAULT_TERRAIN);
         expect(interventions).toEqual({
-          version: 1,
+          version: 2,
           originTick: tick,
           originKind: 'legacy-import',
           originSettings: { ...file.settings },

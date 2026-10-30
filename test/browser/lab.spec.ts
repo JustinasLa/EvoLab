@@ -18,10 +18,22 @@ import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../../s
 import { writeFile } from 'node:fs/promises';
 import { cpus, platform, totalmem } from 'node:os';
 import { Ecosystem } from '../../src/ecosystem';
-import { advance, legacyV3, legacyV4 } from '../fixtures/telemetry';
+import { advance, legacyV3, legacyV4, legacyV5 } from '../fixtures/telemetry';
+import { DEFAULT_TERRAIN, generateTerrain } from '../../src/terrain';
+import { readFileSync } from 'node:fs';
 
 declare global {
   interface Window {
+    terrainNative: {
+      frame: Frame | null;
+      selected: any;
+      playback: any;
+      lifecycle: { type: string; paused: boolean; runId: number }[];
+      errors: any[];
+      saved: number;
+      manual: any | null;
+      pauseOnLifecycle: boolean;
+    };
     publicationFault: {
       arm: () => Promise<void>;
       terminals: number;
@@ -76,6 +88,444 @@ declare global {
     };
   }
 }
+
+async function observeTerrainNative(page: import('@playwright/test').Page): Promise<void> {
+  await page.addInitScript(() => {
+    window.terrainNative = {
+      frame: null,
+      selected: null,
+      playback: null,
+      lifecycle: [],
+      errors: [],
+      saved: 0,
+      manual: null,
+      pauseOnLifecycle: true,
+    };
+    window.Worker = new Proxy(window.Worker, {
+      construct(target, args, newTarget) {
+        const worker: Worker = Reflect.construct(target, args, newTarget);
+        worker.postMessage = new Proxy(worker.postMessage, {
+          apply(post, receiver, messages) {
+            const result = Reflect.apply(post, receiver, messages);
+            if (messages[0].type === 'start' && window.terrainNative.pauseOnLifecycle)
+              Reflect.apply(post, receiver, [{ type: 'pause' }]);
+            return result;
+          },
+        });
+        worker.addEventListener('message', ({ data }) => {
+          const evidence = window.terrainNative;
+          if (data.type === 'frame') {
+            evidence.frame = data.frame;
+            evidence.selected = data.selected;
+            evidence.playback = data.playback;
+          }
+          if (data.type === 'playback') evidence.playback = data.playback;
+          if (data.type === 'manual-result') evidence.manual = data;
+          if (data.type === 'saved') evidence.saved++;
+          if (data.type === 'error') {
+            evidence.errors.push(data);
+            if (evidence.errors.length > 4) evidence.errors.shift();
+          }
+          if (data.type === 'started' || data.type === 'loaded') {
+            evidence.lifecycle.push({
+              type: data.type,
+              paused: data.playback.paused,
+              runId: data.runId,
+            });
+            if (evidence.lifecycle.length > 4) evidence.lifecycle.shift();
+            if (data.type === 'loaded' && evidence.pauseOnLifecycle && !data.playback.paused)
+              queueMicrotask(() => document.getElementById('pause')!.click());
+          }
+        });
+        return worker;
+      },
+    });
+  });
+}
+
+async function terrainNativeFrame(page: import('@playwright/test').Page) {
+  await expect
+    .poll(() =>
+      page.evaluate(() => !!window.terrainNative.frame && window.terrainNative.playback?.paused),
+    )
+    .toBe(true);
+  return page.evaluate(() => {
+    const evidence = window.terrainNative,
+      frame = evidence.frame!;
+    return {
+      frame: { ...frame, cells: Array.from(frame.cells), ids: Array.from(frame.ids) },
+      selected: evidence.selected,
+      playback: evidence.playback,
+    };
+  });
+}
+
+function terrainExpectedFrame(world: Ecosystem) {
+  const frame = world.frame();
+  return { ...frame, cells: Array.from(frame.cells), ids: Array.from(frame.ids) };
+}
+
+async function terrainSave(
+  page: import('@playwright/test').Page,
+  name: string,
+): Promise<WorldFile> {
+  const bytes = await downloadPausedWorld(page);
+  await test.info().attach(name, { body: bytes, contentType: 'application/json' });
+  await test.info().attach(`${name}-manifest.json`, {
+    body: JSON.stringify({
+      bytes: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    }),
+    contentType: 'application/json',
+  });
+  return JSON.parse(bytes.toString());
+}
+
+async function terrainSettings(page: import('@playwright/test').Page): Promise<void> {
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  await page.locator('.world-settings').evaluate((details: HTMLDetailsElement) => {
+    details.open = true;
+  });
+}
+
+for (const preset of ['open-field', 'porous-ridges', 'chambered-refuges'] as const) {
+  test(`terrain reset ${preset} freezes confirmation and preserves real native continuation`, async ({
+    page,
+  }) => {
+    await observeTerrainNative(page);
+    await page.goto('/');
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    const baseline = new Ecosystem();
+    expect((await terrainNativeFrame(page)).frame).toEqual(terrainExpectedFrame(baseline));
+    await terrainSettings(page);
+    await page.locator('#terrain-preset').selectOption(preset);
+    await expect(page.locator('#terrain-preview-caption')).toContainText('terrain seed 42');
+    expect((await terrainNativeFrame(page)).frame).toEqual(terrainExpectedFrame(baseline));
+    await page.locator('#reset').click();
+    await page.locator('#cancel-reset').click();
+    expect((await terrainNativeFrame(page)).frame).toEqual(terrainExpectedFrame(baseline));
+    await page.locator('#reset').click();
+    await expect(page.locator('#cancel-reset')).toBeFocused();
+    await page.locator('#confirm-reset').click();
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    const reference = new Ecosystem(DEFAULTS, true, {
+      terrain: { version: 1, preset, seed: null },
+    });
+    const initial = await terrainSave(page, `${preset}-reset.json`);
+    expect(initial).toEqual(reference.save());
+    expect(initial.tick).toBe(0);
+    expect(initial.organisms).toHaveLength(1);
+    expect(initial.food).toEqual([]);
+    expect(initial.organisms[0]).toMatchObject({
+      x: 120,
+      y: 78,
+      age: 0,
+      energy: 13,
+      children: 0,
+      generation: 0,
+    });
+    expect(initial.walls).toEqual(
+      Array.from(generateTerrain(initial.terrain, 42)).flatMap((value, cell) =>
+        value ? [cell] : [],
+      ),
+    );
+    await page.locator('#step').click();
+    reference.step();
+    await expect(page.locator('#tick')).toHaveText('TICK 1');
+    expect((await terrainNativeFrame(page)).frame).toEqual(terrainExpectedFrame(reference));
+    expect(reference.save().telemetry.pending.energy.leavesGained).toBeGreaterThan(0);
+    const stepped = await terrainSave(page, `${preset}-step.json`);
+    expect(stepped).toEqual(reference.save());
+    await importTelemetryWorld(page, stepped);
+    const observedTick = (await terrainNativeFrame(page)).frame.stats.tick;
+    while (reference.tick < observedTick) reference.step();
+    expect(await terrainSave(page, `${preset}-reload.json`)).toEqual(reference.save());
+    await page.locator('#step').click();
+    reference.step();
+    await expect(page.locator('#tick')).toHaveText(`TICK ${reference.tick}`);
+    expect((await terrainNativeFrame(page)).frame).toEqual(terrainExpectedFrame(reference));
+  });
+}
+
+test('terrain whole-world actions preserve wrapped life, food, selection, pins and truthful measurement metadata', async ({
+  page,
+}) => {
+  await observeTerrainNative(page);
+  const reference = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
+  const body: Genome = {
+    cells: [
+      { x: 0, y: 0, type: 7 },
+      { x: 1, y: 0, type: 7 },
+      { x: 0, y: 1, type: 7 },
+    ],
+    preference: 0.5,
+    tolerance: 0.3,
+    tempo: 2,
+  };
+  reference.spawn(body, 0, 0, undefined, undefined, 2);
+  const recipe = { version: 1 as const, preset: 'chambered-refuges' as const, seed: 42 };
+  const candidate = generateTerrain(recipe, 42),
+    protectedCell = candidate.findIndex((value) => !!value);
+  reference.spawn(body, protectedCell % WIDTH, Math.floor(protectedCell / WIDTH));
+  advance(reference, 59);
+  for (let cell = 0; cell < reference.food.length; cell++)
+    if (!reference.occupied[cell]) reference.food[cell] = 1;
+  reference.walls[index(200, 100)] = 1;
+  reference.food[index(200, 100)] = 0;
+  await page.goto('/');
+  await importTelemetryWorld(page, reference.save());
+  expect(await terrainSave(page, 'terrain-edit-before.json')).toEqual(reference.save());
+  await page.getByRole('button', { name: 'Inspect', exact: true }).click();
+  const origin = await coordinate(page, 0, 0);
+  await page.mouse.click(origin.x, origin.y);
+  await expect.poll(() => page.evaluate(() => window.terrainNative.selected?.id)).toBe(1);
+  await terrainSettings(page);
+  await page.locator('#telemetry-sample').selectOption('30');
+  await page.locator('#clear-walls').click();
+  reference.changeTerrain('clear');
+  await expect
+    .poll(() => page.evaluate(() => window.terrainNative.manual?.operation))
+    .toBe('clear-walls');
+  expect((await terrainNativeFrame(page)).frame).toEqual(terrainExpectedFrame(reference));
+  await page.locator('#terrain-preset').selectOption('chambered-refuges');
+  await page.locator('#terrain-follow').uncheck();
+  await page.locator('#terrain-seed').fill('42');
+  await page.locator('#regenerate-walls').click();
+  const regenerated = reference.changeTerrain('regenerate', recipe);
+  await expect
+    .poll(() => page.evaluate(() => window.terrainNative.manual?.operation))
+    .toBe('regenerate-walls');
+  expect(regenerated.detail.protectedCells).toBeGreaterThan(0);
+  expect(await terrainSave(page, 'terrain-edit-regenerated.json')).toEqual(reference.save());
+  expect((await terrainNativeFrame(page)).selected.id).toBe(1);
+  await expect(page.locator('#telemetry-sample')).toHaveValue('30');
+  await page.locator('#regenerate-walls').click();
+  await expect(page.locator('#notice')).toContainText('unchanged');
+  await page.locator('#terrain-preset').selectOption('open-field');
+  await page.locator('#regenerate-walls').click();
+  reference.changeTerrain('regenerate', { version: 1, preset: 'open-field', seed: 42 });
+  await page.locator('#terrain-seed').fill('43');
+  await page.locator('#regenerate-walls').click();
+  const recipeOnly = reference.changeTerrain('regenerate', {
+    version: 1,
+    preset: 'open-field',
+    seed: 43,
+  });
+  expect(recipeOnly.detail.addedWalls + recipeOnly.detail.removedWalls).toBe(0);
+  expect(await terrainSave(page, 'terrain-edit-recipe-only.json')).toEqual(reference.save());
+  await page.locator('#step').click();
+  reference.step();
+  await expect(page.locator('#tick')).toHaveText('TICK 60');
+  expect(await terrainSave(page, 'terrain-edit-boundary.json')).toEqual(reference.save());
+  const json = restoreMeasurementZeros(
+    JSON.parse((await downloadMeasurements(page, 'json')).toString()),
+  );
+  const csv = decodeDownloadedCsv(await downloadMeasurements(page, 'csv'));
+  expect(csv).toEqual(json);
+  expect(json.version).toBe(2);
+  expect(json.snapshot.terrain).toEqual(reference.terrain);
+  expect(json.interventions).toEqual(reference.save().interventions);
+});
+
+test('terrain imports preserve explicit cells and newer drafts while stale native wall owners cannot cross reset', async ({
+  page,
+}) => {
+  await observeMeasurementOwnership(page);
+  await observeTerrainNative(page);
+  await page.goto('/');
+  const legacy = JSON.parse(readFileSync('test/fixtures/terrain/legacy5-opaque.json', 'utf8'));
+  await importTelemetryWorld(page, legacy);
+  await expect(page.locator('#notice')).toContainText('Saved terrain kept');
+  const explicit = new Ecosystem().save();
+  explicit.terrain = { version: 1, preset: 'open-field', seed: 99 };
+  explicit.walls = [index(5, 5)];
+  explicit.food = [index(6, 6)];
+  const reference = Ecosystem.load(JSON.stringify(explicit));
+  await importTelemetryWorld(page, explicit);
+  const tick = (await terrainNativeFrame(page)).frame.stats.tick;
+  while (reference.tick < tick) reference.step();
+  expect(await terrainSave(page, 'terrain-explicit-authority.json')).toEqual(reference.save());
+  await terrainSettings(page);
+  await page.locator('#terrain-preset').selectOption('chambered-refuges');
+  await page.locator('#file').setInputFiles({
+    name: 'invalid-terrain.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({ ...explicit, terrain: { ...explicit.terrain, seed: -1 } }),
+    ),
+  });
+  await expect(page.locator('#notice')).toContainText('Invalid ecosystem wall recipe');
+  await expect(page.locator('#terrain-preset')).toHaveValue('chambered-refuges');
+  expect(await terrainSave(page, 'terrain-rejected-preserved.json')).toEqual(reference.save());
+  await page.evaluate(() => {
+    window.measurementGate.deliveryBlocked = true;
+  });
+  await page.locator('#clear-walls').click();
+  await expect.poll(() => page.evaluate(() => window.measurementGate.pending.size)).toBe(1);
+  await page.locator('#reset').click();
+  await page.locator('#confirm-reset').click();
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  const reset = new Ecosystem(DEFAULTS, true, {
+    terrain: { version: 1, preset: 'chambered-refuges', seed: 99 },
+  });
+  await page.evaluate(() => window.measurementGate.releaseResults());
+  expect(await terrainSave(page, 'terrain-stale-owner-reset.json')).toEqual(reset.save());
+  await expect(page.locator('#terrain-committed')).toContainText('Chambered refuges');
+  expect(await page.evaluate(() => window.measurementGate.pending.size)).toBe(0);
+});
+
+test('terrain controls and reset dialog remain keyboard-accessible without view-driven mutation at all declared widths', async ({
+  page,
+}, testInfo) => {
+  const errors: string[] = [],
+    external: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('request', (request) => {
+    if (new URL(request.url()).hostname !== '127.0.0.1') external.push(request.url());
+  });
+  await observeTerrainNative(page);
+  await page.goto('/');
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  const before = await terrainSave(page, 'terrain-layout-before.json');
+  await terrainSettings(page);
+  for (const width of [320, 390, 760, 780, 1024, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.locator('#terrain-preset').focus();
+    await page.keyboard.press('ArrowDown');
+    await page.locator('#terrain-follow').focus();
+    await page.keyboard.press('Space');
+    if (!(await page.locator('#terrain-follow').isChecked())) {
+      await page.locator('#terrain-seed').fill('0');
+      await page.locator('#terrain-seed').focus();
+      await expect(page.locator('#terrain-seed')).toBeFocused();
+    }
+    await page.locator('#reset').click();
+    await expect(page.locator('#cancel-reset')).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(page.locator('#confirm-reset')).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#reset-dialog')).not.toBeVisible();
+    await expect(page.locator('#reset')).toBeFocused();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+    await page.locator('#regenerate-walls').scrollIntoViewIfNeeded();
+    await expect(page.locator('#regenerate-walls')).toBeInViewport();
+    const layout = await page.evaluate(() => ({
+      caption: document.getElementById('terrain-preview-caption')!.getBoundingClientRect().width,
+      sidebar: document.querySelector('.sidebar')!.getBoundingClientRect().width,
+      color: getComputedStyle(document.getElementById('terrain-preview-caption')!).color,
+      habitat: document.querySelector('canvas#world')!.getBoundingClientRect().width,
+    }));
+    expect(layout.caption).toBeGreaterThan(0);
+    expect(layout.sidebar).toBeGreaterThan(0);
+    expect(layout.habitat).toBeGreaterThan(0);
+    await testInfo.attach(`terrain-layout-${width}.json`, {
+      body: JSON.stringify(layout),
+      contentType: 'application/json',
+    });
+  }
+  await page
+    .locator('.terrain-controls')
+    .screenshot({ path: testInfo.outputPath('terrain-controls.png') });
+  await page.locator('#zoom-in').click();
+  const center = await coordinate(page, 120, 78);
+  await page.mouse.move(center.x, center.y);
+  await page.mouse.down();
+  await page.mouse.move(center.x + 10, center.y + 10);
+  await page.mouse.up();
+  expect(await terrainSave(page, 'terrain-layout-after.json')).toEqual(before);
+  expect(errors).toEqual([]);
+  expect(external).toEqual([]);
+});
+
+test('D22-R1-001 native genuine legacy extensions survive three actual saves, resumed loads and exact paused Step', async ({
+  page,
+}) => {
+  await observeTerrainNative(page);
+  await page.goto('/');
+  const original = JSON.parse(readFileSync('test/fixtures/terrain/legacy5-opaque.json', 'utf8'));
+  const reference = Ecosystem.load(JSON.stringify(original));
+  await importTelemetryWorld(page, original);
+  const first = await terrainSave(page, 'opaque-successor-save1.json');
+  while (reference.tick < first.tick) reference.step();
+  expect(first).toEqual(reference.save());
+  expect(first.settings).toEqual(original.settings);
+  expect((first.organisms[0] as any).retained).toEqual(original.organisms[0].retained);
+  await importTelemetryWorld(page, first);
+  const second = await terrainSave(page, 'opaque-successor-save2.json');
+  while (reference.tick < second.tick) reference.step();
+  expect(second).toEqual(reference.save());
+  await page.locator('#step').click();
+  reference.step();
+  await expect(page.locator('#tick')).toHaveText(`TICK ${reference.tick}`);
+  expect(await terrainSave(page, 'opaque-successor-save3.json')).toEqual(reference.save());
+  const loads = await page.evaluate(() =>
+    window.terrainNative.lifecycle.filter((entry) => entry.type === 'loaded'),
+  );
+  expect(loads).toHaveLength(2);
+  expect(loads.every((entry) => !entry.paused)).toBe(true);
+});
+
+test('D22-R1-001 native accepted-cap legacy migration fails outbound nonfatally with no download and exact retained selection/Step', async ({
+  page,
+}, testInfo) => {
+  await observeMeasurementOwnership(page);
+  await observeTerrainNative(page);
+  await page.goto('/');
+  const original = JSON.parse(readFileSync('test/fixtures/terrain/legacy5-opaque.json', 'utf8'));
+  original.organisms[0].padding = '';
+  original.organisms[0].padding = 'x'.repeat(2500000 - Buffer.byteLength(JSON.stringify(original)));
+  const input = JSON.stringify(original),
+    reference = Ecosystem.load(input);
+  expect(Buffer.byteLength(input)).toBe(2500000);
+  expect(Buffer.byteLength(JSON.stringify(reference.save()))).toBeGreaterThan(2500000);
+  await importTelemetryWorld(page, original);
+  const tick = (await terrainNativeFrame(page)).frame.stats.tick;
+  while (reference.tick < tick) reference.step();
+  await page.getByRole('button', { name: 'Inspect', exact: true }).click();
+  const center = await coordinate(page, 120, 78);
+  await page.mouse.click(center.x, center.y);
+  await expect.poll(() => page.evaluate(() => window.terrainNative.selected?.id)).toBe(1);
+  const before = await terrainNativeFrame(page),
+    ownersBefore = await page.evaluate(() => [...window.measurementGate.pending]);
+  expect(before.frame).toEqual(terrainExpectedFrame(reference));
+  expect(before.selected).toEqual(reference.save().organisms[0]);
+  expect(ownersBefore).toEqual([]);
+  let downloads = 0;
+  page.on('download', () => downloads++);
+  const savedBefore = await page.evaluate(() => window.terrainNative.saved);
+  await page.locator('#save').click();
+  await expect(page.locator('#notice')).toContainText('World file exceeds 2.5 MB');
+  expect(await terrainNativeFrame(page)).toEqual(before);
+  expect(await page.evaluate(() => [...window.measurementGate.pending])).toEqual(ownersBefore);
+  expect(await page.evaluate(() => window.terrainNative.saved)).toBe(savedBefore);
+  expect(downloads).toBe(0);
+  const failure = await page.evaluate(() => window.terrainNative.errors.at(-1));
+  expect(failure).toMatchObject({ operation: 'save' });
+  expect(failure).not.toHaveProperty('fatal');
+  await page.locator('#step').click();
+  reference.step();
+  await expect(page.locator('#tick')).toHaveText(`TICK ${reference.tick}`);
+  const after = await terrainNativeFrame(page);
+  expect(after.frame).toEqual(terrainExpectedFrame(reference));
+  expect(after.selected).toEqual(reference.save().organisms[0]);
+  expect(after.playback.paused).toBe(true);
+  await testInfo.attach('accepted-cap-native-state.json', {
+    body: JSON.stringify({
+      inputBytes: Buffer.byteLength(input),
+      inputSHA256: createHash('sha256').update(input).digest('hex'),
+      migratedBytes: Buffer.byteLength(JSON.stringify(Ecosystem.load(input).save())),
+      before,
+      after,
+      failure,
+      ownersBefore,
+      successfulDownloads: downloads,
+      frameIsNotCompleteWorld: true,
+    }),
+    contentType: 'application/json',
+  });
+});
 
 test('unselected crossing manual spans remain clipped and disclosed with independent focused pins', async ({
   page,
@@ -172,7 +622,16 @@ test('unselected crossing manual spans remain clipped and disclosed with indepen
   });
 });
 
-for (const operation of ['initial-start', 'start', 'load', 'settings', 'paint', 'shock']) {
+for (const operation of [
+  'initial-start',
+  'start',
+  'load',
+  'settings',
+  'paint',
+  'shock',
+  'clear-walls',
+  'regenerate-walls',
+]) {
   test(`native post-success ${operation} publication fault preserves applied state and unrelated owners until explicit recovery`, async ({
     page,
   }, testInfo) => {
@@ -247,6 +706,7 @@ for (const operation of ['initial-start', 'start', 'load', 'settings', 'paint', 
       await expect(page.locator('#population')).not.toHaveText('—');
       reference = new Ecosystem(DEFAULTS, false);
       advance(reference, 61);
+      if (operation === 'clear-walls') reference.walls[index(200, 100)] = 1;
       await importTelemetryWorld(page, reference.save());
       expect(await downloadPausedWorld(page)).toEqual(
         Buffer.from(JSON.stringify(reference.save())),
@@ -282,6 +742,7 @@ for (const operation of ['initial-start', 'start', 'load', 'settings', 'paint', 
       if (operation === 'start') {
         await page.getByText('World settings', { exact: true }).click();
         await page.locator('#reset').click();
+        await page.locator('#confirm-reset').click();
         reference = new Ecosystem(reference.settings);
       } else if (operation === 'load') {
         reference = new Ecosystem({ ...DEFAULTS, seed: 74, nutrients: 0 }, false);
@@ -309,6 +770,10 @@ for (const operation of ['initial-start', 'start', 'load', 'settings', 'paint', 
             after: { offset: reference.eventOffset, until: reference.eventUntil },
           },
         });
+      } else if (operation === 'clear-walls' || operation === 'regenerate-walls') {
+        await page.getByText('World settings', { exact: true }).click();
+        await page.locator(`#${operation}`).click();
+        reference.changeTerrain(operation === 'clear-walls' ? 'clear' : 'regenerate');
       } else {
         const next = await coordinate(page, 2, 1);
         await page.mouse.move(next.x, next.y);
@@ -492,7 +957,7 @@ test('literal v3 telemetry migrates through the file input and real worker befor
   const migratedBytes = await downloadPausedWorld(page),
     migrated = JSON.parse(migratedBytes.toString()) as WorldFile;
   expect(migrated).toEqual(expected());
-  expect(migrated.version).toBe(5);
+  expect(migrated.version).toBe(6);
   expect(migrated.telemetry.version).toBe(2);
   expect(migrated.telemetry.originTick).toBe(fixture.telemetry.originTick);
   expect(migrated.telemetry.adaptationOriginTick).toBe(65);
@@ -1734,7 +2199,7 @@ test('D9-A10 native file reads stay single-owner through cancellation, reset and
     contentType: 'application/json',
   });
 });
-for (const version of [2, 3, 4, 5] as const) {
+for (const version of [2, 3, 4, 5, 6] as const) {
   test(`measurement bytes preserve genuine world${version} migration,180 samples and truthful manual windows`, async ({
     page,
   }) => {
@@ -1744,7 +2209,12 @@ for (const version of [2, 3, 4, 5] as const) {
     world.changeSettings({ climate: -0 });
     const current = world.save();
     (current.settings as any).retainedExtension = '=literal,"λ\r\n@formula';
-    const { telemetry: _telemetry, interventions: _interventions, ...ecology } = current;
+    const {
+      telemetry: _telemetry,
+      interventions: _interventions,
+      terrain: _terrain,
+      ...ecology
+    } = current;
     const candidate =
       version === 2
         ? { ...ecology, version: 2 }
@@ -1752,9 +2222,12 @@ for (const version of [2, 3, 4, 5] as const) {
           ? legacyV3(current)
           : version === 4
             ? legacyV4(current)
-            : current;
+            : version === 5
+              ? legacyV5(current)
+              : current;
     expect(candidate.version).toBe(version);
-    expect('interventions' in candidate).toBe(version === 5);
+    expect('interventions' in candidate).toBe(version >= 5);
+    expect('terrain' in candidate).toBe(version === 6);
     const text = JSON.stringify(candidate).replace(/"climate":0(?=[,}])/g, '"climate":-0'),
       reference = Ecosystem.load(text),
       expected = reference.save();
@@ -1780,15 +2253,17 @@ for (const version of [2, 3, 4, 5] as const) {
     expect(jsonBytes.toString()).not.toContain('retainedExtension');
     expect(json.windows.samples.retainedCount).toBe(version === 2 ? 0 : 180);
     expect(json.windows.manual).toMatchObject({
-      retainedCount: version === 5 ? 128 : 0,
+      retainedCount: version >= 5 ? 128 : 0,
       capacity: 128,
-      originKind: version === 5 ? 'fresh' : 'legacy-import',
+      originKind: version >= 5 ? 'fresh' : 'legacy-import',
       coverage: 'applied-portions-only',
     });
-    expect(json.windows.settings.unknownEvictedPrefix).toBe(version === 5);
+    expect(json.windows.settings.unknownEvictedPrefix).toBe(version >= 5);
+    expect(json.version).toBe(2);
+    expect(json.snapshot.terrain).toEqual(DEFAULT_TERRAIN);
     for (const view of ['population', 'food', 'adaptation'])
       await page.locator('#telemetry-view').selectOption(view);
-    if (version === 5) {
+    if (version >= 5) {
       const sequence = String(expected.interventions.entries[0].sequence),
         sample = String(expected.telemetry.samples.at(-2)!.tick),
         layouts: object[] = [];
@@ -1890,7 +2365,11 @@ for (const mode of ['processing', 'delivery'] as const) {
       const gate = window.measurementGate;
       gate.processingBlocked = mode === 'processing';
       gate.deliveryBlocked = mode === 'delivery';
-      const click = (id: string) => document.getElementById(id)!.click(),
+      const click = (id: string) => {
+          document.getElementById(id)!.click();
+          if (id === 'reset' && (document.getElementById('reset-dialog') as HTMLDialogElement).open)
+            document.getElementById('confirm-reset')!.click();
+        },
         canvas = document.getElementById('world')!,
         rect = canvas.getBoundingClientRect();
       click('measurements-json');
@@ -2960,6 +3439,7 @@ test.describe('pause on total extinction', () => {
     await page.waitForTimeout(200);
     expect(await readWorld(page)).toEqual(expected);
     await page.getByRole('button', { name: 'Reseed world' }).click();
+    await page.locator('#confirm-reset').click();
     await pause(page);
     const reseeded = await readWorld(page);
     expect(reseeded.settings).toEqual(expected.settings);
@@ -3005,6 +3485,7 @@ test.describe('pause on total extinction', () => {
     await page.locator('#ecosystem-tab').click();
     await page.getByText('World settings', { exact: true }).click();
     await page.locator('#reset').click();
+    await page.locator('#confirm-reset').click();
     await expect(page.locator('#pause-on-extinction')).not.toBeChecked();
     await expect(page.locator('#population')).toHaveText('1');
     await importWorld(page, fixture);
@@ -3173,7 +3654,7 @@ test('restores real worker telemetry, renders its population projection and down
   expect(frame.telemetry).toEqual(before);
   const downloaded = JSON.parse((await downloadWorld(page)).toString());
   expect(downloaded.telemetry).toEqual(before);
-  expect(downloaded.version).toBe(5);
+  expect(downloaded.version).toBe(6);
   expect(downloaded.telemetry.version).toBe(2);
   expect(downloaded.telemetry.intervalTicks).toBe(30);
   const restored = Ecosystem.load(JSON.stringify(downloaded));
@@ -3336,6 +3817,7 @@ test('new and reseeded worlds begin with one creature and no births', async ({ p
   await expect(page.getByText('Nutrient rain', { exact: true })).toHaveCount(0);
   await page.locator('#seed').fill('100');
   await page.getByRole('button', { name: 'Reseed world' }).click();
+  await page.locator('#confirm-reset').click();
   await expect(page.locator('#world-label')).toHaveText('WORLD 0100');
   const saved = await pause(page);
   await expect(page.locator('#population')).toHaveText('1');
@@ -3404,7 +3886,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   await expect(page.locator('[data-shock="bloom"]')).toHaveCount(0);
   const saved = await downloadWorld(page),
     world = JSON.parse(saved.toString());
-  expect(world.version).toBe(5);
+  expect(world.version).toBe(6);
   expect(world.organisms.length).toBeGreaterThan(1);
   const o = world.organisms[0],
     c = o.genome.cells[0];
@@ -3483,6 +3965,7 @@ test('designer, world tools, camera, shortcuts and invalid saves behave in Chrom
   await page.locator('#nutrients').fill('10');
   await page.locator('#seed').fill('123');
   await page.getByRole('button', { name: 'Reseed world' }).click();
+  await page.locator('#confirm-reset').click();
   await expect(page.locator('#world-label')).toHaveText('WORLD 0123');
   await page.locator('#file').setInputFiles({
     name: 'bad.json',

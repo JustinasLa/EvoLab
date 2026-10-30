@@ -57,6 +57,23 @@ afterEach(() => {
 });
 
 describe('bounded model-dependent telemetry presentation', () => {
+  it('renders exact terrain details separately from climate shocks and discloses unknown prior geometry', () => {
+    const world = new Ecosystem();
+    const cleared = world.changeTerrain('clear');
+    show(world.frame());
+    expect(get('telemetry-intervention-details').textContent).toContain('Wall actionclear');
+    expect(get('telemetry-intervention-details').textContent).toContain(
+      String(cleared.detail.removedWalls),
+    );
+    expect(get('telemetry-intervention-details').textContent).toContain(
+      'Terrain history before the first retained wall action is unknown',
+    );
+    expect(get('telemetry-intervention-details').textContent).not.toContain('Climate shock');
+    world.changeTerrain('regenerate', { version: 1, preset: 'chambered-refuges', seed: 0 });
+    show(world.frame());
+    expect(get('telemetry-intervention-details').textContent).toContain('chambered-refuges');
+    expect(get('telemetry-intervention-details').textContent).toContain('Walls added');
+  });
   it('presents each real manual kind without inventing samples and redraws same-tick coalesced portions', () => {
     const world = new Ecosystem(DEFAULTS, false),
       paint = (x: number, sequence: number | null = null) =>

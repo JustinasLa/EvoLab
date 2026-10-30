@@ -1,0 +1,94 @@
+{
+  "version": 5,
+  "telemetry": {
+    "version": 2,
+    "intervalTicks": 30,
+    "originTick": 0,
+    "adaptationOriginTick": 0,
+    "samples": [],
+    "pending": {
+      "births": 0,
+      "deaths": { "age": 0, "energy": 0, "manual": 0 },
+      "energy": {
+        "leavesGained": 0,
+        "mouthsGained": 0,
+        "movementSpent": 0,
+        "upkeepSpent": 0,
+        "climateUpkeepSpent": 0,
+        "reproductionSpent": 0,
+        "offspringGranted": 0,
+        "stingsGained": 0,
+        "stingsDrained": 0
+      },
+      "fromTick": 0
+    }
+  },
+  "interventions": {
+    "version": 1,
+    "originTick": 0,
+    "originKind": "fresh",
+    "originSettings": { "seed": 42, "mutation": 0.12, "nutrients": 5, "climate": 0.8 },
+    "totalEntries": 0,
+    "evictedThroughTick": null,
+    "prefixSettings": { "seed": 42, "mutation": 0.12, "nutrients": 5, "climate": 0.8 },
+    "entries": []
+  },
+  "settings": {
+    "seed": 42,
+    "mutation": 0.12,
+    "nutrients": 5,
+    "climate": 0.8,
+    "retained": {
+      "label": "Žemė 🧬",
+      "nested": [null, { "value": "literal", "flags": [false, 0] }]
+    }
+  },
+  "random": 1703683461,
+  "tick": 0,
+  "births": 0,
+  "deaths": 0,
+  "nextId": 2,
+  "nextSpecies": 5,
+  "eventUntil": 0,
+  "eventOffset": 0,
+  "food": [],
+  "walls": [
+    12403, 12404, 12405, 12406, 12641, 12642, 12880, 12898, 13136, 13137, 13372, 13373, 13374,
+    13375, 16694, 16695, 16696, 16697, 16932, 16933, 17171, 17189, 17427, 17428, 17467, 17468,
+    17469, 17470, 17663, 17664, 17665, 17666, 17705, 17706, 17944, 17962, 18200, 18201, 18436,
+    18437, 18438, 18439, 19008, 19009, 19010, 19011, 19246, 19247, 19485, 19503, 19741, 19742,
+    19977, 19978, 19979, 19980, 21908, 21909, 21910, 21911, 22146, 22147, 22385, 22403, 22641,
+    22642, 22877, 22878, 22879, 22880, 23464, 23465, 23466, 23467, 23702, 23703, 23941, 23959,
+    24197, 24198, 24433, 24434, 24435, 24436, 29823, 29824, 29825, 29826, 30061, 30062, 30300,
+    30318, 30556, 30557, 30792, 30793, 30794, 30795
+  ],
+  "organisms": [
+    {
+      "id": 1,
+      "species": 1,
+      "x": 120,
+      "y": 78,
+      "rotation": 0,
+      "direction": 0,
+      "age": 0,
+      "energy": 13,
+      "generation": 0,
+      "children": 0,
+      "ancestry": [],
+      "genome": {
+        "cells": [
+          { "x": 0, "y": 0, "type": 3, "retained": { "nested": [{ "glyph": "🌱" }] } },
+          { "x": -1, "y": 0, "type": 4 },
+          { "x": 0, "y": -1, "type": 4 },
+          { "x": 1, "y": 0, "type": 4 },
+          { "x": 0, "y": 1, "type": 4 }
+        ],
+        "preference": 0.5,
+        "tolerance": 0.3,
+        "tempo": 5,
+        "retained": { "exact": ["β", 0.1234567890123456] }
+      },
+      "retained": { "nested": ["ąžuolas", { "data": [1, true, null] }] }
+    }
+  ]
+}

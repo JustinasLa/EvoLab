@@ -184,6 +184,20 @@ export function createTelemetryView(root: HTMLElement) {
     } else if (entry.kind === 'settings') {
       for (const [field, change] of Object.entries(entry.detail.changes))
         rows.push([field, `${change!.before} → ${change!.after}`]);
+    } else if (entry.kind === 'terrain') {
+      rows.push(
+        ['Wall action', entry.detail.action],
+        ['Recipe before', JSON.stringify(entry.detail.before)],
+        ['Recipe after', JSON.stringify(entry.detail.after)],
+        ['Walls added', String(entry.detail.addedWalls)],
+        ['Walls removed', String(entry.detail.removedWalls)],
+        ['Food removed beneath new walls', String(entry.detail.removedFood)],
+        ['Candidate walls protected by living cells', String(entry.detail.protectedCells)],
+        [
+          'Interpretation',
+          'Net cell counts, not a replay. Terrain history before the first retained wall action is unknown. Saved/edited cells are authoritative.',
+        ],
+      );
     } else
       rows.push(
         ['Climate shock', entry.detail.kind],

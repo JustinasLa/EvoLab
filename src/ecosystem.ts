@@ -1,3 +1,4 @@
+import { DEFAULT_TERRAIN, generateTerrain, sameTerrain, validTerrain } from './terrain';
 import {
   DEFAULTS,
   WIDTH,
@@ -32,6 +33,9 @@ import {
   type LegacyWorldFile,
   type WorldFileV3,
   type WorldFileV4,
+  type WorldFileV5,
+  type TerrainRecipe,
+  type TerrainDetail,
   type InterventionState,
   type InterventionEffect,
   type InterventionEntry,
@@ -236,7 +240,7 @@ function validTelemetry(
 }
 function emptyInterventions(settings: Settings, tick = 0, legacy = false): InterventionState {
   return {
-    version: 1,
+    version: 2,
     originTick: tick,
     originKind: legacy ? 'legacy-import' : 'fresh',
     originSettings: knownSettings(settings),
@@ -253,7 +257,7 @@ function brushCells(radius: number): number {
       if (horizontal * horizontal + vertical * vertical <= radius * radius) count++;
   return count;
 }
-function validInterventions(value: unknown, file: WorldFile): value is InterventionState {
+function validInterventions(value: unknown, file: WorldFile | WorldFileV5): boolean {
   const settingKeys = ['seed', 'mutation', 'nutrients', 'climate'];
   const settingsMatch = (left: Settings, right: Settings): boolean =>
     settingKeys.every((key) => left[key as keyof Settings] === right[key as keyof Settings]);
@@ -268,7 +272,7 @@ function validInterventions(value: unknown, file: WorldFile): value is Intervent
       'prefixSettings',
       'entries',
     ]) ||
-    value.version !== 1 ||
+    value.version !== (file.version === 6 ? 2 : 1) ||
     !integer(value.originTick, 0, file.tick) ||
     !['fresh', 'legacy-import'].includes(value.originKind as string) ||
     (value.originKind === 'fresh' && value.originTick !== 0) ||
@@ -292,7 +296,8 @@ function validInterventions(value: unknown, file: WorldFile): value is Intervent
   const replay = { ...value.prefixSettings };
   if (replay.seed !== file.settings.seed || value.originSettings.seed !== replay.seed) return false;
   let previousTick = (value.evictedThroughTick as number | null) ?? value.originTick,
-    previousShock: { offset: number; until: number } | undefined;
+    previousShock: { offset: number; until: number } | undefined,
+    previousTerrain: TerrainRecipe | undefined;
   const coordinate = (point: unknown): boolean =>
     exactKeys(point, ['x', 'y']) &&
     integer(point.x, 0, WIDTH - 1) &&
@@ -388,6 +393,42 @@ function validInterventions(value: unknown, file: WorldFile): value is Intervent
             return false;
           replay[field] = change.after as number;
         }
+      } else if (row.kind === 'terrain' && file.version === 6) {
+        if (
+          !exactKeys(detail, [
+            'action',
+            'before',
+            'after',
+            'addedWalls',
+            'removedWalls',
+            'removedFood',
+            'protectedCells',
+          ]) ||
+          !['clear', 'regenerate'].includes(detail.action as string) ||
+          !validTerrain(detail.before) ||
+          !validTerrain(detail.after) ||
+          !integer(detail.addedWalls, 0, WIDTH * HEIGHT) ||
+          !integer(detail.removedWalls, 0, WIDTH * HEIGHT - detail.addedWalls) ||
+          !integer(detail.removedFood, 0, detail.addedWalls) ||
+          !integer(detail.protectedCells, 0, LIMIT * 16) ||
+          (previousTerrain && !sameTerrain(previousTerrain, detail.before))
+        )
+          return false;
+        const unchanged = sameTerrain(detail.before, detail.after);
+        if (
+          detail.action === 'clear'
+            ? !unchanged ||
+              detail.addedWalls !== 0 ||
+              detail.removedFood !== 0 ||
+              detail.protectedCells !== 0 ||
+              detail.removedWalls === 0
+            : unchanged &&
+              detail.addedWalls === 0 &&
+              detail.removedWalls === 0 &&
+              detail.removedFood === 0
+        )
+          return false;
+        previousTerrain = detail.after;
       } else if (row.kind === 'shock') {
         if (
           !exactKeys(detail, ['kind', 'before', 'after']) ||
@@ -409,6 +450,7 @@ function validInterventions(value: unknown, file: WorldFile): value is Intervent
   }
   return (
     settingsMatch(replay, file.settings) &&
+    (!previousTerrain || (file.version === 6 && sameTerrain(previousTerrain, file.terrain))) &&
     (!previousShock ||
       (previousShock.offset === file.eventOffset && previousShock.until === file.eventUntil))
   );
@@ -416,6 +458,7 @@ function validInterventions(value: unknown, file: WorldFile): value is Intervent
 export class Ecosystem {
   random: Random;
   settings: Settings;
+  terrain: TerrainRecipe;
   organisms = new Map<number, Organism>();
   food = new Uint8Array(WIDTH * HEIGHT);
   walls = new Uint8Array(WIDTH * HEIGHT);
@@ -431,9 +474,15 @@ export class Ecosystem {
   private telemetry = emptyTelemetry(0);
   private interventions: InterventionState;
   private readonly recording: boolean;
-  constructor(settings: Settings = DEFAULTS, seed = true, options: { telemetry?: boolean } = {}) {
+  constructor(
+    settings: Settings = DEFAULTS,
+    seed = true,
+    options: { telemetry?: boolean; terrain?: TerrainRecipe } = {},
+  ) {
+    if (!validTerrain(options.terrain ?? DEFAULT_TERRAIN)) throw new Error('Invalid wall recipe.');
     this.recording = options.telemetry !== false;
-    this.settings = { ...settings };
+    this.settings = structuredClone(settings);
+    this.terrain = { ...(options.terrain ?? DEFAULT_TERRAIN) };
     this.interventions = emptyInterventions(settings);
     this.random = new Random(settings.seed);
     if (seed) this.seed();
@@ -559,7 +608,8 @@ export class Ecosystem {
   measurements(openStrokeSequence: number | null = null): MeasurementSource {
     return {
       snapshot: {
-        worldVersion: 5,
+        worldVersion: 6,
+        terrain: { ...this.terrain },
         completedTick: this.tick,
         seed: this.settings.seed,
         settings: knownSettings(this.settings),
@@ -571,22 +621,56 @@ export class Ecosystem {
     };
   }
   seed(): void {
-    // Porous mineral ridges partition habitats without sealing them off.
-    for (let i = 0; i < 7; i++) {
-      const x = 20 + this.random.int(WIDTH - 40),
-        y = 15 + this.random.int(HEIGHT - 30);
-      for (let j = -9; j <= 9; j++)
-        if (Math.abs(j) > 2) {
-          const p = index(x + j, y + Math.round(Math.sin(j / 3) * 2));
-          this.walls[p] = 1;
-          this.food[p] = 0;
-        }
-    }
+    this.walls.set(generateTerrain(this.terrain, this.settings.seed));
+    this.random.state = (this.settings.seed + Math.imul(14, 0x6d2b79f5)) | 0;
     const genome = founder(0),
       x = WIDTH / 2,
       y = HEIGHT / 2;
     for (const position of positions({ genome, x, y, rotation: 0 })) this.walls[position] = 0;
     this.spawn(genome, x, y, 1);
+  }
+  changeTerrain(
+    action: 'clear' | 'regenerate',
+    recipe: TerrainRecipe = this.terrain,
+  ): { detail: TerrainDetail; rowSequence: number | null } {
+    if (!['clear', 'regenerate'].includes(action) || !validTerrain(recipe))
+      throw new Error('Invalid wall action or recipe.');
+    const walls =
+      action === 'clear'
+        ? new Uint8Array(WIDTH * HEIGHT)
+        : generateTerrain(recipe, this.settings.seed);
+    const detail: TerrainDetail = {
+      action,
+      before: { ...this.terrain },
+      after: { ...(action === 'clear' ? this.terrain : recipe) },
+      addedWalls: 0,
+      removedWalls: 0,
+      removedFood: 0,
+      protectedCells: 0,
+    };
+    for (let cell = 0; cell < walls.length; cell++) {
+      if (walls[cell] && this.occupied[cell]) {
+        walls[cell] = 0;
+        detail.protectedCells++;
+      }
+      if (walls[cell] && !this.walls[cell]) detail.addedWalls++;
+      if (!walls[cell] && this.walls[cell]) detail.removedWalls++;
+      if (walls[cell] && this.food[cell]) detail.removedFood++;
+    }
+    if (
+      !detail.addedWalls &&
+      !detail.removedWalls &&
+      !detail.removedFood &&
+      sameTerrain(detail.before, detail.after)
+    )
+      return { detail, rowSequence: null };
+    this.requireInterventionCapacity();
+    const rowSequence = this.appendIntervention({ kind: 'terrain', detail });
+    this.walls.set(walls);
+    if (action === 'regenerate')
+      for (let cell = 0; cell < walls.length; cell++) if (walls[cell]) this.food[cell] = 0;
+    this.terrain = { ...detail.after };
+    return { detail, rowSequence };
   }
   canPlace(o: Pick<Organism, 'x' | 'y' | 'rotation' | 'genome'>, ignore = 0): boolean {
     return positions(o).every(
@@ -880,6 +964,7 @@ export class Ecosystem {
     return {
       cells,
       ids,
+      terrain: { ...this.terrain },
       offset: this.tick < this.eventUntil ? this.eventOffset : 0,
       climate: this.settings.climate,
       telemetry: this.telemetrySnapshot(),
@@ -911,10 +996,11 @@ export class Ecosystem {
       if (this.walls[cell]) walls.push(cell);
     }
     return {
-      version: 5,
+      version: 6,
+      terrain: { ...this.terrain },
       telemetry: this.telemetrySnapshot(),
       interventions: structuredClone(this.interventions),
-      settings: { ...this.settings },
+      settings: structuredClone(this.settings),
       random: this.random.state,
       tick: this.tick,
       births: this.births,
@@ -935,11 +1021,15 @@ export class Ecosystem {
     )
       throw new Error('World file exceeds 2.5 MB.');
     const parsed: unknown = JSON.parse(text);
-    const f = parsed as WorldFile | WorldFileV4 | WorldFileV3 | LegacyWorldFile;
+    const f = parsed as WorldFile | WorldFileV5 | WorldFileV4 | WorldFileV3 | LegacyWorldFile;
     if (
       !f ||
       typeof f !== 'object' ||
-      (f.version !== 2 && f.version !== 3 && f.version !== 4 && f.version !== 5) ||
+      (f.version !== 2 &&
+        f.version !== 3 &&
+        f.version !== 4 &&
+        f.version !== 5 &&
+        f.version !== 6) ||
       !validSettings(f.settings) ||
       !integer(f.random, -2147483648, 4294967295) ||
       !integer(f.tick, 0, 1e9) ||
@@ -952,15 +1042,19 @@ export class Ecosystem {
       !Array.isArray(f.organisms) ||
       f.organisms.length > LIMIT
     )
-      throw new Error('Not a valid EvoLab ecosystem (version 2, 3, 4 or 5).');
+      throw new Error('Not a valid EvoLab ecosystem (version 2, 3, 4, 5 or 6).');
+    if (f.version === 6 && !validTerrain(f.terrain))
+      throw new Error('Invalid ecosystem wall recipe.');
     if (
       f.version !== 2 &&
       !validTelemetry(f.telemetry, f.tick, f.births, f.deaths, f.version === 3 ? 1 : 2)
     )
       throw new Error('Invalid ecosystem telemetry.');
-    if (f.version === 5 && !validInterventions(f.interventions, f))
+    if ((f.version === 5 || f.version === 6) && !validInterventions(f.interventions, f))
       throw new Error('Invalid ecosystem manual intervention history.');
-    const world = new Ecosystem(f.settings, false);
+    const world = new Ecosystem(f.settings, false, {
+      terrain: f.version === 6 ? f.terrain : DEFAULT_TERRAIN,
+    });
     for (const [field, array] of [
       ['food', world.food],
       ['walls', world.walls],
@@ -969,7 +1063,8 @@ export class Ecosystem {
       if (
         !Array.isArray(values) ||
         values.length > WIDTH * HEIGHT ||
-        !values.every((i) => integer(i, 0, WIDTH * HEIGHT - 1))
+        !values.every((i) => integer(i, 0, WIDTH * HEIGHT - 1)) ||
+        (f.version === 6 && new Set(values).size !== values.length)
       )
         throw new Error('Invalid world terrain.');
       for (const i of values) array[i] = 1;
@@ -1013,8 +1108,8 @@ export class Ecosystem {
     });
     world.random.state = f.random;
     world.interventions =
-      f.version === 5
-        ? structuredClone(f.interventions)
+      f.version === 5 || f.version === 6
+        ? { ...structuredClone(f.interventions), version: 2 }
         : emptyInterventions(f.settings, f.tick, true);
     world.telemetry =
       f.version === 2

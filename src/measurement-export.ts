@@ -57,10 +57,11 @@ export function measurementEnvelope(source: MeasurementSource) {
     evicted = manual.totalEntries - manual.entries.length;
   const envelope = {
     format: 'evolab-drift-measurements',
-    version: 1,
+    version: 2,
     rules: { id: 'evolab-drift-cellular', version: 1 },
     snapshot: {
       worldVersion: source.snapshot.worldVersion,
+      terrain: { ...source.snapshot.terrain },
       completedTick,
       seed: source.snapshot.seed,
       settings: knownSettings(source.snapshot.settings),

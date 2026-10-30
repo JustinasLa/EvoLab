@@ -29,6 +29,7 @@ export function validTerrain(value: unknown): value is TerrainRecipe {
     Object.hasOwn(value, 'preset') &&
     Object.hasOwn(value, 'seed') &&
     recipe.version === 1 &&
+    typeof recipe.preset === 'string' &&
     Object.hasOwn(TERRAIN_LABELS, recipe.preset) &&
     (recipe.seed === null || integer(recipe.seed, 0, 4294967295))
   );

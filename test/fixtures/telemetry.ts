@@ -6,6 +6,7 @@ import {
   type WorldFile,
   type WorldFileV3,
   type WorldFileV4,
+  type WorldFileV5,
 } from '../../src/model';
 
 export function advance(world: Ecosystem, ticks: number): void {
@@ -35,7 +36,7 @@ export function colony(
 }
 
 export function legacyV3(saved: WorldFile): WorldFileV3 {
-  const { interventions: _interventions, ...historical } = ecology(saved);
+  const { interventions: _interventions, terrain: _terrain, ...historical } = ecology(saved);
   return {
     ...historical,
     version: 3,
@@ -49,6 +50,19 @@ export function legacyV3(saved: WorldFile): WorldFileV3 {
   };
 }
 export function legacyV4(saved: WorldFile): WorldFileV4 {
-  const { interventions: _interventions, ...historical } = saved;
+  const { interventions: _interventions, terrain: _terrain, ...historical } = saved;
   return { ...historical, version: 4 };
+}
+export function legacyV5(saved: WorldFile): WorldFileV5 {
+  const { terrain: _terrain, interventions, ...historical } = saved;
+  assert.ok(interventions.entries.every((entry) => entry.kind !== 'terrain'));
+  return {
+    ...historical,
+    version: 5,
+    interventions: {
+      ...interventions,
+      version: 1,
+      entries: interventions.entries as WorldFileV5['interventions']['entries'],
+    },
+  };
 }

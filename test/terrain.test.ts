@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { WIDTH, HEIGHT, index, type TerrainRecipe } from '../src/model';
 import {
   DEFAULT_TERRAIN,
@@ -11,6 +12,29 @@ import {
 } from '../src/terrain';
 
 describe('versioned pure terrain recipes', () => {
+  it('matches independently inverted geometry digests and literal doorway coordinates from frozen baseline draws', () => {
+    const oracle = JSON.parse(readFileSync('test/fixtures/terrain/chamber-oracles.json', 'utf8'));
+    for (const fixture of oracle.fixtures) {
+      const mask = generateTerrain(
+        { version: 1, preset: 'chambered-refuges', seed: fixture.seed },
+        0,
+      );
+      expect(createHash('sha256').update(mask).digest('hex')).toBe(fixture.maskSha256);
+      for (let column = 0; column < 4; column++)
+        for (let row = 0; row < 3; row++) {
+          const vertical = 52 * row + fixture.verticalDoors[column * 3 + row];
+          const horizontal = 60 * column + fixture.horizontalDoors[column * 3 + row];
+          for (let offset = 0; offset < 5; offset++) {
+            expect(
+              mask[index(60 * column + fixture.shiftX, vertical + fixture.shiftY + offset)],
+            ).toBe(0);
+            expect(
+              mask[index(horizontal + fixture.shiftX + offset, 52 * row + fixture.shiftY)],
+            ).toBe(0);
+          }
+        }
+    }
+  });
   it('accepts only exact bounded recipes and distinguishes following the world seed', () => {
     for (const preset of Object.keys(TERRAIN_LABELS))
       for (const seed of [null, 0, 4294967295])
