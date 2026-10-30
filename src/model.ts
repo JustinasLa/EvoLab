@@ -69,6 +69,11 @@ export interface Settings {
   nutrients: number;
   climate: number;
 }
+export interface TerrainRecipe {
+  version: 1;
+  preset: 'open-field' | 'porous-ridges' | 'chambered-refuges';
+  seed: number | null;
+}
 export const DEFAULTS: Settings = { seed: 42, mutation: 0.12, nutrients: 5, climate: 0.8 };
 export type Tool = 'inspect' | 'pan' | 'food' | 'wall' | 'erase' | 'plant';
 export interface Species {
