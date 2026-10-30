@@ -16,6 +16,16 @@ export function sameTickLineages(): Ecosystem {
   return world;
 }
 
+export function omittedNewestAdmission(): WorldFile {
+  const world = sameTickLineages();
+  const oldest = world.lineageSnapshot().summaries[0];
+  world.spawn(admissionGenome(), 40, 40);
+  const saved = world.save();
+  saved.lineageArchive.summaries.pop();
+  saved.lineageArchive.summaries.unshift(oldest);
+  return saved;
+}
+
 export function contradictoryPruning(legacy: boolean): WorldFile {
   let world = new Ecosystem({ ...DEFAULTS, mutation: 0, climate: 0, nutrients: 0 }, false);
   world.spawn(admissionGenome(), 40, 40);

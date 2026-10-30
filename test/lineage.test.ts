@@ -12,7 +12,12 @@ import {
 } from '../src/model';
 import { advance, legacyV3, legacyV4, legacyV5 } from './fixtures/telemetry';
 import { cpus, platform, totalmem } from 'node:os';
-import { admissionGenome, contradictoryPruning, sameTickLineages } from './fixtures/lineage';
+import {
+  admissionGenome,
+  contradictoryPruning,
+  omittedNewestAdmission,
+  sameTickLineages,
+} from './fixtures/lineage';
 
 const genome = (): Genome => ({
   cells: [{ x: 0, y: 0, type: 7 }],
@@ -48,23 +53,23 @@ function evidence(events: LineageEvent[], rows: LineageSummary[] = [], watermark
   const world = empty();
   advance(world, 100);
   const saved = world.save();
-  saved.nextSpecies = 2000;
+  saved.nextSpecies = 10_000;
   saved.deaths = 1000;
-  const filler = Array.from({ length: 256 }, (_, offset) =>
-    knownSummary(1000 + offset, watermark, watermark),
-  );
-  const fillerEvents: LineageEvent[] = filler.flatMap((row) => [
-    { kind: 'created', id: row.id, tick: watermark, origin: 'manual', parentId: null },
-    { kind: 'extinct', id: row.id, tick: watermark },
-  ]);
-  // Metadata whose admission event is in the evicted prefix must precede the
-  // filler admissions with retained events. Keep the supplied facts/events and
-  // original chronology assertions intact while constructing a consistent FIFO.
-  const prefixRows = rows.filter(
-    (row) =>
-      row.admittedTick === watermark &&
-      (row.origin === 'legacy-unknown' ||
-        !events.some((event) => event.kind === 'created' && event.id === row.id)),
+  const admissionTick =
+    Math.max(
+      watermark,
+      ...events.map((event) => event.tick),
+      ...rows.map((row) => row.extinctTick!),
+    ) + 1;
+  const filler = Array.from({ length: 256 - rows.length }, (_, offset) => ({
+    ...knownSummary(1000 + offset, 0, admissionTick),
+    admittedTick: admissionTick,
+    foundingGenome: null,
+    genomeStatus: 'pruned' as const,
+  }));
+  const padding: LineageEvent[] = Array.from(
+    { length: 512 - events.length - filler.length },
+    (_, offset) => extinct(3000 + offset, watermark),
   );
   saved.lineageArchive = {
     version: 1,
@@ -74,12 +79,8 @@ function evidence(events: LineageEvent[], rows: LineageSummary[] = [], watermark
     eventsPruned: true,
     eventsEvictedThroughTick: watermark,
     living: [],
-    summaries: [
-      ...prefixRows,
-      ...filler.slice(rows.length),
-      ...rows.filter((row) => !prefixRows.includes(row)),
-    ],
-    events: [...fillerEvents.slice(events.length), ...events],
+    summaries: [...rows, ...filler],
+    events: [...padding, ...events, ...filler.map((row) => extinct(row.id, admissionTick))],
   };
   return saved;
 }
@@ -87,6 +88,11 @@ function created(id: number, tick: number, parentId: number | null = null): Line
   return { kind: 'created', id, tick, origin: parentId === null ? 'manual' : 'mutation', parentId };
 }
 const extinct = (id: number, tick: number): LineageEvent => ({ kind: 'extinct', id, tick });
+function summaryById(saved: WorldFile, id: number): LineageSummary {
+  const row = saved.lineageArchive.summaries.find((summary) => summary.id === id);
+  expect(row?.id).toBe(id);
+  return row!;
+}
 function rejects(saved: WorldFile): void {
   const active = new Ecosystem();
   advance(active, 31);
@@ -96,6 +102,74 @@ function rejects(saved: WorldFile): void {
 }
 
 describe('strict bounded archive candidate validation', () => {
+  it('C16-R2-001 rejects ordered membership omitting the provably newest admission', () => {
+    const invalid = omittedNewestAdmission();
+    expect(invalid.tick).toBe(0);
+    expect(invalid.lineageArchive.events).toHaveLength(257);
+    expect(invalid.lineageArchive.eventsPruned).toBe(false);
+    expect(invalid.lineageArchive.summariesPruned).toBe(true);
+    expect(invalid.lineageArchive.summaries.map((row) => row.id)).toEqual(
+      Array.from({ length: 256 }, (_, offset) => offset + 5),
+    );
+    expect(invalid.lineageArchive.events.at(-1)).toMatchObject({ kind: 'created', id: 261 });
+    rejects(invalid);
+    const actual = sameTickLineages();
+    actual.spawn(admissionGenome(), 40, 40);
+    const restored = reload(actual);
+    expect(restored.lineageSnapshot().summaries.map((row) => row.id)).toEqual(
+      Array.from({ length: 256 }, (_, offset) => offset + 6),
+    );
+    for (const candidate of [actual, restored]) {
+      candidate.spawn(admissionGenome(), 80, 80);
+      candidate.step();
+      expect(candidate.lineageSnapshot().summaries[0].id).toBe(7);
+    }
+    expect(restored.save()).toEqual(actual.save());
+    expect(reload(restored).save()).toEqual(actual.save());
+  });
+
+  it('C16-R2-001 preserves genuinely unknown initial legacy membership and its FIFO continuation', () => {
+    const world = sameTickLineages();
+    world.spawn(admissionGenome(), 40, 40);
+    const candidate = Ecosystem.load(JSON.stringify(legacyV5(world.save()))).save();
+    const oldest = candidate.lineageArchive.living.find((row) => row.id === 5)!;
+    candidate.lineageArchive.summaries[0] = {
+      ...oldest,
+      admittedTick: 0,
+      genomeStatus: 'legacy-unknown',
+      foundingGenome: null,
+    };
+    expect(candidate.lineageArchive.events).toEqual([]);
+    expect(candidate.lineageArchive.summaries[0]).toMatchObject({ id: 5, createdTick: null });
+    expect(candidate.lineageArchive.summaries[1].id).toBe(7);
+    const restored = Ecosystem.load(JSON.stringify(candidate)),
+      control = reload(restored);
+    expect(restored.save()).toEqual(candidate);
+    for (const continued of [restored, control]) {
+      continued.spawn(genome(), 80, 80);
+      continued.step();
+      expect(continued.lineageSnapshot().summaries[0].id).toBe(7);
+    }
+    expect(restored.save()).toEqual(control.save());
+  });
+
+  it('C16-R2-001 includes provable omitted extinction readmissions, including event-only identities', () => {
+    const world = sameTickLineages();
+    world.spawn(admissionGenome(), 40, 40);
+    const beforeDeath = world.save();
+    world.kill(world.organisms.get(1)!, 'manual');
+    const invalid = world.save();
+    invalid.lineageArchive.summaries = beforeDeath.lineageArchive.summaries;
+    expect(invalid.lineageArchive.summaries[0].id).toBe(6);
+    expect(invalid.lineageArchive.events.at(-1)).toEqual(extinct(5, 0));
+    expect(invalid.lineageArchive.living.some((row) => row.id === 5)).toBe(false);
+    rejects(invalid);
+    expect(reload(world).save()).toEqual(world.save());
+    const retained = structuredClone(invalid);
+    const original = knownSummary(5, 0, 0);
+    retained.lineageArchive.summaries = [original, ...retained.lineageArchive.summaries.slice(1)];
+    rejects(retained);
+  });
   it('C16-R1-001 requires eviction provenance for known and provable legacy readmissions', () => {
     for (const legacy of [false, true]) {
       const invalid = contradictoryPruning(legacy);
@@ -235,7 +309,7 @@ describe('strict bounded archive candidate validation', () => {
     rejects(missingCreation);
     world.kill(placed, 'manual');
     const missingDeath = world.save();
-    const row = missingDeath.lineageArchive.summaries.at(-1)!;
+    const row = summaryById(missingDeath, placed.species);
     row.createdTick = 80;
     row.admittedTick = 100;
     row.genomeStatus = 'pruned';
@@ -258,17 +332,31 @@ describe('strict bounded archive candidate validation', () => {
     const impossible = [created(5, 0), extinct(5, 10), created(6, 20, 5), extinct(6, 30)];
     for (const rows of [
       [],
-      [knownSummary(5, 0, 10)],
+      [knownSummary(6, 20, 30, 5)],
       [knownSummary(5, 0, 10), knownSummary(6, 20, 30, 5)],
-    ])
-      rejects(evidence(impossible, rows));
+    ]) {
+      const invalid = evidence(impossible, rows);
+      rejects(invalid);
+      const detached = structuredClone(invalid);
+      const childEvent = detached.lineageArchive.events.find(
+        (event) => event.kind === 'created' && event.id === 6,
+      )!;
+      expect(childEvent).toMatchObject({ kind: 'created', id: 6, tick: 20, parentId: 5 });
+      Object.assign(childEvent, { origin: 'manual', parentId: null });
+      if (rows.some((row) => row.id === 6))
+        Object.assign(summaryById(detached, 6), { origin: 'manual', parentId: null });
+      expect(Ecosystem.load(JSON.stringify(detached)).save()).toEqual(detached);
+    }
     rejects(evidence([created(6, 10, 5), created(5, 20), extinct(5, 30), extinct(6, 30)]));
-    const metadataOnly = evidence([], [knownSummary(5, 0, 0), knownSummary(6, 0, 0, 5)]);
+    const metadataOnly = evidence([], [knownSummary(5, 0, 0), knownSummary(6, 0, 0, 5)], 10);
     expect(Ecosystem.load(JSON.stringify(metadataOnly)).save()).toEqual(metadataOnly);
-    metadataOnly.lineageArchive.summaries.at(-1)!.createdTick = 1;
-    metadataOnly.lineageArchive.summaries.at(-1)!.admittedTick = 1;
-    metadataOnly.lineageArchive.summaries.at(-1)!.extinctTick = 1;
+    const child = summaryById(metadataOnly, 6);
+    expect(child).toMatchObject({ parentId: 5, createdTick: 0, admittedTick: 0, extinctTick: 0 });
+    Object.assign(child, { createdTick: 1, admittedTick: 1, extinctTick: 1 });
     rejects(metadataOnly);
+    const repaired = structuredClone(metadataOnly);
+    summaryById(repaired, 5).extinctTick = 1;
+    expect(Ecosystem.load(JSON.stringify(repaired)).save()).toEqual(repaired);
     const valid = evidence([created(5, 0), created(6, 20, 5), extinct(5, 20), extinct(6, 30)]);
     expect(Ecosystem.load(JSON.stringify(valid)).save()).toEqual(valid);
     const unknownParent = evidence([created(6, 20, 2), extinct(6, 30)]);
@@ -283,8 +371,31 @@ describe('strict bounded archive candidate validation', () => {
     rejects(evidence([valid[0], valid[2], valid[1], valid[3]]));
     const parent = knownSummary(5, 10, 10),
       child = knownSummary(6, 10, 20, 5);
-    rejects(evidence([created(5, 10), extinct(5, 10), extinct(6, 20)], [parent, child], 10));
-    rejects(evidence([created(5, 10), created(6, 10, 5), extinct(6, 20)], [parent, child], 10));
+    const beforeParent = evidence(
+      [created(5, 10), extinct(5, 10), extinct(6, 20)],
+      [child, parent],
+      10,
+    );
+    expect(summaryById(beforeParent, 6)).toMatchObject({ parentId: 5, createdTick: 10 });
+    rejects(beforeParent);
+    const detached = structuredClone(beforeParent);
+    Object.assign(summaryById(detached, 6), { origin: 'manual', parentId: null });
+    expect(Ecosystem.load(JSON.stringify(detached)).save()).toEqual(detached);
+    const afterExtinction = evidence(
+      [created(6, 10, 5), extinct(6, 20)],
+      [knownSummary(5, 0, 10), child],
+      10,
+    );
+    expect(summaryById(afterExtinction, 5)).toMatchObject({ createdTick: 0, extinctTick: 10 });
+    rejects(afterExtinction);
+    const unrelated = structuredClone(afterExtinction);
+    Object.assign(summaryById(unrelated, 6), { origin: 'manual', parentId: null });
+    const childEvent = unrelated.lineageArchive.events.find(
+      (event) => event.kind === 'created' && event.id === 6,
+    )!;
+    expect(childEvent).toMatchObject({ kind: 'created', id: 6, parentId: 5 });
+    Object.assign(childEvent, { origin: 'manual', parentId: null });
+    expect(Ecosystem.load(JSON.stringify(unrelated)).save()).toEqual(unrelated);
     for (const events of [
       [created(6, 10, 5), extinct(5, 10), extinct(6, 20)],
       [extinct(5, 10), extinct(6, 20)],
@@ -303,13 +414,21 @@ describe('strict bounded archive candidate validation', () => {
       peakKind: 'since-origin',
       genomeStatus: 'legacy-unknown',
       foundingGenome: null,
+      admittedTick: 30,
     };
     const saved = evidence(
       [created(999_999_998, 20, 5), extinct(5, 30), extinct(999_999_998, 40)],
-      [parent],
+      [knownSummary(999_999_998, 20, 40, 5), parent],
     );
     saved.nextSpecies = 1_000_000_000;
     saved.lineageArchive.originKind = 'legacy-import';
+    const eventOnly = evidence(
+      [created(999_999_998, 20, 5), extinct(5, 30), extinct(999_999_998, 40)],
+      [parent],
+    );
+    eventOnly.nextSpecies = 1_000_000_000;
+    eventOnly.lineageArchive.originKind = 'legacy-import';
+    expect(Ecosystem.load(JSON.stringify(eventOnly)).save()).toEqual(eventOnly);
     const world = Ecosystem.load(JSON.stringify(saved)),
       control = reload(world);
     for (const candidate of [world, control]) {
@@ -320,12 +439,30 @@ describe('strict bounded archive candidate validation', () => {
     expect(world.nextSpecies).toBe(1_000_000_001);
     expect(() => reload(world)).toThrow('ecosystem');
     const impossible = structuredClone(saved);
-    impossible.lineageArchive.summaries.at(-1)!.extinctTick = 10;
-    impossible.lineageArchive.events = [
-      extinct(1500, 0),
-      ...impossible.lineageArchive.events.filter((event) => event.id !== 5),
-    ];
+    const parentRow = summaryById(impossible, 5);
+    expect(parentRow).toMatchObject({
+      origin: 'legacy-unknown',
+      admittedTick: 30,
+      extinctTick: 30,
+    });
+    expect(summaryById(impossible, 999_999_998)).toMatchObject({ createdTick: 20, parentId: 5 });
+    Object.assign(parentRow, { extinctTick: 10, admittedTick: 10 });
+    const parentEvent = impossible.lineageArchive.events.find((event) => event.id === 5)!;
+    expect(parentEvent).toEqual(extinct(5, 30));
+    parentEvent.tick = 10;
+    impossible.lineageArchive.events.sort((first, second) => first.tick - second.tick);
+    impossible.lineageArchive.summaries.sort(
+      (first, second) => first.admittedTick - second.admittedTick,
+    );
     rejects(impossible);
+    const unrelated = structuredClone(impossible);
+    Object.assign(summaryById(unrelated, 999_999_998), { origin: 'manual', parentId: null });
+    const childEvent = unrelated.lineageArchive.events.find(
+      (event) => event.kind === 'created' && event.id === 999_999_998,
+    )!;
+    expect(childEvent).toMatchObject({ kind: 'created', id: 999_999_998, parentId: 5 });
+    Object.assign(childEvent, { origin: 'manual', parentId: null });
+    expect(Ecosystem.load(JSON.stringify(unrelated)).save()).toEqual(unrelated);
   });
 });
 
@@ -372,7 +509,7 @@ describe('archive field and genotype validation', () => {
       rejects(invalid);
     }
     const dates = evidence([], [knownSummary(5, 0, 0)]);
-    dates.lineageArchive.summaries.at(-1)!.admittedTick = 1;
+    summaryById(dates, 5).admittedTick = 1;
     rejects(dates);
     for (const parentId of [6, 7]) {
       const invalid = evidence([created(6, 0, parentId), extinct(6, 0)]);

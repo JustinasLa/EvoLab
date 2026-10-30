@@ -224,6 +224,10 @@ interface Facts {
   createdPosition?: number;
   extinctPosition?: number;
 }
+interface Transition {
+  tick: number;
+  position: number;
+}
 function validateArchive(
   value: unknown,
   organisms: Iterable<Organism>,
@@ -395,10 +399,7 @@ function validateArchive(
     if (created && extinct) requireArchive(entry.createdPosition! < entry.extinctPosition!);
     if (extinct && state.originKind === 'fresh' && !state.eventsPruned) requireArchive(created);
   }
-  const transition = (
-    entry: Facts,
-    kind: 'created' | 'extinct',
-  ): { tick: number; position: number | null } | undefined => {
+  const transition = (entry: Facts, kind: 'created' | 'extinct'): Transition | undefined => {
     const event = entry[kind];
     if (event)
       return {
@@ -409,18 +410,13 @@ function validateArchive(
     if (date === undefined || date === null) return;
     return {
       tick: date,
-      position: state.eventsPruned && date === state.eventsEvictedThroughTick ? -1 : null,
+      position: -1,
     };
   };
-  const before = (
-    first: { tick: number; position: number | null },
-    second: { tick: number; position: number | null },
-  ): boolean =>
+  const before = (first: Transition, second: Transition): boolean =>
     first.tick < second.tick ||
     (first.tick === second.tick &&
-      (first.position === null ||
-        second.position === null ||
-        (first.position < 0 && first.position === second.position) ||
+      ((first.position < 0 && first.position === second.position) ||
         first.position < second.position));
   for (const entry of facts.values()) {
     const origin = entry.row?.origin ?? entry.created?.origin;
@@ -434,7 +430,62 @@ function validateArchive(
     if (parentCreation) requireArchive(before(parentCreation, childCreation));
     if (parentExtinction) requireArchive(before(childCreation, parentExtinction));
   }
-  let previousAdmission: { tick: number; position: number | null } | undefined;
+  const provenBefore = (first: Transition, second: Transition): boolean =>
+    first.tick < second.tick || (first.tick === second.tick && first.position < second.position);
+  const admissions = new Map<number, Transition[]>();
+  for (const [id, entry] of facts) {
+    const creation = transition(entry, 'created');
+    if (creation) admissions.set(id, [creation]);
+    else if (entry.row?.origin === 'legacy-unknown')
+      admissions.set(id, [{ tick: state.originTick, position: -2 }]);
+  }
+  for (const summary of state.summaries)
+    if (
+      summary.genomeStatus === 'pruned' ||
+      (summary.origin === 'legacy-unknown' && summary.admittedTick !== state.originTick)
+    )
+      admissions.get(summary.id)!.push(transition(facts.get(summary.id)!, 'extinct')!);
+  const extinctions = [...facts.entries()]
+    .map(([id, entry]) => ({ id, extinction: transition(entry, 'extinct') }))
+    .filter((entry) => entry.extinction !== undefined)
+    .sort(
+      (first, second) =>
+        first.extinction!.tick - second.extinction!.tick ||
+        first.extinction!.position - second.extinction!.position,
+    );
+  const readmissions = new Set<number>();
+  for (const { id, extinction } of extinctions) {
+    const start = admissions.get(id)?.[0] ?? {
+      tick: state.eventsPruned ? state.eventsEvictedThroughTick! : state.originTick,
+      position: state.eventsPruned ? -1 : -2,
+    };
+    let intervening = 0;
+    for (const [otherId, transitions] of admissions)
+      if (
+        otherId !== id &&
+        transitions.some(
+          (admission) => provenBefore(start, admission) && provenBefore(admission, extinction!),
+        ) &&
+        ++intervening === LINEAGE_SUMMARY_CAPACITY
+      ) {
+        readmissions.add(id);
+        if (!admissions.has(id)) admissions.set(id, []);
+        admissions.get(id)!.push(extinction!);
+        break;
+      }
+  }
+  let omittedAdmission: Transition | undefined;
+  for (const [id, transitions] of admissions)
+    if (!summaries.has(id))
+      for (const admission of transitions)
+        if (
+          !omittedAdmission ||
+          admission.tick > omittedAdmission.tick ||
+          (admission.tick === omittedAdmission.tick &&
+            admission.position > omittedAdmission.position)
+        )
+          omittedAdmission = admission;
+  let previousAdmission: Transition | undefined;
   for (const summary of state.summaries) {
     const entry = facts.get(summary.id)!;
     // Import placeholders precede all observed events, including an evicted prefix.
@@ -447,16 +498,22 @@ function validateArchive(
       initialLegacy &&
       state.summariesPruned &&
       summary.extinctTick === state.originTick &&
-      previousAdmission?.tick === state.originTick &&
-      previousAdmission.position !== null &&
-      previousAdmission.position > -2;
+      (readmissions.has(summary.id) ||
+        [previousAdmission, omittedAdmission].some(
+          (admission) => admission?.tick === state.originTick && admission.position > -2,
+        ));
     const admission =
       initialLegacy && !readmittedLegacy
         ? { tick: state.originTick, position: -2 }
         : transition(entry, summary.genomeStatus === 'retained' ? 'created' : 'extinct')!;
+    if (readmissions.has(summary.id))
+      requireArchive(
+        summary.genomeStatus !== 'retained' && summary.admittedTick === summary.extinctTick,
+      );
     if (previousAdmission) requireArchive(before(previousAdmission, admission));
+    if (omittedAdmission) requireArchive(before(omittedAdmission, admission));
     // Keep the last provable position across intervening uncertain admissions.
-    if (admission.position !== null) previousAdmission = admission;
+    previousAdmission = admission;
   }
   return {
     version: 1,

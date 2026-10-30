@@ -19,7 +19,12 @@ import { writeFile } from 'node:fs/promises';
 import { cpus, platform, totalmem } from 'node:os';
 import { Ecosystem } from '../../src/ecosystem';
 import { advance, legacyV3, legacyV4, legacyV5 } from '../fixtures/telemetry';
-import { admissionGenome, contradictoryPruning, sameTickLineages } from '../fixtures/lineage';
+import {
+  admissionGenome,
+  contradictoryPruning,
+  omittedNewestAdmission,
+  sameTickLineages,
+} from '../fixtures/lineage';
 
 declare global {
   interface Window {
@@ -2027,7 +2032,7 @@ async function recordLineageDownload(
   });
 }
 
-test('lineage correction rejects provenance and same-tick FIFO contradictions without changing native complete saves', async ({
+test('lineage correction rejects provenance, FIFO order and omitted admissions without changing native complete saves', async ({
   page,
 }, testInfo) => {
   const errors: string[] = [];
@@ -2055,6 +2060,7 @@ test('lineage correction rejects provenance and same-tick FIFO contradictions wi
     ['known-pruning', contradictoryPruning(false)],
     ['legacy-pruning', contradictoryPruning(true)],
     ['same-tick-order', swapped],
+    ['omitted-newest-admission', omittedNewestAdmission()],
   ] as const) {
     const input = Buffer.from(JSON.stringify(invalid));
     await page
@@ -2075,6 +2081,64 @@ test('lineage correction rejects provenance and same-tick FIFO contradictions wi
   await recordLineageDownload(testInfo, 'lineage-correction-rejection-continuation', continued);
   expect(errors).toEqual([]);
 });
+
+for (const legacy of [false, true])
+  test(`lineage round2 ${legacy ? 'unknown legacy' : 'known overflow'} membership survives native reload and continuation`, async ({
+    page,
+  }, testInfo) => {
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await observeTelemetry(page);
+    let reference = sameTickLineages();
+    reference.spawn(admissionGenome(), 40, 40);
+    if (legacy) {
+      reference = Ecosystem.load(JSON.stringify(legacyV5(reference.save())));
+      const unknown = reference.save();
+      [unknown.lineageArchive.summaries[0], unknown.lineageArchive.summaries[1]] = [
+        unknown.lineageArchive.summaries[1],
+        unknown.lineageArchive.summaries[0],
+      ];
+      expect(unknown.lineageArchive.events).toEqual([]);
+      reference = Ecosystem.load(JSON.stringify(unknown));
+    }
+    const initialIds = reference.lineageSnapshot().summaries.map((row) => row.id);
+    expect(initialIds.slice(0, 2)).toEqual(legacy ? [7, 6] : [6, 7]);
+    expect(initialIds.at(-1)).toBe(261);
+    const input = Buffer.from(JSON.stringify(reference.save())),
+      label = `lineage-r2-${legacy ? 'unknown' : 'known'}-membership`;
+    await page.goto('/');
+    await requestPause(page);
+    await importTelemetryWorld(page, JSON.parse(input.toString()));
+    const before = await downloadPausedWorld(page);
+    advance(reference, JSON.parse(before.toString()).tick - reference.tick);
+    expect(JSON.parse(before.toString())).toEqual(reference.save());
+    await paintCell(page, 'plant', 80, 80);
+    referenceManualPaint(reference, 'plant', 80, 80, 0, founder(0));
+    await page.getByTitle('Advance one tick while paused').click();
+    await expectPausedWorld(page, reference.tick + 1);
+    reference.step();
+    const continued = await downloadPausedWorld(page);
+    expect(JSON.parse(continued.toString())).toEqual(reference.save());
+    expect(reference.lineageSnapshot().summaries.map((row) => row.id)).toEqual([
+      ...initialIds.slice(1),
+      262,
+    ]);
+    await importTelemetryWorld(page, JSON.parse(continued.toString()));
+    advance(reference, (await telemetryFrame(page)).stats.tick - reference.tick);
+    await page.getByTitle('Advance one tick while paused').click();
+    await expectPausedWorld(page, reference.tick + 1);
+    reference.step();
+    const reloaded = await downloadPausedWorld(page);
+    expect(JSON.parse(reloaded.toString())).toEqual(reference.save());
+    for (const [suffix, bytes] of [
+      ['input', input],
+      ['before', before],
+      ['continued', continued],
+      ['reload-step', reloaded],
+    ] as const)
+      await recordLineageDownload(testInfo, `${label}-${suffix}`, bytes);
+    expect(errors).toEqual([]);
+  });
 
 test('lineage correction preserves actual same-tick overflow and extinction readmission through native reload and continuation', async ({
   page,
