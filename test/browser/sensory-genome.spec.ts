@@ -145,11 +145,13 @@ test('B1 genuine blueprint1 migrates passively through complete native exports a
   const old = JSON.parse(baselineFixtures['blueprint1.json']);
   const deepText = baselineFixtures[`${info.project.name}-deepest-supported-world5.json`];
   const reference = Ecosystem.load(deepText);
+  await attachWorld(info, 'B1-genuine-historical-input.json', JSON.parse(deepText));
   await page.goto('/');
   await pauseReady(page);
   const completed = await importPaused(page, deepText);
   advance(reference, completed - reference.tick);
   expect(rawWorld(await nativeDownload(page))).toEqual(reference.save());
+  await attachWorld(info, 'B1-after-load-independent-reference.json', reference.save());
   await importBlueprint(page, baselineFixtures['blueprint1.json']);
   await expect(page.locator('#behavior-status')).toHaveText(
     'Legacy behavior — steering uses legacy rules.',
@@ -164,9 +166,11 @@ test('B1 genuine blueprint1 migrates passively through complete native exports a
   });
   await plant(page, reference, blueprint.genome, 220, 140);
   expect(rawWorld(await nativeDownload(page))).toEqual(reference.save());
+  await attachWorld(info, 'B1-after-placement-independent-reference.json', reference.save());
   await page.locator('#step').click();
   reference.step();
   expect(rawWorld(await nativeDownload(page))).toEqual(reference.save());
+  await attachWorld(info, 'B1-after-step-independent-reference.json', reference.save());
   await clean(page, info, 4);
 });
 
@@ -175,6 +179,8 @@ test('B2 stored-evolved complete native designer lifecycle preserves opaque data
 }, info) => {
   const reference = await emptyHabitat(page),
     genome = storedSensoryGenome();
+  await attachWorld(info, 'B2-input-genome.json', genome);
+  await attachWorld(info, 'B2-initial-independent-reference.json', reference.save());
   expect(rawWorld(await nativeDownload(page))).toEqual(reference.save());
   await importBlueprint(
     page,
@@ -195,6 +201,7 @@ test('B2 stored-evolved complete native designer lifecycle preserves opaque data
   const plantedBytes = await nativeDownload(page),
     planted = rawWorld(plantedBytes);
   expect(planted).toEqual(reference.save());
+  await attachWorld(info, 'B2-after-placement-independent-reference.json', reference.save());
   expect(planted.births).toBe(0);
   expect(planted.interventions.entries.at(-1)?.kind).toBe('placement');
   await inspect(page, 50, 50, planted.organisms[0].id);
@@ -233,6 +240,9 @@ test('B3 strict malformed blueprint2 never defaults a missing reaction or change
     posts = (await nativeSummary(page)).posts.length;
   const malformed = JSON.parse(valid);
   delete malformed.genome.behavior.reactions.dangerous;
+  await attachWorld(info, 'B3-valid-input.json', JSON.parse(valid));
+  await attachWorld(info, 'B3-invalid-input.json', malformed);
+  await attachWorld(info, 'B3-unchanged-independent-reference.json', reference.save());
   await page.locator('#blueprint-file').setInputFiles({
     name: 'incomplete-v2.json',
     mimeType: 'application/json',
@@ -399,17 +409,20 @@ test('B6 read-only inactive disclosure fits four widths and observation/camera/k
     genome = storedSensoryGenome();
   reference.spawn(genome, 40, 40)!.energy = 100;
   const fixture = JSON.stringify(reference.save());
+  await attachWorld(info, 'B6-input-world.json', JSON.parse(fixture));
   await page.goto('/');
   await pauseReady(page);
   const completed = await importPaused(page, fixture);
   advance(reference, completed);
   const before = await nativeDownload(page);
   expect(rawWorld(before)).toEqual(reference.save());
+  await attachWorld(info, 'B6-independent-reference.json', reference.save());
   await importBlueprint(
     page,
     serializeBlueprint({ name: 'Read only λ', description: 'No steering activation', genome }),
   );
   await inspect(page, 40, 40, 1);
+  const layouts: { width: number; innerWidth: number; scrollWidth: number; fits: boolean }[] = [];
   for (const width of [320, 390, 780, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await page.getByRole('tab', { name: 'Organism', exact: true }).click();
@@ -431,8 +444,13 @@ test('B6 read-only inactive disclosure fits four widths and observation/camera/k
     await page.locator('#thermal').click();
     await page.locator('#thermal').click();
     await page.getByRole('tab', { name: 'Organism', exact: true }).click();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
-      true,
+    layouts.push(
+      await page.evaluate(() => ({
+        width: innerWidth,
+        innerWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+        fits: document.documentElement.scrollWidth <= innerWidth,
+      })),
     );
     await page.screenshot({ path: info.outputPath(`B6-inactive-${width}.png`), fullPage: true });
     await expect(page.locator('#run-state')).toHaveText('PAUSED');
@@ -442,4 +460,6 @@ test('B6 read-only inactive disclosure fits four widths and observation/camera/k
   ).toEqual(genome);
   expect(await nativeDownload(page)).toEqual(before);
   await clean(page, info, 3);
+  await attachWorld(info, 'B6-complete-layout-evidence.json', layouts);
+  expect(layouts.map((layout) => layout.fits)).toEqual([true, true, true, true]);
 });

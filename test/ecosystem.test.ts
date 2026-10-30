@@ -598,92 +598,119 @@ describe('passive inherited sensory data and reversible compatibility', () => {
       expect(reloaded.save().organisms[0].genome.behavior).toEqual({ version: 1, mode: 'legacy' });
     },
   );
-  it.each(['blueprint-output', 'world-expansion', 'numeric-canonical', 'maximum-world'] as const)(
-    'measures complete %s bytes without truncation or new ecology',
-    (boundary) => {
-      if (boundary === 'blueprint-output') {
-        const genome = storedSensoryGenome();
-        genome.legacyExtensions!.push(['large', [['string', 'λ'.repeat(9000)]]]);
-        const before = cloneGenome(genome);
-        expect(() => serializeBlueprint({ name: 'Complete', description: '', genome })).toThrow(
-          '16 KiB',
+  it.each([
+    'blueprint-output',
+    'world-expansion',
+    'numeric-canonical',
+    'maximum-world',
+    'maximum-world-opaque',
+  ] as const)('measures complete %s bytes without truncation or new ecology', (boundary) => {
+    if (boundary === 'blueprint-output') {
+      const genome = storedSensoryGenome();
+      genome.legacyExtensions!.push(['large', [['string', 'λ'.repeat(9000)]]]);
+      const before = cloneGenome(genome);
+      expect(() => serializeBlueprint({ name: 'Complete', description: '', genome })).toThrow(
+        '16 KiB',
+      );
+      expect(genome).toEqual(before);
+    } else if (boundary === 'numeric-canonical') {
+      expect(encodeLegacyValue([-0, Infinity, -Infinity])).toEqual([
+        ['array', 3],
+        ['number', '-0'],
+        ['number', '+infinity'],
+        ['number', '-infinity'],
+      ]);
+      for (const payload of [-0, Infinity, NaN, 'NaN', 'Infinity'])
+        expect(() => decodeLegacyValue([['number', payload]] as LegacyValue)).toThrow(
+          'opaque encoding',
         );
-        expect(genome).toEqual(before);
-      } else if (boundary === 'numeric-canonical') {
-        expect(encodeLegacyValue([-0, Infinity, -Infinity])).toEqual([
-          ['array', 3],
-          ['number', '-0'],
-          ['number', '+infinity'],
-          ['number', '-infinity'],
-        ]);
-        for (const payload of [-0, Infinity, NaN, 'NaN', 'Infinity'])
-          expect(() => decodeLegacyValue([['number', payload]] as LegacyValue)).toThrow(
-            'opaque encoding',
-          );
-        for (const value of [
-          undefined,
-          () => {},
-          Symbol('opaque'),
-          NaN,
-          new Date(0),
-          Object.defineProperty({}, 'value', {
-            enumerable: true,
-            get() {
-              throw Error('Getter executed');
-            },
-          }),
-        ])
-          expect(() => encodeLegacyValue(value)).toThrow('opaque value');
-        const cyclic: unknown[] = [];
-        cyclic.push(cyclic);
-        expect(() => encodeLegacyValue(cyclic)).toThrow('opaque value');
-      } else if (boundary === 'world-expansion') {
-        const historical = JSON.parse(baselineFixtures['world5-extras.json']);
-        historical.organisms[0].genome.expanding = Array(300000).fill(null);
-        const input = JSON.stringify(historical);
-        expect(new TextEncoder().encode(input).byteLength).toBeLessThan(WORLD_MAX_BYTES);
-        const world = Ecosystem.load(input),
-          saved = world.save(),
-          output = JSON.stringify(saved);
+      for (const value of [
+        undefined,
+        () => {},
+        Symbol('opaque'),
+        NaN,
+        new Date(0),
+        Object.defineProperty({}, 'value', {
+          enumerable: true,
+          get() {
+            throw Error('Getter executed');
+          },
+        }),
+      ])
+        expect(() => encodeLegacyValue(value)).toThrow('opaque value');
+      const cyclic: unknown[] = [];
+      cyclic.push(cyclic);
+      expect(() => encodeLegacyValue(cyclic)).toThrow('opaque value');
+    } else if (boundary === 'world-expansion') {
+      const historical = JSON.parse(baselineFixtures['world5-extras.json']);
+      historical.organisms[0].genome.expanding = Array(300000).fill(null);
+      const input = JSON.stringify(historical);
+      expect(new TextEncoder().encode(input).byteLength).toBeLessThan(WORLD_MAX_BYTES);
+      const world = Ecosystem.load(input),
+        saved = world.save(),
+        output = JSON.stringify(saved);
+      expect(new TextEncoder().encode(output).byteLength).toBeGreaterThan(WORLD_MAX_BYTES);
+      expect(restoreHistoricalWorld(saved).organisms[0].genome.expanding as unknown[]).toHaveLength(
+        300000,
+      );
+      expect(world.save()).toEqual(saved);
+    } else {
+      const world = empty();
+      advance(world, 5400);
+      const genome: Genome = {
+        ...founder(0),
+        cells: Array.from({ length: 16 }, (_, offset) => ({
+          x: offset % 4,
+          y: Math.floor(offset / 4),
+          type: 7,
+        })),
+        behavior: evolved(tables[0]),
+      };
+      if (boundary === 'maximum-world-opaque')
+        for (const cell of genome.cells)
+          cell.legacyExtensions = [
+            ['size', encodeLegacyValue(false)],
+            ['literal', encodeLegacyValue('λ🌱'.repeat(4))],
+          ];
+      expect(() =>
+        serializeBlueprint({ name: 'Full payload', description: '', genome }),
+      ).not.toThrow();
+      for (let population = 0; population < LIMIT; population++) {
+        const result = world.paint(
+          'plant',
+          (population % 60) * 4,
+          Math.floor(population / 60) * 4,
+          0,
+          genome,
+        );
+        expect(result.placement).not.toBeNull();
+        world.appendIntervention({ kind: 'placement', detail: result.placement! });
+      }
+      const saved = world.save(),
+        output = JSON.stringify(saved);
+      expect(saved.organisms).toHaveLength(1600);
+      expect(saved.telemetry.samples).toHaveLength(180);
+      expect(saved.interventions.entries).toHaveLength(128);
+      if (boundary === 'maximum-world-opaque') {
         expect(new TextEncoder().encode(output).byteLength).toBeGreaterThan(WORLD_MAX_BYTES);
+        expect(() => Ecosystem.load(output)).toThrow('2.5 MB');
+        expect(JSON.stringify(world.save())).toBe(output);
         expect(
-          restoreHistoricalWorld(saved).organisms[0].genome.expanding as unknown[],
-        ).toHaveLength(300000);
-        expect(world.save()).toEqual(saved);
+          saved.organisms.every((organism) =>
+            organism.genome.cells.every(
+              (cell) =>
+                decodeLegacyValue(cell.legacyExtensions![0][1]) === false &&
+                decodeLegacyValue(cell.legacyExtensions![1][1]) === 'λ🌱'.repeat(4),
+            ),
+          ),
+        ).toBe(true);
       } else {
-        const world = empty();
-        advance(world, 5400);
-        const genome: Genome = {
-          ...founder(0),
-          cells: Array.from({ length: 16 }, (_, offset) => ({
-            x: offset % 4,
-            y: Math.floor(offset / 4),
-            type: 7,
-          })),
-          behavior: evolved(tables[40]),
-        };
-        for (let population = 0; population < LIMIT; population++) {
-          const result = world.paint(
-            'plant',
-            (population % 60) * 4,
-            Math.floor(population / 60) * 4,
-            0,
-            genome,
-          );
-          expect(result.placement).not.toBeNull();
-          world.appendIntervention({ kind: 'placement', detail: result.placement! });
-        }
-        const saved = world.save(),
-          output = JSON.stringify(saved);
-        expect(saved.organisms).toHaveLength(1600);
-        expect(saved.telemetry.samples).toHaveLength(180);
-        expect(saved.interventions.entries).toHaveLength(128);
         expect(new TextEncoder().encode(output).byteLength).toBeLessThanOrEqual(WORLD_MAX_BYTES);
         expect(JSON.stringify(Ecosystem.load(output).save())).toBe(output);
-        expect(world.births).toBe(0);
       }
-    },
-  );
+      expect(world.births).toBe(0);
+    }
+  });
 });
 
 describe('real bounded manual evidence and complete current-save validation', () => {
