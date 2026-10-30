@@ -441,7 +441,7 @@ test('terrain whole-world actions preserve wrapped life, food, selection, pins a
   );
   const csv = decodeDownloadedCsv(await downloadMeasurements(page, 'csv'));
   expect(csv).toEqual(json);
-  expect(json.version).toBe(2);
+  expect(json.version).toBe(3);
   expect(json.snapshot.terrain).toEqual(reference.terrain);
   expect(json.interventions).toEqual(reference.save().interventions);
 });
@@ -3604,7 +3604,7 @@ test.describe('pause on total extinction', () => {
     const expected = reference.save();
     await expect(page.getByRole('button', { name: 'Save world' })).toBeDisabled();
     await page.evaluate('window.recoveryDelivery.release()');
-    await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5 or 6');
+    await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5, 6 or 7');
     await expect(page.locator('#nutrients')).toHaveValue('7');
     await expect(page.locator('#nutrients-value')).toHaveText('7%');
     await expect(page.locator('#mutation-value')).toHaveText('37%');
@@ -3719,7 +3719,7 @@ for (const terminalTick of [90, 91]) {
       expect(populations).toHaveLength(3);
       await expectPopulationChart(page, populations);
       await importWorld(page, { ...terminal, version: 99 } as unknown as WorldFile);
-      await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5 or 6');
+      await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5, 6 or 7');
       expect(await readWorld(page)).toEqual(terminal);
       await expectPopulationChart(page, populations);
       await page.waitForTimeout(160);
@@ -4757,7 +4757,8 @@ test('B23-6 complete direct raw families, deepest common native path, current re
       rawChecks,
       depth: 1087,
       capInputBytes: Buffer.byteLength(cap),
-      retainedBytes: Buffer.byteLength(JSON.stringify(capReference.save())),
+      acceptedReferenceOutputBytes: Buffer.byteLength(JSON.stringify(capReference.save())),
+      nativeOutputBytes: null, // Oversized native output is deliberately not downloaded.
       downloads,
       before,
     }),
