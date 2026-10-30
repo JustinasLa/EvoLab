@@ -1,3 +1,111 @@
+import assert from 'node:assert/strict';
+import {
+  validGenome,
+  migrateHistoricalGenome,
+  type Genome,
+  type HistoricalGenome,
+  type LegacyValue,
+  type WorldFile,
+  type WorldFileV5,
+} from '../../src/model';
+
+export function storedSensoryGenome(): Genome {
+  const genome = migrateHistoricalGenome(
+    JSON.parse(baselineFixtures['world5-extras.json']).organisms[0].genome,
+  );
+  genome.behavior = {
+    version: 1,
+    mode: 'evolved',
+    reactions: { food: 'chase', wall: 'flee', harmless: 'ignore', dangerous: 'flee' },
+  };
+  return genome;
+}
+function inverseOpaque(tokens: LegacyValue): unknown {
+  const containers: { value: object; keys: string[]; next: number }[] = [];
+  let root: unknown;
+  for (const token of tokens) {
+    let value: unknown;
+    let keys: string[] | undefined;
+    if (token[0] === 'null') value = null;
+    else if (token[0] === 'boolean' || token[0] === 'string') value = token[1];
+    else if (token[0] === 'number')
+      value =
+        token[1] === '-0'
+          ? -0
+          : token[1] === '+infinity'
+            ? Infinity
+            : token[1] === '-infinity'
+              ? -Infinity
+              : token[1];
+    else {
+      value = token[0] === 'array' ? [] : {};
+      keys =
+        token[0] === 'array'
+          ? Array.from({ length: token[1] }, (_, offset) => String(offset))
+          : token[1];
+    }
+    const parent = containers.at(-1);
+    if (parent)
+      Object.defineProperty(parent.value, parent.keys[parent.next++], {
+        value,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    else root = value;
+    if (keys?.length) containers.push({ value: value as object, keys, next: 0 });
+    while (containers.length && containers.at(-1)!.next === containers.at(-1)!.keys.length)
+      containers.pop();
+  }
+  return root;
+}
+export function restoreHistoricalGenome(genome: Genome): HistoricalGenome {
+  const restored: HistoricalGenome = {
+    cells: genome.cells.map((cell) => {
+      const restoredCell = { x: cell.x, y: cell.y, type: cell.type };
+      for (const [name, tokens] of cell.legacyExtensions ?? [])
+        Object.defineProperty(restoredCell, name, {
+          value: inverseOpaque(tokens),
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+      return restoredCell;
+    }),
+    preference: genome.preference,
+    tolerance: genome.tolerance,
+    tempo: genome.tempo,
+  };
+  for (const [name, tokens] of genome.legacyExtensions ?? [])
+    Object.defineProperty(restored, name, {
+      value: inverseOpaque(tokens),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  return restored;
+}
+export function syntheticHistoricalWorld(saved: WorldFile): WorldFileV5 {
+  return {
+    ...structuredClone(saved),
+    version: 5,
+    organisms: saved.organisms.map((organism) => {
+      assert.ok(validGenome(organism.genome));
+      assert.deepEqual(organism.genome.behavior, { version: 1, mode: 'legacy' });
+      return { ...structuredClone(organism), genome: restoreHistoricalGenome(organism.genome) };
+    }),
+  };
+}
+export function restoreHistoricalWorld(saved: WorldFile): WorldFileV5 {
+  return {
+    ...structuredClone(saved),
+    version: 5,
+    organisms: saved.organisms.map((organism) => ({
+      ...structuredClone(organism),
+      genome: restoreHistoricalGenome(organism.genome),
+    })),
+  };
+}
 export const baselineHead = '9712426e3f22b7cb6791e24850e964b605674a0f';
 export const baselineTree = '751ee6681f4914e8150b1f4b329ce7da4583cc6c';
 export const baselineFixtureManifest = [

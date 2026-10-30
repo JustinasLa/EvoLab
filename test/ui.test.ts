@@ -5,6 +5,7 @@ import { Ecosystem } from '../src/ecosystem';
 import { DEFAULTS, founder, type Frame, type PlaybackState, type WorldFile } from '../src/model';
 import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../src/blueprint';
 import { startWorker, type Scope } from '../src/worker';
+import { storedSensoryGenome } from './fixtures/sensory-legacy';
 class WorkerStub extends EventTarget {
   playback: PlaybackState = { paused: false, pauseOnExtinction: true, extinction: null };
   postMessage = vi.fn((data: any) => {
@@ -911,7 +912,13 @@ describe('D9 lifetime ownership with real processing and independently gated ter
 function nearDeath(): WorldFile {
   const world = new Ecosystem({ ...DEFAULTS, climate: 0, nutrients: 0 }, false);
   const organism = world.spawn(
-    { cells: [{ x: 0, y: 0, type: 3 }], preference: 0.5, tolerance: 0.3, tempo: 2 },
+    {
+      behavior: { version: 1 as const, mode: 'legacy' as const },
+      cells: [{ x: 0, y: 0, type: 3 }],
+      preference: 0.5,
+      tolerance: 0.3,
+      tempo: 2,
+    },
     40,
     40,
   )!;
@@ -1423,6 +1430,112 @@ describe('standalone blueprint files', () => {
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
   });
 
+  it.each(['pointer-plant', 'inspector-capture'])(
+    'detaches complete evolved and opaque data through real %s',
+    async (boundary) => {
+      const bridge = realWorker();
+      bridge.deliver();
+      click('pause');
+      bridge.advance();
+      bridge.deliver();
+      const source = storedSensoryGenome(),
+        original = structuredClone(source);
+      await importDraft(
+        serializeBlueprint({ name: 'Inherited λ', description: 'Complete', genome: source }),
+      );
+      const before = bridge.save();
+      click('plant-design');
+      pointer('pointerdown');
+      window.dispatchEvent(new Event('pointerup'));
+      bridge.deliver();
+      const planted = bridge.save(),
+        living = planted.organisms.at(-1)!;
+      expect(living.genome).toEqual(original);
+      expect(planted.births).toBe(before.births);
+      expect(planted.interventions.entries.at(-1)?.kind).toBe('placement');
+      if (boundary === 'inspector-capture') {
+        root.querySelector<HTMLButtonElement>('[data-tool="inspect"]')!.click();
+        pointer('pointerdown');
+        window.dispatchEvent(new Event('pointerup'));
+        bridge.deliver();
+        expect(get('inspector').textContent).toContain('Stored reactions — inactive');
+        click('copy-organism');
+      }
+      expect((await exported()).genome).toEqual(original);
+      source.behavior = { version: 1, mode: 'legacy' };
+      source.legacyExtensions![0][1] = [['null']];
+      const posted = worker.postMessage.mock.calls
+        .map(([message]) => message)
+        .findLast((message) => message.type === 'paint');
+      posted.genome.legacyExtensions[0][1] = [['string', 'posted-only']];
+      expect((await exported()).genome).toEqual(original);
+      expect(bridge.save()).toEqual(planted);
+      expect(get('run-state').textContent).toBe('PAUSED');
+    },
+  );
+
+  it.each(['legacy', 'evolved', 'edit', 'new-cell', 'reset', 'oversize-capture'])(
+    'keeps passive status and complete designer semantics for %s',
+    async (operation) => {
+      const bridge = realWorker();
+      bridge.deliver();
+      click('pause');
+      bridge.advance();
+      bridge.deliver();
+      const source = storedSensoryGenome();
+      if (operation === 'legacy') source.behavior = { version: 1, mode: 'legacy' };
+      await importDraft(serializeBlueprint({ name: 'Stored', description: '', genome: source }));
+      const before = bridge.save();
+      expect(get('behavior-status').textContent).toBe(
+        operation === 'legacy'
+          ? 'Legacy behavior — steering uses legacy rules.'
+          : 'Stored reactions — inactive; steering uses legacy rules.',
+      );
+      if (operation === 'edit') {
+        root.querySelector<HTMLButtonElement>('[data-cell="7"]')!.click();
+        get('editor').querySelector<HTMLButtonElement>('[data-x="0"][data-y="0"]')!.click();
+        set('preference', '0.75');
+        const edited = (await exported()).genome;
+        expect(edited.cells[0]).toEqual({ ...source.cells[0], type: 7 });
+        expect(edited.behavior).toEqual(source.behavior);
+        expect(edited.legacyExtensions).toEqual(source.legacyExtensions);
+        expect(edited.preference).toBe(0.75);
+      } else if (operation === 'new-cell') {
+        get('editor').querySelector<HTMLButtonElement>('[data-x="-2"][data-y="0"]')!.click();
+        const edited = (await exported()).genome;
+        expect(edited.cells.at(-1)).toEqual({ x: -2, y: 0, type: 4 });
+        expect(edited.cells.slice(0, -1)).toEqual(source.cells);
+        expect(edited.behavior).toEqual(source.behavior);
+        expect(edited.legacyExtensions).toEqual(source.legacyExtensions);
+      } else if (operation === 'reset') {
+        click('clear-design');
+        expect((await exported()).genome).toEqual(founder(0));
+        expect(get('behavior-status').textContent).toContain('Legacy behavior');
+      } else if (operation === 'oversize-capture') {
+        const large = storedSensoryGenome();
+        large.legacyExtensions!.push(['large', [['string', 'λ'.repeat(9000)]]]);
+        const candidate = new Ecosystem(DEFAULTS, false);
+        candidate.spawn(large, 30, 30);
+        await loadText(JSON.stringify(candidate.save()));
+        bridge.deliver();
+        click('pause');
+        while (bridge.tasks.length) bridge.advance();
+        bridge.deliver();
+        bridge.command({ type: 'inspect', x: 30, y: 30 });
+        bridge.deliver();
+        const draft = draftState(),
+          saved = bridge.save();
+        click('copy-organism');
+        expect(draftState()).toEqual(draft);
+        expect(get('notice').textContent).toContain('16 KiB');
+        expect(bridge.save()).toEqual(saved);
+        expect((await exported()).genome).toEqual(source);
+        return;
+      } else expect((await exported()).genome).toEqual(source);
+      expect(bridge.save()).toEqual(before);
+    },
+  );
+
   it.each([false, true])(
     'imports only into the designer, preserving exact traits and world commands (paused=%s)',
     async (paused) => {
@@ -1470,7 +1583,7 @@ describe('standalone blueprint files', () => {
     emit(sample, organism);
     expect(await exported('export-organism-blueprint')).toEqual({
       format: 'evolab-organism-blueprint',
-      version: 1,
+      version: 2,
       name: 'Bloom',
       description: '',
       genome: organism.genome,
@@ -1574,7 +1687,7 @@ describe('standalone blueprint files', () => {
       '{',
       '{}',
       'null',
-      JSON.stringify({ ...JSON.parse(serializeBlueprint(fixture())), version: 2 }),
+      JSON.stringify({ ...JSON.parse(serializeBlueprint(fixture())), version: 3 }),
       JSON.stringify({
         ...JSON.parse(serializeBlueprint(fixture())),
         genome: {

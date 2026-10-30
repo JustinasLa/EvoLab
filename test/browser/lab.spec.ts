@@ -19,6 +19,10 @@ import { writeFile } from 'node:fs/promises';
 import { cpus, platform, totalmem } from 'node:os';
 import { Ecosystem } from '../../src/ecosystem';
 import { advance, legacyV3, legacyV4 } from '../fixtures/telemetry';
+import { syntheticHistoricalWorld } from '../fixtures/sensory-legacy';
+import { registerNativeEvidence } from './sensory-evidence';
+
+registerNativeEvidence();
 
 declare global {
   interface Window {
@@ -395,7 +399,13 @@ function telemetryScenario(
   if (state === 'empty') return world.save();
   if (state === 'extinct-paused') {
     const organism = world.spawn(
-      { cells: [{ x: 0, y: 0, type: 3 }], preference: 0.5, tolerance: 0.6, tempo: 2 },
+      {
+        behavior: { version: 1 as const, mode: 'legacy' as const },
+        cells: [{ x: 0, y: 0, type: 3 }],
+        preference: 0.5,
+        tolerance: 0.6,
+        tempo: 2,
+      },
       40,
       40,
     )!;
@@ -410,6 +420,7 @@ function telemetryScenario(
     world.food.fill(0);
     const organism = world.spawn(
       {
+        behavior: { version: 1 as const, mode: 'legacy' as const },
         cells: Array.from({ length: 6 }, (_, cell) => ({
           x: cell % 3,
           y: Math.floor(cell / 3),
@@ -427,7 +438,7 @@ function telemetryScenario(
     for (const living of [...world.organisms.values()]) world.kill(living, 'manual');
   }
   if (state === 'legacy') {
-    const saved = world.save(),
+    const saved = syntheticHistoricalWorld(world.save()),
       { adaptationOriginTick: _origin, ...telemetry } = saved.telemetry;
     world = Ecosystem.load(
       JSON.stringify({
@@ -453,6 +464,7 @@ test('literal v3 telemetry migrates through the file input and real worker befor
   await observeTelemetry(page);
   let reference = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0, mutation: 0 }, false);
   const genome: Genome = {
+    behavior: { version: 1 as const, mode: 'legacy' as const },
     cells: [{ x: 0, y: 0, type: 7 }],
     preference: 0.1234567890123456,
     tolerance: 0.4567890123456789,
@@ -492,7 +504,7 @@ test('literal v3 telemetry migrates through the file input and real worker befor
   const migratedBytes = await downloadPausedWorld(page),
     migrated = JSON.parse(migratedBytes.toString()) as WorldFile;
   expect(migrated).toEqual(expected());
-  expect(migrated.version).toBe(5);
+  expect(migrated.version).toBe(6);
   expect(migrated.telemetry.version).toBe(2);
   expect(migrated.telemetry.originTick).toBe(fixture.telemetry.originTick);
   expect(migrated.telemetry.adaptationOriginTick).toBe(65);
@@ -1734,8 +1746,8 @@ test('D9-A10 native file reads stay single-owner through cancellation, reset and
     contentType: 'application/json',
   });
 });
-for (const version of [2, 3, 4, 5] as const) {
-  test(`measurement bytes preserve genuine world${version} migration,180 samples and truthful manual windows`, async ({
+for (const version of [2, 3, 4, 5, 6] as const) {
+  test(`measurement bytes preserve synthetic world${version} migration,180 samples and truthful manual windows`, async ({
     page,
   }) => {
     const world = Ecosystem.load(JSON.stringify(telemetryScenario('full-ring')));
@@ -1744,7 +1756,8 @@ for (const version of [2, 3, 4, 5] as const) {
     world.changeSettings({ climate: -0 });
     const current = world.save();
     (current.settings as any).retainedExtension = '=literal,"λ\r\n@formula';
-    const { telemetry: _telemetry, interventions: _interventions, ...ecology } = current;
+    const historical = syntheticHistoricalWorld(current);
+    const { telemetry: _telemetry, interventions: _interventions, ...ecology } = historical;
     const candidate =
       version === 2
         ? { ...ecology, version: 2 }
@@ -1752,9 +1765,11 @@ for (const version of [2, 3, 4, 5] as const) {
           ? legacyV3(current)
           : version === 4
             ? legacyV4(current)
-            : current;
+            : version === 5
+              ? historical
+              : current;
     expect(candidate.version).toBe(version);
-    expect('interventions' in candidate).toBe(version === 5);
+    expect('interventions' in candidate).toBe(version >= 5);
     const text = JSON.stringify(candidate).replace(/"climate":0(?=[,}])/g, '"climate":-0'),
       reference = Ecosystem.load(text),
       expected = reference.save();
@@ -1780,15 +1795,15 @@ for (const version of [2, 3, 4, 5] as const) {
     expect(jsonBytes.toString()).not.toContain('retainedExtension');
     expect(json.windows.samples.retainedCount).toBe(version === 2 ? 0 : 180);
     expect(json.windows.manual).toMatchObject({
-      retainedCount: version === 5 ? 128 : 0,
+      retainedCount: version >= 5 ? 128 : 0,
       capacity: 128,
-      originKind: version === 5 ? 'fresh' : 'legacy-import',
+      originKind: version >= 5 ? 'fresh' : 'legacy-import',
       coverage: 'applied-portions-only',
     });
-    expect(json.windows.settings.unknownEvictedPrefix).toBe(version === 5);
+    expect(json.windows.settings.unknownEvictedPrefix).toBe(version >= 5);
     for (const view of ['population', 'food', 'adaptation'])
       await page.locator('#telemetry-view').selectOption(view);
-    if (version === 5) {
+    if (version >= 5) {
       const sequence = String(expected.interventions.entries[0].sequence),
         sample = String(expected.telemetry.samples.at(-2)!.tick),
         layouts: object[] = [];
@@ -2018,6 +2033,7 @@ async function downloadBlueprint(
 }
 
 const sharedGenome = (): Genome => ({
+  behavior: { version: 1 as const, mode: 'legacy' as const },
   cells: [3, 4, 5, 6, 7, 8].map((type, offset) => ({
     x: (offset % 3) - 1,
     y: Math.floor(offset / 3),
@@ -2059,6 +2075,7 @@ test('standalone inspector and designer downloads round-trip full traits before 
     'version',
   ]);
   expect(Object.keys(inspector.file.genome).sort()).toEqual([
+    'behavior',
     'cells',
     'preference',
     'tempo',
@@ -2066,7 +2083,7 @@ test('standalone inspector and designer downloads round-trip full traits before 
   ]);
   expect(inspector.file).toMatchObject({
     format: 'evolab-organism-blueprint',
-    version: 1,
+    version: 2,
     description: '',
   });
   await page.locator('#blueprint-file').setInputFiles({
@@ -2198,7 +2215,7 @@ test.describe('blueprint file rejection and cancellation', () => {
     {
       name: 'unsupported version',
       text: JSON.stringify({ ...parsed, version: 99 }),
-      notice: 'Unsupported blueprint version. Expected version 1.',
+      notice: 'Unsupported blueprint version. Expected version 1 or 2.',
     },
     {
       name: 'disconnected cells',
@@ -2273,7 +2290,7 @@ test.describe('blueprint file rejection and cancellation', () => {
     await expect(page.locator('#world')).toHaveAttribute('data-tool', 'plant');
     expect((await downloadBlueprint(page)).file).toEqual({
       format: 'evolab-organism-blueprint',
-      version: 1,
+      version: 2,
       ...payload,
     });
     await expect(page.locator('#run-state')).toHaveText('PAUSED');
@@ -2422,6 +2439,7 @@ test('blueprint imports retain telemetry until explicit placement and preserve s
   await observeTelemetry(page);
   const initial = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0, mutation: 0 }, false),
     stationary = {
+      behavior: { version: 1 as const, mode: 'legacy' as const },
       cells: [{ x: 0, y: 0, type: 7 as const }],
       preference: 0.5,
       tolerance: 0.12,
@@ -2529,6 +2547,7 @@ test('blueprint designer preserves manual extinction and revives without resumin
   await observeTelemetry(page);
   const reference = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0, mutation: 0 }, false),
     genome: Genome = {
+      behavior: { version: 1 as const, mode: 'legacy' as const },
       cells: [{ x: 0, y: 0, type: 7 }],
       preference: 0.5,
       tolerance: 0.3,
@@ -2650,7 +2669,13 @@ async function extinctionFixture(
             rotation: 0,
             age: cause === 'age' ? 976 - offset : 0,
             energy: cause === 'energy' ? 0.001 : 10,
-            genome: { cells: [{ x: 0, y: 0, type: 3 }], preference: 0.5, tolerance: 0.3, tempo: 2 },
+            genome: {
+              cells: [{ x: 0, y: 0, type: 3 }],
+              preference: 0.5,
+              tolerance: 0.3,
+              tempo: 2,
+              behavior: { version: 1, mode: 'legacy' },
+            },
           },
         ];
   return world;
@@ -2947,7 +2972,7 @@ test.describe('pause on total extinction', () => {
     const expected = reference.save();
     await expect(page.getByRole('button', { name: 'Save world' })).toBeDisabled();
     await page.evaluate('window.recoveryDelivery.release()');
-    await expect(page.locator('#notice')).toContainText('version 2, 3, 4 or 5');
+    await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5 or 6');
     await expect(page.locator('#nutrients')).toHaveValue('7');
     await expect(page.locator('#nutrients-value')).toHaveText('7%');
     await expect(page.locator('#mutation-value')).toHaveText('37%');
@@ -3032,6 +3057,7 @@ for (const terminalTick of [90, 91]) {
       const reference = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0 }, false);
       const organism = reference.spawn(
         {
+          behavior: { version: 1 as const, mode: 'legacy' as const },
           cells: [{ x: 0, y: 0, type: 3 }],
           preference: 0.5,
           tolerance: 0.3,
@@ -3060,7 +3086,7 @@ for (const terminalTick of [90, 91]) {
       expect(populations).toHaveLength(3);
       await expectPopulationChart(page, populations);
       await importWorld(page, { ...terminal, version: 99 } as unknown as WorldFile);
-      await expect(page.locator('#notice')).toContainText('version 2, 3, 4 or 5');
+      await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5 or 6');
       expect(await readWorld(page)).toEqual(terminal);
       await expectPopulationChart(page, populations);
       await page.waitForTimeout(160);
@@ -3105,6 +3131,7 @@ test('restores real worker telemetry, renders its population projection and down
   await observeTelemetry(page);
   const reference = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0, mutation: 0 }, false),
     genome = {
+      behavior: { version: 1 as const, mode: 'legacy' as const },
       cells: [{ x: 0, y: 0, type: 7 as const }],
       preference: 0.5,
       tolerance: 0.12,
@@ -3173,7 +3200,7 @@ test('restores real worker telemetry, renders its population projection and down
   expect(frame.telemetry).toEqual(before);
   const downloaded = JSON.parse((await downloadWorld(page)).toString());
   expect(downloaded.telemetry).toEqual(before);
-  expect(downloaded.version).toBe(5);
+  expect(downloaded.version).toBe(6);
   expect(downloaded.telemetry.version).toBe(2);
   expect(downloaded.telemetry.intervalTicks).toBe(30);
   const restored = Ecosystem.load(JSON.stringify(downloaded));
@@ -3404,7 +3431,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   await expect(page.locator('[data-shock="bloom"]')).toHaveCount(0);
   const saved = await downloadWorld(page),
     world = JSON.parse(saved.toString());
-  expect(world.version).toBe(5);
+  expect(world.version).toBe(6);
   expect(world.organisms.length).toBeGreaterThan(1);
   const o = world.organisms[0],
     c = o.genome.cells[0];

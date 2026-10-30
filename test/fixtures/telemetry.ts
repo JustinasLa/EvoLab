@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { Ecosystem } from '../../src/ecosystem';
+import { syntheticHistoricalWorld } from './sensory-legacy';
 import {
   DEFAULTS,
   WIDTH,
   type WorldFile,
+  type WorldFileV5,
   type WorldFileV3,
   type WorldFileV4,
 } from '../../src/model';
@@ -12,7 +14,7 @@ export function advance(world: Ecosystem, ticks: number): void {
   for (let tick = 0; tick < ticks; tick++) world.step();
 }
 
-export const ecology = ({ telemetry: _telemetry, ...saved }: WorldFile) => saved;
+export const ecology = ({ telemetry: _telemetry, ...saved }: WorldFile | WorldFileV5) => saved;
 
 export function colony(
   count: number,
@@ -26,7 +28,13 @@ export function colony(
   for (let organism = 0; organism < count; organism++)
     assert.ok(
       world.spawn(
-        { cells: [{ x: 0, y: 0, type: 7 }], preference, tolerance, tempo: 2 },
+        {
+          behavior: { version: 1 as const, mode: 'legacy' as const },
+          cells: [{ x: 0, y: 0, type: 7 }],
+          preference,
+          tolerance,
+          tempo: 2,
+        },
         organism % WIDTH,
         Math.floor(organism / WIDTH),
       ),
@@ -35,7 +43,11 @@ export function colony(
 }
 
 export function legacyV3(saved: WorldFile): WorldFileV3 {
-  const { interventions: _interventions, ...historical } = ecology(saved);
+  const {
+    telemetry: _telemetry,
+    interventions: _interventions,
+    ...historical
+  } = syntheticHistoricalWorld(saved);
   return {
     ...historical,
     version: 3,
@@ -49,6 +61,6 @@ export function legacyV3(saved: WorldFile): WorldFileV3 {
   };
 }
 export function legacyV4(saved: WorldFile): WorldFileV4 {
-  const { interventions: _interventions, ...historical } = saved;
+  const { interventions: _interventions, ...historical } = syntheticHistoricalWorld(saved);
   return { ...historical, version: 4 };
 }

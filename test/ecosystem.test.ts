@@ -1,7 +1,15 @@
 import { describe, it, expect } from 'vitest';
+import assert from 'node:assert/strict';
 import { Ecosystem } from '../src/ecosystem';
 import { advance, colony, ecology, legacyV3 } from './fixtures/telemetry';
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
+import {
+  baselineFixtures,
+  baselineHead,
+  restoreHistoricalGenome,
+  restoreHistoricalWorld,
+  storedSensoryGenome,
+} from './fixtures/sensory-legacy';
 import {
   DEFAULTS,
   WIDTH,
@@ -12,6 +20,13 @@ import {
   positions,
   connected,
   validGenome,
+  cloneGenome,
+  validBehavior,
+  encodeLegacyValue,
+  decodeLegacyValue,
+  migrateHistoricalGenome,
+  type Behavior,
+  type LegacyValue,
   validSettings,
   founder,
   mutate,
@@ -27,6 +42,7 @@ import {
 } from '../src/model';
 const empty = () => new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0 }, false);
 const single = (type: CellType = 3, preference = 0.5): Genome => ({
+  behavior: { version: 1 as const, mode: 'legacy' as const },
   cells: [{ x: 0, y: 0, type }],
   preference,
   tolerance: 0.3,
@@ -41,6 +57,609 @@ function adjacent(value: number, direction: -1 | 1): number {
   view.setBigUint64(0, view.getBigUint64(0, false) + BigInt(direction), false);
   return view.getFloat64(0, false);
 }
+
+describe('passive inherited sensory data and reversible compatibility', () => {
+  const actions = ['ignore', 'chase', 'flee'] as const;
+  const tables = actions.flatMap((food) =>
+    actions.flatMap((wall) =>
+      actions.flatMap((harmless) =>
+        actions.map((dangerous) => ({ food, wall, harmless, dangerous })),
+      ),
+    ),
+  );
+  const evolved = (reactions = tables[0]): Behavior => ({
+    version: 1,
+    mode: 'evolved',
+    reactions: { ...reactions },
+  });
+  const ordinaryTable = () => ({
+    food: 'chase',
+    wall: 'flee',
+    harmless: 'ignore',
+    dangerous: 'flee',
+  });
+  const invalidBehaviors: [string, () => unknown, boolean?][] = [
+    ['null', () => null],
+    ['array', () => []],
+    ['function', () => () => {}],
+    ['date', () => new Date(0)],
+    [
+      'getter',
+      () =>
+        Object.defineProperty({ mode: 'legacy' }, 'version', {
+          enumerable: true,
+          get() {
+            throw Error('Getter executed');
+          },
+        }),
+      false,
+    ],
+    ['inherited', () => Object.create({ version: 1, mode: 'legacy' })],
+    ['symbol', () => ({ version: 1, mode: 'legacy', [Symbol('extra')]: true }), false],
+    ['missing-version', () => ({ mode: 'legacy' })],
+    ['missing-mode', () => ({ version: 1 })],
+    ...[0, 2, '1', NaN, Infinity].map((version): [string, () => unknown] => [
+      `version-${String(version)}`,
+      () => ({ version, mode: 'legacy' }),
+    ]),
+    ['extra-field', () => ({ version: 1, mode: 'legacy', probability: 1 })],
+    ['unknown-mode', () => ({ version: 1, mode: 'smart' })],
+    ['case-mode', () => ({ version: 1, mode: 'Legacy' })],
+    ['legacy-table', () => ({ version: 1, mode: 'legacy', reactions: ordinaryTable() })],
+    ['missing-table', () => ({ version: 1, mode: 'evolved' })],
+    ['null-table', () => ({ version: 1, mode: 'evolved', reactions: null })],
+    ['array-table', () => ({ version: 1, mode: 'evolved', reactions: [] })],
+    ['function-table', () => ({ version: 1, mode: 'evolved', reactions: () => {} })],
+    [
+      'missing-food',
+      () => ({
+        version: 1,
+        mode: 'evolved',
+        reactions: { wall: 'flee', harmless: 'ignore', dangerous: 'flee' },
+      }),
+    ],
+    [
+      'missing-danger',
+      () => ({
+        version: 1,
+        mode: 'evolved',
+        reactions: { food: 'chase', wall: 'flee', harmless: 'ignore' },
+      }),
+    ],
+    [
+      'extra-category',
+      () => ({ version: 1, mode: 'evolved', reactions: { ...ordinaryTable(), prey: 'chase' } }),
+    ],
+    ...[0, 'Chase', ' chase', { weight: 1 }].map((food): [string, () => unknown] => [
+      `action-${JSON.stringify(food)}`,
+      () => ({ version: 1, mode: 'evolved', reactions: { ...ordinaryTable(), food } }),
+    ]),
+    [
+      'inherited-category',
+      () => ({
+        version: 1,
+        mode: 'evolved',
+        reactions: Object.assign(Object.create({ dangerous: 'flee' }), {
+          food: 'chase',
+          wall: 'flee',
+          harmless: 'ignore',
+        }),
+      }),
+    ],
+    [
+      'symbol-category',
+      () => ({
+        version: 1,
+        mode: 'evolved',
+        reactions: { ...ordinaryTable(), [Symbol('extra')]: 'ignore' },
+      }),
+      false,
+    ],
+    [
+      'getter-category',
+      () => ({
+        version: 1,
+        mode: 'evolved',
+        reactions: Object.defineProperty(ordinaryTable(), 'food', {
+          enumerable: true,
+          get() {
+            throw Error('Getter executed');
+          },
+        }),
+      }),
+      false,
+    ],
+  ];
+  it.each(tables)('accepts and completely copies the exact finite table %j', (table) => {
+    const genome: Genome = { ...founder(1), behavior: evolved(table) };
+    expect(validBehavior(genome.behavior)).toBe(true);
+    expect(validGenome(genome)).toBe(true);
+    const cloned = cloneGenome(genome);
+    expect(cloned).toEqual(genome);
+    expect(cloned.behavior).not.toBe(genome.behavior);
+    const world = empty();
+    world.spawn(genome, 30, 30);
+    const before = world.save();
+    const parsed = parseBlueprint(
+      serializeBlueprint({ name: 'Stored only', description: '', genome }),
+    );
+    expect(parsed.version).toBe(2);
+    expect(parsed.genome).toEqual(genome);
+    expect(Ecosystem.load(JSON.stringify(before)).save()).toEqual(before);
+    expect(world.save()).toEqual(before);
+    if (cloned.behavior.mode === 'evolved')
+      cloned.behavior.reactions.food = table.food === 'ignore' ? 'flee' : 'ignore';
+    expect(genome.behavior).toEqual(evolved(table));
+  });
+  it.each(invalidBehaviors)(
+    'rejects malformed current behavior %s without fallback or getter execution',
+    (_name, make, jsonSafe = true) => {
+      const genome = { ...founder(1), behavior: make() } as Genome;
+      expect(validBehavior(genome.behavior)).toBe(false);
+      expect(validGenome(genome)).toBe(false);
+      expect(() => cloneGenome(genome)).toThrow('Invalid inherited genome');
+      expect(() => serializeBlueprint({ name: 'Invalid', description: '', genome })).toThrow();
+      if (jsonSafe) {
+        const world = empty();
+        world.spawn(founder(0), 30, 30);
+        const before = world.save(),
+          candidate = structuredClone(before);
+        candidate.organisms.at(-1)!.genome = genome;
+        expect(() => Ecosystem.load(JSON.stringify(candidate))).toThrow('organism');
+        expect(world.save()).toEqual(before);
+      }
+    },
+  );
+  it.each(['spawn', 'mutate', 'frame', 'save', 'reload', 'inverse'] as const)(
+    'detaches full nested payload at the real %s boundary',
+    (boundary) => {
+      const source = storedSensoryGenome(),
+        original = cloneGenome(source),
+        world = empty();
+      const organism = world.spawn(source, 30, 30)!;
+      const copied =
+        boundary === 'spawn'
+          ? organism.genome
+          : boundary === 'mutate'
+            ? mutate(source, new Random(7))
+            : boundary === 'frame'
+              ? world.frame().stats.top[0].genome
+              : boundary === 'save'
+                ? world.save().organisms[0].genome
+                : boundary === 'reload'
+                  ? Ecosystem.load(JSON.stringify(world.save())).organisms.values().next().value!
+                      .genome
+                  : migrateHistoricalGenome(restoreHistoricalGenome(source));
+      expect(copied.legacyExtensions).toEqual(original.legacyExtensions);
+      if (boundary !== 'mutate' && boundary !== 'inverse') expect(copied).toEqual(original);
+      (copied.legacyExtensions![0][1].at(-1)! as any)[1] = 'copy-only';
+      expect(source).toEqual(original);
+      const copiedSnapshot = structuredClone(copied);
+      (source.legacyExtensions![0][1].at(-1)! as any)[1] = 'source-only';
+      if (source.behavior.mode === 'evolved') source.behavior.reactions.food = 'ignore';
+      expect(copied).toEqual(copiedSnapshot);
+      if (boundary === 'frame') expect(world.organisms.get(organism.id)!.genome).toEqual(original);
+    },
+  );
+  it.each([42, 7, 1].flatMap((seed) => [0, 1, 2, 3].map((body) => [seed, body] as const)))(
+    'inherits passive tables and opaque values through genuine births seed %i body %i',
+    (seed, body) => {
+      for (const mutation of [0, 0.12]) {
+        const legacy = new Ecosystem({ seed, mutation, nutrients: 0, climate: 0 }, false);
+        const stored = new Ecosystem({ seed, mutation, nutrients: 0, climate: 0 }, false);
+        const genome = founder(body === 0 ? 1 : body === 1 ? 3 : 0);
+        if (body === 3) genome.cells[1].type = 8;
+        genome.legacyExtensions = [['sentinel', [['string', 'inherited']]]];
+        genome.cells[0].legacyExtensions = [
+          [
+            'cell-sentinel',
+            [
+              ['object', ['flag']],
+              ['boolean', false],
+            ],
+          ],
+        ];
+        const control = legacy.spawn(genome, 60, 60)!;
+        const inherited = cloneGenome(genome);
+        inherited.behavior = evolved(tables[80]);
+        const parent = stored.spawn(inherited, 60, 60)!;
+        control.energy = parent.energy = 100;
+        const descendants = new Set<number>();
+        for (let tick = 0; tick < 120; tick++) {
+          legacy.step();
+          stored.step();
+          for (const organism of stored.organisms.values())
+            if (organism.generation > 0) {
+              descendants.add(organism.id);
+              expect(organism.genome.behavior).toEqual(inherited.behavior);
+              expect(organism.genome.legacyExtensions).toEqual(genome.legacyExtensions);
+            }
+        }
+        expect(parent.children).toBeGreaterThanOrEqual(2);
+        expect(descendants.size).toBeGreaterThanOrEqual(2);
+        expect(restoreHistoricalWorld(stored.save())).toEqual(
+          restoreHistoricalWorld(legacy.save()),
+        );
+        expect(stored.births).toBeGreaterThanOrEqual(2);
+        expect(stored.random.state).toBe(legacy.random.state);
+      }
+    },
+  );
+  const historicalCases = [
+    ...[42, 7, 1].flatMap((seed) =>
+      [0, 0.12].flatMap((mutation) =>
+        [0, 1, 2, 3].map((rotation) => ({
+          name: `seed${seed}-mutation${mutation}-rotation${rotation}`,
+          seed,
+          mutation,
+          rotation,
+        })),
+      ),
+    ),
+    ...[2, 3, 4, 5].map((version) => ({ name: `world${version}`, version })),
+    { name: 'blueprint1' },
+    { name: 'numeric-and-deep' },
+  ];
+  it.each(historicalCases)(
+    'continues complete independently captured historical payload $name',
+    (entry) => {
+      expect(baselineHead).toBe('9712426e3f22b7cb6791e24850e964b605674a0f');
+      if ('seed' in entry) {
+        {
+          const key = entry.name,
+            candidate = Ecosystem.load(baselineFixtures[`${key}-initial.json`]);
+          const stored = Ecosystem.load(JSON.stringify(candidate.save()));
+          for (const organism of stored.organisms.values())
+            organism.genome.behavior = evolved(tables[60]);
+          let halfway: Ecosystem | undefined;
+          for (const tick of [1, 30, 90, 300, 1200]) {
+            advance(candidate, tick - candidate.tick);
+            advance(stored, tick - stored.tick);
+            const expected = JSON.parse(baselineFixtures[`${key}-tick${tick}.json`]);
+            expect(restoreHistoricalWorld(candidate.save())).toEqual(expected);
+            expect(restoreHistoricalWorld(stored.save())).toEqual(expected);
+            const raster = new Uint8Array(WIDTH * HEIGHT),
+              ids = new Int32Array(WIDTH * HEIGHT);
+            for (const cell of expected.food) raster[cell] = 1;
+            for (const cell of expected.walls) raster[cell] = 2;
+            for (const organism of expected.organisms)
+              for (const cell of organism.genome.cells) {
+                const localX =
+                  organism.rotation === 0
+                    ? cell.x
+                    : organism.rotation === 1
+                      ? -cell.y
+                      : organism.rotation === 2
+                        ? -cell.x
+                        : cell.y;
+                const localY =
+                  organism.rotation === 0
+                    ? cell.y
+                    : organism.rotation === 1
+                      ? cell.x
+                      : organism.rotation === 2
+                        ? -cell.y
+                        : -cell.x;
+                const position =
+                  ((organism.y + localY + HEIGHT) % HEIGHT) * WIDTH +
+                  ((organism.x + localX + WIDTH) % WIDTH);
+                ids[position] = organism.id;
+                raster[position] = cell.type;
+              }
+            const frame = candidate.frame();
+            expect(frame.cells).toEqual(raster);
+            expect(frame.ids).toEqual(ids);
+            for (const organism of stored.organisms.values())
+              expect(organism.genome.behavior).toEqual(evolved(tables[60]));
+            if (tick === 300) halfway = Ecosystem.load(JSON.stringify(candidate.save()));
+          }
+          advance(halfway!, 900);
+          expect(JSON.stringify(halfway!.save())).toBe(JSON.stringify(candidate.save()));
+        }
+      } else if ('version' in entry) {
+        const world = Ecosystem.load(baselineFixtures[`world${entry.version}-extras.json`]);
+        expect(restoreHistoricalWorld(world.save())).toEqual(
+          JSON.parse(baselineFixtures[`world${entry.version}-baseline-import.json`]),
+        );
+        advance(world, 17);
+        const interrupted = Ecosystem.load(JSON.stringify(world.save()));
+        advance(world, 18);
+        advance(interrupted, 18);
+        expect(world.save()).toEqual(interrupted.save());
+        expect(restoreHistoricalWorld(world.save())).toEqual(
+          JSON.parse(baselineFixtures[`world${entry.version}-baseline-plus35.json`]),
+        );
+      } else if (entry.name === 'blueprint1') {
+        const old = JSON.parse(baselineFixtures['blueprint1.json']),
+          parsed = parseBlueprint(baselineFixtures['blueprint1.json']);
+        expect(parsed).toEqual({
+          ...old,
+          version: 2,
+          genome: { ...old.genome, behavior: { version: 1, mode: 'legacy' } },
+        });
+        for (const name of [
+          'behavior',
+          'legacyExtensions',
+          'reactions',
+          '__proto__',
+          'constructor',
+          'prototype',
+        ])
+          for (const scope of ['genome', 'cell']) {
+            const candidate = structuredClone(old);
+            Object.defineProperty(
+              scope === 'genome' ? candidate.genome : candidate.genome.cells[0],
+              name,
+              { value: { inert: true }, enumerable: true },
+            );
+            expect(() => parseBlueprint(JSON.stringify(candidate))).toThrow();
+          }
+      } else {
+        const world = Ecosystem.load(baselineFixtures['opaque-numbers-world5.json']);
+        expect(
+          restoreHistoricalWorld(world.save()).organisms[0].genome.numericOpaque,
+        ).toStrictEqual([-0, Infinity, -Infinity]);
+        for (const name of [
+          'deepest-supported-world5.json',
+          'desktop-deepest-supported-world5.json',
+          'mobile-deepest-supported-world5.json',
+        ]) {
+          const raw = baselineFixtures[name],
+            deep = Ecosystem.load(raw),
+            saved = JSON.stringify(deep.save());
+          expect(JSON.stringify(Ecosystem.load(saved).save())).toBe(saved);
+          let expected = JSON.parse(raw).organisms[0].genome.deepOpaque;
+          let restored = restoreHistoricalWorld(deep.save()).organisms[0].genome.deepOpaque as any;
+          while (Array.isArray(expected)) {
+            expect(Array.isArray(restored)).toBe(true);
+            expect(restored).toHaveLength(1);
+            expected = expected[0];
+            restored = restored[0];
+          }
+          expect(restored).toBe(expected);
+        }
+      }
+    },
+  );
+  const invalidGenomes: [string, (genome: Genome) => unknown][] = [
+    ['prototype', (genome) => Object.assign(Object.create({ extra: true }), genome)],
+    [
+      'getter',
+      (genome) =>
+        Object.defineProperty(genome, 'tempo', {
+          enumerable: true,
+          get() {
+            throw Error('Getter executed');
+          },
+        }),
+    ],
+    [
+      'cell-getter',
+      (genome) => ({
+        ...genome,
+        cells: [
+          Object.defineProperty({ x: 0, y: 0 }, 'type', {
+            enumerable: true,
+            get() {
+              throw Error('Getter executed');
+            },
+          }),
+        ],
+      }),
+    ],
+    [
+      'cell-symbol',
+      (genome) => ({ ...genome, cells: [{ x: 0, y: 0, type: 3, [Symbol('extra')]: 1 }] }),
+    ],
+    [
+      'unknown-cell',
+      (genome) => ({
+        ...genome,
+        cells: [{ x: 0, y: 0, type: 3, behavior: { version: 1, mode: 'legacy' } }],
+      }),
+    ],
+    ['hole', (genome) => ({ ...genome, cells: Array(1) })],
+    [
+      'array-extra',
+      (genome) => ({ ...genome, cells: Object.assign(genome.cells, { extra: true }) }),
+    ],
+    ['cell-exotic', (genome) => ({ ...genome, cells: [new Date(0)] })],
+    ['missing-behavior', ({ behavior: _behavior, ...genome }) => genome],
+    ['unknown-genome', (genome) => ({ ...genome, retainedExtension: true })],
+    ['empty-bag', (genome) => ({ ...genome, legacyExtensions: [] })],
+    ['hidden-key', (genome) => Object.defineProperty(genome, 'hidden', { value: 'not droppable' })],
+  ];
+  it.each(invalidGenomes)(
+    'rejects complete malformed current %s records before copying',
+    (_name, make) => {
+      const candidate = make(founder(1));
+      expect(validGenome(candidate)).toBe(false);
+      expect(() => cloneGenome(candidate as Genome)).toThrow('Invalid inherited genome');
+      expect(() =>
+        serializeBlueprint({ name: 'Invalid', description: '', genome: candidate as Genome }),
+      ).toThrow();
+    },
+  );
+  const invalidBags: unknown[] = [
+    [],
+    [['cells', [['null']]]],
+    [
+      ['same', [['null']]],
+      ['same', [['null']]],
+    ],
+    [['extra', []]],
+    [['extra', [['undefined']]]],
+    [['extra', [['undefined', false]]]],
+    [['extra', [['null', false]]]],
+    [['extra', [['array', -0]]]],
+    [['extra', [['array', 2], ['null']]]],
+    [['extra', [['null'], ['null']]]],
+    [['extra', [['object', ['same', 'same']], ['null'], ['null']]]],
+  ];
+  it.each(invalidBags.map((bag, offset) => [offset, bag] as const))(
+    'rejects noncanonical opaque carrier %i atomically',
+    (_offset, bag) => {
+      const candidate = { ...founder(0), legacyExtensions: bag };
+      expect(validGenome(candidate)).toBe(false);
+      const world = empty();
+      world.spawn(founder(0), 30, 30);
+      const before = world.save(),
+        invalid = structuredClone(before);
+      invalid.organisms[0].genome = candidate as Genome;
+      const invalidText = JSON.stringify(invalid).replace('["array",0]', '["array",-0]');
+      expect(() => Ecosystem.load(invalidText)).toThrow('organism');
+      expect(() =>
+        serializeBlueprint({ name: 'Invalid bag', description: '', genome: candidate as Genome }),
+      ).toThrow();
+      expect(world.save()).toEqual(before);
+    },
+  );
+  it.each(
+    [2, 3, 4, 5].flatMap((version) => ['genome', 'cell'].map((scope) => [version, scope] as const)),
+  )(
+    'retains genuine v%i %s collision names and complete settings/organism data',
+    (version, scope) => {
+      const original = JSON.parse(baselineFixtures[`world${version}-extras.json`]);
+      const world = Ecosystem.load(baselineFixtures[`world${version}-extras.json`]);
+      const restored = restoreHistoricalWorld(world.save());
+      const expected = JSON.parse(baselineFixtures[`world${version}-baseline-import.json`]);
+      expect(restored).toEqual(expected);
+      for (const organism of world.organisms.values())
+        expect(organism.genome.behavior).toEqual({ version: 1, mode: 'legacy' });
+      const actualRecord =
+        scope === 'genome' ? restored.organisms[0].genome : restored.organisms[0].genome.cells[0];
+      const originalRecord =
+        scope === 'genome' ? original.organisms[0].genome : original.organisms[0].genome.cells[0];
+      expect(actualRecord).toEqual(originalRecord);
+      expect(Object.hasOwn(actualRecord, '__proto__')).toBe(true);
+      expect(({} as any).safe).toBeUndefined();
+      expect(restored.settings).toEqual(original.settings);
+      expect((restored.organisms[0] as any).retainedOrganism).toEqual(
+        original.organisms[0].retainedOrganism,
+      );
+    },
+  );
+  const opaqueValues = [
+    null,
+    false,
+    '',
+    [],
+    {},
+    JSON.parse('{"__proto__":{"constructor":{"prototype":false}},"cells":[null,"λ🌱"]}'),
+    [-0, Infinity, -Infinity],
+    { flag: false, items: [null, 'x'] },
+  ];
+  it.each(opaqueValues.map((value, offset) => [offset, value] as const))(
+    'reversibly clones and transports every opaque value family %i',
+    (_offset, value) => {
+      const encoded = encodeLegacyValue(value),
+        decoded = decodeLegacyValue(encoded);
+      assert.deepStrictEqual(decoded, value);
+      expect(encodeLegacyValue(decoded)).toEqual(encoded);
+      const genome = founder(0);
+      genome.legacyExtensions = [['behavior', encoded]];
+      const blueprint = parseBlueprint(
+        serializeBlueprint({ name: 'Opaque only', description: '', genome }),
+      );
+      expect(blueprint.genome).toEqual(genome);
+      const world = empty();
+      world.spawn(genome, 30, 30);
+      const reloaded = Ecosystem.load(JSON.stringify(world.save()));
+      expect(reloaded.save()).toEqual(world.save());
+      assert.deepStrictEqual(
+        (restoreHistoricalGenome(reloaded.save().organisms[0].genome) as any).behavior,
+        value,
+      );
+      expect(reloaded.save().organisms[0].genome.behavior).toEqual({ version: 1, mode: 'legacy' });
+    },
+  );
+  it.each(['blueprint-output', 'world-expansion', 'numeric-canonical', 'maximum-world'] as const)(
+    'measures complete %s bytes without truncation or new ecology',
+    (boundary) => {
+      if (boundary === 'blueprint-output') {
+        const genome = storedSensoryGenome();
+        genome.legacyExtensions!.push(['large', [['string', 'λ'.repeat(9000)]]]);
+        const before = cloneGenome(genome);
+        expect(() => serializeBlueprint({ name: 'Complete', description: '', genome })).toThrow(
+          '16 KiB',
+        );
+        expect(genome).toEqual(before);
+      } else if (boundary === 'numeric-canonical') {
+        expect(encodeLegacyValue([-0, Infinity, -Infinity])).toEqual([
+          ['array', 3],
+          ['number', '-0'],
+          ['number', '+infinity'],
+          ['number', '-infinity'],
+        ]);
+        for (const payload of [-0, Infinity, NaN, 'NaN', 'Infinity'])
+          expect(() => decodeLegacyValue([['number', payload]] as LegacyValue)).toThrow(
+            'opaque encoding',
+          );
+        for (const value of [
+          undefined,
+          () => {},
+          Symbol('opaque'),
+          NaN,
+          new Date(0),
+          Object.defineProperty({}, 'value', {
+            enumerable: true,
+            get() {
+              throw Error('Getter executed');
+            },
+          }),
+        ])
+          expect(() => encodeLegacyValue(value)).toThrow('opaque value');
+        const cyclic: unknown[] = [];
+        cyclic.push(cyclic);
+        expect(() => encodeLegacyValue(cyclic)).toThrow('opaque value');
+      } else if (boundary === 'world-expansion') {
+        const historical = JSON.parse(baselineFixtures['world5-extras.json']);
+        historical.organisms[0].genome.expanding = Array(300000).fill(null);
+        const input = JSON.stringify(historical);
+        expect(new TextEncoder().encode(input).byteLength).toBeLessThan(WORLD_MAX_BYTES);
+        const world = Ecosystem.load(input),
+          saved = world.save(),
+          output = JSON.stringify(saved);
+        expect(new TextEncoder().encode(output).byteLength).toBeGreaterThan(WORLD_MAX_BYTES);
+        expect(
+          restoreHistoricalWorld(saved).organisms[0].genome.expanding as unknown[],
+        ).toHaveLength(300000);
+        expect(world.save()).toEqual(saved);
+      } else {
+        const world = empty();
+        advance(world, 5400);
+        const genome: Genome = {
+          ...founder(0),
+          cells: Array.from({ length: 16 }, (_, offset) => ({
+            x: offset % 4,
+            y: Math.floor(offset / 4),
+            type: 7,
+          })),
+          behavior: evolved(tables[40]),
+        };
+        for (let population = 0; population < LIMIT; population++) {
+          const result = world.paint(
+            'plant',
+            (population % 60) * 4,
+            Math.floor(population / 60) * 4,
+            0,
+            genome,
+          );
+          expect(result.placement).not.toBeNull();
+          world.appendIntervention({ kind: 'placement', detail: result.placement! });
+        }
+        const saved = world.save(),
+          output = JSON.stringify(saved);
+        expect(saved.organisms).toHaveLength(1600);
+        expect(saved.telemetry.samples).toHaveLength(180);
+        expect(saved.interventions.entries).toHaveLength(128);
+        expect(new TextEncoder().encode(output).byteLength).toBeLessThanOrEqual(WORLD_MAX_BYTES);
+        expect(JSON.stringify(Ecosystem.load(output).save())).toBe(output);
+        expect(world.births).toBe(0);
+      }
+    },
+  );
+});
 
 describe('real bounded manual evidence and complete current-save validation', () => {
   function logged(): Ecosystem {
@@ -294,6 +913,7 @@ describe('real bounded manual evidence and complete current-save validation', ()
 
 describe('standalone blueprint engine boundaries', () => {
   const genome = (): Genome => ({
+    behavior: { version: 1 as const, mode: 'legacy' as const },
     cells: [3, 4, 5, 6, 7, 8].map((type, offset) => ({
       x: (offset % 3) - 1,
       y: Math.floor(offset / 3) - 1,
@@ -716,7 +1336,13 @@ describe('a shared, living world', () => {
     w.step();
     expect(o.x).toBe(21);
     const blind = w.spawn(
-      { cells: [{ x: 0, y: 0, type: 5 }], preference: 0.5, tolerance: 0.3, tempo: 2 },
+      {
+        behavior: { version: 1 as const, mode: 'legacy' as const },
+        cells: [{ x: 0, y: 0, type: 5 }],
+        preference: 0.5,
+        tolerance: 0.3,
+        tempo: 2,
+      },
       50,
       50,
     )!;
@@ -736,6 +1362,7 @@ describe('a shared, living world', () => {
     for (const predator of [false, true]) {
       const world = empty(),
         genome: Genome = {
+          behavior: { version: 1 as const, mode: 'legacy' as const },
           cells: [
             { x: 0, y: 0, type: 5 },
             { x: -1, y: 0, type: 8 },
@@ -1363,6 +1990,7 @@ describe('measured thermal adaptation', () => {
     world.nextSpecies = 1_000_000_000;
     for (let position = 0; position < LIMIT; position++) {
       const genome: Genome = {
+        behavior: { version: 1 as const, mode: 'legacy' as const },
         cells: Array.from({ length: 16 }, (_, cell) => ({
           x: cell % 4,
           y: Math.floor(cell / 4),
@@ -1743,8 +2371,12 @@ describe('telemetry persistence, migration and complete candidate validation', (
             JSON.stringify({ ...file, telemetry: { untrusted: 'ignored legacy extension' } }),
           ),
           { version: _version, ...expectedEcology } = file,
-          { version: current, interventions, ...actualEcology } = ecology(world.save());
-        expect(current).toBe(5);
+          {
+            version: _restoredVersion,
+            interventions,
+            ...actualEcology
+          } = ecology(restoreHistoricalWorld(world.save()));
+        expect(world.save().version).toBe(6);
         expect(interventions).toEqual({
           version: 1,
           originTick: tick,

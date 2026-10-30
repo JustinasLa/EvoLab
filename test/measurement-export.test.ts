@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Ecosystem } from '../src/ecosystem';
+import { storedSensoryGenome, syntheticHistoricalWorld } from './fixtures/sensory-legacy';
 import { DEFAULTS, WORLD_MAX_BYTES, founder, type MeasurementSource } from '../src/model';
 import {
   MEASUREMENT_COLUMNS,
@@ -158,6 +159,33 @@ function decode(text: string): any {
 }
 
 describe('bounded retained measurement codec', () => {
+  it.each(['legacy-json', 'evolved-json', 'legacy-csv', 'evolved-csv'])(
+    'observes the current world without changing inherited data: %s',
+    (variant) => {
+      const world = new Ecosystem({ ...DEFAULTS, nutrients: 0 }, false),
+        genome = storedSensoryGenome();
+      if (variant.startsWith('legacy')) genome.behavior = { version: 1, mode: 'legacy' };
+      world.spawn(genome, 30, 30)!.energy = 100;
+      for (let tick = 0; tick < 90; tick++) world.step();
+      const before = world.save(),
+        format = variant.endsWith('json') ? 'json' : 'csv';
+      const source = world.measurements(),
+        envelope = measurementEnvelope(source);
+      const serialized = serializeMeasurements(source, format);
+      expect(serialized.byteLength).toBe(new TextEncoder().encode(serialized.text).length);
+      expect(envelope.snapshot.worldVersion).toBe(6);
+      expect(envelope).toMatchObject({
+        version: 1,
+        rules: { version: 1 },
+        telemetry: { version: 2 },
+        interventions: { version: 1 },
+      });
+      expect(serialized.text).not.toContain('native-B5');
+      expect(serialized.text).not.toContain('legacyExtensions');
+      expect(world.save()).toEqual(before);
+      expect(Ecosystem.load(JSON.stringify(before)).save()).toEqual(before);
+    },
+  );
   it.each([
     '',
     's:literal',
@@ -282,7 +310,7 @@ describe('bounded retained measurement codec', () => {
     });
     expect(csv(serializeMeasurements(world.measurements(), 'csv').text)).toHaveLength(311);
     expect(decode(serializeMeasurements(world.measurements(), 'csv').text)).toEqual(actual);
-    const { interventions: _log, ...saved } = world.save(),
+    const { interventions: _log, ...saved } = syntheticHistoricalWorld(world.save()),
       legacy = Ecosystem.load(JSON.stringify({ ...saved, version: 4 }));
     const imported = measurementEnvelope(legacy.measurements());
     expect(imported.windows.settings).toMatchObject({

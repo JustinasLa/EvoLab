@@ -6,6 +6,7 @@ import {
   TELEMETRY_INTERVAL_TICKS,
   TELEMETRY_CAPACITY,
   WORLD_MAX_BYTES,
+  WORLD_VERSION,
   INTERVENTION_CAPACITY,
   STROKE_COMMAND_CAPACITY,
   knownSettings,
@@ -16,6 +17,9 @@ import {
   founder,
   mutate,
   validGenome,
+  validHistoricalGenome,
+  migrateHistoricalGenome,
+  cloneGenome,
   validSettings,
   finite,
   integer,
@@ -32,6 +36,8 @@ import {
   type LegacyWorldFile,
   type WorldFileV3,
   type WorldFileV4,
+  type WorldFileV5,
+  type HistoricalGenome,
   type InterventionState,
   type InterventionEffect,
   type InterventionEntry,
@@ -253,7 +259,10 @@ function brushCells(radius: number): number {
       if (horizontal * horizontal + vertical * vertical <= radius * radius) count++;
   return count;
 }
-function validInterventions(value: unknown, file: WorldFile): value is InterventionState {
+function validInterventions(
+  value: unknown,
+  file: WorldFile | WorldFileV5,
+): value is InterventionState {
   const settingKeys = ['seed', 'mutation', 'nutrients', 'climate'];
   const settingsMatch = (left: Settings, right: Settings): boolean =>
     settingKeys.every((key) => left[key as keyof Settings] === right[key as keyof Settings]);
@@ -559,7 +568,7 @@ export class Ecosystem {
   measurements(openStrokeSequence: number | null = null): MeasurementSource {
     return {
       snapshot: {
-        worldVersion: 5,
+        worldVersion: WORLD_VERSION,
         completedTick: this.tick,
         seed: this.settings.seed,
         settings: knownSettings(this.settings),
@@ -618,7 +627,7 @@ export class Ecosystem {
           ? [...parent.ancestry]
           : [...parent.ancestry, parent.species].slice(-8)
         : [],
-      genome: structuredClone(genome),
+      genome: cloneGenome(genome),
     };
     if (!this.canPlace(o)) return;
     this.nextId++;
@@ -899,7 +908,13 @@ export class Ecosystem {
           this.tick < this.eventUntil
             ? `${this.eventOffset < 0 ? 'Cold snap' : 'Heatwave'} · ${this.eventUntil - this.tick} ticks`
             : 'Drifting climate',
-        top: [...species.values()].sort((a, b) => b.count - a.count).slice(0, 5),
+        top: [...species.values()]
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 5)
+          .map((representative) => ({
+            ...representative,
+            genome: cloneGenome(representative.genome),
+          })),
       },
     };
   }
@@ -911,7 +926,7 @@ export class Ecosystem {
       if (this.walls[cell]) walls.push(cell);
     }
     return {
-      version: 5,
+      version: WORLD_VERSION,
       telemetry: this.telemetrySnapshot(),
       interventions: structuredClone(this.interventions),
       settings: { ...this.settings },
@@ -935,11 +950,15 @@ export class Ecosystem {
     )
       throw new Error('World file exceeds 2.5 MB.');
     const parsed: unknown = JSON.parse(text);
-    const f = parsed as WorldFile | WorldFileV4 | WorldFileV3 | LegacyWorldFile;
+    const f = parsed as WorldFile | WorldFileV5 | WorldFileV4 | WorldFileV3 | LegacyWorldFile;
     if (
       !f ||
       typeof f !== 'object' ||
-      (f.version !== 2 && f.version !== 3 && f.version !== 4 && f.version !== 5) ||
+      (f.version !== 2 &&
+        f.version !== 3 &&
+        f.version !== 4 &&
+        f.version !== 5 &&
+        f.version !== WORLD_VERSION) ||
       !validSettings(f.settings) ||
       !integer(f.random, -2147483648, 4294967295) ||
       !integer(f.tick, 0, 1e9) ||
@@ -952,13 +971,13 @@ export class Ecosystem {
       !Array.isArray(f.organisms) ||
       f.organisms.length > LIMIT
     )
-      throw new Error('Not a valid EvoLab ecosystem (version 2, 3, 4 or 5).');
+      throw new Error('Not a valid EvoLab ecosystem (version 2, 3, 4, 5 or 6).');
     if (
       f.version !== 2 &&
       !validTelemetry(f.telemetry, f.tick, f.births, f.deaths, f.version === 3 ? 1 : 2)
     )
       throw new Error('Invalid ecosystem telemetry.');
-    if (f.version === 5 && !validInterventions(f.interventions, f))
+    if ((f.version === 5 || f.version === WORLD_VERSION) && !validInterventions(f.interventions, f))
       throw new Error('Invalid ecosystem manual intervention history.');
     const world = new Ecosystem(f.settings, false);
     for (const [field, array] of [
@@ -991,12 +1010,19 @@ export class Ecosystem {
         !Array.isArray(o.ancestry) ||
         o.ancestry.length > 8 ||
         !o.ancestry.every((s) => integer(s, 1, f.nextSpecies - 1)) ||
-        !validGenome(o.genome) ||
-        !world.canPlace(o)
+        !(f.version === WORLD_VERSION ? validGenome(o.genome) : validHistoricalGenome(o.genome))
       )
         throw new Error('Invalid or overlapping organism.');
-      world.organisms.set(o.id, structuredClone(o));
-      for (const p of positions(o)) {
+      const organism: Organism = structuredClone({
+        ...o,
+        genome:
+          f.version === WORLD_VERSION
+            ? cloneGenome(o.genome as Genome)
+            : migrateHistoricalGenome(o.genome as HistoricalGenome),
+      });
+      if (!world.canPlace(organism)) throw new Error('Invalid or overlapping organism.');
+      world.organisms.set(o.id, organism);
+      for (const p of positions(organism)) {
         world.occupied[p] = o.id;
         world.food[p] = 0;
       }
@@ -1013,7 +1039,7 @@ export class Ecosystem {
     });
     world.random.state = f.random;
     world.interventions =
-      f.version === 5
+      f.version === 5 || f.version === WORLD_VERSION
         ? structuredClone(f.interventions)
         : emptyInterventions(f.settings, f.tick, true);
     world.telemetry =
