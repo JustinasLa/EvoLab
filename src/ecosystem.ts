@@ -1363,8 +1363,8 @@ export class Ecosystem {
           : structuredClone(f.telemetry);
     world.lineage =
       f.version === WORLD_VERSION
-        ? LineageArchive.load(f.lineageArchive, world.organisms.values(), f.tick, f.nextSpecies)
-        : LineageArchive.legacy(world.organisms.values(), f.tick);
+        ? LineageArchive.load(f.lineageArchive, f.organisms, f.tick, f.nextSpecies)
+        : LineageArchive.legacy(f.organisms, f.tick);
     return world;
   }
 }
