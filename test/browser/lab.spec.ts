@@ -129,7 +129,7 @@ const nativeLeaseRecords = new WeakMap<
   {
     requests: { stream: string; at: number }[];
     downloads: { filename: string; at: number }[];
-    reads: { filename: string; bytes: number; at: number }[];
+    reads: { filename: string; bytes: number; sha256: string; at: number }[];
   }
 >();
 const leaseCase = (title: string) =>
@@ -142,11 +142,20 @@ function leaseRequest(page: import('@playwright/test').Page, stream: string) {
   if (records.requests.length === 32) throw new Error('Native lease request evidence exceeded32');
   records.requests.push({ stream, at: Date.now() });
 }
-function leaseRead(page: import('@playwright/test').Page, filename: string, bytes: Buffer) {
+async function leaseRead(page: import('@playwright/test').Page, filename: string, bytes: Buffer) {
   const records = nativeLeaseRecords.get(page);
   if (!records) return;
   if (records.reads.length === 32) throw new Error('Native complete-read evidence exceeded32');
-  records.reads.push({ filename, bytes: bytes.length, at: Date.now() });
+  records.reads.push({
+    filename,
+    bytes: bytes.length,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    at: Date.now(),
+  });
+  await test.info().attach(`native-complete-read-${records.reads.length}-${filename}`, {
+    body: bytes,
+    contentType: filename.endsWith('.csv') ? 'text/csv' : 'application/json',
+  });
 }
 test.beforeEach(async ({ page }, info) => {
   if (!leaseCase(info.title)) return;
@@ -1986,7 +1995,7 @@ async function downloadWorld(page: import('@playwright/test').Page): Promise<Buf
     chunks: Buffer[] = [];
   for await (const chunk of stream) chunks.push(chunk);
   const bytes = Buffer.concat(chunks);
-  leaseRead(page, download.suggestedFilename(), bytes);
+  await leaseRead(page, download.suggestedFilename(), bytes);
   return bytes;
 }
 async function downloadMeasurements(page: import('@playwright/test').Page, format: 'json' | 'csv') {
@@ -1998,7 +2007,7 @@ async function downloadMeasurements(page: import('@playwright/test').Page, forma
     chunks: Buffer[] = [];
   for await (const chunk of stream) chunks.push(chunk);
   const bytes = Buffer.concat(chunks);
-  leaseRead(page, download.suggestedFilename(), bytes);
+  await leaseRead(page, download.suggestedFilename(), bytes);
   expect(download.suggestedFilename()).toMatch(
     new RegExp(`^evolab-measurements-\\d+-tick-\\d+\\.${format}$`),
   );
