@@ -29,13 +29,16 @@ import {
   type Tool,
   type CellType,
   type PlaybackState,
-  type PaintTool,
+  type StrokeTool,
+  type RefugeBrush,
+  type RefugeSummary,
   type TrackedOperation,
   type MeasurementFormat,
   type TerrainRecipe,
 } from './model';
 import { draw, genomeSvg, markup, organismHtml, point, viewport, type Camera } from './view';
 import { createTelemetryView } from './telemetry-view';
+import { emptyRefuges, refugeTool, refugeSummary } from './refuges';
 import {
   BLUEPRINT_DEFAULT_NAME,
   BLUEPRINT_MAX_BYTES,
@@ -49,6 +52,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     [...root.querySelectorAll<HTMLElement>('[id]')].map((element) => [element.id, element]),
   );
   const get = <T extends HTMLElement>(id: string): T => elements.get(id) as T;
+  const refugeButtons = [...root.querySelectorAll<HTMLButtonElement>('[data-refuge-tool]')];
   const canvas = get<HTMLCanvasElement>('world'),
     buffer = document.createElement('canvas');
   const camera: Camera = { zoom: 1, x: 0, y: 0 };
@@ -63,6 +67,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     terrain: TerrainRecipe;
     run: number;
     revision: number;
+    refugeReset: 'off-empty';
   } | null = null;
   let settledSettings: Partial<Settings> = {};
   const latestSettingId: Partial<Record<keyof Settings, number>> = {};
@@ -74,6 +79,9 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     thermal = false,
     tool: Tool = 'pan',
     brush = 2;
+  let refugeIntensity = 4,
+    confirmedRefuges = refugeSummary(emptyRefuges()),
+    settledRefugeId = 0;
   let frame: Frame | undefined,
     selected: Organism | null = null,
     blueprint = founder(0),
@@ -111,6 +119,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       recipe?: TerrainRecipe;
       resolvedSeed?: number;
     };
+    refugePayload?: Record<string, unknown>;
     setting?: { key: 'mutation' | 'nutrients' | 'climate'; value: number };
   };
   const owners = new Map<number, Owner>();
@@ -122,13 +131,27 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     worldRead = false,
     readGeneration = 0;
   let closeLease: { run: number; strokeId: number; posted: boolean } | null = null;
-  let localStroke: { id: number; tool: PaintTool; radius: number; count: number } | null = null;
+  let localStroke: {
+    id: number;
+    tool: StrokeTool;
+    radius: number;
+    count: number;
+    brush?: RefugeBrush;
+  } | null = null;
   let ownerPointer: number | null = null;
   let availabilityState = -1;
   const isManual = (operation: TrackedOperation): boolean =>
-    ['begin-stroke', 'paint', 'settings', 'shock', 'clear-walls', 'regenerate-walls'].includes(
-      operation,
-    );
+    [
+      'begin-stroke',
+      'paint',
+      'settings',
+      'shock',
+      'clear-walls',
+      'regenerate-walls',
+      'refuge-mode',
+      'paint-refuge',
+      'clear-refuges',
+    ].includes(operation);
   const hasOwner = (operation: TrackedOperation): boolean =>
     [...owners.values()].some((owner) => owner.operation === operation);
   const lifecycleBusy = (): boolean => hasOwner('start') || hasOwner('load');
@@ -140,8 +163,21 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         unavailable || hasOwner('export-measurements') || !!downloads['export-measurements'],
       saveBlocked = unavailable || hasOwner('save') || !!downloads.save,
       state = Number(exportBlocked) + Number(saveBlocked) * 2;
-    for (const action of ['clear-walls', 'regenerate-walls'])
-      get<HTMLButtonElement>(action).disabled = unavailable || manualCount() >= MANUAL_CAPACITY;
+    const manualBlocked = unavailable || manualCount() >= MANUAL_CAPACITY;
+    for (const action of ['clear-walls', 'regenerate-walls', 'refuge-enabled', 'clear-refuges']) {
+      const control = get<HTMLButtonElement | HTMLInputElement>(action);
+      if (control.disabled !== manualBlocked) control.disabled = manualBlocked;
+    }
+    for (const button of refugeButtons) {
+      const disabled = manualBlocked || !confirmedRefuges.enabled;
+      if (button.disabled !== disabled) button.disabled = disabled;
+    }
+    text(
+      'refuge-pending',
+      hasOwner('refuge-mode') || hasOwner('clear-refuges') || hasOwner('paint-refuge')
+        ? 'Pending worker confirmation; earlier admitted dabs may still complete.'
+        : '',
+    );
     if (state === availabilityState) return;
     availabilityState = state;
     for (const format of ['json', 'csv'])
@@ -225,6 +261,15 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       ...(payload.strokeId ? { strokeId: payload.strokeId as number } : {}),
     };
     if (operation === 'clear-walls') owner.terrainPayload = { action: 'clear' };
+    if (
+      ['refuge-mode', 'paint-refuge', 'clear-refuges'].includes(operation) ||
+      (operation === 'begin-stroke' && refugeTool(payload.tool))
+    )
+      owner.refugePayload = Object.fromEntries(
+        ['rulesVersion', 'tool', 'units', 'radius', 'x', 'y', 'enabled']
+          .filter((key) => Object.hasOwn(payload, key))
+          .map((key) => [key, payload[key]]),
+      );
     if (operation === 'regenerate-walls')
       owner.terrainPayload = {
         action: 'regenerate',
@@ -353,6 +398,11 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
             data.resolvedSeed !== owner.terrainPayload.resolvedSeed))
     )
       return true;
+    if (
+      owner.refugePayload &&
+      Object.entries(owner.refugePayload).some(([key, value]) => data[key] !== value)
+    )
+      return true;
     owner.completing = true;
     try {
       if (!alive || !owner.applicable || owner.run !== runId) return true;
@@ -385,6 +435,8 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         renderSettings(data.settings);
         installTerrain(data.terrain, owner.terrainRevision);
         settledTerrainId = owner.id;
+        installRefuges(data.thermalRefuges);
+        settledRefugeId = owner.id;
         renderPlayback(data.playback);
         telemetry.reset();
         updates = 0;
@@ -394,7 +446,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
           notice('');
         } else {
           notice(
-            `World restored. Playback follows Pause on extinction.${data.terrainMigration ? ' Saved terrain kept; default wall recipe supplied for future actions.' : ''}`,
+            `World restored. Playback follows Pause on extinction.${data.terrainMigration ? ' Saved terrain kept; default wall recipe supplied for future actions.' : ''} ${data.refugeMigration ? 'Legacy climate retained; painted refuges are disabled.' : 'Imported painted field.'}`,
           );
         }
       } else if (data.type === 'manual-result') {
@@ -406,6 +458,21 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
           throw new Error('Invalid manual completion payload.');
         owner.failed = data.status === 'rejected';
         settleSetting(owner, !owner.failed);
+        if (owner.refugePayload && operation !== 'begin-stroke' && !owner.failed) {
+          if (operation === 'refuge-mode' && owner.id > settledRefugeId) {
+            settledRefugeId = owner.id;
+            installRefuges({
+              ...confirmedRefuges,
+              enabled: data.enabled,
+              nonzeroCells: data.nonzeroCells,
+            });
+          }
+          notice(
+            data.status === 'no-op'
+              ? 'Painted temperature unchanged; no manual entry recorded.'
+              : 'Painted temperature action applied; consequences begin on the next ecological tick.',
+          );
+        }
         if (owner.terrainPayload && !owner.failed) {
           if (!validTerrain(data.terrain)) throw new Error('Invalid completed wall recipe.');
           if (
@@ -591,6 +658,10 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   };
   function choose(next: Tool): void {
     endStroke();
+    if (refugeTool(next) && !confirmedRefuges.enabled) {
+      notice('Enable painted temperature refuges before painting.');
+      return;
+    }
     if (next === 'plant' && !validGenome(blueprint)) {
       notice('Draw 1–16 connected cells before placing an organism.');
       tab('organism');
@@ -601,8 +672,9 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       .querySelectorAll<HTMLButtonElement>('button[data-tool]')
       .forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === tool)));
     canvas.dataset.tool = tool;
+    get<HTMLInputElement>('refuge-intensity').disabled = tool === 'erase-temperature';
     if (tool === 'plant') tab('organism');
-    const painting = ['food', 'wall', 'erase'].includes(tool);
+    const painting = ['food', 'wall', 'erase'].includes(tool) || refugeTool(tool);
     get('brush-control').hidden = !painting;
     get('tool-hint').hidden = painting;
     text(
@@ -614,6 +686,9 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         wall: 'Paint walls.',
         erase: 'Erase life and terrain.',
         plant: 'Click an empty patch to place your body.',
+        warm: 'Add warmth with each admitted dab.',
+        cool: 'Subtract warmth with each admitted dab.',
+        'erase-temperature': 'Erase painted temperature only.',
       }[tool],
     );
   }
@@ -699,6 +774,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       terrain: { ...terrain },
       run: runId,
       revision: terrainRevision,
+      refugeReset: 'off-empty',
     };
     text(
       'reset-payload',
@@ -753,6 +829,22 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       send({ type: 'inspect', ...p });
       tab('organism');
     } else if (tool !== 'pan') {
+      if (refugeTool(tool)) {
+        const stroke = localStroke!;
+        if (
+          stroke.count >= STROKE_COMMAND_CAPACITY ||
+          !postTracked('paint-refuge', { ...stroke.brush, ...p, strokeId: stroke.id })
+        ) {
+          endStroke();
+          notice(
+            'Partial temperature stroke stopped. Earlier admitted dabs may still complete; start a fresh gesture.',
+          );
+        } else {
+          stroke.count++;
+          if (stroke.count === STROKE_COMMAND_CAPACITY) endStroke();
+        }
+        return;
+      }
       if (!validGenome(blueprint)) {
         notice('Draw 1–16 connected cells before painting.');
         return;
@@ -804,7 +896,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       return;
     }
     if (
-      ['food', 'wall', 'erase'].includes(tool) &&
+      (['food', 'wall', 'erase'].includes(tool) || refugeTool(tool)) &&
       (closeLease ||
         manualCount() > MANUAL_CAPACITY - 2 ||
         postingId > Number.MAX_SAFE_INTEGER - 3 ||
@@ -813,11 +905,23 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       notice('Brush capacity busy. A fresh pointer press is required after earlier work drains.');
       return;
     }
-    if (['food', 'wall', 'erase'].includes(tool)) {
+    if (refugeTool(tool) && !confirmedRefuges.enabled) {
+      notice('Painted temperature refuges are disabled.');
+      return;
+    }
+    if (['food', 'wall', 'erase'].includes(tool) || refugeTool(tool)) {
       const id = ++strokeId;
       closeLease = { run: runId, strokeId: id, posted: false };
-      localStroke = { id, tool: tool as PaintTool, radius: brush, count: 0 };
-      if (!postTracked('begin-stroke', { strokeId: id, tool, radius: brush })) {
+      const frozenBrush = refugeTool(tool)
+        ? {
+            rulesVersion: 1 as const,
+            tool,
+            radius: brush,
+            units: tool === 'warm' ? refugeIntensity : tool === 'cool' ? -refugeIntensity : 0,
+          }
+        : undefined;
+      localStroke = { id, tool: tool as StrokeTool, radius: brush, count: 0, brush: frozenBrush };
+      if (!postTracked('begin-stroke', { strokeId: id, tool, radius: brush, ...frozenBrush })) {
         closeLease = null;
         localStroke = null;
         return;
@@ -899,6 +1003,26 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     get('thermal').setAttribute('aria-pressed', String(thermal));
     text('thermal', thermal ? 'Hide temperature' : 'Show temperature');
     dirty = true;
+  });
+  get('refuge-enabled').addEventListener('change', () => {
+    const enabled = get<HTMLInputElement>('refuge-enabled').checked;
+    get<HTMLInputElement>('refuge-enabled').checked = confirmedRefuges.enabled;
+    endStroke();
+    postTracked('refuge-mode', { rulesVersion: 1, enabled });
+  });
+  get('clear-refuges').addEventListener('click', () => {
+    endStroke();
+    postTracked('clear-refuges', { rulesVersion: 1 });
+  });
+  get('refuge-intensity').addEventListener('input', () => {
+    endStroke();
+    const value = Number(get<HTMLInputElement>('refuge-intensity').value);
+    if (!integer(value, 1, 32)) {
+      notice('Choose a whole-number temperature intensity from 1 to 32.');
+      return;
+    }
+    refugeIntensity = value;
+    text('refuge-intensity-value', `${value} units`);
   });
   for (const id of ['mutation', 'nutrients', 'climate'] as const)
     get(id).addEventListener('input', () => {
@@ -1123,7 +1247,9 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   });
   const keyboard = (event: KeyboardEvent): void => {
     if (
-      (event.target instanceof HTMLElement && event.target.matches('input,select,textarea')) ||
+      (event.target instanceof HTMLElement &&
+        (event.target.matches('input,select,textarea') ||
+          (event.code === 'Space' && event.target.matches('button')))) ||
       event.ctrlKey ||
       event.metaKey ||
       event.altKey ||
@@ -1150,10 +1276,20 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     dirty = true;
   };
   window.addEventListener('resize', resize);
+  function installRefuges(summary: RefugeSummary): void {
+    confirmedRefuges = { ...summary };
+    get<HTMLInputElement>('refuge-enabled').checked = summary.enabled;
+    text(
+      'refuge-summary',
+      `${summary.enabled ? (summary.nonzeroCells ? 'Enabled · painted' : 'Enabled · empty') : summary.nonzeroCells ? 'Disabled · stored paint' : 'Disabled · empty'} · ${summary.nonzeroCells}/4096 nonzero cells · offsets ${summary.minimumUnits}..${summary.maximumUnits} units · rules 1`,
+    );
+    availability();
+  }
   function renderFrame(next: Frame, selection: Organism | null, displayOnly = false): void {
     const previousSelection = selected?.id;
     const previousPopulation = frame?.stats.population;
     frame = next;
+    installRefuges(refugeSummary(next.thermalRefuges));
     selected = selection;
     dirty = true;
     if (!displayOnly) updates++;
@@ -1221,6 +1357,10 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       return;
     }
     if (data.type !== 'frame' || stopped) return;
+    if (integer(data.refugeModeId, 0, Number.MAX_SAFE_INTEGER)) {
+      if (data.refugeModeId < settledRefugeId) return;
+      settledRefugeId = data.refugeModeId;
+    }
     renderPlayback(data.playback);
     renderFrame(data.frame, data.selected);
   };

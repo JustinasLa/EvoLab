@@ -4,7 +4,7 @@ export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 6;
+export const WORLD_VERSION = 7;
 export const INTERVENTION_CAPACITY = 128;
 export const MANUAL_CAPACITY = 32;
 export const STROKE_COMMAND_CAPACITY = 4096;
@@ -75,7 +75,37 @@ export interface TerrainRecipe {
   seed: number | null;
 }
 export const DEFAULTS: Settings = { seed: 42, mutation: 0.12, nutrients: 5, climate: 0.8 };
-export type Tool = 'inspect' | 'pan' | 'food' | 'wall' | 'erase' | 'plant';
+export type RefugeTool = 'warm' | 'cool' | 'erase-temperature';
+export type Tool = 'inspect' | 'pan' | 'food' | 'wall' | 'erase' | 'plant' | RefugeTool;
+export interface RefugePlane {
+  version: 1;
+  enabled: boolean;
+  units: Int8Array;
+}
+export interface RefugeField extends RefugePlane {
+  nonzeroCells: number;
+}
+export interface RefugeFile {
+  version: 1;
+  enabled: boolean;
+  cells: [number, number][];
+}
+export interface RefugeSummary {
+  version: 1;
+  enabled: boolean;
+  nonzeroCells: number;
+  capacity: 4096;
+  unitsPerNormalized: 100;
+  minimumUnits: number;
+  maximumUnits: number;
+  sumUnits: number;
+}
+export interface RefugeBrush {
+  rulesVersion: 1;
+  tool: RefugeTool;
+  radius: number;
+  units: number;
+}
 export interface Species {
   id: number;
   count: number;
@@ -97,6 +127,7 @@ export interface Stats {
 }
 export interface Frame {
   terrain: TerrainRecipe;
+  thermalRefuges: RefugePlane;
   cells: Uint8Array;
   ids: Int32Array;
   stats: Stats;
@@ -195,10 +226,17 @@ export interface WorldEcology {
   organisms: Organism[];
 }
 export interface WorldFile extends WorldEcology {
-  version: 6;
+  version: 7;
+  thermalRefuges: RefugeFile;
   terrain: TerrainRecipe;
   telemetry: TelemetryState;
   interventions: InterventionState;
+}
+export interface WorldFileV6 extends WorldEcology {
+  version: 6;
+  terrain: TerrainRecipe;
+  telemetry: TelemetryState;
+  interventions: InterventionStateV2;
 }
 export interface WorldFileV5 extends WorldEcology {
   version: 5;
@@ -214,6 +252,7 @@ export type LegacyWorldFile = WorldEcology & {
   version: 2;
 };
 export type PaintTool = 'food' | 'wall' | 'erase';
+export type StrokeTool = PaintTool | RefugeTool;
 export type SettingKey = 'mutation' | 'nutrients' | 'climate';
 export type SettingsPatch = Partial<Pick<Settings, SettingKey>>;
 export interface Coordinate {
@@ -258,16 +297,36 @@ export interface TerrainDetail {
   removedFood: number;
   protectedCells: number;
 }
-export type InterventionEffect = InterventionEffectV1 | { kind: 'terrain'; detail: TerrainDetail };
+export type InterventionEffectV2 =
+  InterventionEffectV1 | { kind: 'terrain'; detail: TerrainDetail };
+export interface RefugePaintDetail extends RefugeBrush {
+  first: Coordinate;
+  last: Coordinate;
+  successfulCommands: number;
+  changedBrushCells: number;
+}
+export type RefugeEffect =
+  | { kind: 'refuge-mode'; detail: { rulesVersion: 1; before: boolean; after: boolean } }
+  | { kind: 'refuge-paint'; detail: RefugePaintDetail }
+  | { kind: 'refuge-clear'; detail: { rulesVersion: 1; removedCells: number } };
+export type InterventionEffect = InterventionEffectV2 | RefugeEffect;
 export type InterventionEntryV1 = InterventionEffectV1 & {
   sequence: number;
   origin: 'manual';
   firstTick: number;
   lastTick: number;
 };
-export type InterventionEntry =
+export type InterventionEntryV2 =
   | InterventionEntryV1
-  | (Extract<InterventionEffect, { kind: 'terrain' }> & {
+  | (Extract<InterventionEffectV2, { kind: 'terrain' }> & {
+      sequence: number;
+      origin: 'manual';
+      firstTick: number;
+      lastTick: number;
+    });
+export type InterventionEntry =
+  | InterventionEntryV2
+  | (RefugeEffect & {
       sequence: number;
       origin: 'manual';
       firstTick: number;
@@ -283,8 +342,12 @@ export interface InterventionStateV1 {
   prefixSettings: Settings;
   entries: InterventionEntryV1[];
 }
-export interface InterventionState extends Omit<InterventionStateV1, 'version' | 'entries'> {
+export interface InterventionStateV2 extends Omit<InterventionStateV1, 'version' | 'entries'> {
   version: 2;
+  entries: InterventionEntryV2[];
+}
+export interface InterventionState extends Omit<InterventionStateV1, 'version' | 'entries'> {
+  version: 3;
   entries: InterventionEntry[];
 }
 export interface PaintOutcome {
@@ -294,8 +357,9 @@ export interface PaintOutcome {
 }
 export interface MeasurementSource {
   snapshot: {
-    worldVersion: 6;
+    worldVersion: 7;
     terrain: TerrainRecipe;
+    thermalRefuges: RefugeSummary;
     completedTick: number;
     seed: number;
     settings: Settings;
@@ -313,7 +377,10 @@ export type ManualOperation =
   | 'shock'
   | 'end-stroke'
   | 'clear-walls'
-  | 'regenerate-walls';
+  | 'regenerate-walls'
+  | 'refuge-mode'
+  | 'paint-refuge'
+  | 'clear-refuges';
 export type TrackedOperation = ManualOperation | 'export-measurements' | 'save' | 'start' | 'load';
 export const knownSettings = ({ seed, mutation, nutrients, climate }: Settings): Settings => ({
   seed,
@@ -456,15 +523,14 @@ export function temperature(
   tick: number,
   strength: number,
   offset = 0,
+  refugeUnits = 0,
 ): number {
-  return clamp(
+  const raw =
     0.5 +
-      strength *
-        (0.27 * Math.sin((x / WIDTH) * Math.PI * 2 - tick / 1100) +
-          0.13 * Math.cos((y / HEIGHT) * Math.PI * 2) +
-          0.12 * Math.sin(tick / 650)) +
-      offset,
-    0,
-    1,
-  );
+    strength *
+      (0.27 * Math.sin((x / WIDTH) * Math.PI * 2 - tick / 1100) +
+        0.13 * Math.cos((y / HEIGHT) * Math.PI * 2) +
+        0.12 * Math.sin(tick / 650)) +
+    offset;
+  return refugeUnits === 0 ? clamp(raw, 0, 1) : clamp(raw + refugeUnits / 100, 0, 1);
 }

@@ -1,6 +1,7 @@
 import { Ecosystem } from './ecosystem';
 import { DEFAULT_TERRAIN, resolvedTerrainSeed, validTerrain } from './terrain';
 import { serializeMeasurements } from './measurement-export';
+import { refugeTool, validRefugeBrush, refugeSummary } from './refuges';
 import {
   WORLD_MAX_BYTES,
   STROKE_COMMAND_CAPACITY,
@@ -14,6 +15,8 @@ import {
   type ExtinctionSummary,
   type LoadFailureResponse,
   type PaintTool,
+  type StrokeTool,
+  type RefugeBrush,
 } from './model';
 
 export interface Scope {
@@ -33,10 +36,12 @@ export function startWorker(
     selected = 0;
   let pauseOnExtinction = true,
     extinction: ExtinctionSummary | null = null;
-  let postingWatermark = 0;
+  let postingWatermark = 0,
+    refugeModeId = 0;
   let stroke: {
     id: number;
-    tool: PaintTool;
+    tool: StrokeTool;
+    brush?: RefugeBrush;
     radius: number;
     sequence: number | null;
     count: number;
@@ -53,6 +58,9 @@ export function startWorker(
     'shock',
     'clear-walls',
     'regenerate-walls',
+    'refuge-mode',
+    'paint-refuge',
+    'clear-refuges',
   ]);
   const manual = new Set([
     'begin-stroke',
@@ -62,6 +70,9 @@ export function startWorker(
     'shock',
     'clear-walls',
     'regenerate-walls',
+    'refuge-mode',
+    'paint-refuge',
+    'clear-refuges',
   ]);
   const errorText = (error: unknown): string =>
     (error instanceof Error ? error.message : String(error)).slice(0, 512);
@@ -95,11 +106,12 @@ export function startWorker(
       {
         type: 'frame',
         runId,
+        refugeModeId,
         frame,
         selected: world.organisms.get(selected) ?? null,
         playback: playback(),
       },
-      [frame.cells.buffer, frame.ids.buffer],
+      [frame.cells.buffer, frame.ids.buffer, frame.thermalRefuges.units.buffer],
     );
   }
   function queue(): void {
@@ -140,6 +152,7 @@ export function startWorker(
       strokeOwned =
         data.type === 'begin-stroke' ||
         data.type === 'end-stroke' ||
+        data.type === 'paint-refuge' ||
         (data.type === 'paint' && data.tool !== 'plant');
     const owner = {
       operation: data.type,
@@ -147,6 +160,23 @@ export function startWorker(
       ...(isManual ? { commandId: id } : { requestId: id }),
       ...(data.type === 'export-measurements' ? { format: data.format } : {}),
       ...(strokeOwned ? { strokeId: data.strokeId } : {}),
+      ...((data.type === 'paint-refuge' || data.type === 'begin-stroke') && validRefugeBrush(data)
+        ? {
+            rulesVersion: 1,
+            tool: data.tool,
+            radius: data.radius,
+            units: data.units,
+            ...(data.type === 'paint-refuge' && integer(data.x, 0, 239) && integer(data.y, 0, 155)
+              ? { x: data.x, y: data.y }
+              : {}),
+          }
+        : {}),
+      ...((data.type === 'refuge-mode' || data.type === 'clear-refuges') && data.rulesVersion === 1
+        ? { rulesVersion: 1 }
+        : {}),
+      ...(data.type === 'refuge-mode' && typeof data.enabled === 'boolean'
+        ? { enabled: data.enabled }
+        : {}),
       ...(data.type === 'clear-walls' ? { action: 'clear' } : {}),
       ...(data.type === 'regenerate-walls'
         ? {
@@ -202,6 +232,7 @@ export function startWorker(
         const terrain = data.terrain === undefined ? DEFAULT_TERRAIN : data.terrain;
         if (!validTerrain(terrain)) throw new Error('Invalid wall recipe.');
         world = new Ecosystem(data.settings, true, { terrain });
+        refugeModeId = id;
         runId = data.runId;
         paused = false;
         selected = 0;
@@ -214,6 +245,7 @@ export function startWorker(
           seed: world.settings.seed,
           settings: knownSettings(world.settings),
           terrain: { ...world.terrain },
+          thermalRefuges: refugeSummary(world.thermalRefuges),
           playback: playback(),
         });
         send();
@@ -242,7 +274,11 @@ export function startWorker(
                   playback: playback(),
                 },
               };
-              scope.postMessage(response, [frame.cells.buffer, frame.ids.buffer]);
+              scope.postMessage(response, [
+                frame.cells.buffer,
+                frame.ids.buffer,
+                frame.thermalRefuges.units.buffer,
+              ]);
             } catch (failure) {
               paused = true;
               scope.postMessage({
@@ -256,6 +292,7 @@ export function startWorker(
           return;
         }
         world = restored;
+        refugeModeId = id;
         paused = false;
         selected = 0;
         extinction = world.organisms.size ? null : { tick: world.tick, cause: 'empty-import' };
@@ -268,6 +305,8 @@ export function startWorker(
           settings: knownSettings(world.settings),
           terrain: { ...world.terrain },
           ...(JSON.parse(data.text).version < 6 ? { terrainMigration: true } : {}),
+          thermalRefuges: refugeSummary(world.thermalRefuges),
+          refugeMigration: JSON.parse(data.text).version < 7,
           playback: playback(),
         });
         send();
@@ -288,7 +327,12 @@ export function startWorker(
       } else if (data.type === 'speed') {
         if ([1, 4, 12].includes(data.value)) speed = data.value;
       } else if (data.type === 'begin-stroke' && world) {
-        if (stroke || !['food', 'wall', 'erase'].includes(data.tool) || !integer(data.radius, 0, 8))
+        if (
+          stroke ||
+          (!['food', 'wall', 'erase'].includes(data.tool) && !validRefugeBrush(data)) ||
+          !integer(data.radius, 0, 8) ||
+          (refugeTool(data.tool) && !world.thermalRefuges.enabled)
+        )
           throw new Error('Invalid or overlapping brush stroke.');
         stroke = {
           id: data.strokeId,
@@ -296,12 +340,59 @@ export function startWorker(
           radius: data.radius,
           sequence: null,
           count: 0,
+          ...(refugeTool(data.tool)
+            ? {
+                brush: {
+                  rulesVersion: 1 as const,
+                  tool: data.tool,
+                  radius: data.radius,
+                  units: data.units,
+                },
+              }
+            : {}),
         };
         result('applied');
       } else if (data.type === 'end-stroke' && world) {
         const matched = stroke?.id === data.strokeId;
         if (matched) stroke = null;
         result(matched ? 'applied' : 'no-op');
+      } else if (data.type === 'refuge-mode' && world) {
+        stroke = null;
+        if (data.rulesVersion !== 1 || typeof data.enabled !== 'boolean')
+          throw new Error('Invalid painted temperature mode payload.');
+        const sequence = world.changeRefugeMode(data.enabled);
+        refugeModeId = id;
+        terrainApplied = sequence !== null;
+        result(sequence === null ? 'no-op' : 'applied', sequence, {
+          nonzeroCells: world.thermalRefuges.nonzeroCells,
+        });
+        send();
+      } else if (data.type === 'clear-refuges' && world) {
+        stroke = null;
+        if (data.rulesVersion !== 1) throw new Error('Invalid painted temperature clear payload.');
+        const outcome = world.clearRefuges();
+        terrainApplied = outcome.rowSequence !== null;
+        result(terrainApplied ? 'applied' : 'no-op', outcome.rowSequence, outcome);
+        send();
+      } else if (data.type === 'paint-refuge' && world) {
+        if (!validRefugeBrush(data) || !integer(data.x, 0, 239) || !integer(data.y, 0, 155))
+          throw new Error('Invalid painted temperature payload.');
+        if (
+          !stroke ||
+          stroke.id !== data.strokeId ||
+          !stroke.brush ||
+          stroke.tool !== data.tool ||
+          stroke.radius !== data.radius ||
+          stroke.brush.units !== data.units ||
+          stroke.count >= STROKE_COMMAND_CAPACITY
+        )
+          throw new Error('Rejected closed or exhausted temperature stroke.');
+        const outcome = world.paintRefuge(stroke.brush, data.x, data.y, stroke.sequence);
+        stroke.count++;
+        if (outcome.rowSequence !== null) stroke.sequence = outcome.rowSequence;
+        terrainApplied = outcome.rowSequence !== null;
+        result(terrainApplied ? 'applied' : 'no-op', outcome.rowSequence, outcome);
+        if (terrainApplied) send();
       } else if (data.type === 'settings' && world) {
         stroke = null;
         if (!data.settings || typeof data.settings !== 'object' || Array.isArray(data.settings))
@@ -359,7 +450,7 @@ export function startWorker(
           const previous = stroke.sequence;
           sequence = world.recordPaint(
             outcome,
-            stroke.tool,
+            stroke.tool as PaintTool,
             stroke.radius,
             data.x,
             data.y,
@@ -443,7 +534,7 @@ export function startWorker(
                 playback: playback(),
               },
             },
-            [frame.cells.buffer, frame.ids.buffer],
+            [frame.cells.buffer, frame.ids.buffer, frame.thermalRefuges.units.buffer],
           );
         } catch (failure) {
           paused = true;

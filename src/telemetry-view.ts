@@ -198,6 +198,35 @@ export function createTelemetryView(root: HTMLElement) {
           'Net cell counts, not a replay. Terrain history before the first retained wall action is unknown. Saved/edited cells are authoritative.',
         ],
       );
+    } else if (entry.kind === 'refuge-mode') {
+      rows.push(
+        [
+          'Painted temperature mode',
+          `${entry.detail.before ? 'ON' : 'OFF'} → ${entry.detail.after ? 'ON' : 'OFF'}`,
+        ],
+        ['Rules version', String(entry.detail.rulesVersion)],
+      );
+    } else if (entry.kind === 'refuge-paint') {
+      rows.push(
+        ['Tool', entry.detail.tool],
+        ['Signed units per dab', String(entry.detail.units)],
+        ['Radius', String(entry.detail.radius)],
+        ['Rules version', String(entry.detail.rulesVersion)],
+        ['First effective anchor', `${entry.detail.first.x}, ${entry.detail.first.y}`],
+        ['Last effective anchor', `${entry.detail.last.x}, ${entry.detail.last.y}`],
+        ['Effective commands', String(entry.detail.successfulCommands)],
+        ['Changed cells summed, not unique area', String(entry.detail.changedBrushCells)],
+        [
+          'Interpretation',
+          'Manual applied portions; offset history before retained edits is unknown; not a replay.',
+        ],
+      );
+    } else if (entry.kind === 'refuge-clear') {
+      rows.push(
+        ['Painted temperature cells removed', String(entry.detail.removedCells)],
+        ['Rules version', String(entry.detail.rulesVersion)],
+        ['Meaning', 'Mode unchanged; life, food and walls preserved.'],
+      );
     } else
       rows.push(
         ['Climate shock', entry.detail.kind],
@@ -652,7 +681,7 @@ export function createTelemetryView(root: HTMLElement) {
         last = samples.at(-1),
         manual = frame.interventions,
         latestManual = manual.entries.at(-1),
-        key = `${run}/${telemetry.originTick}/${telemetry.adaptationOriginTick}/${samples.length}/${first?.tick}/${last?.tick}/${manual.originTick}/${manual.originKind}/${manual.totalEntries}/${latestManual?.sequence}/${latestManual?.kind === 'paint' ? latestManual.detail.successfulCommands : ''}`;
+        key = `${run}/${telemetry.originTick}/${telemetry.adaptationOriginTick}/${samples.length}/${first?.tick}/${last?.tick}/${manual.originTick}/${manual.originKind}/${manual.totalEntries}/${latestManual?.sequence}/${latestManual?.kind === 'paint' || latestManual?.kind === 'refuge-paint' ? latestManual.detail.successfulCommands : ''}`;
       summary.textContent = `World tick ${frame.stats.tick}; ${last ? `latest sample tick ${last.tick}; retained ticks ${first!.tick}–${last.tick}; ${samples.length} of at most ${TELEMETRY_CAPACITY} samples` : 'no recorded samples'}. Samples every ${TELEMETRY_INTERVAL_TICKS} completed ticks. Current live values can differ after paused editing. No synthetic initial, latest or extinction point.`;
       if (key === sourceKey) return;
       sourceKey = key;

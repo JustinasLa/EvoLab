@@ -18,7 +18,9 @@ import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../../s
 import { writeFile } from 'node:fs/promises';
 import { cpus, platform, totalmem } from 'node:os';
 import { Ecosystem } from '../../src/ecosystem';
-import { advance, legacyV3, legacyV4, legacyV5 } from '../fixtures/telemetry';
+import { advance, legacyV3, legacyV4, legacyV5, legacyV6 } from '../fixtures/telemetry';
+import { fixtureText, acceptedReference, predecessor } from '../fixtures/refuges';
+import { localTemperature, refugeSummary } from '../../src/refuges';
 import { DEFAULT_TERRAIN, generateTerrain } from '../../src/terrain';
 import { readFileSync } from 'node:fs';
 
@@ -86,6 +88,23 @@ declare global {
       releaseFrame: () => void;
       failEndpoint: () => void;
     };
+    nativeLease: {
+      posts: {
+        stream: string;
+        requestId: number;
+        runId: number;
+        at: number;
+        monotonicMs: number;
+      }[];
+      dispatches: {
+        stream: string;
+        requestId: number;
+        filename: string;
+        at: number;
+        monotonicMs: number;
+      }[];
+    };
+    refugePixels: { tick: number; climate: number; offset: number; colors: number[][] } | null;
     telemetryEvidence: { frame: Frame | null; points: number[][]; loadText: string | null };
     telemetryPerformance: {
       enabled: boolean;
@@ -101,6 +120,135 @@ declare global {
     };
   }
 }
+
+// Passive, bounded evidence for the 22 added executions. Native posting,
+// anchor activation, driver download events and complete reads retain their
+// ordinary implementation and clocks; no lease or scheduling timer is replaced.
+const nativeLeaseRecords = new WeakMap<
+  import('@playwright/test').Page,
+  {
+    requests: { stream: string; at: number }[];
+    downloads: { filename: string; at: number }[];
+    reads: { filename: string; bytes: number; sha256: string; at: number }[];
+  }
+>();
+const leaseCase = (title: string) =>
+  /^B23-/.test(title) ||
+  /^native post-success (refuge-mode|paint-refuge|clear-refuges) /.test(title) ||
+  title.includes('genuine world7 migration');
+function leaseRequest(page: import('@playwright/test').Page, stream: string) {
+  const records = nativeLeaseRecords.get(page);
+  if (!records) return;
+  if (records.requests.length === 32) throw new Error('Native lease request evidence exceeded32');
+  records.requests.push({ stream, at: Date.now() });
+}
+async function leaseRead(page: import('@playwright/test').Page, filename: string, bytes: Buffer) {
+  const records = nativeLeaseRecords.get(page);
+  if (!records) return;
+  if (records.reads.length === 32) throw new Error('Native complete-read evidence exceeded32');
+  records.reads.push({
+    filename,
+    bytes: bytes.length,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    at: Date.now(),
+  });
+  await test.info().attach(`native-complete-read-${records.reads.length}-${filename}`, {
+    body: bytes,
+    contentType: filename.endsWith('.csv') ? 'text/csv' : 'application/json',
+  });
+}
+test.beforeEach(async ({ page }, info) => {
+  if (!leaseCase(info.title)) return;
+  const records = { requests: [], downloads: [], reads: [] } as NonNullable<
+    ReturnType<typeof nativeLeaseRecords.get>
+  >;
+  nativeLeaseRecords.set(page, records);
+  page.on('download', (download) => {
+    if (records.downloads.length === 32) throw new Error('Native download evidence exceeded32');
+    records.downloads.push({ filename: download.suggestedFilename(), at: Date.now() });
+  });
+  await page.addInitScript(() => {
+    const evidence = (window.nativeLease = { posts: [], dispatches: [] } as Window['nativeLease']);
+    Worker.prototype.postMessage = new Proxy(Worker.prototype.postMessage, {
+      apply(post, worker, args) {
+        const result = Reflect.apply(post, worker, args),
+          command = args[0];
+        if (command?.type === 'save' || command?.type === 'export-measurements') {
+          if (evidence.posts.length === 32) throw new Error('Native post evidence exceeded32');
+          evidence.posts.push({
+            stream: command.type === 'save' ? 'save' : 'measurement',
+            requestId: command.requestId,
+            runId: command.runId,
+            at: Date.now(),
+            monotonicMs: performance.now(),
+          });
+        }
+        return result;
+      },
+    });
+    document.addEventListener(
+      'click',
+      (event) => {
+        const link = event.target;
+        if (!(link instanceof HTMLAnchorElement) || !link.href.startsWith('blob:')) return;
+        const stream = link.download.startsWith('evolab-world-')
+          ? 'save'
+          : link.download.startsWith('evolab-measurements-')
+            ? 'measurement'
+            : null;
+        if (!stream) return;
+        if (evidence.dispatches.length === 32)
+          throw new Error('Native dispatch evidence exceeded32');
+        const posted = evidence.posts.findLast((entry) => entry.stream === stream);
+        evidence.dispatches.push({
+          stream,
+          requestId: posted?.requestId ?? -1,
+          filename: link.download,
+          at: Date.now(),
+          monotonicMs: performance.now(),
+        });
+      },
+      true,
+    );
+  });
+});
+test.afterEach(async ({ page }, info) => {
+  const records = nativeLeaseRecords.get(page);
+  if (!records) return;
+  const browser = await page.evaluate(() => window.nativeLease),
+    intervals = ['save', 'measurement'].flatMap((stream) => {
+      const dispatches = browser.dispatches.filter((entry) => entry.stream === stream);
+      return dispatches.slice(1).map((entry, position) => ({
+        stream,
+        fromRequest: dispatches[position].requestId,
+        toRequest: entry.requestId,
+        milliseconds: entry.monotonicMs - dispatches[position].monotonicMs,
+      }));
+    });
+  await info.attach('native-download-lease-times.json', {
+    contentType: 'application/json',
+    body: JSON.stringify({
+      browser,
+      driver: records,
+      intervals,
+      naturalLeaseMilliseconds: 1000,
+      qualification:
+        'Observed real native posts, blob-link dispatches, driver downloads and complete stream reads. Independent-stream intervals can overlap other work; these are not additional serial idle waits.',
+    }),
+  });
+  expect(browser.dispatches.length).toBe(records.downloads.length);
+  expect(records.reads.length).toBe(records.downloads.length);
+  expect(records.requests.length).toBe(records.reads.length);
+  for (const entry of browser.dispatches) {
+    expect(entry.requestId).toBeGreaterThan(0);
+    expect(
+      browser.posts.some(
+        (posted) => posted.requestId === entry.requestId && posted.stream === entry.stream,
+      ),
+    ).toBe(true);
+  }
+  nativeLeaseRecords.delete(page);
+});
 
 async function observeTerrainNative(
   page: import('@playwright/test').Page,
@@ -226,27 +374,41 @@ async function observeTerrainNative(
   }, pauseAt);
 }
 
-async function terrainNativeFrame(page: import('@playwright/test').Page) {
+async function terrainNativeFrame(page: import('@playwright/test').Page, recoveryRun?: number) {
   await expect
     .poll(() =>
-      page.evaluate(() => {
+      page.evaluate((recoveryRun) => {
         const evidence = window.terrainNative,
-          lifecycle = evidence.lifecycle.at(-1);
+          lifecycle = evidence.lifecycle.at(-1),
+          acknowledged =
+            recoveryRun === undefined
+              ? typeof lifecycle?.pauseAcknowledgedSequence === 'number'
+              : evidence.errors.some(
+                  (error) =>
+                    error.operation === 'load' &&
+                    error.runId === recoveryRun &&
+                    error.recovery?.playback.paused,
+                );
         return (
           !!evidence.frame &&
-          evidence.frameRunId === lifecycle?.runId &&
-          typeof lifecycle?.pauseAcknowledgedSequence === 'number' &&
+          evidence.frameRunId === (recoveryRun ?? lifecycle?.runId) &&
+          acknowledged &&
           evidence.playback?.paused &&
           document.getElementById('run-state')?.textContent === 'PAUSED'
         );
-      }),
+      }, recoveryRun),
     )
     .toBe(true);
   return page.evaluate(() => {
     const evidence = window.terrainNative,
       frame = evidence.frame!;
     return {
-      frame: { ...frame, cells: Array.from(frame.cells), ids: Array.from(frame.ids) },
+      frame: {
+        ...frame,
+        cells: Array.from(frame.cells),
+        ids: Array.from(frame.ids),
+        thermalRefuges: { ...frame.thermalRefuges, units: Array.from(frame.thermalRefuges.units) },
+      },
       selected: evidence.selected,
       playback: evidence.playback,
     };
@@ -268,7 +430,12 @@ function expectReceiptDrivenTerrainPauses(lifecycle: Window['terrainNative']['li
 
 function terrainExpectedFrame(world: Ecosystem) {
   const frame = world.frame();
-  return { ...frame, cells: Array.from(frame.cells), ids: Array.from(frame.ids) };
+  return {
+    ...frame,
+    cells: Array.from(frame.cells),
+    ids: Array.from(frame.ids),
+    thermalRefuges: { ...frame.thermalRefuges, units: Array.from(frame.thermalRefuges.units) },
+  };
 }
 
 async function terrainSave(
@@ -428,7 +595,7 @@ test('terrain whole-world actions preserve wrapped life, food, selection, pins a
   );
   const csv = decodeDownloadedCsv(await downloadMeasurements(page, 'csv'));
   expect(csv).toEqual(json);
-  expect(json.version).toBe(2);
+  expect(json.version).toBe(3);
   expect(json.snapshot.terrain).toEqual(reference.terrain);
   expect(json.interventions).toEqual(reference.save().interventions);
 });
@@ -751,6 +918,9 @@ for (const operation of [
   'shock',
   'clear-walls',
   'regenerate-walls',
+  'refuge-mode',
+  'paint-refuge',
+  'clear-refuges',
 ]) {
   test(`native post-success ${operation} publication fault preserves applied state and unrelated owners until explicit recovery`, async ({
     page,
@@ -827,6 +997,11 @@ for (const operation of [
       reference = new Ecosystem(DEFAULTS, false);
       advance(reference, 61);
       if (operation === 'clear-walls') reference.walls[index(200, 100)] = 1;
+      if (operation === 'paint-refuge' || operation === 'clear-refuges') {
+        reference.changeRefugeMode(true);
+        if (operation === 'clear-refuges')
+          reference.paintRefuge({ rulesVersion: 1, tool: 'warm', radius: 0, units: 4 }, 1, 1);
+      }
       await importTelemetryWorld(page, reference.save());
       expect(await downloadPausedWorld(page)).toEqual(
         Buffer.from(JSON.stringify(reference.save())),
@@ -842,7 +1017,9 @@ for (const operation of [
         input.dispatchEvent(new Event('input'));
       });
       reference.changeSettings({ mutation: 0.2 });
-      await page.getByRole('button', { name: 'Food', exact: true }).click();
+      await page
+        .getByRole('button', { name: operation === 'paint-refuge' ? 'Warm' : 'Food', exact: true })
+        .click();
       await page.locator('#brush').evaluate((input: HTMLInputElement) => {
         input.value = '0';
         input.dispatchEvent(new Event('input'));
@@ -850,15 +1027,17 @@ for (const operation of [
       const first = await coordinate(page, 1, 1);
       await page.mouse.move(first.x, first.y);
       await page.mouse.down();
-      referenceManualPaint(reference, 'food', 1, 1, 0, founder(0));
-      if (operation !== 'paint') await page.mouse.up();
+      if (operation === 'paint-refuge')
+        reference.paintRefuge({ rulesVersion: 1, tool: 'warm', radius: 0, units: 4 }, 1, 1);
+      else referenceManualPaint(reference, 'food', 1, 1, 0, founder(0));
+      if (operation !== 'paint' && operation !== 'paint-refuge') await page.mouse.up();
       await expect(page.locator('#notice')).not.toContainText('Worker capacity busy');
       await page.evaluate(() => window.publicationFault.arm());
       held = await page.evaluate(() => {
         window.measurementGate.deliveryBlocked = false;
         return [...window.measurementGate.pending];
       });
-      expect(held.length).toBe(operation === 'paint' ? 5 : 6);
+      expect(held.length).toBe(operation === 'paint' || operation === 'paint-refuge' ? 5 : 6);
       if (operation === 'start') {
         await page.getByText('World settings', { exact: true }).click();
         await page.locator('#reset').click();
@@ -890,6 +1069,22 @@ for (const operation of [
             after: { offset: reference.eventOffset, until: reference.eventUntil },
           },
         });
+      } else if (operation === 'refuge-mode') {
+        await page.locator('#refuge-enabled').click();
+        reference.changeRefugeMode(true);
+      } else if (operation === 'clear-refuges') {
+        await page.locator('#clear-refuges').click();
+        reference.clearRefuges();
+      } else if (operation === 'paint-refuge') {
+        const next = await coordinate(page, 2, 1);
+        await page.mouse.move(next.x, next.y);
+        reference.paintRefuge(
+          { rulesVersion: 1, tool: 'warm', radius: 0, units: 4 },
+          2,
+          1,
+          reference.interventions.entries.at(-1)!.sequence,
+        );
+        await page.mouse.up();
       } else if (operation === 'clear-walls' || operation === 'regenerate-walls') {
         await page.getByText('World settings', { exact: true }).click();
         await page.locator(`#${operation}`).click();
@@ -1065,7 +1260,7 @@ test('literal v3 telemetry migrates through the file input and real worker befor
   const migratedBytes = await downloadPausedWorld(page),
     migrated = JSON.parse(migratedBytes.toString()) as WorldFile;
   expect(migrated).toEqual(expected());
-  expect(migrated.version).toBe(6);
+  expect(migrated.version).toBe(7);
   expect(migrated.telemetry.version).toBe(2);
   expect(migrated.telemetry.originTick).toBe(fixture.telemetry.originTick);
   expect(migrated.telemetry.adaptationOriginTick).toBe(65);
@@ -1792,15 +1987,19 @@ async function coordinate(
   );
 }
 async function downloadWorld(page: import('@playwright/test').Page): Promise<Buffer> {
+  leaseRequest(page, 'save');
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Save world' }).click();
   const download = await downloadPromise,
     stream = await download.createReadStream(),
     chunks: Buffer[] = [];
   for await (const chunk of stream) chunks.push(chunk);
-  return Buffer.concat(chunks);
+  const bytes = Buffer.concat(chunks);
+  await leaseRead(page, download.suggestedFilename(), bytes);
+  return bytes;
 }
 async function downloadMeasurements(page: import('@playwright/test').Page, format: 'json' | 'csv') {
+  leaseRequest(page, 'measurement');
   const pending = page.waitForEvent('download');
   await page.locator(`#measurements-${format}`).click();
   const download = await pending,
@@ -1808,6 +2007,7 @@ async function downloadMeasurements(page: import('@playwright/test').Page, forma
     chunks: Buffer[] = [];
   for await (const chunk of stream) chunks.push(chunk);
   const bytes = Buffer.concat(chunks);
+  await leaseRead(page, download.suggestedFilename(), bytes);
   expect(download.suggestedFilename()).toMatch(
     new RegExp(`^evolab-measurements-\\d+-tick-\\d+\\.${format}$`),
   );
@@ -2322,7 +2522,7 @@ test('D9-A10 native file reads stay single-owner through cancellation, reset and
     contentType: 'application/json',
   });
 });
-for (const version of [2, 3, 4, 5, 6] as const) {
+for (const version of [2, 3, 4, 5, 6, 7] as const) {
   test(`measurement bytes preserve genuine world${version} migration,180 samples and truthful manual windows`, async ({
     page,
   }) => {
@@ -2330,12 +2530,18 @@ for (const version of [2, 3, 4, 5, 6] as const) {
     for (let entry = 0; entry < 130; entry++)
       world.changeSettings({ nutrients: entry % 2 ? 0 : 1 });
     world.changeSettings({ climate: -0 });
+    if (version === 7) {
+      world.changeRefugeMode(true);
+      world.paintRefuge({ rulesVersion: 1, tool: 'cool', radius: 1, units: -4 }, 0, 0);
+      world.changeRefugeMode(false);
+    }
     const current = world.save();
     (current.settings as any).retainedExtension = '=literal,"λ\r\n@formula';
     const {
       telemetry: _telemetry,
       interventions: _interventions,
       terrain: _terrain,
+      thermalRefuges: _thermalRefuges,
       ...ecology
     } = current;
     const candidate =
@@ -2347,10 +2553,13 @@ for (const version of [2, 3, 4, 5, 6] as const) {
             ? legacyV4(current)
             : version === 5
               ? legacyV5(current)
-              : current;
+              : version === 6
+                ? legacyV6(current)
+                : current;
     expect(candidate.version).toBe(version);
     expect('interventions' in candidate).toBe(version >= 5);
-    expect('terrain' in candidate).toBe(version === 6);
+    expect('terrain' in candidate).toBe(version >= 6);
+    expect('thermalRefuges' in candidate).toBe(version === 7);
     const text = JSON.stringify(candidate).replace(/"climate":0(?=[,}])/g, '"climate":-0'),
       reference = Ecosystem.load(text),
       expected = reference.save();
@@ -2382,7 +2591,9 @@ for (const version of [2, 3, 4, 5, 6] as const) {
       coverage: 'applied-portions-only',
     });
     expect(json.windows.settings.unknownEvictedPrefix).toBe(version >= 5);
-    expect(json.version).toBe(2);
+    expect(json.version).toBe(3);
+    expect(json.rules.version).toBe(2);
+    expect(json.snapshot.thermalRefuges).toEqual(refugeSummary(reference.thermalRefuges));
     expect(json.snapshot.terrain).toEqual(DEFAULT_TERRAIN);
     for (const view of ['population', 'food', 'adaptation'])
       await page.locator('#telemetry-view').selectOption(view);
@@ -3552,7 +3763,7 @@ test.describe('pause on total extinction', () => {
     const expected = reference.save();
     await expect(page.getByRole('button', { name: 'Save world' })).toBeDisabled();
     await page.evaluate('window.recoveryDelivery.release()');
-    await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5 or 6');
+    await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5, 6 or 7');
     await expect(page.locator('#nutrients')).toHaveValue('7');
     await expect(page.locator('#nutrients-value')).toHaveText('7%');
     await expect(page.locator('#mutation-value')).toHaveText('37%');
@@ -3667,7 +3878,7 @@ for (const terminalTick of [90, 91]) {
       expect(populations).toHaveLength(3);
       await expectPopulationChart(page, populations);
       await importWorld(page, { ...terminal, version: 99 } as unknown as WorldFile);
-      await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5 or 6');
+      await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5, 6 or 7');
       expect(await readWorld(page)).toEqual(terminal);
       await expectPopulationChart(page, populations);
       await page.waitForTimeout(160);
@@ -3780,7 +3991,7 @@ test('restores real worker telemetry, renders its population projection and down
   expect(frame.telemetry).toEqual(before);
   const downloaded = JSON.parse((await downloadWorld(page)).toString());
   expect(downloaded.telemetry).toEqual(before);
-  expect(downloaded.version).toBe(6);
+  expect(downloaded.version).toBe(7);
   expect(downloaded.telemetry.version).toBe(2);
   expect(downloaded.telemetry.intervalTicks).toBe(30);
   const restored = Ecosystem.load(JSON.stringify(downloaded));
@@ -4012,7 +4223,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   await expect(page.locator('[data-shock="bloom"]')).toHaveCount(0);
   const saved = await downloadWorld(page),
     world = JSON.parse(saved.toString());
-  expect(world.version).toBe(6);
+  expect(world.version).toBe(7);
   expect(world.organisms.length).toBeGreaterThan(1);
   const o = world.organisms[0],
     c = o.genome.cells[0];
@@ -4115,4 +4326,733 @@ test('designer, world tools, camera, shortcuts and invalid saves behave in Chrom
         .evaluateAll((buttons) => buttons.every((b) => b.scrollWidth <= b.clientWidth)),
     ).toBe(true);
   }
+});
+
+async function refugeLoad(page: import('@playwright/test').Page, text: string): Promise<number> {
+  const before = await page.evaluate(() => window.terrainNative.lifecycle.length);
+  await page.locator('#file').setInputFiles({
+    name: 'original-refuge-fixture.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(text),
+  });
+  await expect
+    .poll(() => page.evaluate(() => window.terrainNative.lifecycle.length))
+    .toBeGreaterThan(before);
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const native = window.terrainNative,
+          latest = native.lifecycle.at(-1);
+        return (
+          native.frameRunId === latest?.runId &&
+          !!latest?.pauseAcknowledgedSequence &&
+          native.playback?.paused
+        );
+      }),
+    )
+    .toBe(true);
+  await test
+    .info()
+    .attach('original-input.json', { body: Buffer.from(text), contentType: 'application/json' });
+  return page.evaluate(() => window.terrainNative.frame!.stats.tick);
+}
+
+async function refugeControls(page: import('@playwright/test').Page, radius = 0, intensity = 4) {
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  for (const [id, value] of [
+    ['brush', radius],
+    ['refuge-intensity', intensity],
+  ] as const)
+    await page.locator(`#${id}`).evaluate((input: HTMLInputElement, value) => {
+      input.value = String(value);
+      input.dispatchEvent(new Event('input'));
+    }, value);
+}
+
+async function refugeMode(page: import('@playwright/test').Page, enabled: boolean) {
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  if ((await page.locator('#refuge-enabled').isChecked()) !== enabled)
+    await page.locator('#refuge-enabled').click();
+  await expect(page.locator('#refuge-enabled')).toBeChecked({ checked: enabled });
+  await expect
+    .poll(() => page.evaluate(() => window.terrainNative.frame?.thermalRefuges.enabled))
+    .toBe(enabled);
+}
+
+async function refugePaint(
+  page: import('@playwright/test').Page,
+  tool: 'warm' | 'cool' | 'erase-temperature',
+  x: number,
+  y: number,
+  zoom = 1,
+) {
+  const previous = await page.evaluate(() => window.terrainNative.manual?.commandId ?? 0);
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  await page.locator(`button[data-tool="${tool}"]`).click();
+  await page.locator('#world').scrollIntoViewIfNeeded();
+  const anchor = await page.locator('#world').evaluate(
+    (canvas: HTMLCanvasElement, point) => {
+      const rect = canvas.getBoundingClientRect(),
+        scale = Math.min(canvas.clientWidth / 240, canvas.clientHeight / 156) * point.zoom;
+      return {
+        x: rect.left + (canvas.clientWidth - 240 * scale) / 2 + (point.x + 0.5) * scale,
+        y: rect.top + (canvas.clientHeight - 156 * scale) / 2 + (point.y + 0.5) * scale,
+      };
+    },
+    { x, y, zoom },
+  );
+  await page.mouse.click(anchor.x, anchor.y);
+  // The ordinary end-stroke receipt follows the paint result and any frame
+  // on the same native FIFO channel, including rejected/no-op dabs.
+  await expect
+    .poll(() =>
+      page.evaluate((previous) => {
+        const terminal = window.terrainNative.manual;
+        return terminal?.operation === 'end-stroke' && terminal.commandId > previous;
+      }, previous),
+    )
+    .toBe(true);
+}
+
+async function refugeProtocol(page: import('@playwright/test').Page, receiptDriven = true) {
+  const evidence = await page.evaluate(() => ({
+    lifecycle: window.terrainNative.lifecycle,
+    errors: window.terrainNative.errors,
+    saved: window.terrainNative.saved,
+    fifoPauses: window.terrainNative.fifoPauses,
+  }));
+  if (receiptDriven) expectReceiptDrivenTerrainPauses(evidence.lifecycle);
+  else {
+    expect(evidence.fifoPauses).toBeGreaterThan(0);
+    for (const receipt of evidence.lifecycle) {
+      expect(receipt.pausePostedSequence!).toBeLessThan(receipt.receivedSequence);
+      expect(receipt.pauseAcknowledgedSequence).not.toBeNull();
+      expect(receipt.completedTick).toBe(0);
+    }
+  }
+  await test.info().attach('native-refuge-protocol.json', {
+    body: JSON.stringify(evidence),
+    contentType: 'application/json',
+  });
+}
+
+test('B23-1 opt-in empty field retains the complete original climate trajectory through native Save/reload/Step', async ({
+  page,
+}) => {
+  await observeTerrainNative(page, 'lifecycle-receipt');
+  await page.goto('/');
+  await terrainNativeFrame(page);
+  await expect(page.locator('#refuge-enabled')).not.toBeChecked();
+  const original = fixtureText('capture-attempt3/inputs/seed-42-porous-ridges.json'),
+    reference = acceptedReference(original);
+  const initialTick = (await terrainNativeFrame(page)).frame.stats.tick;
+  while (reference.tick < initialTick) reference.step();
+  await refugeMode(page, true);
+  const first = await terrainSave(page, 'neutral-enabled.json');
+  expect(first.thermalRefuges).toEqual({ version: 1, enabled: true, cells: [] });
+  expect(first.interventions.entries).toEqual([
+    {
+      sequence: 1,
+      origin: 'manual',
+      kind: 'refuge-mode',
+      firstTick: initialTick,
+      lastTick: initialTick,
+      detail: { rulesVersion: 1, before: false, after: true },
+    },
+  ]);
+  const compare = (saved: WorldFile) => {
+    while (reference.tick < saved.tick) reference.step();
+    const { thermalRefuges: _field, ...retained } = saved;
+    expect({ ...retained, version: 6, interventions: reference.save().interventions }).toEqual(
+      reference.save(),
+    );
+  };
+  compare(first);
+  await refugeLoad(page, JSON.stringify(first));
+  await page.locator('#step').click();
+  const second = await terrainSave(page, 'neutral-reloaded-step.json');
+  compare(second);
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  await page.locator('#thermal').click();
+  await page.locator('#zoom-in').click();
+  await page.locator('#zoom-out').click();
+  await page.locator('#step').click();
+  const third = await terrainSave(page, 'neutral-view-step.json');
+  compare(third);
+  expect(third.interventions).toEqual(first.interventions);
+  await refugeProtocol(page);
+});
+
+function controlledRefuge(name: string, units: number) {
+  const original = fixtureText(`capture-attempt3/inputs/${name}.json`),
+    reference = acceptedReference(original),
+    saved = JSON.parse(original);
+  const current = {
+    ...saved,
+    version: 7,
+    thermalRefuges: { version: 1, enabled: true, cells: [[index(120, 78), units]] },
+    interventions: { ...saved.interventions, version: 3 },
+  };
+  const metabolic = JSON.parse(original);
+  metabolic.eventOffset = units / 100;
+  metabolic.eventUntil = 900;
+  return { original, current, reference, metabolic: acceptedReference(JSON.stringify(metabolic)) };
+}
+
+test('B23-2 signed thermal arms pay actual energy for first-tick funded birth, not metric-only preference', async ({
+  page,
+}) => {
+  await observeTerrainNative(page);
+  await page.goto('/');
+  await terrainNativeFrame(page);
+  for (const units of [25, -25]) {
+    const control = controlledRefuge('threshold-0.75-open', units);
+    expect(await refugeLoad(page, JSON.stringify(control.current))).toBe(0);
+    await page.locator('#step').click();
+    control.metabolic.step();
+    const saved = await terrainSave(page, `funded-${units}.json`),
+      old = control.metabolic.save();
+    expect(saved.births).toBe(units === 25 ? 1 : 0);
+    expect(saved.organisms[0].children).toBe(units === 25 ? 1 : 0);
+    expect(saved.telemetry.pending.energy.offspringGranted).toBe(units === 25 ? 10.5 : 0);
+    expect(predecessor(saved)).toEqual({ ...old, eventOffset: 0, eventUntil: 0 });
+  }
+  await refugeProtocol(page, false);
+});
+
+test('B23-3 wrapped additive manual dabs share camera coordinates and never edit life, food or walls at command time', async ({
+  page,
+}) => {
+  await observeTerrainNative(page, 'lifecycle-receipt');
+  await page.goto('/');
+  await terrainNativeFrame(page);
+  const original = JSON.parse(fixtureText('capture-attempt3/inputs/threshold-0.75-open.json'));
+  original.organisms[0].x = 239;
+  original.organisms[0].y = 155;
+  original.organisms[0].rotation = 1;
+  original.food = [index(10, 10)];
+  original.walls = [index(4, 4)];
+  const reference = Ecosystem.load(JSON.stringify(original));
+  advance(reference, await refugeLoad(page, JSON.stringify(original)));
+  const before = await terrainSave(page, 'wrapped-before.json');
+  expect(before).toEqual(reference.save());
+  await refugeControls(page, 1, 25);
+  await refugeMode(page, true);
+  reference.changeRefugeMode(true);
+  await page.locator('#zoom-out').click();
+  for (const tool of ['warm', 'warm', 'cool', 'erase-temperature'] as const) {
+    await refugePaint(page, tool, 0, 0, 1 / 1.4);
+    reference.paintRefuge(
+      { rulesVersion: 1, tool, units: tool === 'warm' ? 25 : tool === 'cool' ? -25 : 0, radius: 1 },
+      0,
+      0,
+    );
+    expect((await terrainNativeFrame(page)).frame).toEqual(terrainExpectedFrame(reference));
+  }
+  await refugePaint(page, 'warm', 0, 0, 1 / 1.4);
+  reference.paintRefuge({ rulesVersion: 1, tool: 'warm', units: 25, radius: 1 }, 0, 0);
+  expect(reference.thermalRefuges.units[index(-1, 0)]).toBe(25);
+  await refugeMode(page, false);
+  reference.changeRefugeMode(false);
+  await expect(page.locator('#refuge-summary')).toContainText('Disabled · stored paint');
+  await refugeMode(page, true);
+  reference.changeRefugeMode(true);
+  await page.locator('#clear-refuges').click();
+  reference.clearRefuges();
+  const after = await terrainSave(page, 'wrapped-after.json');
+  expect(after).toEqual(reference.save());
+  expect({
+    ...after,
+    thermalRefuges: before.thermalRefuges,
+    interventions: before.interventions,
+  }).toEqual(before);
+  await refugeProtocol(page);
+});
+
+test('B23-4 capacity and late-load rejection preserve full state while stale manual owners drain across replacement', async ({
+  page,
+}) => {
+  await observeMeasurementOwnership(page);
+  await observeTerrainNative(page, 'lifecycle-receipt');
+  await page.goto('/');
+  await terrainNativeFrame(page);
+  const original = JSON.parse(fixtureText('capture-attempt3/inputs/threshold-0.75-open.json'));
+  const candidate = {
+      ...original,
+      version: 7,
+      thermalRefuges: {
+        version: 1,
+        enabled: true,
+        cells: Array.from({ length: 4096 }, (_, position) => [position, 32]),
+      },
+      interventions: { ...original.interventions, version: 3 },
+    },
+    text = JSON.stringify(candidate),
+    reference = Ecosystem.load(text);
+  advance(reference, await refugeLoad(page, text));
+  await refugeSelected(page);
+  const before = await terrainSave(page, 'capacity-before.json');
+  expect(before).toEqual(reference.save());
+  await refugeControls(page, 8, 4);
+  await refugePaint(page, 'warm', 120, 78);
+  await expect(page.locator('#notice')).toContainText('capacity');
+  const bad = structuredClone(candidate);
+  bad.thermalRefuges.cells[4095][1] = 33;
+  await page.locator('#file').setInputFiles({
+    name: 'late-malformed-field.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(bad)),
+  });
+  await expect(page.locator('#notice')).toContainText('Invalid painted temperature cell');
+  const recoveryRun = await page.evaluate(() => window.terrainNative.errors.at(-1).runId);
+  const retained = await terrainSave(page, 'capacity-recovered.json');
+  expect(retained).toEqual(before);
+  await expect.poll(() => page.evaluate(() => window.terrainNative.selected?.id)).toBe(1);
+  await page.locator('#step').click();
+  reference.step();
+  await expect(page.locator('#tick')).toHaveText(`TICK ${reference.tick.toLocaleString()}`);
+  expect((await terrainNativeFrame(page, recoveryRun)).frame).toEqual(
+    terrainExpectedFrame(reference),
+  );
+  await page.evaluate(() => {
+    window.measurementGate.deliveryBlocked = true;
+  });
+  try {
+    await refugeMode(page, false);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            [...window.measurementGate.pending.values()].filter(
+              (owner: any) => owner.operation === 'refuge-mode',
+            ).length,
+        ),
+      )
+      .toBe(1);
+    const replacement = Ecosystem.load(text),
+      tick = await refugeLoad(page, text);
+    advance(replacement, tick);
+    await page.evaluate(() => window.measurementGate.releaseResults());
+    await expect(page.locator('#refuge-enabled')).toBeChecked();
+    await page.locator('#step').click();
+    replacement.step();
+    const final = await terrainSave(page, 'capacity-new-run-step.json');
+    expect(final).toEqual(replacement.save());
+    expect(final.thermalRefuges.enabled).toBe(true);
+    await expect.poll(() => page.evaluate(() => window.measurementGate.pending.size)).toBe(0);
+  } finally {
+    await page.evaluate(() => window.measurementGate.releaseResults());
+  }
+  const successful = await page.evaluate(() => window.terrainNative.lifecycle);
+  expectReceiptDrivenTerrainPauses(successful);
+  await test.info().attach('capacity-owner-recovery.json', {
+    body: JSON.stringify({ successful, completeRetainedSave: true, capacity: 4096 }),
+    contentType: 'application/json',
+  });
+});
+
+test('B23-5 authoritative anchor temperature determines real survival, body food and extinction without rescue', async ({
+  page,
+}) => {
+  await observeTerrainNative(page);
+  await page.addInitScript(() => {
+    window.refugePixels = null;
+    const put = CanvasRenderingContext2D.prototype.putImageData;
+    CanvasRenderingContext2D.prototype.putImageData = function (...args) {
+      const result = Reflect.apply(put, this, args),
+        pixels = args[0],
+        frame = window.terrainNative?.frame;
+      if (pixels.width === 240 && pixels.height === 156 && frame)
+        window.refugePixels = {
+          tick: frame.stats.tick,
+          climate: frame.climate,
+          offset: frame.offset,
+          colors: [0, 78 * 240 + 120, 78 * 240 + 121, 37439].map((position) =>
+            Array.from(pixels.data.slice(position * 4, position * 4 + 4)),
+          ),
+        };
+      return result;
+    };
+  });
+  await page.goto('/');
+  await terrainNativeFrame(page);
+  for (const units of [25, -25]) {
+    const control = controlledRefuge('armor-survival', units);
+    // The adjacent empty painted cell exposes the same thermal rule through
+    // the real Canvas path while the occupied anchor retains its anatomy color.
+    control.current.thermalRefuges.cells.push([index(121, 78), units]);
+    expect(await refugeLoad(page, JSON.stringify(control.current))).toBe(0);
+    await page.locator('#step').click();
+    control.metabolic.step();
+    const saved = await terrainSave(page, `survival-${units}.json`);
+    expect(predecessor(saved)).toEqual({
+      ...control.metabolic.save(),
+      eventOffset: 0,
+      eventUntil: 0,
+    });
+    expect(saved.organisms.length).toBe(units === 25 ? 1 : 0);
+    expect(saved.deaths).toBe(units === 25 ? 0 : 1);
+    expect(saved.telemetry.pending.deaths.energy).toBe(units === 25 ? 0 : 1);
+    if (units === 25) {
+      await page.getByRole('button', { name: 'Inspect', exact: true }).click();
+      const anchor = await coordinate(page, 120, 78);
+      await page.mouse.click(anchor.x, anchor.y);
+      await expect(page.locator('#inspector')).toContainText('0.75');
+      await expect(page.locator('#inspector')).toContainText('+0.25 (25 units)');
+      const native = await terrainNativeFrame(page),
+        expected = localTemperature(120, 78, saved.tick, saved.settings.climate, 0, {
+          version: 1,
+          enabled: true,
+          units: Int8Array.from({ length: WIDTH * HEIGHT }, (_, position) =>
+            position === index(120, 78) ? 25 : 0,
+          ),
+        });
+      expect(expected).toBe(0.75);
+      expect(native.selected.energy).toBe(0.05 - 0.012);
+      await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+      // Add drift and a real heatwave at the paused command tick. This changes
+      // the environment without retroactively spending energy or making samples.
+      await terrainSettings(page);
+      await page.locator('#climate').fill('1');
+      await page.getByRole('button', { name: 'Heatwave', exact: true }).click();
+      await expect
+        .poll(() =>
+          page.evaluate(() => [
+            window.terrainNative.frame?.climate,
+            window.terrainNative.frame?.offset,
+          ]),
+        )
+        .toEqual([1, 0.32]);
+      const common = (await terrainNativeFrame(page)).frame;
+      expect(common.stats.tick).toBe(saved.tick);
+      expect(common.telemetry).toEqual(saved.telemetry);
+      const independentTemperature = (x: number, y: number, localUnits: number) => {
+        const raw =
+          0.5 +
+          common.climate *
+            (0.27 * Math.sin((x / WIDTH) * Math.PI * 2 - common.stats.tick / 1100) +
+              0.13 * Math.cos((y / HEIGHT) * Math.PI * 2) +
+              0.12 * Math.sin(common.stats.tick / 650)) +
+          common.offset;
+        return Math.max(0, Math.min(1, raw + localUnits / 100));
+      };
+      const anchorTemperature = independentTemperature(120, 78, units);
+      await expect(
+        page
+          .locator('#inspector dt')
+          .filter({ hasText: /^Normalized anchor temperature$/ })
+          .locator('..')
+          .locator('dd'),
+      ).toHaveText(String(anchorTemperature));
+      await page.locator('#thermal').click();
+      await expect(page.locator('#thermal')).toHaveAttribute('aria-pressed', 'true');
+      const expectedColors = [
+        [0, 0, 0],
+        [121, 78, units],
+        [239, 155, 0],
+      ].map(([x, y, localUnits]) => {
+        const value = independentTemperature(x, y, localUnits);
+        return [
+          Math.round(9 + value * 37),
+          Math.round(18 + (1 - Math.abs(value - 0.5) * 2) * 13),
+          Math.round(20 + (1 - value) * 40),
+          255,
+        ];
+      });
+      await expect
+        .poll(() => page.evaluate(() => window.refugePixels))
+        .toEqual({
+          tick: saved.tick,
+          climate: 1,
+          offset: 0.32,
+          colors: [
+            expectedColors[0],
+            [0xa3, 0x8a, 0xe4, 255],
+            expectedColors[1],
+            expectedColors[2],
+          ],
+        });
+      await test.info().attach('common-frame-thermal-authority.json', {
+        body: JSON.stringify({
+          tick: common.stats.tick,
+          climate: common.climate,
+          eventOffset: common.offset,
+          units,
+          anchorTemperature,
+          pixels: await page.evaluate(() => window.refugePixels),
+        }),
+        contentType: 'application/json',
+      });
+    } else {
+      expect(saved.food).toEqual([index(120, 78)]);
+      await expect(page.locator('#extinction-summary')).toContainText('energy exhaustion');
+      await expect(page.locator('#run-state')).toHaveText('PAUSED');
+      await page.locator('#pause-on-extinction').uncheck();
+      await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    }
+  }
+  await refugeProtocol(page, false);
+});
+
+function refugeGraph(value: any): object {
+  const pending: any[] = [],
+    nodes: object[] = [];
+  function atom(item: any): object {
+    if (item === null) return { kind: 'null' };
+    if (typeof item !== 'object')
+      return {
+        kind: typeof item,
+        value: typeof item === 'number' ? (Object.is(item, -0) ? '-0' : String(item)) : item,
+      };
+    const id = pending.length;
+    pending.push(item);
+    return { kind: 'reference', id };
+  }
+  const root = atom(value);
+  for (let position = 0; position < pending.length; position++) {
+    const item = pending[position];
+    nodes.push({
+      id: position,
+      array: Array.isArray(item),
+      prototype:
+        Object.getPrototypeOf(item) === (Array.isArray(item) ? Array.prototype : Object.prototype)
+          ? 'ordinary'
+          : Object.getPrototypeOf(item) === null
+            ? 'null'
+            : 'other',
+      entries: Object.getOwnPropertyNames(item).map((key) => {
+        const descriptor = Object.getOwnPropertyDescriptor(item, key)!;
+        return {
+          key,
+          enumerable: descriptor.enumerable,
+          writable: descriptor.writable,
+          configurable: descriptor.configurable,
+          value: atom(descriptor.value),
+        };
+      }),
+    });
+  }
+  return { root, nodes };
+}
+
+async function refugeSelected(page: import('@playwright/test').Page) {
+  await page.getByRole('button', { name: 'Inspect', exact: true }).click();
+  const anchor = await coordinate(page, 120, 78);
+  await page.mouse.click(anchor.x, anchor.y);
+  await expect.poll(() => page.evaluate(() => window.terrainNative.selected?.id)).toBe(1);
+  return page.evaluate((encoder) => {
+    const encode = Function(`return (${encoder})`)();
+    return encode(window.terrainNative.selected);
+  }, refugeGraph.toString());
+}
+
+test('B23-6 complete direct raw families, deepest common native path, current reload and cap failure retain original boundaries', async ({
+  page,
+}) => {
+  await observeTerrainNative(page, 'lifecycle-receipt');
+  await page.goto('/');
+  await terrainNativeFrame(page);
+  const raw = fixtureText('native-depth-direct/inputs/desktop-combined-1087.json'),
+    original = acceptedReference(raw);
+  advance(original, await refugeLoad(page, raw));
+  expect(await refugeSelected(page)).toEqual(refugeGraph(original.save().organisms[0]));
+  const rawChecks = await page.evaluate(() =>
+    [
+      window.terrainNative.selected,
+      window.terrainNative.selected.genome,
+      window.terrainNative.selected.genome.cells[0],
+    ].map((value) => ({
+      positive: Object.is(value.positive, Infinity),
+      negative: Object.is(value.negative, -Infinity),
+      signedZero: Object.is(value.negativeZero, -0),
+      ownProto: Object.hasOwn(value, '__proto__'),
+      ordinary: Object.getPrototypeOf(value) === Object.prototype,
+    })),
+  );
+  expect(rawChecks).toEqual(
+    Array.from({ length: 3 }, () => ({
+      positive: true,
+      negative: true,
+      signedZero: true,
+      ownProto: true,
+      ordinary: true,
+    })),
+  );
+  const first = await terrainSave(page, 'direct-deep-first.json');
+  expect(predecessor(first)).toEqual(JSON.parse(JSON.stringify(original.save())));
+  const normalized = acceptedReference(JSON.stringify(original.save())),
+    expected = Ecosystem.load(JSON.stringify(original.save()));
+  advance(normalized, await refugeLoad(page, JSON.stringify(first)));
+  advance(expected, normalized.tick);
+  await refugeMode(page, true);
+  expected.changeRefugeMode(true);
+  expect(await refugeSelected(page)).toEqual(refugeGraph(normalized.save().organisms[0]));
+  const second = await terrainSave(page, 'direct-deep-reloaded.json');
+  expect(second).toEqual(expected.save());
+  await page.locator('#step').click();
+  expected.step();
+  normalized.step();
+  const third = await terrainSave(page, 'direct-deep-step.json');
+  expect(third).toEqual(expected.save());
+  expect(third.organisms).toEqual(normalized.save().organisms);
+  const cap = fixtureText('capture-direct/inputs/native-cap-v5.json'),
+    capReference = acceptedReference(cap);
+  advance(capReference, await refugeLoad(page, cap));
+  const selected = await refugeSelected(page);
+  expect(selected).toEqual(refugeGraph(capReference.save().organisms[0]));
+  let downloads = 0;
+  const record = () => downloads++;
+  page.on('download', record);
+  const before = await page.evaluate(() => ({
+    saved: window.terrainNative.saved,
+    tick: window.terrainNative.frame!.stats.tick,
+    playback: window.terrainNative.playback,
+  }));
+  await page.locator('#save').click();
+  await expect(page.locator('#notice')).toContainText('World file exceeds 2.5 MB');
+  expect(downloads).toBe(0);
+  expect(await page.evaluate(() => window.terrainNative.saved)).toBe(before.saved);
+  expect(await refugeSelected(page)).toEqual(selected);
+  expect(await page.evaluate(() => window.terrainNative.frame!.stats.tick)).toBe(before.tick);
+  expect(await page.evaluate(() => window.terrainNative.errors.at(-1)?.fatal)).toBeUndefined();
+  await page.locator('#step').click();
+  capReference.step();
+  await expect(page.locator('#tick')).toHaveText(`TICK ${capReference.tick.toLocaleString()}`);
+  expect(await refugeSelected(page)).toEqual(refugeGraph(capReference.save().organisms[0]));
+  page.off('download', record);
+  await refugeProtocol(page);
+  await test.info().attach('raw-depth-cap-boundaries.json', {
+    body: JSON.stringify({
+      rawChecks,
+      depth: 1087,
+      capInputBytes: Buffer.byteLength(cap),
+      acceptedReferenceOutputBytes: Buffer.byteLength(JSON.stringify(capReference.save())),
+      nativeOutputBytes: null, // Oversized native output is deliberately not downloaded.
+      downloads,
+      before,
+    }),
+    contentType: 'application/json',
+  });
+  const previousErrors = await page.evaluate(() => window.terrainNative.errors.length);
+  await page.locator('#file').setInputFiles({
+    name: 'original-adjacent-unsupported-1088.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(fixtureText('native-depth-direct/inputs/desktop-combined-1088.json')),
+  });
+  await expect
+    .poll(() => page.evaluate(() => window.terrainNative.errors.length))
+    .toBeGreaterThan(previousErrors);
+  await expect(page.locator('#run-state')).toHaveText('STOPPED');
+  await expect(page.locator('#notice')).toContainText('The action completed');
+  await test.info().attach('original-adjacent-native-limitation.json', {
+    body: JSON.stringify(await page.evaluate(() => window.terrainNative.errors.at(-1))),
+    contentType: 'application/json',
+  });
+});
+
+test('B23-7 manual disclosure, keyboard controls and responsive views preserve the whole paused world', async ({
+  page,
+}) => {
+  const errors: string[] = [],
+    external: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('request', (request) => {
+    if (!new URL(request.url()).hostname.match(/^(127\.0\.0\.1|localhost)$/))
+      external.push(request.url());
+  });
+  await observeTerrainNative(page, 'lifecycle-receipt');
+  await page.goto('/');
+  await terrainNativeFrame(page);
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  await expect(page.locator('.refuge-section')).toContainText('Manual environment change.');
+  await expect(page.locator('.refuge-section')).toContainText('Walls do not insulate temperature.');
+  await page.locator('#refuge-enabled').focus();
+  await page.keyboard.press('Space');
+  await expect(page.locator('#refuge-enabled')).toBeChecked();
+  await refugeControls(page, 0, 4);
+  await page.locator('#refuge-intensity').focus();
+  await page.keyboard.press('End');
+  await expect(page.locator('#refuge-intensity')).toHaveValue('32');
+  await page.getByRole('button', { name: 'Erase temperature', exact: true }).focus();
+  await page.keyboard.press('Space');
+  await expect(page.locator('#refuge-intensity')).toBeDisabled();
+  await page.getByRole('button', { name: 'Warm', exact: true }).focus();
+  await page.keyboard.press('Space');
+  await expect(page.locator('#refuge-intensity')).toBeEnabled();
+  await refugeMode(page, false);
+  const before = await downloadPausedWorld(page),
+    layouts: object[] = [];
+  for (const width of [320, 390, 760, 780, 1024, 1280]) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.locator('#refuge-enabled').focus();
+    await expect(page.locator('#refuge-enabled')).toBeFocused();
+    const layout = await page.locator('.refuge-section').evaluate((section) => ({
+      width: innerWidth,
+      fits: document.documentElement.scrollWidth <= innerWidth,
+      text: section.textContent,
+      contrast: [...section.querySelectorAll('h3,p,label,button:not(:disabled)')].map((node) => {
+        const luminance = (color: string) =>
+          color
+            .match(/[\d.]+/g)!
+            .slice(0, 3)
+            .map(Number)
+            .reduce((sum, channel, position) => {
+              const value = channel / 255;
+              return (
+                sum +
+                (value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4) *
+                  [0.2126, 0.7152, 0.0722][position]
+              );
+            }, 0);
+        let surface: Element | null = node;
+        while (
+          surface &&
+          ['transparent', 'rgba(0, 0, 0, 0)'].includes(getComputedStyle(surface).backgroundColor)
+        )
+          surface = surface.parentElement;
+        if (!surface) throw new Error('No painted refuge-control background');
+        const light = [
+          luminance(getComputedStyle(node).color),
+          luminance(getComputedStyle(surface).backgroundColor),
+        ];
+        return (Math.max(...light) + 0.05) / (Math.min(...light) + 0.05);
+      }),
+      controls: [...section.querySelectorAll('button,input')].map((control) => ({
+        tag: control.tagName,
+        width: control.getBoundingClientRect().width,
+        height: control.getBoundingClientRect().height,
+      })),
+    }));
+    expect(layout.width).toBe(width);
+    expect(layout.fits).toBe(true);
+    expect(layout.contrast.every((ratio) => ratio >= 4.5)).toBe(true);
+    expect(layout.controls.every((control) => control.width > 0)).toBe(true);
+    layouts.push(layout);
+  }
+  await page.locator('#thermal').click();
+  await page.locator('#zoom-in').click();
+  await page.locator('#zoom-out').click();
+  await page.locator('#clear-refuges').focus();
+  await page.keyboard.press('Space');
+  await expect(page.locator('#notice')).toContainText('unchanged');
+  await terrainSettings(page);
+  await page.locator('#reset').click();
+  await expect(page.locator('#reset-dialog')).toContainText(
+    'Painted temperature will be cleared and disabled.',
+  );
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#reset-dialog')).not.toBeVisible();
+  expect(await downloadPausedWorld(page)).toEqual(before);
+  await test.info().attach('refuge-layouts.json', {
+    body: JSON.stringify(layouts),
+    contentType: 'application/json',
+  });
+  await test.info().attach('refuge-responsive.png', {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: 'image/png',
+  });
+  expect(errors).toEqual([]);
+  expect(external).toEqual([]);
+  await refugeProtocol(page);
 });
