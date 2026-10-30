@@ -15,7 +15,9 @@ import { cpus, platform, totalmem } from 'node:os';
 import {
   admissionGenome,
   contradictoryPruning,
+  impossibleReadmission,
   omittedNewestAdmission,
+  retainedAdjacentExtinction,
   sameTickLineages,
 } from './fixtures/lineage';
 
@@ -102,6 +104,174 @@ function rejects(saved: WorldFile): void {
 }
 
 describe('strict bounded archive candidate validation', () => {
+  it('C16-R3-001 rejects impossible readmission at 255 following admissions and continues retained detail', () => {
+    const invalid = impossibleReadmission();
+    expect(invalid.tick).toBe(0);
+    expect(invalid.lineageArchive.events).toHaveLength(258);
+    expect(invalid.lineageArchive.eventsPruned).toBe(false);
+    expect(invalid.lineageArchive.summariesPruned).toBe(true);
+    expect(invalid.lineageArchive.summaries.map((row) => row.id)).toEqual([
+      ...Array.from({ length: 255 }, (_, offset) => offset + 7),
+      6,
+    ]);
+    expect(invalid.lineageArchive.events.filter((event) => event.kind === 'extinct')).toEqual([
+      extinct(6, 0),
+    ]);
+    rejects(invalid);
+    const actual = retainedAdjacentExtinction();
+    expect(actual.lineageSnapshot().summaries[0]).toMatchObject({
+      id: 6,
+      genomeStatus: 'retained',
+      foundingGenome: admissionGenome(),
+      extinctTick: 0,
+    });
+    const restored = reload(actual);
+    expect(restored.save()).toEqual(actual.save());
+    for (const candidate of [actual, restored]) {
+      candidate.spawn(admissionGenome(), 80, 80);
+      expect(candidate.lineageSnapshot().summaries[0].id).toBe(7);
+      expect(candidate.lineageSnapshot().summaries.some((row) => row.id === 6)).toBe(false);
+      candidate.step();
+    }
+    expect(restored.save()).toEqual(actual.save());
+    expect(reload(restored).save()).toEqual(actual.save());
+  });
+
+  it.each([254, 255, 256])(
+    'C16-R3-001 distinguishes %i following admissions without treating retained extinctions as admissions',
+    (following) => {
+      const world = sameTickLineages();
+      world.spawn(admissionGenome(), 40, 40);
+      const target = 261 - following;
+      for (const organism of [...world.organisms.values()]
+        .filter((row) => row.species > target)
+        .slice(0, 10))
+        world.kill(organism, 'manual');
+      world.kill(
+        [...world.organisms.values()].find((row) => row.species === target)!,
+        'manual',
+      );
+      const valid = world.save();
+      expect(valid.lineageArchive.eventsPruned).toBe(false);
+      expect(summaryById(valid, target).genomeStatus).toBe(
+        following === 256 ? 'pruned' : 'retained',
+      );
+      expect(reload(world).save()).toEqual(valid);
+      if (following < 256) {
+        const forged = structuredClone(valid),
+          summary = summaryById(forged, target);
+        summary.genomeStatus = 'pruned';
+        summary.foundingGenome = null;
+        forged.lineageArchive.summaries = [
+          ...forged.lineageArchive.summaries.filter((row) => row.id !== target),
+          summary,
+        ];
+        rejects(forged);
+      }
+    },
+  );
+
+  it('C16-R3-001 accounts for a real intervening extinction readmission and its eviction chain', () => {
+    const world = sameTickLineages();
+    world.spawn(admissionGenome(), 40, 40);
+    for (const organismId of [1, 2, 3]) {
+      world.kill(world.organisms.get(organismId)!, 'manual');
+      expect(world.lineageSnapshot().summaries.at(-1)).toMatchObject({
+        id: organismId + 4,
+        genomeStatus: 'pruned',
+        admittedTick: 0,
+      });
+      expect(reload(world).save()).toEqual(world.save());
+    }
+    const candidate = reload(world);
+    for (const current of [world, candidate]) {
+      current.spawn(admissionGenome(), 80, 80);
+      expect(current.lineageSnapshot().summaries[0].id).toBe(10);
+      current.step();
+    }
+    expect(candidate.save()).toEqual(world.save());
+  });
+
+  it('C16-R3-001 proves retained suffix membership even at a partially evicted same-tick watermark', () => {
+    const world = empty();
+    for (let index = 0; index < 300; index++) {
+      const organism = world.spawn(admissionGenome(), 40, 40)!;
+      world.kill(organism, 'manual');
+    }
+    for (let position = 0; position < 257; position++)
+      world.spawn(admissionGenome(), position % WIDTH, Math.floor(position / WIDTH));
+    world.kill(world.organisms.get(302)!, 'manual');
+    const valid = world.save(),
+      target = valid.lineageArchive.summaries[0];
+    expect(valid.lineageArchive.eventsPruned).toBe(true);
+    expect(valid.lineageArchive.eventsEvictedThroughTick).toBe(0);
+    expect(target).toMatchObject({ id: 306, genomeStatus: 'retained', extinctTick: 0 });
+    expect(valid.lineageArchive.events).toContainEqual(created(306, 0));
+    expect(reload(world).save()).toEqual(valid);
+    target.genomeStatus = 'pruned';
+    target.foundingGenome = null;
+    valid.lineageArchive.summaries.push(valid.lineageArchive.summaries.shift()!);
+    rejects(valid);
+  });
+
+  it('C16-R3-001 cannot retain older founding detail across a claimed later eviction', () => {
+    const older = knownSummary(5, 0, 0),
+      readmitted = {
+        ...knownSummary(6, 20, 30),
+        admittedTick: 30,
+        genomeStatus: 'pruned' as const,
+        foundingGenome: null,
+      };
+    const unknown = Array.from({ length: 256 }, (_, offset) => extinct(3000 + offset, 21));
+    const invalid = evidence([created(6, 20), ...unknown, extinct(6, 30)], [older, readmitted], 10);
+    expect(invalid.lineageArchive.events).toHaveLength(512);
+    rejects(invalid);
+    const repaired = evidence(
+      [created(6, 20), ...unknown.slice(1), extinct(5, 30), extinct(6, 30)],
+      [
+        {
+          ...older,
+          extinctTick: 30,
+          admittedTick: 30,
+          genomeStatus: 'pruned',
+          foundingGenome: null,
+        },
+        readmitted,
+      ],
+      10,
+    );
+    const restored = Ecosystem.load(JSON.stringify(repaired));
+    expect(restored.save()).toEqual(repaired);
+    expect(reload(restored).save()).toEqual(repaired);
+  });
+
+  it('C16-R3-001 preserves an ambiguous initial legacy readmission required by later known eviction', () => {
+    const legacy = {
+      ...knownSummary(5, 0, 0),
+      origin: 'legacy-unknown' as const,
+      createdTick: null,
+      peakKind: 'since-origin' as const,
+      genomeStatus: 'legacy-unknown' as const,
+      foundingGenome: null,
+    };
+    const candidate = evidence(
+      [
+        created(6, 0),
+        ...Array.from({ length: 255 }, (_, offset) => extinct(3000 + offset, 0)),
+        extinct(5, 0),
+        extinct(6, 0),
+      ],
+      [legacy, { ...knownSummary(6, 0, 0), genomeStatus: 'pruned', foundingGenome: null }],
+    );
+    candidate.lineageArchive.originKind = 'legacy-import';
+    const world = Ecosystem.load(JSON.stringify(candidate));
+    expect(world.save()).toEqual(candidate);
+    expect(reload(world).save()).toEqual(candidate);
+    world.spawn(admissionGenome(), 80, 80);
+    expect(world.lineageSnapshot().summaries[0].id).toBe(6);
+    expect(reload(world).save()).toEqual(world.save());
+  });
+
   it('C16-R2-001 rejects ordered membership omitting the provably newest admission', () => {
     const invalid = omittedNewestAdmission();
     expect(invalid.tick).toBe(0);

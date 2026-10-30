@@ -22,7 +22,9 @@ import { advance, legacyV3, legacyV4, legacyV5 } from '../fixtures/telemetry';
 import {
   admissionGenome,
   contradictoryPruning,
+  impossibleReadmission,
   omittedNewestAdmission,
+  retainedAdjacentExtinction,
   sameTickLineages,
 } from '../fixtures/lineage';
 
@@ -2061,6 +2063,7 @@ test('lineage correction rejects provenance, FIFO order and omitted admissions w
     ['legacy-pruning', contradictoryPruning(true)],
     ['same-tick-order', swapped],
     ['omitted-newest-admission', omittedNewestAdmission()],
+    ['impossible-readmission', impossibleReadmission()],
   ] as const) {
     const input = Buffer.from(JSON.stringify(invalid));
     await page
@@ -2079,6 +2082,55 @@ test('lineage correction rejects provenance, FIFO order and omitted admissions w
   const continued = await downloadPausedWorld(page);
   expect(JSON.parse(continued.toString())).toEqual(source.save());
   await recordLineageDownload(testInfo, 'lineage-correction-rejection-continuation', continued);
+  expect(errors).toEqual([]);
+});
+
+test('lineage round3 adjacent retained extinction survives native reload and the next FIFO admission', async ({
+  page,
+}, testInfo) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await observeTelemetry(page);
+  const reference = retainedAdjacentExtinction();
+  const input = Buffer.from(JSON.stringify(reference.save()));
+  expect(reference.lineageSnapshot().summaries[0]).toMatchObject({
+    id: 6,
+    genomeStatus: 'retained',
+    foundingGenome: admissionGenome(),
+    extinctTick: 0,
+  });
+  await page.goto('/');
+  await requestPause(page);
+  await importTelemetryWorld(page, JSON.parse(input.toString()));
+  const before = await downloadPausedWorld(page);
+  advance(reference, JSON.parse(before.toString()).tick - reference.tick);
+  expect(JSON.parse(before.toString())).toEqual(reference.save());
+  await importTelemetryWorld(page, JSON.parse(before.toString()));
+  advance(reference, (await telemetryFrame(page)).stats.tick - reference.tick);
+  await paintCell(page, 'plant', 80, 80);
+  referenceManualPaint(reference, 'plant', 80, 80, 0, founder(0));
+  await page.getByTitle('Advance one tick while paused').click();
+  await expectPausedWorld(page, reference.tick + 1);
+  reference.step();
+  const continued = await downloadPausedWorld(page);
+  expect(JSON.parse(continued.toString())).toEqual(reference.save());
+  expect(reference.lineageSnapshot().summaries.map((row) => row.id)).toEqual(
+    Array.from({ length: 256 }, (_, offset) => offset + 7),
+  );
+  await importTelemetryWorld(page, JSON.parse(continued.toString()));
+  advance(reference, (await telemetryFrame(page)).stats.tick - reference.tick);
+  await page.getByTitle('Advance one tick while paused').click();
+  await expectPausedWorld(page, reference.tick + 1);
+  reference.step();
+  const reloaded = await downloadPausedWorld(page);
+  expect(JSON.parse(reloaded.toString())).toEqual(reference.save());
+  for (const [suffix, bytes] of [
+    ['input', input],
+    ['before', before],
+    ['continued', continued],
+    ['reload-step', reloaded],
+  ] as const)
+    await recordLineageDownload(testInfo, `lineage-r3-adjacent-${suffix}`, bytes);
   expect(errors).toEqual([]);
 });
 

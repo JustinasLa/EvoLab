@@ -439,12 +439,28 @@ function validateArchive(
     else if (entry.row?.origin === 'legacy-unknown')
       admissions.set(id, [{ tick: state.originTick, position: -2 }]);
   }
-  for (const summary of state.summaries)
-    if (
-      summary.genomeStatus === 'pruned' ||
-      (summary.origin === 'legacy-unknown' && summary.admittedTick !== state.originTick)
-    )
-      admissions.get(summary.id)!.push(transition(facts.get(summary.id)!, 'extinct')!);
+  const earliestEviction = new Map<number, number>();
+  const initialLineages = [...facts].filter(([, entry]) => !entry.created);
+  if (
+    state.originKind === 'legacy-import' &&
+    !state.eventsPruned &&
+    initialLineages.length <= LINEAGE_SUMMARY_CAPACITY
+  )
+    for (const [id] of initialLineages)
+      earliestEviction.set(id, LINEAGE_SUMMARY_CAPACITY - initialLineages.length + 1);
+  const retainedAtExtinction = new Set<number>();
+  let possibleAdmissions = 0;
+  for (const event of state.events) {
+    if (event.kind === 'created') {
+      possibleAdmissions++;
+      earliestEviction.set(event.id, possibleAdmissions + LINEAGE_SUMMARY_CAPACITY);
+    } else {
+      const eviction = earliestEviction.get(event.id);
+      if (eviction !== undefined && possibleAdmissions < eviction)
+        retainedAtExtinction.add(event.id);
+      else possibleAdmissions++;
+    }
+  }
   const extinctions = [...facts.entries()]
     .map(([id, entry]) => ({ id, extinction: transition(entry, 'extinct') }))
     .filter((entry) => entry.extinction !== undefined)
@@ -460,20 +476,29 @@ function validateArchive(
       position: state.eventsPruned ? -1 : -2,
     };
     let intervening = 0;
-    for (const [otherId, transitions] of admissions)
-      if (
-        otherId !== id &&
-        transitions.some(
-          (admission) => provenBefore(start, admission) && provenBefore(admission, extinction!),
-        ) &&
-        ++intervening === LINEAGE_SUMMARY_CAPACITY
-      ) {
+    for (const [otherId, transitions] of admissions) {
+      if (otherId === id) continue;
+      intervening += transitions.filter(
+        (admission) => provenBefore(start, admission) && provenBefore(admission, extinction!),
+      ).length;
+      if (intervening >= LINEAGE_SUMMARY_CAPACITY) {
         readmissions.add(id);
         if (!admissions.has(id)) admissions.set(id, []);
         admissions.get(id)!.push(extinction!);
         break;
       }
+    }
   }
+  let minimumAdmission: Transition | undefined;
+  for (const summary of state.summaries)
+    if (
+      summary.genomeStatus === 'pruned' ||
+      (summary.origin === 'legacy-unknown' && summary.admittedTick !== state.originTick) ||
+      readmissions.has(summary.id)
+    ) {
+      const start = admissions.get(summary.id)![0];
+      if (!minimumAdmission || provenBefore(minimumAdmission, start)) minimumAdmission = start;
+    }
   let omittedAdmission: Transition | undefined;
   for (const [id, transitions] of admissions)
     if (!summaries.has(id))
@@ -499,13 +524,16 @@ function validateArchive(
       state.summariesPruned &&
       summary.extinctTick === state.originTick &&
       (readmissions.has(summary.id) ||
-        [previousAdmission, omittedAdmission].some(
+        [previousAdmission, omittedAdmission, minimumAdmission].some(
           (admission) => admission?.tick === state.originTick && admission.position > -2,
         ));
     const admission =
       initialLegacy && !readmittedLegacy
         ? { tick: state.originTick, position: -2 }
         : transition(entry, summary.genomeStatus === 'retained' ? 'created' : 'extinct')!;
+    if (summary.genomeStatus !== 'retained' && (!initialLegacy || readmittedLegacy))
+      requireArchive(!retainedAtExtinction.has(summary.id));
+    if (minimumAdmission) requireArchive(before(minimumAdmission, admission));
     if (readmissions.has(summary.id))
       requireArchive(
         summary.genomeStatus !== 'retained' && summary.admittedTick === summary.extinctTick,

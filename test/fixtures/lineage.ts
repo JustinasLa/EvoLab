@@ -26,6 +26,23 @@ export function omittedNewestAdmission(): WorldFile {
   return saved;
 }
 
+export function retainedAdjacentExtinction(): Ecosystem {
+  const world = sameTickLineages();
+  world.spawn(admissionGenome(), 40, 40);
+  world.kill(world.organisms.get(2)!, 'manual');
+  return world;
+}
+
+export function impossibleReadmission(): WorldFile {
+  const saved = retainedAdjacentExtinction().save();
+  const summary = saved.lineageArchive.summaries.shift()!;
+  summary.genomeStatus = 'pruned';
+  summary.foundingGenome = null;
+  summary.admittedTick = 0;
+  saved.lineageArchive.summaries.push(summary);
+  return saved;
+}
+
 export function contradictoryPruning(legacy: boolean): WorldFile {
   let world = new Ecosystem({ ...DEFAULTS, mutation: 0, climate: 0, nutrients: 0 }, false);
   world.spawn(admissionGenome(), 40, 40);

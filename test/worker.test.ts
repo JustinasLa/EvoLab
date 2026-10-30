@@ -3,7 +3,12 @@ import { startWorker, type Scope } from '../src/worker';
 import { Ecosystem } from '../src/ecosystem';
 import { legacyV3, legacyV4, legacyV5 } from './fixtures/telemetry';
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
-import { contradictoryPruning, omittedNewestAdmission, sameTickLineages } from './fixtures/lineage';
+import {
+  contradictoryPruning,
+  impossibleReadmission,
+  omittedNewestAdmission,
+  sameTickLineages,
+} from './fixtures/lineage';
 import {
   DEFAULTS,
   WIDTH,
@@ -1484,6 +1489,7 @@ describe('failed-load retained-world recovery', () => {
       contradictoryPruning(true),
       swapped,
       omittedNewestAdmission(),
+      impossibleReadmission(),
     ]) {
       harness.send({ type: 'load', runId: ++runId, text: JSON.stringify(invalid) });
       expect(harness.last('error')).toMatchObject({
