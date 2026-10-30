@@ -399,13 +399,16 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     );
     for (const action of ['load', 'rename', 'duplicate', 'export', 'delete'])
       get<HTMLButtonElement>(`library-${action}`).disabled = !entry;
+    renderCandidate();
+    updateCapture();
+  }
+  function renderCandidate(): void {
     get('library-candidate').hidden = !candidate;
     text('library-candidate-name', candidate?.blueprint.name ?? '');
     get('library-candidate-preview').innerHTML = candidate
       ? genomeSvg(candidate.blueprint.genome)
       : '';
-    get<HTMLButtonElement>('library-replace').disabled = !entry || !candidate;
-    updateCapture();
+    get<HTMLButtonElement>('library-replace').disabled = !selectedEntry() || !candidate;
   }
   async function refreshLibrary(outcome = ''): Promise<void> {
     if (!alive || !get<HTMLDetailsElement>('local-library').open) return;
@@ -479,7 +482,28 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         libraryStatus('Unsaved capture cancelled: the world changed before storage admission.');
         return;
       }
-      const id = await library.mutate(action);
+      const id = await library.mutate(action, (committed, expired) => {
+        if (!alive) return;
+        libraryRequest++;
+        libraryWorking = undefined;
+        refreshNeeded = false;
+        libraryRefreshOutcome = '';
+        if (
+          committed &&
+          (action.type === 'create' || action.type === 'replace') &&
+          candidate === action.candidate
+        ) {
+          candidate = undefined;
+          candidateRun = undefined;
+          renderCandidate();
+        }
+        libraryStatus(
+          committed
+            ? `Native write committed${expired ? ' after the deadline' : ''}. The list is stale; Refresh explicitly.`
+            : 'Native operation aborted; no write from it committed. The list is stale; Refresh explicitly.',
+        );
+        updateCapture();
+      });
       if (!alive || request !== libraryRequest) return;
       if (selection === librarySelection) {
         initialLibrarySelection = false;

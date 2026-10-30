@@ -1152,9 +1152,10 @@ describe('explicit bounded local library', () => {
     root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
     harness.deliver();
     const before = harness.save();
-    expect(before.version).toBe(5);
+    expect(before.version).toBe(7);
     expect(before.telemetry.version).toBe(2);
-    expect(before.interventions.version).toBe(1);
+    expect(before.interventions.version).toBe(3);
+    expect(before.thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
     expect(before.interventions.entries).toHaveLength(1);
     storage.values.set(first, encodeRecord(draft('composed design'), 1));
     await open();
@@ -1661,6 +1662,91 @@ describe('explicit bounded local library', () => {
         expect(get('library-status').textContent).toContain('Library refreshed');
         expect(root.querySelector(`[data-library-id="${second}"]`)).not.toBeNull();
       }
+    },
+  );
+
+  it.each(
+    ['create', 'replace'].flatMap((action) =>
+      [false, true].flatMap((expired) =>
+        ['onversionchange', 'onclose'].flatMap((invalidation) =>
+          ['complete', 'abort'].map((terminal) => ({ action, expired, invalidation, terminal })),
+        ),
+      ),
+    ),
+  )(
+    'reconciles $action certainty after expired=$expired $invalidation $terminal without stale UI',
+    async ({ action, expired, invalidation, terminal }) => {
+      vi.useFakeTimers();
+      const original = encodeRecord(draft('original'), 1);
+      const neighbor = encodeRecord(draft('neighbor'), 1);
+      storage.values.set(first, original);
+      storage.values.set(second, neighbor);
+      await open();
+      if (action === 'replace') {
+        await uploadLocal(serializeBlueprint(draft('replacement').blueprint));
+        click('library-replace');
+      }
+      storage.faults.abortThrow = true;
+      if (terminal === 'complete') storage.faults.completionStall = 'readwrite';
+      else storage.faults.txStall = true;
+      click(action === 'create' ? 'library-save' : 'library-confirm');
+      await flush();
+      const owner = storage.current;
+      const transactions = storage.connection.transaction.mock.calls.length;
+      const opens = storage.factory.open.mock.calls.length;
+      select(second);
+      const focused = root.querySelector<HTMLButtonElement>(`[data-library-id="${second}"]`)!;
+      focused.focus();
+      const rows = get('library-rows').innerHTML;
+      storage.connection[invalidation]();
+      await flush();
+      const complete = owner.native.oncomplete;
+      const abort = owner.native.onabort;
+      click('library-refresh');
+      click('library-add');
+      await flush();
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+      expect(storage.factory.open).toHaveBeenCalledTimes(opens);
+      expect(get('library-candidate').hidden).toBe(false);
+      if (expired) await vi.advanceTimersByTimeAsync(10001);
+      if (terminal === 'complete') owner.releaseCompletion();
+      else abort();
+      await flush();
+      expect(get('library-status').textContent).toContain(
+        terminal === 'complete' ? 'Native write committed' : 'no write from it committed',
+      );
+      expect(get('library-candidate').hidden).toBe(terminal === 'complete');
+      expect(get('library-rows').innerHTML).toBe(rows);
+      expect(get('library-selection').textContent).toContain(second);
+      expect(document.activeElement).toBe(focused);
+      expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
+      expect(storage.factory.open).toHaveBeenCalledTimes(opens);
+      expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+      if (terminal === 'abort')
+        expect([...storage.values]).toEqual([
+          [first, original],
+          [second, neighbor],
+        ]);
+      else if (action === 'create') expect(storage.values.size).toBe(3);
+      else
+        expect(classifyRecord(first, storage.values.get(first))).toMatchObject({
+          revision: 2,
+          blueprint: { name: 'replacement' },
+        });
+      const status = get('library-status').textContent;
+      complete();
+      abort();
+      await flush();
+      expect(get('library-status').textContent).toBe(status);
+      expect(get('library-rows').innerHTML).toBe(rows);
+      delete storage.faults.completionStall;
+      delete storage.faults.abortThrow;
+      delete storage.faults.txStall;
+      click('library-refresh');
+      await flush();
+      expect(get('library-status').textContent).toContain('Library refreshed');
+      expect(get('library-selection').textContent).toContain(second);
+      expect(document.activeElement).toBe(focused);
     },
   );
 

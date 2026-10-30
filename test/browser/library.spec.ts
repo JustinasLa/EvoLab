@@ -123,6 +123,8 @@ async function deliveryProbe(page: Page) {
       holdDatabaseMode: '' as '' | IDBTransactionMode,
       heldDatabase: [] as (() => void)[],
       databaseTransactions: 0,
+      heldDatabaseTerminal: '',
+      writeConnection: null as IDBDatabase | null,
       holdOpen: false,
       heldOpen: [] as (() => void)[],
       openCalls: 0,
@@ -143,14 +145,17 @@ async function deliveryProbe(page: Page) {
     IDBDatabase.prototype.transaction = function (...args: Parameters<typeof nativeTransaction>) {
       state.databaseTransactions++;
       const transaction = nativeTransaction.apply(this, args);
-      transaction.addEventListener('complete', (event) => {
-        if (!state.holdDatabase && state.holdDatabaseMode !== transaction.mode) return;
-        event.stopImmediatePropagation();
-        if (!state.heldDatabase.length) {
-          const callback = transaction.oncomplete;
-          state.heldDatabase.push(() => callback?.call(transaction, event));
-        }
-      });
+      if (transaction.mode === 'readwrite') state.writeConnection = this;
+      for (const terminal of ['complete', 'abort'] as const)
+        transaction.addEventListener(terminal, (event) => {
+          if (!state.holdDatabase && state.holdDatabaseMode !== transaction.mode) return;
+          event.stopImmediatePropagation();
+          if (!state.heldDatabase.length) {
+            const callback = terminal === 'complete' ? transaction.oncomplete : transaction.onabort;
+            state.heldDatabaseTerminal = terminal;
+            state.heldDatabase.push(() => callback?.call(transaction, event));
+          }
+        });
       return transaction;
     };
     const nativeOpen = IDBFactory.prototype.open;
@@ -186,6 +191,195 @@ async function releaseDatabase(page: Page) {
     state.holdDatabaseMode = '';
     for (const callback of state.heldDatabase.splice(0)) callback();
   });
+}
+
+for (const expired of [false, true]) {
+  for (const invalidation of ['versionchange', 'close'] as const) {
+    for (const terminal of ['complete', 'abort'] as const) {
+      test(`native write ${terminal} certainty survives ${invalidation} expired=${expired}`, async ({
+        page,
+      }, info) => {
+        const errors: string[] = [];
+        page.on('pageerror', (error) => errors.push(error.message));
+        await deliveryProbe(page);
+        const before = await fixture(page);
+        const original = encodeRecord(candidate('original'), 1);
+        const neighbor = encodeRecord(candidate('neighbor'), 1);
+        await database(page, [
+          [first, original],
+          [second, neighbor],
+        ]);
+        await openLibrary(page);
+        const incoming = serializeBlueprint(candidate('owned mutation').blueprint);
+        const imported = { blueprint: parseBlueprint(incoming) };
+        await page.locator('#library-file').setInputFiles({
+          name: 'candidate.json',
+          mimeType: 'application/json',
+          buffer: Buffer.from(incoming),
+        });
+        await expect(page.locator('#library-candidate')).toBeVisible();
+        if (expired) await page.locator('#library-replace').click();
+        await page.evaluate((terminal) => {
+          const state = (window as any).libraryProbe;
+          state.holdDatabaseMode = 'readwrite';
+          state.writeStartedAt = performance.now();
+          if (terminal === 'abort') {
+            for (const method of ['add', 'put'] as const) {
+              const native = IDBObjectStore.prototype[method];
+              IDBObjectStore.prototype[method] = function (...args: Parameters<typeof native>) {
+                const request = native.apply(this, args);
+                this.transaction.abort();
+                return request;
+              };
+            }
+          }
+        }, terminal);
+        await page.locator(expired ? '#library-confirm' : '#library-add').click();
+        await expect
+          .poll(() => page.evaluate(() => (window as any).libraryProbe.heldDatabase.length))
+          .toBe(1);
+        expect(await page.evaluate(() => (window as any).libraryProbe.heldDatabaseTerminal)).toBe(
+          terminal,
+        );
+        const selected = page.locator(`[data-library-id="${second}"]`);
+        await selected.click();
+        await selected.focus();
+        const rows = await page.locator('#library-rows').innerHTML();
+        const counts = await page.evaluate(() => {
+          const state = (window as any).libraryProbe;
+          return { opens: state.openCalls, transactions: state.databaseTransactions };
+        });
+        if (invalidation === 'versionchange') {
+          const upgrade = await page.evaluate(
+            (name) =>
+              new Promise<string>((resolve, reject) => {
+                const request = indexedDB.open(name, 2);
+                request.onupgradeneeded = () => request.transaction!.abort();
+                request.onerror = (event) => {
+                  event.preventDefault();
+                  resolve(request.error!.name);
+                };
+                request.onsuccess = () => {
+                  request.result.close();
+                  reject(new Error('Unexpected upgrade'));
+                };
+              }),
+            LIBRARY_DATABASE,
+          );
+          expect(upgrade).toBe('AbortError');
+        } else
+          await page.evaluate(() =>
+            (window as any).libraryProbe.writeConnection.dispatchEvent(new Event('close')),
+          );
+        await expect(page.locator('#library-status')).toContainText(
+          invalidation === 'versionchange' ? 'Another tab changed' : 'connection closed',
+        );
+        await page
+          .locator('#library-refresh')
+          .evaluate((button: HTMLButtonElement) => button.click());
+        await page.locator('#library-add').evaluate((button: HTMLButtonElement) => button.click());
+        const invalidatedCounts = await page.evaluate(() => {
+          const state = (window as any).libraryProbe;
+          return { opens: state.openCalls, transactions: state.databaseTransactions };
+        });
+        expect(invalidatedCounts).toEqual({
+          ...counts,
+          opens: counts.opens + (invalidation === 'versionchange' ? 1 : 0),
+        });
+        await expect(page.locator('#library-candidate')).toBeVisible();
+        if (expired) {
+          const elapsed = await page.evaluate(async () => {
+            const start = performance.now();
+            await new Promise((resolve) => setTimeout(resolve, 10100));
+            return performance.now() - start;
+          });
+          expect(elapsed).toBeGreaterThanOrEqual(10000);
+          await expect(page.locator('#library-status')).toContainText('uncertain');
+        } else
+          expect(
+            await page.evaluate(
+              () => performance.now() - (window as any).libraryProbe.writeStartedAt,
+            ),
+          ).toBeLessThan(10000);
+        await page.evaluate(() => {
+          const state = (window as any).libraryProbe;
+          state.replayTerminal = state.heldDatabase[0];
+        });
+        await releaseDatabase(page);
+        await expect(page.locator('#library-status')).toContainText(
+          terminal === 'complete' ? 'Native write committed' : 'no write from it committed',
+        );
+        if (terminal === 'complete') await expect(page.locator('#library-candidate')).toBeHidden();
+        else await expect(page.locator('#library-candidate')).toBeVisible();
+        const notice = await page.locator('#library-status').textContent();
+        await page.evaluate(() => (window as any).libraryProbe.replayTerminal());
+        await expect(page.locator('#library-status')).toHaveText(notice!);
+        expect(await page.locator('#library-rows').innerHTML()).toBe(rows);
+        await expect(page.locator('#library-selection')).toContainText(second);
+        await expect(selected).toBeFocused();
+        await expect(page.locator('#library-dialog')).toBeHidden();
+        expect(
+          await page.evaluate(() => {
+            const state = (window as any).libraryProbe;
+            return { opens: state.openCalls, transactions: state.databaseTransactions };
+          }),
+        ).toEqual(invalidatedCounts);
+        if (terminal === 'abort')
+          expect(await download(page, '#library-export-candidate')).toEqual(Buffer.from(incoming));
+        const stored = await database(page);
+        if (terminal === 'abort')
+          expect(stored).toEqual([
+            [first, original],
+            [second, neighbor],
+          ]);
+        else if (expired)
+          expect(stored).toEqual([
+            [first, encodeRecord(imported, 2)],
+            [second, neighbor],
+          ]);
+        else {
+          expect(stored).toHaveLength(3);
+          expect(stored).toEqual(
+            expect.arrayContaining([
+              [first, original],
+              [second, neighbor],
+            ]),
+          );
+          const added = stored.find(([id]) => id !== first && id !== second)!;
+          expect(added[1]).toBe(encodeRecord(imported, 1));
+        }
+        const after = await pausedSave(page);
+        expect(after).toEqual(before);
+        await page.locator('#library-refresh').click();
+        await expect(page.locator('#library-status')).toContainText('Library refreshed');
+        await expect(page.locator('#library-selection')).toContainText(second);
+        expect(errors).toEqual([]);
+        await info.attach('native-write-certainty.json', {
+          contentType: 'application/json',
+          body: JSON.stringify({
+            expired,
+            invalidation,
+            terminal,
+            action: expired ? 'replace' : 'create',
+            notice,
+            counts,
+            invalidatedCounts,
+            stored,
+            closeEventInjected: invalidation === 'close',
+            actualNativeAbort: terminal === 'abort',
+          }),
+        });
+        await info.attach('complete-world-before.json', {
+          contentType: 'application/json',
+          body: before,
+        });
+        await info.attach('complete-world-after.json', {
+          contentType: 'application/json',
+          body: after,
+        });
+      });
+    }
+  }
 }
 
 test('native abort rollback and a failed post-commit refresh never invent an unsaved outcome', async ({
@@ -454,6 +648,7 @@ test('current-run capture rejects loaded/saved acknowledgements and waits for su
   await deliveryProbe(page);
   const before = await fixture(page);
   const capture = page.locator('#capture-selected');
+  const captureNode = await capture.elementHandle();
   await capture.focus();
   await page.evaluate(() => {
     (window as any).libraryProbe.holdWorker = 'error';
@@ -468,12 +663,27 @@ test('current-run capture rejects loaded/saved acknowledgements and waits for su
     .toBe(1);
   await expect(capture).toBeDisabled();
   await expect(page.locator('#specimen-details > summary')).toBeFocused();
-  expect(await download(page, '#save')).toEqual(before);
-  await expect(capture).toBeDisabled();
+  await expect(page.locator('#save')).toBeDisabled();
+  expect(await capture.evaluate((node, original) => node === original, captureNode)).toBe(true);
   await releaseWorker(page);
   await expect(page.locator('#notice')).toContainText('Not a valid EvoLab');
   await expect(capture).toBeEnabled();
-  await expect(page.locator('#save')).toBeFocused();
+  await expect(page.locator('#save')).toBeEnabled();
+  await expect(page.locator('#specimen-details > summary')).toBeFocused();
+  expect(await capture.evaluate((node, original) => node === original, captureNode)).toBe(true);
+  await page.locator('#save').evaluate((button: HTMLButtonElement) => {
+    button.addEventListener(
+      'click',
+      () => {
+        (window as any).saveFocusAtActivation =
+          document.activeElement === button && !button.disabled;
+      },
+      { capture: true, once: true },
+    );
+  });
+  expect(await download(page, '#save')).toEqual(before);
+  expect(await page.evaluate(() => (window as any).saveFocusAtActivation)).toBe(true);
+  await expect(page.locator('body')).toBeFocused();
   for (let repeat = 0; repeat < 3; repeat++) expect(await pausedSave(page)).toEqual(before);
   await page.evaluate(() => {
     (window as any).libraryProbe.holdWorker = 'frame';
@@ -499,6 +709,8 @@ test('current-run capture rejects loaded/saved acknowledgements and waits for su
       failedLoadRepeatedSaves: 3,
       loadedAckEligible: false,
       savedAckEligible: false,
+      saveFocusAtActivation: await page.evaluate(() => (window as any).saveFocusAtActivation),
+      saveLeaseDropsDisabledButtonFocus: true,
       retainedWorkerMessages: await page.evaluate(
         () => (window as any).libraryProbe.heldWorker.length,
       ),
@@ -1711,7 +1923,7 @@ for (const scenario of [
   });
 }
 
-test('composed library operations preserve complete world5 and measurement intervention exports', async ({
+test('composed library operations preserve complete world7 and measurement intervention exports', async ({
   page,
 }, info) => {
   await fixture(page);
@@ -1719,9 +1931,10 @@ test('composed library operations preserve complete world5 and measurement inter
   await page.locator('[data-shock="heat"]').click();
   const before = await pausedSave(page);
   const world = JSON.parse(before.toString()) as WorldFile;
-  expect(world.version).toBe(5);
+  expect(world.version).toBe(7);
   expect(world.telemetry.version).toBe(2);
-  expect(world.interventions.version).toBe(1);
+  expect(world.interventions.version).toBe(3);
+  expect(world.thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
   expect(world.interventions.entries).toHaveLength(1);
   await page.locator('#ecosystem-tab').click();
   const measurements = await download(page, '#measurements-json');
@@ -1741,7 +1954,7 @@ test('composed library operations preserve complete world5 and measurement inter
   await page.locator('#ecosystem-tab').click();
   expect(await download(page, '#measurements-json')).toEqual(measurements);
   expect(await download(page, '#measurements-csv')).toEqual(csv);
-  await info.attach('composed-world5.json', { contentType: 'application/json', body: before });
+  await info.attach('composed-world7.json', { contentType: 'application/json', body: before });
   await info.attach('composed-measurements.json', {
     contentType: 'application/json',
     body: measurements,

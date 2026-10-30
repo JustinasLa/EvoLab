@@ -228,7 +228,7 @@ export function createLibrary(
   let opening: IDBOpenDBRequest | undefined;
   let active: IDBTransaction | undefined;
   let activeStatus: ((message: string) => void) | undefined;
-  let revokeRead: (() => void) | undefined;
+  let invalidateActive: (() => void) | undefined;
   let operationTimer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
   const status = (message: string): void => {
@@ -312,14 +312,14 @@ export function createLibrary(
         }
         database = connection;
         connection.onversionchange = () => {
-          revokeRead?.();
+          invalidateActive?.();
           abort();
           close();
           options.invalidated?.();
           status('Another tab changed the library. Confirmations cancelled; Retry explicitly.');
         };
         connection.onclose = () => {
-          revokeRead?.();
+          invalidateActive?.();
           abort();
           close();
           options.invalidated?.();
@@ -336,6 +336,7 @@ export function createLibrary(
       accept: (result: Result) => void,
       fail: (error: unknown) => void,
     ) => void,
+    settled?: (committed: boolean, expired: boolean) => void,
   ): Promise<Result> {
     if (disposed || !database) return Promise.reject(new LibraryError('unavailable'));
     if (opening || active) return Promise.reject(new LibraryError('busy'));
@@ -352,6 +353,7 @@ export function createLibrary(
       let result: Result,
         failure: LibraryError | undefined,
         expired = false,
+        invalidated = false,
         presentation = true;
       const phaseStatus = (message: string): void => {
         if (presentation) status(message);
@@ -366,18 +368,22 @@ export function createLibrary(
       operationTimer = timer;
       // A revoked read still owns its native transaction until terminal delivery.
       // Its deadline and presentation are independent of that ownership.
-      if (mode === 'readonly')
-        revokeRead = () => {
+      invalidateActive = () => {
+        invalidated = true;
+        if (mode === 'readonly') {
           presentation = false;
           clearTimeout(timer);
           operationTimer = undefined;
-        };
-      const finish = (): void => {
+        }
+      };
+      const finish = (): boolean => {
+        if (active !== native) return false;
         clearTimeout(timer);
         operationTimer = undefined;
-        activeStatus = revokeRead = undefined;
+        activeStatus = invalidateActive = undefined;
         native.oncomplete = native.onabort = native.onerror = null;
-        if (active === native) active = undefined;
+        active = undefined;
+        return true;
       };
       const fail = (error: unknown): void => {
         failure = storageError(error);
@@ -389,19 +395,27 @@ export function createLibrary(
       };
       native.onabort = () => {
         const error = failure ?? storageError(native.error);
-        finish();
-        if (expired)
-          phaseStatus('Native operation aborted; no write from it committed. Refresh explicitly.');
+        if (!finish()) return;
+        if (expired || (invalidated && mode === 'readwrite')) {
+          if (settled && !disposed) settled(false, expired);
+          else
+            phaseStatus(
+              'Native operation aborted; no write from it committed. Refresh explicitly.',
+            );
+        }
         reject(error);
       };
       native.oncomplete = () => {
-        finish();
-        if (expired)
-          phaseStatus(
-            mode === 'readwrite'
-              ? 'Native write committed after the deadline. Refresh to inspect the committed record.'
-              : 'Native read settled. Refresh explicitly.',
-          );
+        if (!finish()) return;
+        if (expired || (invalidated && mode === 'readwrite')) {
+          if (settled && !disposed) settled(true, expired);
+          else
+            phaseStatus(
+              mode === 'readwrite'
+                ? `Native write committed${expired ? ' after the deadline' : ''}. Refresh to inspect the committed record.`
+                : 'Native read settled. Refresh explicitly.',
+            );
+        }
         if (disposed) reject(new LibraryError('unavailable'));
         else resolve(result);
       };
@@ -450,7 +464,10 @@ export function createLibrary(
       };
     });
   }
-  async function mutate(action: LibraryMutation): Promise<string> {
+  async function mutate(
+    action: LibraryMutation,
+    settled?: (committed: boolean, expired: boolean) => void,
+  ): Promise<string> {
     const adding = action.type === 'create' || action.type === 'duplicate';
     const candidate =
       action.type === 'create' || action.type === 'replace' ? action.candidate : undefined;
@@ -469,73 +486,79 @@ export function createLibrary(
       }
       if (!uuid(id)) throw new LibraryError('unavailable');
       try {
-        return await transaction<string>('readwrite', (store, accept, fail) => {
-          const count = store.count();
-          count.onsuccess = () => {
-            if (
-              (adding && count.result >= LIBRARY_CAPACITY) ||
-              (count.result > LIBRARY_CAPACITY && !['delete', 'repair'].includes(action.type))
-            ) {
-              fail(new LibraryError('full'));
-              return;
-            }
-            const write = (value: LibraryCandidate, revision: number, add: boolean): void => {
-              try {
-                const token = encodeRecord(value, revision);
-                if (add) store.add(token, id);
-                else store.put(token, id);
-                accept(id);
-              } catch (error) {
-                fail(error);
-              }
-            };
-            if (action.type === 'create') {
-              write(action.candidate, 1, true);
-              return;
-            }
-            const target = action.entry;
-            if (!uuid(target.id) || !bounded(target.token, LIBRARY_RECORD_BYTES)) {
-              fail(new LibraryError('conflict'));
-              return;
-            }
-            const request = store.get(target.id);
-            request.onsuccess = () => {
-              const current = classifyRecord(target.id, request.result);
+        return await transaction<string>(
+          'readwrite',
+          (store, accept, fail) => {
+            const count = store.count();
+            count.onsuccess = () => {
               if (
-                current.token !== target.token ||
-                (action.type === 'repair'
-                  ? current.kind !== 'damaged' ||
-                    target.kind !== 'damaged' ||
-                    current.reason !== target.reason
-                  : current.kind !== 'valid')
+                (adding && count.result >= LIBRARY_CAPACITY) ||
+                (count.result > LIBRARY_CAPACITY && !['delete', 'repair'].includes(action.type))
               ) {
+                fail(new LibraryError('full'));
+                return;
+              }
+              const write = (value: LibraryCandidate, revision: number, add: boolean): void => {
+                try {
+                  const token = encodeRecord(value, revision);
+                  if (add) store.add(token, id);
+                  else store.put(token, id);
+                  accept(id);
+                } catch (error) {
+                  fail(error);
+                }
+              };
+              if (action.type === 'create') {
+                write(action.candidate, 1, true);
+                return;
+              }
+              const target = action.entry;
+              if (!uuid(target.id) || !bounded(target.token, LIBRARY_RECORD_BYTES)) {
                 fail(new LibraryError('conflict'));
                 return;
               }
-              if (action.type === 'delete' || action.type === 'repair') {
-                store.delete(target.id!);
-                accept(target.id!);
-                return;
-              }
-              const entry = current as LibraryEntry;
-              if (action.type === 'duplicate') write(entry, 1, true);
-              else if (action.type === 'rename' && action.name === entry.blueprint.name) accept(id);
-              else
-                write(
-                  action.type === 'replace'
-                    ? action.candidate
-                    : {
-                        blueprint: { ...entry.blueprint, name: action.name },
-                        ...(entry.provenance ? { provenance: entry.provenance } : {}),
-                      },
-                  entry.revision + 1,
-                  false,
-                );
+              const request = store.get(target.id);
+              request.onsuccess = () => {
+                const current = classifyRecord(target.id, request.result);
+                if (
+                  current.token !== target.token ||
+                  (action.type === 'repair'
+                    ? current.kind !== 'damaged' ||
+                      target.kind !== 'damaged' ||
+                      current.reason !== target.reason
+                    : current.kind !== 'valid')
+                ) {
+                  fail(new LibraryError('conflict'));
+                  return;
+                }
+                if (action.type === 'delete' || action.type === 'repair') {
+                  store.delete(target.id!);
+                  accept(target.id!);
+                  return;
+                }
+                const entry = current as LibraryEntry;
+                if (action.type === 'duplicate') write(entry, 1, true);
+                else if (action.type === 'rename' && action.name === entry.blueprint.name)
+                  accept(id);
+                else
+                  write(
+                    action.type === 'replace'
+                      ? action.candidate
+                      : {
+                          blueprint: { ...entry.blueprint, name: action.name },
+                          ...(entry.provenance ? { provenance: entry.provenance } : {}),
+                        },
+                    entry.revision + 1,
+                    false,
+                  );
+              };
             };
-          };
-        });
+          },
+          settled,
+        );
       } catch (error) {
         if (
+          !database ||
           !(error instanceof LibraryError) ||
           error.code !== 'collision' ||
           !adding ||

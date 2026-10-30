@@ -396,6 +396,73 @@ describe('native event ownership and transactions', () => {
     },
   );
 
+  it.each(
+    [false, true].flatMap((expired) =>
+      ['onversionchange', 'onclose'].flatMap((invalidation) =>
+        ['complete', 'abort'].map((terminal) => ({ expired, invalidation, terminal })),
+      ),
+    ),
+  )(
+    'retains write certainty after expired=$expired $invalidation until $terminal',
+    async ({ expired, invalidation, terminal }) => {
+      vi.useFakeTimers();
+      const native = harness();
+      const status = vi.fn();
+      const settled = vi.fn();
+      const library = createLibrary({ factory: () => native.factory, status });
+      await library.open();
+      native.faults.abortThrow = true;
+      if (terminal === 'complete') native.faults.completionStall = 'readwrite';
+      else native.faults.txStall = true;
+      const writing = library.mutate({ type: 'create', candidate: candidate() }, settled).then(
+        () => 'committed',
+        () => 'rejected',
+      );
+      await pending();
+      const owner = native.current;
+      const completion = owner.native.oncomplete;
+      const abortion = owner.native.onabort;
+      native.connection[invalidation]();
+      expect(settled).not.toHaveBeenCalled();
+      expect(library.busy).toBe(true);
+      await expect(library.open()).rejects.toMatchObject({ code: 'busy' });
+      if (expired) await vi.advanceTimersByTimeAsync(10001);
+      if (terminal === 'complete') owner.releaseCompletion();
+      else abortion();
+      await writing;
+      expect(settled).toHaveBeenCalledExactlyOnceWith(terminal === 'complete', expired);
+      expect(library.busy).toBe(false);
+      expect(native.values.size).toBe(terminal === 'complete' ? 1 : 0);
+      completion();
+      abortion();
+      expect(settled).toHaveBeenCalledTimes(1);
+      expect(native.factory.open).toHaveBeenCalledTimes(1);
+      library.dispose();
+    },
+  );
+
+  it('does not retry an invalidated write even when its abort reports a collision', async () => {
+    const native = harness();
+    const randomId = vi.fn(() => first);
+    const settled = vi.fn();
+    const library = createLibrary({ factory: () => native.factory, randomId });
+    await library.open();
+    native.faults.requestError = 'ConstraintError';
+    native.faults.abortThrow = true;
+    const writing = library.mutate({ type: 'create', candidate: candidate() }, settled);
+    const rejected = expect(writing).rejects.toMatchObject({ code: 'collision' });
+    await pending();
+    native.connection.onversionchange();
+    native.current.native.onabort();
+    await rejected;
+    expect(settled).toHaveBeenCalledExactlyOnceWith(false, false);
+    expect(randomId).toHaveBeenCalledTimes(1);
+    expect(native.factory.open).toHaveBeenCalledTimes(1);
+    expect(native.connection.transaction).toHaveBeenCalledTimes(1);
+    expect(native.values.size).toBe(0);
+    library.dispose();
+  });
+
   it('preserves unsupported stores, handles native close/version changes and disposal', async () => {
     for (const fault of ['keyPath', 'autoIncrement', 'indexes', 'storeThrow'] as const) {
       const native = harness();
