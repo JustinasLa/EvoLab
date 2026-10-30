@@ -6,6 +6,7 @@ import { DEFAULT_TERRAIN } from '../src/terrain';
 import { DEFAULTS, founder, type Frame, type PlaybackState, type WorldFile } from '../src/model';
 import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../src/blueprint';
 import { startWorker, type Scope } from '../src/worker';
+import { emptyRefuges, refugeSummary } from '../src/refuges';
 class WorkerStub extends EventTarget {
   playback: PlaybackState = { paused: false, pauseOnExtinction: true, extinction: null };
   postMessage = vi.fn((data: any) => {
@@ -59,6 +60,7 @@ class WorkerStub extends EventTarget {
     this.onmessage?.({
       data: {
         terrain: { ...DEFAULT_TERRAIN },
+        thermalRefuges: refugeSummary(emptyRefuges()),
         playback: this.playback,
         runId:
           runId ??

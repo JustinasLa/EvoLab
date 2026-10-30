@@ -1,7 +1,7 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { startWorker, type Scope } from '../src/worker';
 import { Ecosystem } from '../src/ecosystem';
-import { legacyV3, legacyV4, legacyV5 } from './fixtures/telemetry';
+import { legacyV3, legacyV4, legacyV5, legacyV6 } from './fixtures/telemetry';
 import { DEFAULT_TERRAIN } from '../src/terrain';
 import { readFileSync } from 'node:fs';
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
@@ -1570,7 +1570,7 @@ describe('integrated extinction and telemetry', () => {
     expect(harness.tasks).toHaveLength(0);
   });
 
-  it.each([2, 3, 4, 5, 6])(
+  it.each([2, 3, 4, 5, 6, 7])(
     'migrates/restores v%i then preserves terminal and pending history through an empty save continuation',
     (version) => {
       const harness = workerHarness();
@@ -1579,6 +1579,7 @@ describe('integrated extinction and telemetry', () => {
         telemetry: _telemetry,
         interventions: _interventions,
         terrain: _terrain,
+        thermalRefuges: _thermalRefuges,
         ...legacy
       } = current;
       const file =
@@ -1590,7 +1591,9 @@ describe('integrated extinction and telemetry', () => {
               ? legacyV4(current)
               : version === 5
                 ? legacyV5(current)
-                : current;
+                : version === 6
+                  ? legacyV6(current)
+                  : current;
       expect(file.version).toBe(version);
       if (file.version === 2) expect(file).not.toHaveProperty('telemetry');
       else {
@@ -1618,21 +1621,23 @@ describe('integrated extinction and telemetry', () => {
         });
       if (file.version >= 4) {
         expect(imported).toEqual(
-          file.version === 6
+          file.version === 7
             ? file
-            : file.version === 5
+            : file.version === 5 || file.version === 6
               ? {
                   ...file,
-                  version: 6,
-                  terrain: { ...DEFAULT_TERRAIN },
-                  interventions: { ...file.interventions, version: 2 },
+                  version: 7,
+                  terrain: file.version === 6 ? file.terrain : { ...DEFAULT_TERRAIN },
+                  thermalRefuges: { version: 1, enabled: false, cells: [] },
+                  interventions: { ...file.interventions, version: 3 },
                 }
               : {
                   ...file,
-                  version: 6,
+                  version: 7,
                   terrain: { ...DEFAULT_TERRAIN },
+                  thermalRefuges: { version: 1, enabled: false, cells: [] },
                   interventions: {
-                    version: 2,
+                    version: 3,
                     originTick: file.tick,
                     originKind: 'legacy-import',
                     originSettings: { ...file.settings },
@@ -1649,7 +1654,7 @@ describe('integrated extinction and telemetry', () => {
       harness.advance();
       reference.step();
       const terminal = harness.save();
-      expect(terminal.version).toBe(6);
+      expect(terminal.version).toBe(7);
       expect(terminal.telemetry.version).toBe(2);
       expect(terminal.telemetry.samples.at(-1)).toMatchObject({
         fromTick: version === 2 ? 89 : 60,
@@ -1717,7 +1722,7 @@ describe('failed-load retained-world recovery', () => {
     for (let repeat = 0; repeat < 2; repeat++)
       harness.send({ type: 'load', runId: 3 + repeat, text: 'not json' });
     expect(harness.transferStats.batches).toBeGreaterThan(0);
-    expect(harness.transferStats.buffers).toBe(harness.transferStats.batches * 2);
+    expect(harness.transferStats.buffers).toBe(harness.transferStats.batches * 3);
     expect(harness.transferStats.duplicates).toBe(0);
     expect(harness.transferStats.detached).toBe(harness.transferStats.buffers);
     expect(harness.save()).toEqual(before);

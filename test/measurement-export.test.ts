@@ -158,16 +158,16 @@ function decode(text: string): any {
 }
 
 describe('bounded retained measurement codec', () => {
-  it('uses envelope2 and exact terrain metadata/detail without expanding numeric settings or changing CSV columns', () => {
+  it('uses envelope3 and exact terrain metadata/detail without expanding numeric settings or changing CSV columns', () => {
     const world = new Ecosystem();
     (world.settings as any).retained = { literal: 'unmeasured opaque value' };
     world.changeTerrain('clear');
     world.changeTerrain('regenerate', { version: 1, preset: 'open-field', seed: -0 });
     const source = world.measurements(),
       envelope = measurementEnvelope(source);
-    expect(envelope.version).toBe(2);
-    expect(envelope.rules.version).toBe(1);
-    expect(envelope.snapshot.worldVersion).toBe(6);
+    expect(envelope.version).toBe(3);
+    expect(envelope.rules.version).toBe(2);
+    expect(envelope.snapshot.worldVersion).toBe(7);
     expect(envelope.snapshot.terrain).toEqual(world.terrain);
     expect(envelope.snapshot.settings).toEqual(DEFAULTS);
     expect(envelope.negativeZeroPaths).toContain('/snapshot/terrain/seed');

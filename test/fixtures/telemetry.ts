@@ -7,6 +7,7 @@ import {
   type WorldFileV3,
   type WorldFileV4,
   type WorldFileV5,
+  type WorldFileV6,
 } from '../../src/model';
 
 export function advance(world: Ecosystem, ticks: number): void {
@@ -36,7 +37,12 @@ export function colony(
 }
 
 export function legacyV3(saved: WorldFile): WorldFileV3 {
-  const { interventions: _interventions, terrain: _terrain, ...historical } = ecology(saved);
+  const {
+    interventions: _interventions,
+    terrain: _terrain,
+    thermalRefuges: _thermalRefuges,
+    ...historical
+  } = ecology(saved);
   return {
     ...historical,
     version: 3,
@@ -50,12 +56,26 @@ export function legacyV3(saved: WorldFile): WorldFileV3 {
   };
 }
 export function legacyV4(saved: WorldFile): WorldFileV4 {
-  const { interventions: _interventions, terrain: _terrain, ...historical } = saved;
+  const {
+    interventions: _interventions,
+    terrain: _terrain,
+    thermalRefuges: _thermalRefuges,
+    ...historical
+  } = saved;
   return { ...historical, version: 4 };
 }
 export function legacyV5(saved: WorldFile): WorldFileV5 {
-  const { terrain: _terrain, interventions, ...historical } = saved;
-  assert.ok(interventions.entries.every((entry) => entry.kind !== 'terrain'));
+  const {
+    terrain: _terrain,
+    thermalRefuges: _thermalRefuges,
+    interventions,
+    ...historical
+  } = saved;
+  assert.ok(
+    interventions.entries.every(
+      (entry) => entry.kind !== 'terrain' && !entry.kind.startsWith('refuge-'),
+    ),
+  );
   return {
     ...historical,
     version: 5,
@@ -63,6 +83,19 @@ export function legacyV5(saved: WorldFile): WorldFileV5 {
       ...interventions,
       version: 1,
       entries: interventions.entries as WorldFileV5['interventions']['entries'],
+    },
+  };
+}
+export function legacyV6(saved: WorldFile): WorldFileV6 {
+  const { thermalRefuges: _thermalRefuges, interventions, ...historical } = saved;
+  assert.ok(interventions.entries.every((entry) => !entry.kind.startsWith('refuge-')));
+  return {
+    ...historical,
+    version: 6,
+    interventions: {
+      ...interventions,
+      version: 2,
+      entries: interventions.entries as WorldFileV6['interventions']['entries'],
     },
   };
 }

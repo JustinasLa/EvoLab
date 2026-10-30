@@ -115,8 +115,9 @@ describe('approved seeded terrain, opaque extension and exact continuation contr
       const world = new Ecosystem({ ...DEFAULTS, seed });
       for (const tick of [0, 30, 90, 330, 1600]) {
         while (world.tick < tick) world.step();
-        const { terrain, ...snapshot } = world.save();
+        const { terrain, thermalRefuges, ...snapshot } = world.save();
         expect(terrain).toEqual(DEFAULT_TERRAIN);
+        expect(thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
         if (seed === 42 && tick === 1600) {
           expect(world.births).toBeGreaterThan(0);
           expect(world.deaths).toBeGreaterThan(0);
@@ -1953,7 +1954,7 @@ describe('measured thermal adaptation', () => {
       expect(ecology(saved)).toEqual({
         ...ecology(world.save()),
         interventions: {
-          version: 2,
+          version: 3,
           originTick: tick,
           originKind: 'legacy-import',
           originSettings: { ...world.settings },
@@ -2081,11 +2082,18 @@ describe('telemetry persistence, migration and complete candidate validation', (
             JSON.stringify({ ...file, telemetry: { untrusted: 'ignored legacy extension' } }),
           ),
           { version: _version, ...expectedEcology } = file,
-          { version: current, interventions, terrain, ...actualEcology } = ecology(world.save());
-        expect(current).toBe(6);
+          {
+            version: current,
+            interventions,
+            terrain,
+            thermalRefuges,
+            ...actualEcology
+          } = ecology(world.save());
+        expect(current).toBe(7);
+        expect(thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
         expect(terrain).toEqual(DEFAULT_TERRAIN);
         expect(interventions).toEqual({
-          version: 2,
+          version: 3,
           originTick: tick,
           originKind: 'legacy-import',
           originSettings: { ...file.settings },

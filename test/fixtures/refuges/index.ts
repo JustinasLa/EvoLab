@@ -5,7 +5,7 @@ import { gunzipSync } from 'node:zlib';
 import { Ecosystem as AcceptedEcosystem } from './accepted-source/ecosystem';
 import type { WorldFileV6, WorldFile } from '../../../src/model';
 
-const provenance = JSON.parse(readFileSync(new URL('./provenance.json', import.meta.url), 'utf8'));
+const provenance = JSON.parse(readFileSync('test/fixtures/refuges/provenance.json', 'utf8'));
 let captured: Record<string, string> | undefined;
 const decoded = new Map<string, string>();
 
@@ -13,7 +13,7 @@ export function fixtureText(name: string): string {
   const retained = decoded.get(name);
   if (retained !== undefined) return retained;
   if (!captured) {
-    const archive = readFileSync(new URL('./accepted-capture.json.gz', import.meta.url));
+    const archive = readFileSync('test/fixtures/refuges/accepted-capture.json.gz');
     assert.equal(createHash('sha256').update(archive).digest('hex'), provenance.archive.sha256);
     const container = JSON.parse(gunzipSync(archive).toString('utf8'));
     assert.equal(container.base, '28415e3339f24660da8f77e4ada8237a6bbce7ae');
