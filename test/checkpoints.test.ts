@@ -204,16 +204,70 @@ describe('native checkpoint ownership and failure delivery', () => {
     native.faults.upgrade = true;
     native.deliverOpen();
     expect(native.request.transaction.abort).toHaveBeenCalled();
-    expect(status).toHaveBeenCalledWith(expect.stringContaining('Late'));
+    expect(status).toHaveBeenCalledWith(expect.stringContaining('open failed after the deadline'));
+    expect(status).toHaveBeenCalledWith(expect.stringContaining('Refresh explicitly to retry'));
+    expect(native.connection.close).not.toHaveBeenCalled();
     expect(store.busy).toBe(false);
     store.dispose();
     const upgrade = harness();
     Object.assign(upgrade.faults, { upgrade: true, createThrow: true });
     const broken = createCheckpoints({ factory: () => upgrade.factory });
-    await broken.open();
+    await expect(broken.open()).rejects.toMatchObject({ code: 'storage' });
     expect(upgrade.request.transaction.abort).toHaveBeenCalled();
     broken.dispose();
   });
+  it('preserves present undefined values and rejects insertion into an observed empty slot', async () => {
+    const native = harness(),
+      store = createCheckpoints({ factory: () => native.factory });
+    native.values.set(1, undefined);
+    const snapshot = await store.list();
+    expect(snapshot.count).toBe(1);
+    expect(snapshot.rows[0]).toMatchObject({
+      slot: 1,
+      readonly: true,
+      problem: expect.stringContaining('Uninspectable'),
+    });
+    await expect(store.access({ slot: 1 }, token())).rejects.toMatchObject({ code: 'conflict' });
+    const empty = snapshot.rows[1];
+    native.values.set(2, undefined);
+    await expect(store.access(empty, token())).rejects.toMatchObject({ code: 'conflict' });
+    await expect(store.access(empty, null)).rejects.toMatchObject({ code: 'conflict' });
+    expect([...native.values]).toEqual([
+      [1, undefined],
+      [2, undefined],
+    ]);
+    store.dispose();
+  });
+  it.each([false, true])(
+    'settles an expired failed open with a classified retry status unless disposed=%s',
+    async (disposed) => {
+      vi.useFakeTimers();
+      const native = harness(),
+        status = vi.fn();
+      native.faults.openStall = true;
+      const store = createCheckpoints({ factory: () => native.factory, status });
+      const opening = store.open(),
+        rejected = expect(opening).rejects.toMatchObject({ code: 'pending' });
+      await vi.advanceTimersByTimeAsync(5000);
+      await rejected;
+      status.mockClear();
+      if (disposed) store.dispose();
+      native.faults.openError = 'SecurityError';
+      native.deliverOpen();
+      expect(store.busy).toBe(false);
+      if (disposed) expect(status).not.toHaveBeenCalled();
+      else {
+        expect(status).toHaveBeenCalledWith(
+          expect.stringContaining('Checkpoint storage unavailable'),
+        );
+        expect(status).toHaveBeenCalledWith(expect.stringContaining('Refresh explicitly to retry'));
+        delete native.faults.openError;
+        delete native.faults.openStall;
+        await store.open();
+      }
+      store.dispose();
+    },
+  );
   it.each([false, true])(
     'retains uncertain writes until native settlement, commit=%s',
     async (commit) => {

@@ -58,8 +58,12 @@ export function checkpointRecord(name: string, world: string): string {
     throw new CheckpointError('invalid');
   return JSON.stringify({ version: 1, name, tick: source.tick, seed: source.settings.seed, world });
 }
-export function classifyCheckpoint(slot: number, value: unknown): Checkpoint {
-  if (value === undefined) return { slot };
+export function classifyCheckpoint(
+  slot: number,
+  value: unknown,
+  present = value !== undefined,
+): Checkpoint {
+  if (!present) return { slot };
   if (
     typeof value !== 'string' ||
     value.length > RECORD_MAX_BYTES ||
@@ -175,6 +179,10 @@ export function createCheckpoints(
       request.onerror = () => {
         const error = storageError(request.error);
         finish();
+        if (expired)
+          status(
+            `Checkpoint open failed after the deadline. ${error.message} Refresh explicitly to retry.`,
+          );
         reject(error);
       };
       request.onsuccess = () => {
@@ -322,10 +330,11 @@ export function createCheckpoints(
       const count = store.count();
       count.onsuccess = guarded(fail, () => {
         for (let slot = 1; slot <= CHECKPOINT_CAPACITY; slot++) {
-          const request = store.get(slot);
+          const request = store.openCursor(slot);
           request.onsuccess = guarded(fail, () => {
-            const value: unknown = request.result;
-            rows.push(classifyCheckpoint(slot, value));
+            const cursor = request.result;
+            const value: unknown = cursor?.value;
+            rows.push(classifyCheckpoint(slot, value, cursor !== null));
             if (typeof value === 'string') bytes += new TextEncoder().encode(value).byteLength;
             if (rows.length === CHECKPOINT_CAPACITY) accept({ rows, count: count.result, bytes });
           });
@@ -352,9 +361,10 @@ export function createCheckpoints(
             fail(new CheckpointError('full'));
             return;
           }
-          const request = store.get(entry.slot);
+          const request = store.openCursor(entry.slot);
           request.onsuccess = guarded(fail, () => {
-            const current = classifyCheckpoint(entry.slot, request.result);
+            const cursor = request.result;
+            const current = classifyCheckpoint(entry.slot, cursor?.value, cursor !== null);
             if (current.readonly || current.token !== entry.token) {
               fail(new CheckpointError('conflict'));
               return;

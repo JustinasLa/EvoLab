@@ -6035,6 +6035,69 @@ test('corrupt local checkpoints, failed complete validation, CAS conflicts and q
   });
 });
 
+test('native undefined checkpoint records remain occupied and cannot replace an observed empty slot', async ({
+  page,
+}) => {
+  await observeTerrainNative(page);
+  await page.goto('/');
+  await terrainNativeFrame(page);
+  const baseline = await downloadPausedWorld(page);
+  await openCheckpoints(page);
+  await page.locator('#checkpoint-name').fill('preserve unknown records');
+  const undefinedRecord = async (slot: number, write = false) =>
+    page.evaluate(
+      async ({ slot, write }) => {
+        const request = indexedDB.open('evolab-world-checkpoints', 1);
+        const db = await new Promise<IDBDatabase>((resolve, reject) => {
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        try {
+          return await new Promise<{ present: boolean; isUndefined: boolean }>(
+            (resolve, reject) => {
+              const tx = db.transaction('entries', write ? 'readwrite' : 'readonly');
+              const store = tx.objectStore('entries');
+              if (write) store.put(undefined, slot);
+              const cursor = store.openCursor(slot);
+              let result = { present: false, isUndefined: false };
+              cursor.onsuccess = () => {
+                result = {
+                  present: cursor.result !== null,
+                  isUndefined: cursor.result?.value === undefined,
+                };
+              };
+              tx.oncomplete = () => resolve(result);
+              tx.onabort = () => reject(tx.error);
+            },
+          );
+        } finally {
+          db.close();
+        }
+      },
+      { slot, write },
+    );
+  expect(await undefinedRecord(1, true)).toEqual({ present: true, isUndefined: true });
+  await page.locator('#checkpoint-refresh').click();
+  await expect(page.locator('#checkpoint-slot')).toContainText('Uninspectable stored value');
+  await expect(page.locator('#checkpoint-usage')).toContainText('1 / 5');
+  for (const action of ['save', 'restore', 'delete']) {
+    await page.locator('#checkpoint-' + action).click();
+    await expect(page.locator('#checkpoint-status')).toContainText(
+      'Unsupported storage is read-only',
+    );
+    await expect(page.locator('#checkpoint-dialog')).not.toBeVisible();
+  }
+  await page.locator('#checkpoint-slot').selectOption('2');
+  expect(await undefinedRecord(2, true)).toEqual({ present: true, isUndefined: true });
+  await expect(page.locator('#save')).toBeEnabled();
+  await page.locator('#checkpoint-save').click();
+  await expect(page.locator('#checkpoint-status')).toContainText('changed or disappeared');
+  await expect(page.locator('#checkpoint-dialog')).not.toBeVisible();
+  expect(await undefinedRecord(1)).toEqual({ present: true, isUndefined: true });
+  expect(await undefinedRecord(2)).toEqual({ present: true, isUndefined: true });
+  expect((await downloadPausedWorld(page)).toString()).toBe(baseline.toString());
+});
+
 test('unavailable checkpoint storage leaves explicit download and exact Step available', async ({
   page,
 }) => {
