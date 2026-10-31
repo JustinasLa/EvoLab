@@ -329,13 +329,19 @@ export function nextSessionId(value: number): number {
     throw new Error('Session counter exhausted. Restart the worker.');
   return value + 1;
 }
+export interface LineagePresentation {
+  archive: LineageArchiveState;
+  current: (Species & { organismIds: number[] })[];
+}
 export type WorldPresentation = Pick<Frame, 'stats' | 'climate' | 'offset' | 'terrain'> & {
+  lineage?: LineagePresentation;
   thermalRefuges: RefugeSummary;
   anchorTemperature: number | null;
   anchorRefugeUnits: number;
 };
 export type HabitatFrame = Omit<Frame, 'telemetry' | 'interventions'>;
 export interface DisplayView {
+  lineage?: true;
   epoch: number;
   enabled: boolean;
   visible: boolean;

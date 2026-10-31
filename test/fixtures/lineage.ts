@@ -189,3 +189,45 @@ export function extinctionOccupancyContradiction(): WorldFile {
   };
   return saved;
 }
+
+/** The next real tick prunes the extinct child's last summary/creation evidence. */
+export function relationshipEviction() {
+  const world = new Ecosystem(
+    { ...DEFAULTS, seed: 2, mutation: 0.4, climate: 0, nutrients: 0 },
+    false,
+  );
+  const parent = world.spawn(admissionGenome(), 120, 78)!;
+  const extinct = world.spawn(admissionGenome(), 122, 78, undefined, parent)!;
+  world.kill(extinct, 'manual');
+  const retained = world.spawn(admissionGenome(), 124, 78, undefined, parent)!;
+  const reproducer = world.spawn(admissionGenome(), 130, 78)!;
+  for (let i = 0; i < 254; i++) {
+    const filler = world.spawn(admissionGenome(), 10, 10)!;
+    world.kill(filler, 'manual');
+  }
+  for (const organism of [parent, retained, reproducer]) {
+    organism.age = 32;
+    organism.energy = 30;
+  }
+  return { world, parent, extinct, retained };
+}
+
+/** Three funded births prune one of exactly 41 extinct identities from the event ring. */
+export function paginationEviction() {
+  const world = new Ecosystem(
+    { ...DEFAULTS, seed: 0, mutation: 0.4, climate: 0, nutrients: 0 },
+    false,
+  );
+  for (let i = 0; i < 41; i++) {
+    const extinct = world.spawn(admissionGenome(), 10, 10)!;
+    world.kill(extinct, 'manual');
+  }
+  for (const x of [120, 124, 130]) {
+    const reproducer = world.spawn(admissionGenome(), x, 78)!;
+    reproducer.age = 32;
+    reproducer.energy = 30;
+  }
+  for (let i = 0; i < 427; i++)
+    world.spawn(admissionGenome(), i % WIDTH, 10 + Math.floor(i / WIDTH));
+  return world;
+}

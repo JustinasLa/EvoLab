@@ -49,6 +49,8 @@ import { storedSensoryGenome } from '../fixtures/sensory-legacy';
 import { readFileSync } from 'node:fs';
 import {
   admissionGenome,
+  relationshipEviction,
+  paginationEviction,
   contradictoryPruning,
   impossibleReadmission,
   omittedNewestAdmission,
@@ -6032,6 +6034,489 @@ test('B23-7 manual disclosure, keyboard controls and responsive views preserve t
   expect(errors).toEqual([]);
   expect(external).toEqual([]);
   await refugeProtocol(page);
+});
+
+test.describe('retained lineage explorer', () => {
+  test('paused accessible navigation highlights real membership and preserves complete saves', async ({
+    page,
+  }, info) => {
+    await page.addInitScript(() => {
+      const evidence = ((window as any).lineageExplorerEvidence = {
+        commands: [] as string[],
+        outlines: 0,
+      });
+      Worker.prototype.postMessage = new Proxy(Worker.prototype.postMessage, {
+        apply(post, worker, args) {
+          if (!['flow-ack', 'display-view'].includes(args[0].type))
+            evidence.commands.push(args[0].type);
+          return Reflect.apply(post, worker, args);
+        },
+      });
+      CanvasRenderingContext2D.prototype.fillRect = new Proxy(
+        CanvasRenderingContext2D.prototype.fillRect,
+        {
+          apply(fill, context, args) {
+            if (context.canvas.id === 'world') evidence.outlines = 0;
+            return Reflect.apply(fill, context, args);
+          },
+        },
+      );
+      CanvasRenderingContext2D.prototype.strokeRect = new Proxy(
+        CanvasRenderingContext2D.prototype.strokeRect,
+        {
+          apply(stroke, context, args) {
+            if (context.canvas.id === 'world' && context.strokeStyle === '#ffffff')
+              evidence.outlines++;
+            return Reflect.apply(stroke, context, args);
+          },
+        },
+      );
+    });
+    await page.goto('/');
+    await pause(page);
+    const world = new Ecosystem({ ...DEFAULTS, mutation: 0, climate: 0, nutrients: 0 }, false);
+    const parent = world.spawn(admissionGenome(), 120, 78)!;
+    world.spawn(admissionGenome(), 122, 78, parent.species, parent);
+    const childBody = admissionGenome();
+    childBody.preference = 0.65;
+    const child = world.spawn(childBody, 124, 78, undefined, parent)!;
+    world.kill(child, 'manual');
+    // Opaque compatibility remains part of complete world Save, not display projection.
+    parent.genome.legacyExtensions = [
+      ['extra', encodeLegacyValue({ text: '<literal>', nested: [1, { preserved: true }] })],
+    ];
+    await importTelemetryWorld(page, world.save());
+    await page.locator('#ecosystem-tab').click();
+    const before = await downloadWorld(page);
+    await page.locator('#lineage-heading').focus();
+    await page.keyboard.press('Space');
+    await expect(page.locator('#lineage-explorer')).toHaveJSProperty('open', true);
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    await expect(page.locator('#lineage-retention')).toContainText('Bounded evidence');
+    const commands = await page.evaluate(
+      () => (window as any).lineageExplorerEvidence.commands.length,
+    );
+    const search = page.getByLabel('Search lineage ID, anatomy or status');
+    await search.fill(String(parent.species));
+    const row = page.locator('#lineage-rows button');
+    await expect(row).toHaveCount(1);
+    await row.focus();
+    await page.keyboard.press('Enter');
+    await expect(row).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('#lineage-detail')).toBeFocused();
+    await expect(page.locator('#lineage-detail')).toContainText('Peak: 2 lifetime');
+    await expect(page.locator('#lineage-detail')).toContainText('Anatomy category: Rootling');
+    await expect(page.locator('.lineage-event-chart')).toHaveAttribute('role', 'img');
+    await expect(
+      page.getByRole('list', { name: `Retained timeline for lineage #${parent.species}` }),
+    ).toContainText(`Parent #${parent.species} → child #${child.species}`);
+    await page.locator('#world').scrollIntoViewIfNeeded();
+    await expect
+      .poll(() => page.evaluate(() => (window as any).lineageExplorerEvidence.outlines))
+      .toBe(2);
+    await page.locator(`#lineage-detail [data-lineage-id="${child.species}"]`).click();
+    await expect(page.locator('#lineage-detail')).toContainText(
+      `Lineage #${child.species} · Extinct`,
+    );
+    await expect(page.locator('#lineage-detail')).toContainText(
+      'Generation: unknown (not archived)',
+    );
+    await expect(page.locator('#lineage-detail')).toContainText(
+      `Extinction of lineage #${child.species}`,
+    );
+    await page.locator('#world').scrollIntoViewIfNeeded();
+    await expect
+      .poll(() => page.evaluate(() => (window as any).lineageExplorerEvidence.outlines))
+      .toBe(0);
+    expect(await page.evaluate(() => (window as any).lineageExplorerEvidence.commands.length)).toBe(
+      commands,
+    );
+    expect(await downloadWorld(page)).toEqual(before);
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    await page.locator('#lineage-clear').focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#lineage-clear')).toBeDisabled();
+    await expect(search).toBeFocused();
+    await page.keyboard.press('Space');
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    expect(await downloadWorld(page)).toEqual(before);
+    await expect(page.locator('#lineage-detail')).toContainText('Select a lineage');
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true);
+    // Import a fresh world with the same lineage IDs: extinct selection must not attach.
+    await search.fill(String(child.species));
+    await page.locator('#lineage-rows button').click();
+    const replacement = new Ecosystem(DEFAULTS, false);
+    replacement.spawn(admissionGenome(), 10, 10);
+    replacement.spawn(admissionGenome(), 12, 10);
+    await page.locator('#lineage-detail button').focus();
+    // Keep native focus recovery observable: the ordinary import helper clicks Pause/Save.
+    await page.locator('#file').setInputFiles({
+      name: 'replacement-lineages.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify(replacement.save())),
+    });
+    await expect(page.locator('#notice')).toContainText('World restored');
+    await expect(search).toBeFocused();
+    await page.locator('#pause').evaluate((button: HTMLButtonElement) => {
+      if (button.textContent === 'Ⅱ Pause') button.click();
+    });
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    await expect(page.getByTitle('Advance one tick while paused')).toBeEnabled();
+    await expect(search).toBeFocused();
+    const replacementTick = Number((await page.locator('#tick').textContent())!.replace(/\D/g, ''));
+    expect(replacementTick).toBeGreaterThanOrEqual(replacement.tick);
+    advance(replacement, replacementTick - replacement.tick);
+    await page.keyboard.press('Space');
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    expect(await downloadWorld(page)).toEqual(Buffer.from(JSON.stringify(replacement.save())));
+    await expect(page.locator('#lineage-detail')).toContainText('Select a lineage');
+    await expect(page.locator('#lineage-rows [aria-pressed="true"]')).toHaveCount(0);
+    const screenshot = await page.locator('#lineage-explorer').screenshot();
+    await info.attach('lineage-explorer', { body: screenshot, contentType: 'image/png' });
+  });
+
+  test('held native pagination cannot cross an asynchronous world replacement', async ({
+    page,
+  }, info) => {
+    await observeTerrainNative(page);
+    await page.goto('/');
+    await terrainNativeFrame(page);
+    const world = sameTickLineages();
+    await importTelemetryWorld(page, world.save());
+    await page.locator('#ecosystem-tab').click();
+    await page.locator('#lineage-heading').click();
+    const target = page.getByRole('button', { name: 'Next lineages' });
+    await target.scrollIntoViewIfNeeded();
+    await target.focus();
+    const box = (await target.boundingBox())!;
+    const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    const session =
+      info.project.name === 'mobile' ? await page.context().newCDPSession(page) : null;
+    if (session)
+      await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] });
+    else {
+      await page.mouse.move(point.x, point.y);
+      await page.mouse.down();
+    }
+    const replacement = Ecosystem.load(JSON.stringify(world.save()));
+    replacement.step();
+    await page.locator('#file').setInputFiles({
+      name: 'held-pager-replacement.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify(replacement.save())),
+    });
+    await expect(page.locator('#notice')).toContainText('World restored');
+    await expect(page.locator('#lineage-observed')).toHaveText(
+      `Observed at tick ${replacement.tick}.`,
+    );
+    await expect(target).toBeEnabled();
+    expect(await target.boundingBox()).toEqual(box);
+    expect(
+      await target.evaluate(
+        (button, at) => document.elementFromPoint(at.x, at.y)?.closest('button') === button,
+        point,
+      ),
+    ).toBe(true);
+    if (session) {
+      await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await session.detach();
+    } else await page.mouse.up();
+    await expect(page.locator('#lineage-results')).toContainText('showing 1–40');
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    expect(await terrainSave(page, 'held-pager-replacement-after.json')).toEqual(
+      replacement.save(),
+    );
+    await target.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#lineage-results')).toContainText('showing 41–80');
+    expect(await terrainSave(page, 'fresh-pager-after.json')).toEqual(replacement.save());
+  });
+
+  test('live observations preserve a held navigation target and timeline scroll', async ({
+    page,
+  }, info) => {
+    await page.goto('/');
+    await pause(page);
+    const world = new Ecosystem({ ...DEFAULTS, mutation: 0, climate: 0, nutrients: 0 }, false);
+    const parent = world.spawn(admissionGenome(), 120, 78)!;
+    const children = Array.from({ length: 24 }, (_, i) =>
+      world.spawn(admissionGenome(), 10 + i * 2, 20, undefined, parent)!,
+    );
+    await importTelemetryWorld(page, world.save());
+    await page.locator('#ecosystem-tab').click();
+    await page.locator('#lineage-heading').click();
+    await expect(page.locator('#lineage-retention')).toContainText('Bounded evidence');
+    await page.locator('#lineage-search').fill(String(parent.species));
+    await page.locator('#lineage-rows button').click();
+    const before = JSON.parse((await downloadWorld(page)).toString()) as WorldFile;
+    const timeline = page.locator('.lineage-timeline');
+    const scroll = await timeline.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+      return element.scrollTop;
+    });
+    expect(scroll).toBeGreaterThan(0);
+    const target = page.locator(`#lineage-detail button[data-lineage-id="${children[0].species}"]`);
+    await target.scrollIntoViewIfNeeded();
+    await page.evaluate((id) => {
+      (window as any).lineageHeld = {
+        row: document.querySelector('#lineage-rows button'),
+        timeline: document.querySelector('.lineage-timeline'),
+        target: document.querySelector(`#lineage-detail button[data-lineage-id="${id}"]`),
+      };
+    }, children[0].species);
+    const observedTick = () =>
+      page
+        .locator('#lineage-observed')
+        .evaluate((element) => Number(element.textContent!.replace(/\D/g, '')));
+    const tick = await observedTick();
+    await page.locator('#pause').click();
+    await expect(page.locator('#run-state')).toHaveText('LIVE');
+    await target.scrollIntoViewIfNeeded();
+    const box = (await target.boundingBox())!;
+    const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    const session =
+      info.project.name === 'mobile' ? await page.context().newCDPSession(page) : null;
+    if (session)
+      await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] });
+    else {
+      await page.mouse.move(point.x, point.y);
+      await page.mouse.down();
+    }
+    const pressedTick = await observedTick();
+    await expect.poll(observedTick).toBeGreaterThan(Math.max(tick, pressedTick) + 1);
+    expect(
+      await page.evaluate(() => {
+        const held = (window as any).lineageHeld;
+        return {
+          row: held.row === document.querySelector('#lineage-rows button'),
+          timeline: held.timeline === document.querySelector('.lineage-timeline'),
+          target: held.target.isConnected,
+          scroll: held.timeline.scrollTop,
+        };
+      }),
+    ).toEqual({ row: true, timeline: true, target: true, scroll });
+    if (session) {
+      await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await session.detach();
+    } else await page.mouse.up();
+    await expect(page.locator('#lineage-detail')).toContainText(
+      `Lineage #${children[0].species} · Living`,
+    );
+    await requestPause(page);
+    await expect(page.locator('#save')).toBeEnabled();
+    const after = JSON.parse((await downloadPausedWorld(page)).toString()) as WorldFile;
+    const reference = Ecosystem.load(JSON.stringify(before));
+    while (reference.tick < after.tick) reference.step();
+    expect(after).toEqual(reference.save());
+  });
+
+  test('native relationship focus survives a sibling extinction observation', async ({ page }) => {
+    await observeTerrainNative(page);
+    await page.goto('/');
+    await terrainNativeFrame(page);
+    const world = new Ecosystem({ ...DEFAULTS, mutation: 0, climate: 0, nutrients: 0 }, false);
+    const parent = world.spawn(admissionGenome(), 120, 78)!;
+    const first = world.spawn(admissionGenome(), 122, 78, undefined, parent)!;
+    const second = world.spawn(admissionGenome(), 124, 78, undefined, parent)!;
+    first.energy = 0.001;
+    await importTelemetryWorld(page, world.save());
+    await page.locator('#ecosystem-tab').click();
+    await page.locator('#lineage-heading').click();
+    await page.locator('#lineage-search').fill(String(parent.species));
+    await page.locator('#lineage-rows button').click();
+    const before = await terrainSave(page, 'focused-extinction-before.json');
+    expect(before.organisms.map((organism) => organism.id)).toContain(first.id);
+    const reference = Ecosystem.load(JSON.stringify(before));
+    const target = page.locator(`#lineage-detail button[data-lineage-id="${second.species}"]`);
+    await target.focus();
+    await page.evaluate(() => {
+      (window as any).focusedRelation = document.activeElement;
+      // Activate the real Step control without moving focus off the relationship.
+      document.getElementById('step')!.click();
+    });
+    reference.step();
+    expect(reference.organisms.has(first.id)).toBe(false);
+    await expect(page.locator('#lineage-observed')).toHaveText(
+      `Observed at tick ${reference.tick}.`,
+    );
+    await expect(target).toBeFocused();
+    expect(await target.evaluate((element) => element === (window as any).focusedRelation)).toBe(
+      true,
+    );
+    expect(
+      await page
+        .locator('[data-lineage-key="children"] button')
+        .evaluateAll((buttons) =>
+          buttons.map((button) => Number((button as HTMLElement).dataset.lineageId)),
+        ),
+    ).toEqual([first.species, second.species]);
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#lineage-detail')).toContainText(
+      `Lineage #${second.species} · Living`,
+    );
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    expect(await terrainSave(page, 'focused-extinction-after.json')).toEqual(reference.save());
+  });
+
+  for (const selectedEvidence of ['retained', 'expiring'] as const) {
+    test(`native relationship ownership across real archive eviction / ${selectedEvidence}`, async ({
+      page,
+    }, info) => {
+      await observeTerrainNative(page);
+      await page.goto('/');
+      await terrainNativeFrame(page);
+      const { world, parent, extinct, retained } = relationshipEviction();
+      await importTelemetryWorld(page, world.save());
+      await page.locator('#ecosystem-tab').click();
+      await page.locator('#lineage-heading').click();
+      const selected = selectedEvidence === 'retained' ? parent.species : extinct.species;
+      await page.locator('#lineage-search').fill(String(selected));
+      await page.locator('#lineage-rows button').click();
+      const before = await terrainSave(page, `eviction-${selectedEvidence}-before.json`);
+      const reference = Ecosystem.load(JSON.stringify(before));
+      const id = selectedEvidence === 'retained' ? retained.species : parent.species;
+      const target = page.locator(`#lineage-detail button[data-lineage-id="${id}"]`);
+      await target.scrollIntoViewIfNeeded();
+      await target.focus();
+      await target.evaluate((element) => {
+        (window as any).evictionTarget = element;
+      });
+      const box = (await target.boundingBox())!;
+      const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      const session =
+        selectedEvidence === 'retained' && info.project.name === 'mobile'
+          ? await page.context().newCDPSession(page)
+          : null;
+      if (selectedEvidence === 'retained') {
+        if (session)
+          await session.send('Input.dispatchTouchEvent', {
+            type: 'touchStart',
+            touchPoints: [point],
+          });
+        else {
+          await page.mouse.move(point.x, point.y);
+          await page.mouse.down();
+        }
+      }
+      await page.evaluate(() => document.getElementById('step')!.click());
+      reference.step();
+      expect(reference.lineageSnapshot().events.some((event) => event.id === extinct.species)).toBe(
+        false,
+      );
+      await expect(page.locator('#lineage-observed')).toHaveText(
+        `Observed at tick ${reference.tick}.`,
+      );
+      if (selectedEvidence === 'retained') {
+        expect(await target.evaluate((element) => element === (window as any).evictionTarget)).toBe(
+          true,
+        );
+        await expect(target).toBeFocused();
+        expect(await target.boundingBox()).toEqual(box);
+        // Release at the original coordinates: no move may compensate for reflow.
+        if (session) {
+          await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+          await session.detach();
+        } else await page.mouse.up();
+        await expect(page.locator('#lineage-detail')).toContainText(
+          `Lineage #${retained.species} · Living`,
+        );
+      } else {
+        await expect(page.locator('#lineage-detail')).toContainText('evidence was pruned');
+        await expect(page.locator('#lineage-search')).toBeFocused();
+        await page.keyboard.press('Space');
+      }
+      await expect(page.locator('#run-state')).toHaveText('PAUSED');
+      expect(await terrainSave(page, `eviction-${selectedEvidence}-after.json`)).toEqual(
+        reference.save(),
+      );
+    });
+  }
+
+  for (const pager of ['previous', 'next'] as const) {
+    test(`native focused ${pager} pagination recovers safely across real archive eviction`, async ({
+      page,
+    }) => {
+      await observeTerrainNative(page);
+      await page.goto('/');
+      await terrainNativeFrame(page);
+      const world = paginationEviction();
+      await importTelemetryWorld(page, world.save());
+      await page.locator('#ecosystem-tab').click();
+      await page.locator('#lineage-heading').click();
+      await page.locator('#lineage-search').fill('extinct');
+      await expect(page.locator('#lineage-results')).toContainText('41 matching');
+      if (pager === 'previous') await page.getByRole('button', { name: 'Next lineages' }).click();
+      const reference = Ecosystem.load(
+        JSON.stringify(await terrainSave(page, `pager-${pager}-before.json`)),
+      );
+      const target = page.getByRole('button', {
+        name: pager === 'previous' ? 'Previous lineages' : 'Next lineages',
+      });
+      await expect(target).toBeEnabled();
+      await target.focus();
+      await expect(target).toBeFocused();
+      await page.evaluate(() => document.getElementById('step')!.click());
+      reference.step();
+      await expect(page.locator('#lineage-observed')).toHaveText(
+        `Observed at tick ${reference.tick}.`,
+      );
+      await expect(page.locator('#lineage-results')).toContainText('40 matching');
+      await expect(page.locator('#lineage-results')).toContainText('showing 1–40');
+      await expect(target).toBeDisabled();
+      await expect(page.locator('#lineage-search')).toBeFocused();
+      await page.keyboard.press('Space');
+      await expect(page.locator('#run-state')).toHaveText('PAUSED');
+      expect(await terrainSave(page, `pager-${pager}-after.json`)).toEqual(reference.save());
+    });
+  }
+
+  test('empty and overflowing archives expose pruned ancestry with bounded phone-safe navigation', async ({
+    page,
+  }) => {
+    await page.goto('/');
+    await pause(page);
+    const empty = new Ecosystem(DEFAULTS, false);
+    await importTelemetryWorld(page, empty.save(), true);
+    await page.locator('#ecosystem-tab').click();
+    await page.locator('#lineage-heading').click();
+    await expect(page.locator('#lineage-retention')).toContainText('Bounded evidence');
+    await expect(page.locator('#lineage-results')).toContainText('No retained lineages');
+    await expect(page.locator('#lineage-rows li')).toHaveCount(0);
+    const world = new Ecosystem({ ...DEFAULTS, climate: 0, mutation: 0, nutrients: 0 }, false);
+    const parent = world.spawn(admissionGenome(), 120, 78)!;
+    const changed = admissionGenome();
+    changed.preference = 0.7;
+    const child = world.spawn(changed, 122, 78, undefined, parent)!;
+    world.kill(parent, 'manual');
+    for (let i = 0; i < 270; i++) world.kill(world.spawn(admissionGenome(), 10, 10)!, 'manual');
+    // Child stays living with metadata even after its own summary/event is evicted.
+    await importTelemetryWorld(page, world.save());
+    await expect(page.locator('#lineage-retention')).toContainText(
+      '256/256 summaries; 512/512 events',
+    );
+    await expect(page.locator('#lineage-retention')).toContainText('Older summaries pruned');
+    await expect(page.locator('#lineage-retention')).toContainText(
+      'Events pruned through tick 0; that tick may be partial',
+    );
+    await expect(page.locator('#lineage-rows li')).toHaveCount(40);
+    await page.getByRole('button', { name: 'Next lineages', exact: true }).click();
+    await expect(page.locator('#lineage-results')).toContainText('showing 41–80');
+    await page.getByLabel('Search lineage ID, anatomy or status').fill(`#${child.species}`);
+    await page.locator('#lineage-rows button').click();
+    await expect(page.locator('#lineage-detail')).toContainText(
+      'Current living representative; founding anatomy unknown / pruned',
+    );
+    await expect(page.locator('#lineage-detail')).toContainText('unknown / pruned ancestor');
+    await page.locator(`#lineage-detail [data-lineage-id="${parent.species}"]`).click();
+    await expect(page.locator('#lineage-detail')).toContainText('Unknown / pruned');
+    await expect(page.locator('#lineage-detail')).toContainText('Live: unknown');
+    await expect(page.locator('#lineage-detail')).toContainText('Creation tick unknown / pruned');
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true);
+  });
 });
 
 function placementWorld(): Ecosystem {

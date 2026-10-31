@@ -63,6 +63,7 @@ import {
   type Camera,
 } from './view';
 import { createTelemetryView } from './telemetry-view';
+import { createLineageView } from './lineage-view';
 import { emptyRefuges, refugeTool, refugeSummary, validRefugeBrush } from './refuges';
 import {
   createLibrary,
@@ -95,7 +96,8 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
         !data.display ||
         !integer(data.display.epoch, 0, Number.MAX_SAFE_INTEGER) ||
         typeof data.display.enabled !== 'boolean' ||
-        typeof data.display.visible !== 'boolean'
+        typeof data.display.visible !== 'boolean' ||
+        (data.display.lineage !== undefined && data.display.lineage !== true)
       )
         throw new Error('Invalid initial settings or display.');
       return {
@@ -106,6 +108,7 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
           epoch: data.display.epoch,
           enabled: data.display.enabled,
           visible: data.display.visible,
+          ...(data.display.lineage ? { lineage: true as const } : {}),
         },
       };
     case 'load':
@@ -1460,9 +1463,24 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       `World tick ${current?.world.stats.tick ?? 'unknown'} · habitat tick ${frame?.stats.tick ?? 'not received'} · ${!desiredView.visible ? 'Habitat not visible' : !desiredView.enabled ? 'Rendering off' : !frame || displayedEpoch !== desiredView.epoch ? 'Refreshing habitat…' : displayedRevision !== current?.revision ? (frame.stats.tick === current?.world.stats.tick ? 'Habitat awaiting latest edit' : 'Habitat is behind world progress') : `Habitat current at tick ${frame.stats.tick}`}`,
     );
   }
-  function changeView(enabled = desiredView.enabled, visible = desiredView.visible): void {
-    if (!alive || (enabled === desiredView.enabled && visible === desiredView.visible)) return;
-    desiredView = { epoch: increment(desiredView.epoch), enabled, visible };
+  function changeView(
+    enabled = desiredView.enabled,
+    visible = desiredView.visible,
+    lineage = desiredView.lineage === true,
+  ): void {
+    if (
+      !alive ||
+      (enabled === desiredView.enabled &&
+        visible === desiredView.visible &&
+        lineage === (desiredView.lineage === true))
+    )
+      return;
+    desiredView = {
+      epoch: increment(desiredView.epoch),
+      enabled,
+      visible,
+      ...(lineage ? { lineage: true as const } : {}),
+    };
     viewIntent = { ...desiredView };
     if (!enabled || !visible) discardFenceEpoch = desiredView.epoch;
     if (pendingFrame) {
@@ -1628,6 +1646,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       .forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
     get('ecosystem-panel').hidden = name !== 'ecosystem';
     get('organism-panel').hidden = name !== 'organism';
+    if (name === 'ecosystem') lineageView.reveal();
   };
   function choose(next: Tool): void {
     endStroke();
@@ -2696,6 +2715,17 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       }
     }
   }
+  const lineageView = createLineageView(root, () => {
+    dirty = true;
+  });
+  let displayedLineage: WorldPresentation['lineage'];
+  let displayedLineageReplacement = 0;
+  get('lineage-explorer').addEventListener('toggle', () => {
+    if (get<HTMLDetailsElement>('lineage-explorer').open) {
+      changeView(desiredView.enabled, desiredView.visible, true);
+      lineageView.reveal();
+    }
+  });
   function accept(
     observation: ControlState,
     source?: TelemetrySnapshot,
@@ -2710,6 +2740,12 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     if (!latestState || differentRun || observation.revision > latestState.revision) {
       if (!differentRun && latestState && observation.replacementId !== latestState.replacementId)
         return;
+      if (observation.world.lineage)
+        lineageView.update(
+          observation.world.lineage,
+          observation.world.stats.tick,
+          observation.replacementId,
+        );
       renderObservation(
         observation.world,
         observation.selected,
@@ -3108,6 +3144,8 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         displayedRevision = pendingFrame.state.revision;
         displayedEpoch = pendingFrame.viewEpoch;
         displayedSelected = pendingFrame.selectedId;
+        displayedLineage = pendingFrame.state.world.lineage;
+        displayedLineageReplacement = pendingFrame.state.replacementId;
         pendingFrame = null;
       }
       const anchor =
@@ -3126,7 +3164,18 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
             ? 'Move over the habitat to preview placement.'
             : `${ghost.blocked ? 'Blocked' : 'Valid'} in displayed tick ${frame!.stats.tick} at ${anchor!.x}, ${anchor!.y}. Worker rechecks on placement.${touchAnchor ? ' Tap this anchor again to place.' : ''}`,
       );
-      draw(canvas, buffer, frame!, camera, thermal, displayedSelected, ghost);
+      draw(
+        canvas,
+        buffer,
+        frame!,
+        camera,
+        thermal,
+        displayedSelected,
+        ghost,
+        displayedLineage
+          ? lineageView.highlighted(displayedLineage, displayedLineageReplacement)
+          : undefined,
+      );
       dirty = false;
       freshness();
       if (consumed) {
@@ -3208,6 +3257,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     candidate = undefined;
     librarySnapshot = { count: 0, rows: [] };
     telemetry.dispose();
+    lineageView.dispose();
     cancelAnimationFrame(animation);
     terminate();
     window.removeEventListener('keydown', keyboard);
