@@ -1923,7 +1923,7 @@ for (const scenario of [
   });
 }
 
-test('composed library operations preserve complete world7 and measurement intervention exports', async ({
+test('composed library operations preserve complete world8 archive and measurement intervention exports', async ({
   page,
 }, info) => {
   await fixture(page);
@@ -1931,7 +1931,8 @@ test('composed library operations preserve complete world7 and measurement inter
   await page.locator('[data-shock="heat"]').click();
   const before = await pausedSave(page);
   const world = JSON.parse(before.toString()) as WorldFile;
-  expect(world.version).toBe(7);
+  expect(world.version).toBe(8);
+  expect(world.lineageArchive.summaries.length).toBeGreaterThan(0);
   expect(world.telemetry.version).toBe(2);
   expect(world.interventions.version).toBe(3);
   expect(world.thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
@@ -1954,7 +1955,7 @@ test('composed library operations preserve complete world7 and measurement inter
   await page.locator('#ecosystem-tab').click();
   expect(await download(page, '#measurements-json')).toEqual(measurements);
   expect(await download(page, '#measurements-csv')).toEqual(csv);
-  await info.attach('composed-world7.json', { contentType: 'application/json', body: before });
+  await info.attach('composed-world8.json', { contentType: 'application/json', body: before });
   await info.attach('composed-measurements.json', {
     contentType: 'application/json',
     body: measurements,

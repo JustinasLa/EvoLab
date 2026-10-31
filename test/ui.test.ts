@@ -1155,7 +1155,8 @@ describe('explicit bounded local library', () => {
     root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
     harness.deliver();
     const before = harness.save();
-    expect(before.version).toBe(7);
+    expect(before.version).toBe(8);
+    expect(before.lineageArchive.summaries.length).toBeGreaterThan(0);
     expect(before.telemetry.version).toBe(2);
     expect(before.interventions.version).toBe(3);
     expect(before.thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
