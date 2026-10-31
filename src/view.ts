@@ -1,6 +1,9 @@
 import {
   WIDTH,
   HEIGHT,
+  LIMIT,
+  positions,
+  cloneGenome,
   COLORS,
   CELL_NAMES,
   type HabitatFrame,
@@ -45,6 +48,32 @@ export function point(
     cy = Math.floor((y - view.top) / view.scale);
   return cx >= 0 && cx < WIDTH && cy >= 0 && cy < HEIGHT ? { x: cx, y: cy } : null;
 }
+export function transformDesign(genome: Genome, action: 'rotate' | 'mirror'): Genome {
+  const transformed = cloneGenome(genome);
+  for (const cell of transformed.cells) {
+    const { x, y } = cell;
+    [cell.x, cell.y] = action === 'rotate' ? [-y, x] : [-x, y];
+  }
+  return transformed;
+}
+export interface PlacementGhost {
+  positions: number[];
+  blocked: boolean;
+}
+export function placementGhost(
+  frame: HabitatFrame,
+  genome: Genome,
+  x: number,
+  y: number,
+): PlacementGhost {
+  const footprint = positions({ genome, x, y, rotation: 0 });
+  return {
+    positions: footprint,
+    blocked:
+      frame.stats.population >= LIMIT ||
+      footprint.some((i) => frame.cells[i] === 2 || frame.ids[i] !== 0),
+  };
+}
 export function draw(
   canvas: HTMLCanvasElement,
   buffer: HTMLCanvasElement,
@@ -52,6 +81,7 @@ export function draw(
   camera: Camera,
   thermal: boolean,
   selected: number,
+  ghost?: PlacementGhost,
 ): void {
   const ctx = canvas.getContext('2d')!,
     b = buffer.getContext('2d')!;
@@ -111,6 +141,16 @@ export function draw(
   ctx.strokeStyle = '#26313a';
   ctx.lineWidth = 1;
   ctx.strokeRect(v.left - 0.5, v.top - 0.5, WIDTH * v.scale + 1, HEIGHT * v.scale + 1);
+  if (ghost) {
+    ctx.fillStyle = ghost.blocked ? '#ed708580' : '#66db8b80';
+    ctx.strokeStyle = ghost.blocked ? '#ed7085' : '#66db8b';
+    for (const i of ghost.positions) {
+      const x = v.left + (i % WIDTH) * v.scale,
+        y = v.top + Math.floor(i / WIDTH) * v.scale;
+      ctx.fillRect(x, y, v.scale, v.scale);
+      ctx.strokeRect(x, y, v.scale, v.scale);
+    }
+  }
 }
 export function genomeSvg(genome: Genome, size = 52): string {
   const xs = genome.cells.map((c) => c.x),
@@ -217,7 +257,7 @@ export const markup = `
   <section class="world-controls" aria-label="World tools and status">
     <div class="world-heading"><div class="world-label"><span class="live-dot"></span><span id="world-label">WORLD 0042</span><span id="run-state">LIVE</span></div><div class="zoom-controls"><button id="zoom-out" title="Zoom out">−</button><button id="fit" title="Fit world">Fit</button><button id="zoom-in" title="Zoom in">+</button></div></div>
     <div class="tool-dock" role="toolbar" aria-label="World tools"><button data-tool="inspect" aria-pressed="true" title="Inspect organism (I)">${inspectIcon}<span>Inspect</span><kbd>I</kbd></button><button data-tool="pan" aria-pressed="false" title="Pan world (H)">${panIcon}<span>Pan</span><kbd>H</kbd></button><button data-tool="food" aria-pressed="false" title="Paint nutrients (F)">${foodIcon}<span>Food</span><kbd>F</kbd></button><button data-tool="wall" aria-pressed="false" title="Paint walls (W)">${wallIcon}<span>Wall</span><kbd>W</kbd></button><button data-tool="erase" aria-pressed="false" title="Erase life and terrain (E)">${eraseIcon}<span>Erase</span><kbd>E</kbd></button><button data-tool="plant" aria-pressed="false" title="Place designed organism (P)">${plantIcon}<span>Plant</span><kbd>P</kbd></button></div>
-    <div class="tool-options"><span id="tool-hint">Click an organism to inspect its cells.</span><label id="brush-control" hidden for="brush">Radius<input id="brush" type="range" min="0" max="8" step="1" value="2"><output id="brush-value">2 cells</output></label></div>
+    <p id="placement-feedback" role="status" aria-live="polite"></p><button id="cancel-placement" hidden>Cancel placement (Esc)</button><div class="tool-options"><span id="tool-hint">Click an organism to inspect its cells.</span><label id="brush-control" hidden for="brush">Radius<input id="brush" type="range" min="0" max="8" step="1" value="2"><output id="brush-value">2 cells</output></label></div>
     <div class="world-bottom"><span id="tick">TICK 0</span><span id="world-count">Seeding life…</span><span class="world-size">240 × 156 cells · wrapped edges</span></div>
   </section>
   <div class="tabs" role="tablist" aria-label="Simulation panels"><button id="ecosystem-tab" data-tab="ecosystem" role="tab" aria-controls="ecosystem-panel" aria-selected="true">Ecosystem</button><button id="organism-tab" data-tab="organism" role="tab" aria-controls="organism-panel" aria-selected="false">Organism</button></div>
@@ -234,9 +274,9 @@ export const markup = `
       <div id="organism-panel" class="panel" role="tabpanel" aria-labelledby="organism-tab" hidden><details id="specimen-details" class="specimen-section"><summary>Selected organism</summary><div id="inspector"></div></details><section class="designer-section"><div class="section-caption"><h2>Build a body</h2><button id="clear-design" class="quiet">Reset</button></div><div id="cell-palette" class="cell-palette">${CELL_NAMES.map((name, i) => `<button data-cell="${i + 3}" aria-pressed="${i === 1}" title="${name}: ${cellDescriptions[i]}"><i style="--cell:${COLORS[i + 3]}"></i>${name}</button>`).join('')}</div><p id="cell-description" class="muted">${cellDescriptions[1]}</p><div id="editor" class="editor" aria-label="Organism anatomy editor"></div><p id="behavior-status" class="muted"></p><p id="design-note" class="muted">Use 1–16 cells, connected edge to edge.</p><label class="slider-label" for="preference">Preferred temperature<output id="preference-value">20°</output></label><input id="preference" type="range" min="0" max="1" step="0.025" value="0.5">
       <div class="blueprint-fields"><label for="blueprint-name">Blueprint name</label><input id="blueprint-name" type="text" maxlength="80" required><label for="blueprint-description">Description</label><textarea id="blueprint-description" maxlength="1000" rows="3"></textarea></div>
       <div class="blueprint-actions"><button id="import-blueprint">Import blueprint</button><button id="export-blueprint">Export blueprint</button></div><input id="blueprint-file" type="file" accept="application/json,.json" hidden><p id="designer-file-status" class="muted" role="status"></p>
-      <p class="muted">Importing edits only this design. Choose Place in world, then click the habitat to create a new organism.</p><button id="plant-design" class="primary wide">Place in world</button></section>
+      <div class="design-transforms" role="group" aria-label="Transform design"><button id="rotate-design" title="Rotate clockwise (R)">Rotate ↻ (R)</button><button id="mirror-design" title="Mirror horizontally (M)">Mirror ↔ (M)</button></div><p class="muted">Importing edits only this design. Choose Place in world, then click the habitat to create a new organism.</p><button id="plant-design" class="primary wide">Place in world</button></section>
       <details id="local-library"><summary id="library-heading">Local organism library</summary><p id="library-count">Not opened · 100 physical entries maximum</p><p id="library-status" role="status" aria-live="polite"></p><p class="muted">Saved designs stay in this browser profile, subject to eviction or clearing. Duplicate names are allowed; local IDs identify entries. Other tabs may change this list; Refresh.</p><div class="library-actions"><button id="library-refresh">Refresh / Retry</button><button id="library-save">Save design to library</button><button id="library-import">Import into library</button></div><input id="library-file" type="file" accept="application/json,.json" hidden><ul id="library-rows"></ul><p id="library-selection" class="muted">No selected entry.</p><div class="library-actions"><button id="library-load" disabled>Load into designer…</button><button id="library-rename" disabled>Rename…</button><button id="library-duplicate" disabled>Duplicate</button><button id="library-export" disabled>Export blueprint</button><button id="library-delete" disabled>Delete…</button></div><section id="library-candidate" hidden><h3>Blueprint candidate copy</h3><p class="muted">A delayed write may already have committed. Refresh before retrying. Discard removes only this candidate copy, not stored entries.</p><p id="library-candidate-name"></p><div id="library-candidate-preview"></div><div class="library-actions"><button id="library-add">Add as new / Retry</button><button id="library-replace">Replace selected…</button><button id="library-export-candidate">Export candidate blueprint</button><button id="library-discard">Discard candidate copy</button></div></section><p class="muted">Blueprint exports omit local IDs, revisions and capture provenance. For unsupported or uninspectable storage, export valid entries first, then consider browser site-storage settings. Clearing site data can remove other origin data and cannot be undone.</p></details></div>
-    <footer><nav aria-label="World files and help"><button id="save" title="Download this world">Save world</button><button id="load" title="Open a saved world">Load world</button><button id="help" title="How this world works">Help</button><a href="https://github.com/JustinasLa/EvoLab" target="_blank" rel="noreferrer">Source</a></nav><input id="file" type="file" accept="application/json,.json" hidden><details class="legend"><summary>Cell legend &amp; shortcuts</summary><div class="cell-legend">${CELL_NAMES.map((name, i) => `<span title="${cellDescriptions[i]}"><i style="--cell:${COLORS[i + 3]}"></i>${name}</span>`).join('')}<span><i style="--cell:${COLORS[1]}"></i>Food</span><span><i style="--cell:${COLORS[2]}"></i>Wall</span></div><p class="footer-note">Space: pause · Scroll: zoom<br>I / H / F / W / E / P: select tools</p></details></footer>
+    <footer><nav aria-label="World files and help"><button id="save" title="Download this world">Save world</button><button id="load" title="Open a saved world">Load world</button><button id="help" title="How this world works">Help</button><a href="https://github.com/JustinasLa/EvoLab" target="_blank" rel="noreferrer">Source</a></nav><input id="file" type="file" accept="application/json,.json" hidden><details class="legend"><summary>Cell legend &amp; shortcuts</summary><div class="cell-legend">${CELL_NAMES.map((name, i) => `<span title="${cellDescriptions[i]}"><i style="--cell:${COLORS[i + 3]}"></i>${name}</span>`).join('')}<span><i style="--cell:${COLORS[1]}"></i>Food</span><span><i style="--cell:${COLORS[2]}"></i>Wall</span></div><p class="footer-note">Space: pause · Scroll: zoom<br>I / H / F / W / E / P: select tools · R: rotate design · M: mirror · Esc: cancel placement</p></details></footer>
   </div>
     <p id="notice" role="status"></p>
   </aside>

@@ -55,6 +55,8 @@ import {
   markup,
   organismHtml,
   point,
+  placementGhost,
+  transformDesign,
   viewport,
   type Camera,
 } from './view';
@@ -276,6 +278,13 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   const canvas = get<HTMLCanvasElement>('world'),
     buffer = document.createElement('canvas');
   const camera: Camera = { zoom: 1, x: 0, y: 0 };
+  let hover: { x: number; y: number } | undefined,
+    touchAnchor: { x: number; y: number } | undefined;
+  function clearPlacement(): void {
+    hover = touchAnchor = undefined;
+    text('placement-feedback', '');
+    dirty = true;
+  }
   let settingsEdits: Partial<Settings> = {};
   let confirmedSettings = { ...DEFAULTS };
   let committedTerrain: TerrainRecipe = { ...DEFAULT_TERRAIN },
@@ -438,10 +447,13 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     }
   }
   function invalidateDesign(): void {
+    touchAnchor = undefined;
+    dirty = true;
     cancelReplacement('the design or world changed.');
     designRevision++;
   }
   function invalidateObservation(): void {
+    clearPlacement();
     captureIntent = null;
     acceptedObservationRun = undefined;
     observationTick = undefined;
@@ -1002,6 +1014,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     runId: number;
     strokeId?: number;
     format?: MeasurementFormat;
+    placement?: boolean;
   };
   const pending: Entry[] = [];
   const pendingSettings: Partial<Record<keyof Settings, { ticket: number; value: number }>> = {};
@@ -1257,6 +1270,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       ...('strokeId' in payload ? { strokeId: payload.strokeId } : {}),
       ...('format' in payload ? { format: payload.format } : {}),
       type: payload.type,
+      placement: payload.type === 'paint' && payload.tool === 'plant',
       ticket: entry.ticket,
       generation: entry.generation,
       reserved: entry.reserved,
@@ -1611,6 +1625,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       return;
     }
     tool = next;
+    clearPlacement();
     root
       .querySelectorAll<HTMLButtonElement>('button[data-tool]')
       .forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === tool)));
@@ -1628,7 +1643,8 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         food: 'Paint food.',
         wall: 'Paint walls.',
         erase: 'Erase life and terrain.',
-        plant: 'Click an empty patch to place your body.',
+        plant:
+          'Preview, then click to place. Touch: tap an anchor, then tap it again. Escape cancels.',
         warm: 'Add warmth with each admitted dab.',
         cool: 'Subtract warmth with each admitted dab.',
         'erase-temperature': 'Erase painted temperature only.',
@@ -1636,6 +1652,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     );
   }
   function editor(): void {
+    dirty = true;
     get('editor').replaceChildren();
     for (let y = -4; y <= 4; y++)
       for (let x = -4; x <= 4; x++) {
@@ -1660,6 +1677,20 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         : 'Use 1–16 cells, connected edge to edge.',
     );
   }
+  function transform(action: 'rotate' | 'mirror'): void {
+    try {
+      const next = transformDesign(blueprint, action);
+      endStroke();
+      invalidateDesign();
+      blueprint = next;
+      editor();
+    } catch {
+      notice('Draw 1–16 connected cells before transforming a design.');
+    }
+  }
+  get('rotate-design').addEventListener('click', () => transform('rotate'));
+  get('mirror-design').addEventListener('click', () => transform('mirror'));
+  get('cancel-placement').addEventListener('click', () => choose('pan'));
   function copyDesign(genome: Genome): boolean {
     let copied: Genome;
     try {
@@ -1902,9 +1933,25 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     lastX = event.clientX;
     lastY = event.clientY;
     canvas.setPointerCapture(event.pointerId);
+    const rect = canvas.getBoundingClientRect();
+    hover = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    dirty = true;
+    if (tool === 'plant' && event.pointerType === 'touch') {
+      const anchor = point(canvas, camera, hover.x, hover.y);
+      if (!anchor) return;
+      if (!touchAnchor || anchor.x !== touchAnchor.x || anchor.y !== touchAnchor.y) {
+        touchAnchor = anchor;
+        return;
+      }
+      touchAnchor = undefined;
+    }
     act(event);
   });
   canvas.addEventListener('pointermove', (event) => {
+    if (ownerPointer !== null && event.pointerId !== ownerPointer) return;
+    const rect = canvas.getBoundingClientRect();
+    hover = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    dirty = true;
     if (!dragging || event.pointerId !== ownerPointer) return;
     if (tool === 'pan') {
       camera.x += event.clientX - lastX;
@@ -1914,7 +1961,11 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     lastX = event.clientX;
     lastY = event.clientY;
   });
+  canvas.addEventListener('pointerleave', () => {
+    if (!touchAnchor) clearPlacement();
+  });
   const release = (event: Event): void => {
+    if (event.type === 'blur' || event.type === 'pointercancel') clearPlacement();
     if ('pointerId' in event && event.pointerId !== ownerPointer) return;
     endStroke();
   };
@@ -2459,6 +2510,12 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       get<HTMLDialogElement>('reset-dialog').open
     )
       return;
+    const key = event.key.toLowerCase();
+    if (key === 'escape') choose('pan');
+    if ((key === 'r' || key === 'm') && !event.repeat) {
+      event.preventDefault();
+      transform(key === 'r' ? 'rotate' : 'mirror');
+    }
     if (event.code === 'Space') {
       event.preventDefault();
       get('pause').click();
@@ -2870,6 +2927,8 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           telemetry.update({ status: 'unavailable' });
         }
         if (data.type === 'design-captured') completeCapture(data);
+        if (data.type === 'manual-result' && completion.placement && data.status === 'applied')
+          notice('Organism placed. Playback is unchanged.');
         if (data.type === 'error') {
           if (completion.type === 'capture-design') {
             captureIntent = null;
@@ -2976,7 +3035,21 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         displayedSelected = pendingFrame.selectedId;
         pendingFrame = null;
       }
-      draw(canvas, buffer, frame!, camera, thermal, displayedSelected);
+      const anchor = tool === 'plant' && hover ? point(canvas, camera, hover.x, hover.y) : null;
+      const ghost =
+        anchor && validGenome(blueprint)
+          ? placementGhost(frame!, blueprint, anchor.x, anchor.y)
+          : undefined;
+      get('cancel-placement').hidden = tool !== 'plant';
+      text(
+        'placement-feedback',
+        tool !== 'plant'
+          ? ''
+          : !ghost
+            ? 'Move over the habitat to preview placement.'
+            : `${ghost.blocked ? 'Blocked' : 'Valid'} in displayed tick ${frame!.stats.tick} at ${anchor!.x}, ${anchor!.y}. Worker rechecks on placement.${touchAnchor ? ' Tap this anchor again to place.' : ''}`,
+      );
+      draw(canvas, buffer, frame!, camera, thermal, displayedSelected, ghost);
       dirty = false;
       freshness();
       if (consumed) {

@@ -1100,7 +1100,10 @@ export class Ecosystem {
   }
   paint(tool: Tool, x: number, y: number, radius: number, genome: Genome): PaintOutcome {
     if (tool === 'plant') {
-      const placed = this.spawn(genome, x, y);
+      const placed =
+        this.organisms.size < LIMIT && this.canPlace({ genome, x, y, rotation: 0 })
+          ? this.spawn(genome, x, y)
+          : undefined;
       return {
         changedBrushCells: 0,
         removedOrganisms: 0,
