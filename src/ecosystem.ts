@@ -47,6 +47,7 @@ import {
   type RefugeBrush,
   type ShadeBrush,
   type WorldFileV9,
+  type Cell,
   type Genome,
   type Organism,
   type Settings,
@@ -91,6 +92,18 @@ const DIRECTIONS = [
   [-1, 0],
   [0, -1],
 ];
+function metabolicPosition(organism: Organism, cell: Cell): number {
+  switch (organism.rotation) {
+    case 0:
+      return index(organism.x + cell.x, organism.y + cell.y);
+    case 1:
+      return index(organism.x - cell.y, organism.y + cell.x);
+    case 2:
+      return index(organism.x - cell.x, organism.y - cell.y);
+    default:
+      return index(organism.x + cell.y, organism.y - cell.x);
+  }
+}
 function emptyFlow(): TelemetryFlow {
   return {
     births: 0,
@@ -1106,13 +1119,11 @@ export class Ecosystem {
         'climateUpkeepSpent',
         (Math.max(0, o.genome.tolerance - 0.2) * 0.025 + stress * 0.2) * o.genome.cells.length,
       );
-      const places = positions(o);
-      for (let c = 0; c < o.genome.cells.length; c++) {
-        const type = o.genome.cells[c].type,
-          p = places[c];
+      for (const cell of o.genome.cells) {
+        const type = cell.type;
         if (type === 4) {
           before = o.energy;
-          const activeUnits = shadeUnits ? shadeUnits[p] : 0;
+          const activeUnits = shadeUnits ? shadeUnits[metabolicPosition(o, cell)] : 0;
           if (activeUnits === 0) o.energy += 0.04 * daylight * (1 - stress);
           else o.energy += 0.04 * daylight * (1 - stress) * ((16 - activeUnits) / 16);
           this.recordEnergy('leavesGained', o.energy - before);
@@ -1124,13 +1135,15 @@ export class Ecosystem {
                 (1 - stress) *
                 ((16 - activeUnits) / 16);
           if (this.random.next() < foodChance) {
-            const [dx, dy] = DIRECTIONS[this.random.int(4)],
+            const p = metabolicPosition(o, cell),
+              [dx, dy] = DIRECTIONS[this.random.int(4)],
               n = index((p % WIDTH) + dx, Math.floor(p / WIDTH) + dy);
             if (!this.occupied[n] && !this.walls[n]) this.food[n] = 1;
           }
         }
         if (type === 3 || type === 6) {
-          const x = p % WIDTH,
+          const p = metabolicPosition(o, cell),
+            x = p % WIDTH,
             y = Math.floor(p / WIDTH);
           for (const [dx, dy] of DIRECTIONS) {
             const n = index(x + dx, y + dy);
