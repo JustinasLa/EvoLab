@@ -50,6 +50,16 @@ import {
 import { createTelemetryView } from './telemetry-view';
 import { emptyRefuges, refugeTool, refugeSummary } from './refuges';
 import {
+  createLibrary,
+  libraryCandidate,
+  LibraryError,
+  type LibraryCandidate,
+  type LibraryEntry,
+  type LibraryProblem,
+  type LibraryMutation,
+  type LibrarySnapshot,
+} from './library';
+import {
   BLUEPRINT_DEFAULT_NAME,
   BLUEPRINT_MAX_BYTES,
   parseBlueprint,
@@ -63,6 +73,22 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   );
   const get = <T extends HTMLElement>(id: string): T => elements.get(id) as T;
   const refugeButtons = [...root.querySelectorAll<HTMLButtonElement>('[data-refuge-tool]')];
+  const captureButton = document.createElement('button');
+  captureButton.id = 'capture-selected';
+  captureButton.textContent = 'Capture selected organism';
+  captureButton.disabled = true;
+  const captureStatus = document.createElement('p');
+  captureStatus.id = 'capture-status';
+  captureStatus.className = 'muted';
+  captureStatus.textContent = 'Inspect an organism to capture its last received genotype.';
+  captureButton.setAttribute('aria-describedby', captureStatus.id);
+  get('specimen-details').append(captureButton, captureStatus);
+  get('help-dialog').append(
+    Object.assign(document.createElement('p'), {
+      textContent:
+        'Reloading starts a fresh world. Explicitly saved local library designs survive in this browser profile, subject to browser eviction or clearing. Download blueprints for portable backups; there is no account or sync.',
+    }),
+  );
   const canvas = get<HTMLCanvasElement>('world'),
     buffer = document.createElement('canvas');
   const camera: Camera = { zoom: 1, x: 0, y: 0 };
@@ -100,6 +126,46 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     blueprintDescription = '',
     designRevision = 0,
     blueprintRequest = 0;
+  let acceptedObservationRun: number | undefined;
+  let replacementGeneration = 0;
+  let replacement:
+    | {
+        generation: number;
+        kind: 'file' | 'library';
+        revision: number;
+        run: number;
+        selection: number;
+      }
+    | undefined;
+  let blueprintReader: FileReader | undefined;
+  let picker: { input: HTMLInputElement; generation: number; expired: boolean } | undefined;
+  let fileTimer: ReturnType<typeof setTimeout> | undefined;
+  let dialogTimer: ReturnType<typeof setTimeout> | undefined;
+  let exportTimer: ReturnType<typeof setTimeout> | undefined;
+  let exportUrl: string | undefined;
+  let librarySnapshot: LibrarySnapshot = { count: 0, rows: [] };
+  let librarySelected: string | undefined;
+  let initialLibrarySelection = true;
+  let librarySelection = 0;
+  let libraryRequest = 0;
+  let libraryWorking: 'refresh' | 'write' | 'load' | undefined;
+  let libraryRefreshOutcome = '';
+  let refreshNeeded = false;
+  const rowSignatures = new WeakMap<HTMLElement, string | undefined>();
+  let candidate: LibraryCandidate | undefined;
+  let candidateRun: number | undefined;
+  let dialogIntent:
+    | {
+        type: 'load' | 'rename' | 'replace' | 'delete' | 'repair';
+        entry: LibraryEntry | LibraryProblem;
+        candidate?: LibraryCandidate;
+        generation: number;
+        revision: number;
+        run: number;
+        selection: number;
+        invoker: HTMLElement | null;
+      }
+    | undefined;
   let dragging = false,
     lastX = 0,
     lastY = 0,
@@ -114,6 +180,536 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   };
   const notice = (message: string): void => text('notice', message);
   const send = (data: object): void => worker.postMessage(data);
+  const libraryStatus = (message: string): void => {
+    if (alive) text('library-status', message);
+  };
+  const library = createLibrary({
+    invalidated: () => {
+      refreshNeeded = false;
+      libraryRequest++;
+      libraryWorking = undefined;
+      if (replacement?.kind === 'library') cancelReplacement('the library connection changed.');
+    },
+    status: (message) => {
+      if (!alive) return;
+      cancelDialog('Library connection or operation changed.');
+      libraryStatus(libraryRefreshOutcome ? `${libraryRefreshOutcome} ${message}` : message);
+      updateCapture();
+      drainRefresh();
+    },
+  });
+  function updateCapture(): void {
+    const eligible =
+      alive &&
+      !stopped &&
+      acceptedObservationRun === runId &&
+      selected !== null &&
+      Number.isSafeInteger(frame?.stats.tick) &&
+      frame!.stats.tick >= 0;
+    if (!eligible && document.activeElement === captureButton) {
+      if (!get('organism-panel').hidden && get<HTMLDetailsElement>('specimen-details').open)
+        get('specimen-details').querySelector('summary')!.focus();
+      else get('organism-tab').focus();
+    }
+    captureButton.disabled = !eligible;
+    const busy = libraryBusy() || !!candidate;
+    captureButton.setAttribute('aria-disabled', String(busy));
+    captureStatus.textContent = eligible
+      ? busy
+        ? 'Library busy or an unsaved blueprint is pending. Capture is not started; playback is unchanged.'
+        : 'Captures the last received genotype and observation tick, not fitness or living identity.'
+      : 'Inspect an organism after the current world response to capture it.';
+  }
+  function cancelDialog(message: string): void {
+    if (!dialogIntent) return;
+    const intent = dialogIntent;
+    dialogIntent = undefined;
+    clearTimeout(dialogTimer);
+    get<HTMLDialogElement>('library-dialog').close();
+    if (alive) {
+      if (intent.invoker?.isConnected && !(intent.invoker as HTMLButtonElement).disabled)
+        intent.invoker.focus();
+      else get('library-heading').focus();
+    }
+    if (intent.type === 'load') cancelReplacement(message);
+    libraryStatus(message);
+    drainRefresh();
+  }
+  function cancelReplacement(message: string): void {
+    const previous = replacement;
+    replacement = undefined;
+    replacementGeneration++;
+    if (previous?.kind === 'library') {
+      if (libraryWorking === 'load') {
+        library.cancel();
+        libraryRequest++;
+        libraryWorking = undefined;
+      }
+      libraryStatus(`Load into designer cancelled: ${message}`);
+    } else if (previous?.kind === 'file' && alive)
+      text('designer-file-status', `Blueprint import cancelled: ${message}`);
+    if (dialogIntent?.type === 'load') cancelDialog(message);
+    if (blueprintReader && previous?.kind === 'file') {
+      clearTimeout(fileTimer);
+      blueprintReader.abort();
+    }
+  }
+  function invalidateDesign(): void {
+    cancelReplacement('the design or world changed.');
+    designRevision++;
+  }
+  function invalidateObservation(): void {
+    acceptedObservationRun = undefined;
+    cancelReplacement('the world changed.');
+    cancelDialog('The world changed.');
+    if (candidate && candidateRun !== undefined && libraryWorking !== 'write') {
+      candidate = undefined;
+      renderLibrary();
+      libraryStatus('Unsaved capture cancelled: the world changed before storage admission.');
+    }
+    updateCapture();
+  }
+  function selectedEntry(): LibraryEntry | undefined {
+    return librarySnapshot.rows.find(
+      (row): row is LibraryEntry => row.kind === 'valid' && row.id === librarySelected,
+    );
+  }
+  function libraryBusy(): boolean {
+    return !!libraryWorking || library.busy || !!picker || !!blueprintReader || !!dialogIntent;
+  }
+  function drainRefresh(): void {
+    if (alive && refreshNeeded && !libraryBusy()) void refreshLibrary();
+  }
+  function admitReplacement(kind: 'file' | 'library'): NonNullable<typeof replacement> | undefined {
+    if (
+      !alive ||
+      picker ||
+      (libraryWorking && libraryWorking !== 'load') ||
+      (dialogIntent && dialogIntent.type !== 'load') ||
+      candidate ||
+      (blueprintReader && replacement?.kind !== 'file') ||
+      (kind === 'library' && library.busy)
+    ) {
+      libraryStatus('Busy: replacement not started. No action was queued.');
+      return;
+    }
+    cancelReplacement('superseded by a newer replacement intent.');
+    if (blueprintReader || (kind === 'library' && library.busy)) {
+      libraryStatus('Busy: the previous native owner has not settled. Replacement not started.');
+      return;
+    }
+    replacement = {
+      kind,
+      generation: ++replacementGeneration,
+      revision: designRevision,
+      run: runId,
+      selection: librarySelection,
+    };
+    return replacement;
+  }
+  function replacementCurrent(
+    intent: NonNullable<typeof replacement>,
+    generation = intent.generation,
+  ): boolean {
+    return (
+      alive &&
+      replacement === intent &&
+      intent.generation === generation &&
+      intent.generation === replacementGeneration &&
+      intent.revision === designRevision &&
+      intent.run === runId &&
+      (intent.kind === 'file' || intent.selection === librarySelection)
+    );
+  }
+  function publishDesign(
+    value: LibraryCandidate['blueprint'],
+    intent: NonNullable<typeof replacement>,
+  ): void {
+    if (!replacementCurrent(intent)) return;
+    endStroke();
+    replacement = undefined;
+    blueprint = value.genome;
+    blueprintName = value.name;
+    blueprintDescription = value.description;
+    designRevision++;
+    editor();
+    get<HTMLDetailsElement>('specimen-details').open = false;
+    tab('organism');
+    choose('pan');
+  }
+  function renderLibrary(): void {
+    const list = get('library-rows');
+    const existing = new Map(
+      [...list.children].map((node) => [(node as HTMLElement).dataset.key!, node as HTMLElement]),
+    );
+    const keys = new Set(librarySnapshot.rows.map((row, index) => row.id ?? `problem-${index}`));
+    for (const [key, item] of existing) {
+      if (!keys.has(key)) {
+        if (item.contains(document.activeElement)) get('library-heading').focus();
+        item.remove();
+        existing.delete(key);
+      }
+    }
+    librarySnapshot.rows.forEach((row, index) => {
+      const key = row.id ?? `problem-${index}`;
+      let item = existing.get(key);
+      existing.delete(key);
+      if (!item) {
+        item = document.createElement('li');
+        item.dataset.key = key;
+      }
+      const signature = row.kind === 'valid' || row.kind === 'damaged' ? row.token : row.reason;
+      if (rowSignatures.get(item) !== signature) {
+        const button = item.querySelector('button') ?? document.createElement('button');
+        button.replaceChildren();
+        delete button.dataset.libraryId;
+        delete button.dataset.repairId;
+        button.disabled = false;
+        if (row.kind === 'valid') {
+          button.dataset.libraryId = row.id;
+          button.innerHTML = genomeSvg(row.blueprint.genome);
+          button.append(
+            Object.assign(document.createElement('span'), { textContent: row.blueprint.name }),
+          );
+          button.append(
+            Object.assign(document.createElement('small'), {
+              textContent: `Local ID ${row.id}; ${row.blueprint.genome.cells.length} cells; revision ${row.revision}`,
+            }),
+          );
+        } else {
+          button.textContent = `${row.kind}: ${row.reason} ${row.id ?? `Slot ${index + 1}`}`;
+          if (row.kind === 'damaged') {
+            button.dataset.repairId = row.id;
+            button.textContent += ' Remove damaged entry…';
+          } else {
+            if (document.activeElement === button) get('library-heading').focus();
+            button.disabled = true;
+          }
+        }
+        if (button.parentElement !== item) item.replaceChildren(button);
+        rowSignatures.set(item, signature);
+      }
+      item
+        .querySelector('button')!
+        .setAttribute('aria-pressed', String(row.kind === 'valid' && row.id === librarySelected));
+      if (list.children[index] !== item) list.insertBefore(item, list.children[index] ?? null);
+    });
+    for (const node of existing.values()) node.remove();
+    text(
+      'library-count',
+      `${librarySnapshot.count} / 100 physical entries${librarySnapshot.count > 100 ? '; overfull: first 100 only, mutations restricted' : ''}`,
+    );
+    const entry = selectedEntry();
+    text(
+      'library-selection',
+      entry
+        ? `${entry.blueprint.name} · ${entry.id} · ${entry.provenance?.captureTick === undefined ? 'No capture tick' : `Observed at tick ${entry.provenance.captureTick}`}${entry.provenance?.seed === undefined ? '' : `; seed ${entry.provenance.seed}`} · provenance, not fitness.`
+        : 'No selected entry.',
+    );
+    for (const action of ['load', 'rename', 'duplicate', 'export', 'delete'])
+      get<HTMLButtonElement>(`library-${action}`).disabled = !entry;
+    renderCandidate();
+    updateCapture();
+  }
+  function renderCandidate(): void {
+    get('library-candidate').hidden = !candidate;
+    text('library-candidate-name', candidate?.blueprint.name ?? '');
+    get('library-candidate-preview').innerHTML = candidate
+      ? genomeSvg(candidate.blueprint.genome)
+      : '';
+    get<HTMLButtonElement>('library-replace').disabled = !selectedEntry() || !candidate;
+  }
+  async function refreshLibrary(outcome = ''): Promise<void> {
+    if (!alive || !get<HTMLDetailsElement>('local-library').open) return;
+    if (libraryBusy()) {
+      refreshNeeded = true;
+      return;
+    }
+    refreshNeeded = false;
+    libraryWorking = 'refresh';
+    libraryRefreshOutcome = outcome;
+    const request = ++libraryRequest,
+      selection = librarySelection;
+    libraryStatus(outcome || 'Reading local library…');
+    try {
+      const snapshot = await library.list();
+      if (!alive || request !== libraryRequest) return;
+      librarySnapshot = snapshot;
+      if (selection === librarySelection && initialLibrarySelection)
+        librarySelected = snapshot.rows.find((row) => row.kind === 'valid')?.id;
+      initialLibrarySelection = false;
+      if (!selectedEntry()) librarySelected = undefined;
+      renderLibrary();
+      libraryStatus(outcome || 'Library refreshed. Other tabs may change it.');
+    } catch (error) {
+      if (alive && request === libraryRequest)
+        libraryStatus(
+          `${outcome ? `${outcome} The committed outcome is unchanged; refresh failed. ` : ''}${libraryMessage(error)}`,
+        );
+    } finally {
+      if (request === libraryRequest) {
+        libraryWorking = undefined;
+        libraryRefreshOutcome = '';
+        updateCapture();
+        drainRefresh();
+      }
+    }
+  }
+  function libraryMessage(error: unknown): string {
+    return error instanceof LibraryError
+      ? error.message
+      : 'The local blueprint operation failed. The world and current design are unchanged.';
+  }
+  function stageCandidate(value: LibraryCandidate, observed = false): void {
+    candidate = value;
+    candidateRun = observed ? runId : undefined;
+    get<HTMLDetailsElement>('local-library').open = true;
+    renderLibrary();
+  }
+  async function writeLibrary(action: LibraryMutation): Promise<number | undefined> {
+    if (!alive || libraryBusy()) {
+      libraryStatus('Library busy. Action not started.');
+      return;
+    }
+    libraryWorking = 'write';
+    libraryRefreshOutcome = '';
+    updateCapture();
+    const focusOwner = document.activeElement;
+    const request = ++libraryRequest;
+    let followup = request;
+    let selection = librarySelection;
+    const valid = librarySnapshot.rows.filter((row): row is LibraryEntry => row.kind === 'valid');
+    const deletedIndex =
+      'entry' in action ? valid.findIndex((row) => row.id === action.entry.id) : -1;
+    try {
+      await library.open();
+      if (!alive || request !== libraryRequest) return;
+      if (candidateRun !== undefined && candidateRun !== runId) {
+        candidate = undefined;
+        candidateRun = undefined;
+        renderLibrary();
+        libraryStatus('Unsaved capture cancelled: the world changed before storage admission.');
+        return;
+      }
+      const id = await library.mutate(action, (committed, expired) => {
+        if (!alive) return;
+        libraryRequest++;
+        libraryWorking = undefined;
+        refreshNeeded = false;
+        libraryRefreshOutcome = '';
+        if (
+          committed &&
+          (action.type === 'create' || action.type === 'replace') &&
+          candidate === action.candidate
+        ) {
+          candidate = undefined;
+          candidateRun = undefined;
+          renderCandidate();
+        }
+        libraryStatus(
+          committed
+            ? `Native write committed${expired ? ' after the deadline' : ''}. The list is stale; Refresh explicitly.`
+            : 'Native operation aborted; no write from it committed. The list is stale; Refresh explicitly.',
+        );
+        updateCapture();
+      });
+      if (!alive || request !== libraryRequest) return;
+      if (selection === librarySelection) {
+        initialLibrarySelection = false;
+        librarySelected =
+          action.type === 'delete'
+            ? (valid[deletedIndex + 1] ?? valid[deletedIndex - 1])?.id
+            : action.type === 'repair'
+              ? librarySelected
+              : id;
+        selection = ++librarySelection;
+      }
+      if (action.type === 'create' || action.type === 'replace') {
+        candidate = undefined;
+        candidateRun = undefined;
+      }
+      libraryWorking = undefined;
+      renderLibrary();
+      const refresh = refreshLibrary('Write committed. Duplicate names are allowed.');
+      followup = libraryRequest;
+      await refresh;
+      if (!alive || followup !== libraryRequest || selection !== librarySelection) return;
+      if (
+        (action.type === 'delete' || action.type === 'repair') &&
+        (document.activeElement === focusOwner || document.activeElement === document.body)
+      ) {
+        const neighbor = [
+          ...get('library-rows').querySelectorAll<HTMLButtonElement>('button'),
+        ].find((button) => button.dataset.libraryId === librarySelected);
+        (neighbor ?? get('library-heading')).focus();
+      }
+    } catch (error) {
+      if (alive && request === libraryRequest) {
+        libraryWorking = undefined;
+        libraryStatus(libraryMessage(error));
+        if (error instanceof LibraryError && error.code === 'conflict') {
+          const refresh = refreshLibrary(`${error.message} `);
+          followup = libraryRequest;
+          await refresh;
+        }
+      }
+    } finally {
+      if (request === libraryRequest) {
+        libraryWorking = undefined;
+        updateCapture();
+        drainRefresh();
+      }
+    }
+    return alive && followup === libraryRequest && selection === librarySelection
+      ? followup
+      : undefined;
+  }
+  function showLibraryDialog(
+    type: NonNullable<typeof dialogIntent>['type'],
+    entry: LibraryEntry | LibraryProblem,
+    intent?: NonNullable<typeof replacement>,
+  ): void {
+    if (dialogIntent || !alive) return;
+    dialogIntent = {
+      type,
+      entry,
+      candidate,
+      generation: intent?.generation ?? replacementGeneration,
+      revision: designRevision,
+      run: runId,
+      selection: librarySelection,
+      invoker: document.activeElement as HTMLElement | null,
+    };
+    text(
+      'library-dialog-title',
+      type === 'load'
+        ? 'Replace the current design?'
+        : type === 'rename'
+          ? 'Rename local entry'
+          : type === 'repair'
+            ? 'Remove damaged entry?'
+            : type === 'delete'
+              ? 'Delete local entry?'
+              : 'Replace selected entry?',
+    );
+    text(
+      'library-dialog-description',
+      `${entry.kind === 'valid' ? entry.blueprint.name : 'Declared supported but damaged record'} · Local ID ${entry.id}. ${type === 'load' ? 'Current designer edits will be lost; the world will not change.' : type === 'rename' ? 'Names may repeat. The exact name is preserved.' : 'Existing bytes will be lost. This cannot be undone. Export valid entries first.'}${type === 'replace' ? ` Incoming: ${candidate!.blueprint.name}. Provenance will also be replaced.` : ''}`,
+    );
+    get('library-dialog-preview').innerHTML =
+      type === 'replace' ? genomeSvg(candidate!.blueprint.genome) : '';
+    get('library-rename-label').hidden = type !== 'rename';
+    get<HTMLInputElement>('library-rename-name').hidden = type !== 'rename';
+    get<HTMLInputElement>('library-rename-name').value =
+      entry.kind === 'valid' ? entry.blueprint.name : '';
+    text('library-dialog-status', '');
+    get<HTMLDialogElement>('library-dialog').showModal();
+    get('library-cancel').focus();
+    dialogTimer = setTimeout(
+      () => cancelDialog('Confirmation expired; start a new action.'),
+      60000,
+    );
+    updateCapture();
+  }
+  async function loadLibraryEntry(): Promise<void> {
+    const entry = selectedEntry();
+    if (!entry) return;
+    const intent = admitReplacement('library');
+    if (!intent) return;
+    libraryWorking = 'load';
+    const request = ++libraryRequest;
+    try {
+      const current = await library.read(entry);
+      if (!replacementCurrent(intent)) return;
+      libraryWorking = undefined;
+      showLibraryDialog('load', current, intent);
+    } catch (error) {
+      if (replacementCurrent(intent)) {
+        cancelReplacement('the entry could not be read.');
+        libraryStatus(libraryMessage(error));
+      }
+    } finally {
+      if (request === libraryRequest) {
+        libraryWorking = undefined;
+        drainRefresh();
+      }
+    }
+  }
+  async function confirmLibrary(): Promise<void> {
+    const intent = dialogIntent;
+    if (!intent) return;
+    let request: number | undefined;
+    dialogIntent = undefined;
+    clearTimeout(dialogTimer);
+    get<HTMLDialogElement>('library-dialog').close();
+    if (intent.type === 'load') {
+      const owner = replacement?.kind === 'library' ? replacement : undefined;
+      if (!owner || !replacementCurrent(owner, intent.generation)) return;
+      libraryWorking = 'load';
+      request = ++libraryRequest;
+      try {
+        const current = await library.read(intent.entry as LibraryEntry);
+        if (replacementCurrent(owner)) {
+          publishDesign(current.blueprint, owner);
+          libraryStatus(
+            'Blueprint loaded into the designer. Place it explicitly to create a fresh organism.',
+          );
+        }
+      } catch (error) {
+        if (replacementCurrent(owner)) {
+          cancelReplacement('final read failed.');
+          libraryStatus(libraryMessage(error));
+        }
+      } finally {
+        if (request === libraryRequest) {
+          libraryWorking = undefined;
+          drainRefresh();
+        }
+      }
+    } else if (intent.type === 'repair')
+      request = await writeLibrary({ type: 'repair', entry: intent.entry as LibraryProblem });
+    else if (intent.type === 'replace')
+      request = await writeLibrary({
+        type: 'replace',
+        entry: intent.entry as LibraryEntry,
+        candidate: intent.candidate!,
+      });
+    else if (intent.type === 'rename')
+      request = await writeLibrary({
+        type: 'rename',
+        entry: intent.entry as LibraryEntry,
+        name: get<HTMLInputElement>('library-rename-name').value,
+      });
+    else request = await writeLibrary({ type: 'delete', entry: intent.entry as LibraryEntry });
+    if (!alive || request !== libraryRequest) return;
+    if (!dialogIntent && document.activeElement === document.body) get('library-heading').focus();
+    updateCapture();
+  }
+  function exportLibrary(value: LibraryCandidate): void {
+    if (exportUrl) URL.revokeObjectURL(exportUrl);
+    clearTimeout(exportTimer);
+    const anchor = document.createElement('a');
+    try {
+      exportUrl = URL.createObjectURL(
+        new Blob([serializeBlueprint(value.blueprint)], { type: 'application/json' }),
+      );
+      anchor.href = exportUrl;
+      anchor.download = 'evolab-blueprint.json';
+      document.body.append(anchor);
+      anchor.click();
+      libraryStatus(
+        'Exported the last loaded blueprint revision. Local ID and provenance are not in the file.',
+      );
+    } catch {
+      libraryStatus('Could not download this blueprint. Try again.');
+    } finally {
+      anchor.remove();
+      exportTimer = setTimeout(() => {
+        if (exportUrl) URL.revokeObjectURL(exportUrl);
+        exportUrl = undefined;
+      }, 1000);
+    }
+  }
   type Owner = {
     id: number;
     run: number;
@@ -652,6 +1248,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   }
   function stop(): void {
     stopped = true;
+    invalidateObservation();
     paused = true;
     text('pause', '▶ Resume');
     get<HTMLButtonElement>('step').disabled = true;
@@ -660,6 +1257,10 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     availability();
   }
   const tab = (name: string): void => {
+    if (name !== 'organism') {
+      cancelDialog('Confirmation cancelled: the library is no longer visible.');
+      if (replacement?.kind === 'library') cancelReplacement('the library is no longer visible.');
+    }
     root
       .querySelectorAll<HTMLButtonElement>('[data-tab]')
       .forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
@@ -737,7 +1338,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       return false;
     }
     endStroke();
-    designRevision++;
+    invalidateDesign();
     blueprint = copied;
     blueprintName = speciesName(genome);
     blueprintDescription = '';
@@ -817,6 +1418,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       previousSettled = settledSettings;
     settingsEdits = {};
     settledSettings = {};
+    invalidateObservation();
     runId++;
     if (operation === 'start') notice('');
     if (!postTracked(operation, payload, runId, revision)) {
@@ -1064,7 +1666,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   });
   get('preference').addEventListener('input', () => {
     endStroke();
-    designRevision++;
+    invalidateDesign();
     blueprint.preference = Number(get<HTMLInputElement>('preference').value);
     text('preference-value', `${Math.round(blueprint.preference * 40)}°`);
   });
@@ -1128,7 +1730,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     const b = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-x]');
     if (!b) return;
     endStroke();
-    designRevision++;
+    invalidateDesign();
     const x = Number(b.dataset.x),
       y = Number(b.dataset.y),
       existing = blueprint.cells.findIndex((c) => c.x === x && c.y === y);
@@ -1140,67 +1742,267 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   });
   get('clear-design').addEventListener('click', () => {
     endStroke();
-    designRevision++;
+    invalidateDesign();
     blueprint = founder(0);
     blueprintName = BLUEPRINT_DEFAULT_NAME;
     blueprintDescription = '';
     editor();
   });
   get('blueprint-name').addEventListener('input', () => {
-    designRevision++;
+    invalidateDesign();
     blueprintName = get<HTMLInputElement>('blueprint-name').value;
   });
   get('blueprint-description').addEventListener('input', () => {
-    designRevision++;
+    invalidateDesign();
     blueprintDescription = get<HTMLTextAreaElement>('blueprint-description').value;
   });
   get('export-blueprint').addEventListener('click', () =>
     exportBlueprint(blueprint, blueprintName, blueprintDescription),
   );
   const blueprintInput = get<HTMLInputElement>('blueprint-file');
-  get('import-blueprint').addEventListener('click', () => {
-    blueprintRequest++;
-    blueprintInput.value = '';
-    blueprintInput.click();
-  });
-  blueprintInput.addEventListener('cancel', () => {
-    blueprintRequest++;
-    blueprintInput.value = '';
-  });
-  blueprintInput.addEventListener('change', async () => {
-    const request = ++blueprintRequest,
-      revision = designRevision,
-      worldRun = runId,
-      file = blueprintInput.files?.[0];
-    if (!file) return;
-    const current = (): boolean =>
-      alive && request === blueprintRequest && revision === designRevision && worldRun === runId;
-    try {
-      if (file.size > BLUEPRINT_MAX_BYTES)
-        throw new Error('Blueprint files must be 16 KiB or smaller.');
-      let content: string;
-      try {
-        content = await file.text();
-      } catch {
-        throw new Error('Could not read this blueprint. Choose a readable JSON file.');
-      }
-      if (!current()) return;
-      const imported = parseBlueprint(content);
-      endStroke();
-      blueprint = imported.genome;
-      blueprintName = imported.name;
-      blueprintDescription = imported.description;
-      designRevision++;
-      editor();
-      get<HTMLDetailsElement>('specimen-details').open = false;
-      tab('organism');
-      choose('pan');
-      notice('Blueprint loaded into the designer. Place it explicitly to add an organism.');
-    } catch (error) {
-      if (current()) notice((error as Error).message);
-    } finally {
-      if (request === blueprintRequest) blueprintInput.value = '';
+  const libraryInput = get<HTMLInputElement>('library-file');
+  const cleanups: (() => void)[] = [];
+  function listen(target: EventTarget, type: string, callback: EventListener): void {
+    target.addEventListener(type, callback);
+    cleanups.push(() => target.removeEventListener(type, callback));
+  }
+  function beginPicker(input: HTMLInputElement, designer: boolean): void {
+    if (
+      picker ||
+      (blueprintReader && (!designer || replacement?.kind !== 'file')) ||
+      candidate ||
+      (libraryWorking && libraryWorking !== 'load') ||
+      (dialogIntent && dialogIntent.type !== 'load')
+    ) {
+      libraryStatus('Busy: file picker not opened.');
+      return;
     }
+    const intent = designer ? admitReplacement('file') : undefined;
+    if ((designer && !intent) || (!designer && libraryBusy())) return;
+    const generation = ++blueprintRequest;
+    input.value = '';
+    picker = { input, generation, expired: false };
+    fileTimer = setTimeout(() => {
+      if (picker?.generation === generation) {
+        picker.expired = true;
+        cancelReplacement('file picker expired.');
+        libraryStatus('File picker expired. Close it before opening another picker.');
+      }
+    }, 60000);
+    input.click();
+  }
+  function pickerCancelled(input: HTMLInputElement): void {
+    if (picker && picker.input !== input) return;
+    clearTimeout(fileTimer);
+    picker = undefined;
+    blueprintRequest++;
+    if (input === blueprintInput) cancelReplacement('file selection cancelled.');
+    input.value = '';
+    updateCapture();
+    drainRefresh();
+  }
+  function readBlueprint(input: HTMLInputElement, designer: boolean): void {
+    const choice = picker;
+    if (choice && choice.input !== input) return;
+    if (choice) {
+      picker = undefined;
+      clearTimeout(fileTimer);
+      if (choice.expired || !alive) {
+        input.value = '';
+        return;
+      }
+    }
+    const file = input.files?.[0];
+    if (!file) {
+      if (choice) pickerCancelled(input);
+      return;
+    }
+    let intent = designer ? (choice ? replacement : admitReplacement('file')) : undefined;
+    if ((designer && !intent) || (!designer && (libraryBusy() || candidate))) {
+      libraryStatus('Busy: blueprint read not started.');
+      return;
+    }
+    const request = ++blueprintRequest,
+      worldRun = runId;
+    let publishable = true;
+    const current = (): boolean =>
+      publishable &&
+      alive &&
+      request === blueprintRequest &&
+      worldRun === runId &&
+      (!designer || (!!intent && replacementCurrent(intent)));
+    const failed = (message: string): void => {
+      if (!current()) return;
+      publishable = false;
+      if (designer) {
+        text('designer-file-status', message);
+        notice(message);
+        replacement = undefined;
+      } else libraryStatus(message);
+    };
+    if (file.size > BLUEPRINT_MAX_BYTES) {
+      failed('Blueprint files must be 16 KiB or smaller.');
+      input.value = '';
+      return;
+    }
+    const reader = new FileReader();
+    blueprintReader = reader;
+    fileTimer = setTimeout(() => {
+      failed('Blueprint read timed out. The native reader must settle before another read.');
+      reader.abort();
+    }, 10000);
+    reader.onload = () => {
+      if (!current()) return;
+      try {
+        const imported = parseBlueprint(reader.result as string);
+        if (designer) {
+          publishDesign(imported, intent!);
+          text('designer-file-status', 'Blueprint loaded into designer.');
+          notice('Blueprint loaded into the designer. Place it explicitly to add an organism.');
+        } else {
+          stageCandidate({ blueprint: imported });
+          libraryStatus(
+            'Imported an unsaved blueprint. Add as new, or explicitly replace the selected ID.',
+          );
+        }
+        publishable = false;
+      } catch (error) {
+        failed((error as Error).message);
+      }
+    };
+    reader.onerror = () => failed('Could not read this blueprint. Choose a readable JSON file.');
+    reader.onabort = () => {
+      if (current()) failed('Blueprint read cancelled.');
+    };
+    reader.onloadend = () => {
+      publishable = false;
+      if (blueprintReader === reader) {
+        blueprintReader = undefined;
+        clearTimeout(fileTimer);
+      }
+      reader.onload = reader.onerror = reader.onabort = reader.onloadend = null;
+      if (alive && request === blueprintRequest) input.value = '';
+      if (alive) {
+        updateCapture();
+        drainRefresh();
+      }
+    };
+    try {
+      reader.readAsText(file);
+    } catch {
+      failed('Could not read this blueprint. Choose a readable JSON file.');
+      reader.dispatchEvent(new ProgressEvent('loadend'));
+    }
+  }
+  listen(get('import-blueprint'), 'click', () => beginPicker(blueprintInput, true));
+  listen(blueprintInput, 'cancel', () => pickerCancelled(blueprintInput));
+  listen(blueprintInput, 'change', () => readBlueprint(blueprintInput, true));
+  listen(get('library-import'), 'click', () => beginPicker(libraryInput, false));
+  listen(libraryInput, 'cancel', () => pickerCancelled(libraryInput));
+  listen(libraryInput, 'change', () => readBlueprint(libraryInput, false));
+  listen(get('local-library'), 'toggle', () => {
+    if (get<HTMLDetailsElement>('local-library').open) void refreshLibrary();
+    else {
+      cancelDialog('Confirmation cancelled: library closed.');
+      cancelReplacement('library closed.');
+    }
+  });
+  listen(get('library-refresh'), 'click', () => {
+    void refreshLibrary();
+  });
+  listen(get('library-save'), 'click', () => {
+    if (libraryBusy() || candidate) {
+      libraryStatus('Busy: save not started. Discard or save the current candidate first.');
+      return;
+    }
+    try {
+      stageCandidate(libraryCandidate(blueprint, blueprintName, blueprintDescription));
+      void writeLibrary({ type: 'create', candidate: candidate! });
+    } catch (error) {
+      libraryStatus(libraryMessage(error));
+    }
+  });
+  listen(captureButton, 'click', () => {
+    if (captureButton.disabled || libraryBusy() || candidate) {
+      libraryStatus('Capture unavailable or busy. No playback action was taken.');
+      return;
+    }
+    try {
+      stageCandidate(
+        libraryCandidate(selected!.genome, speciesName(selected!.genome), '', {
+          captureTick: frame!.stats.tick,
+        }),
+        true,
+      );
+      void writeLibrary({ type: 'create', candidate: candidate! });
+    } catch (error) {
+      libraryStatus(libraryMessage(error));
+    }
+  });
+  listen(get('library-add'), 'click', () => {
+    if (candidate) void writeLibrary({ type: 'create', candidate });
+  });
+  listen(get('library-discard'), 'click', () => {
+    if (libraryBusy()) return;
+    candidate = undefined;
+    candidateRun = undefined;
+    renderLibrary();
+    libraryStatus('Blueprint candidate copy discarded. Stored entries are unchanged.');
+  });
+  listen(get('library-export-candidate'), 'click', () => {
+    if (candidate) exportLibrary(candidate);
+  });
+  listen(get('library-export'), 'click', () => {
+    const entry = selectedEntry();
+    if (entry) exportLibrary(entry);
+  });
+  listen(get('library-load'), 'click', () => {
+    void loadLibraryEntry();
+  });
+  listen(get('library-duplicate'), 'click', () => {
+    const entry = selectedEntry();
+    if (entry) void writeLibrary({ type: 'duplicate', entry });
+  });
+  for (const type of ['rename', 'replace', 'delete'] as const)
+    listen(get(`library-${type}`), 'click', () => {
+      const entry = selectedEntry();
+      if (entry && !libraryBusy() && (type !== 'replace' || candidate))
+        showLibraryDialog(type, entry);
+    });
+  listen(get('library-rows'), 'click', (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button');
+    if (!button) return;
+    if (button.dataset.libraryId) {
+      cancelDialog('Selection changed.');
+      cancelReplacement('library selection changed.');
+      initialLibrarySelection = false;
+      librarySelected = button.dataset.libraryId;
+      librarySelection++;
+      renderLibrary();
+    } else if (button.dataset.repairId && !libraryBusy()) {
+      const entry = librarySnapshot.rows.find(
+        (row) => row.kind === 'damaged' && row.id === button.dataset.repairId,
+      );
+      if (entry) showLibraryDialog('repair', entry);
+    }
+  });
+  listen(get('library-cancel'), 'click', () => cancelDialog('Confirmation cancelled.'));
+  listen(get('library-dialog'), 'cancel', (event) => {
+    event.preventDefault();
+    cancelDialog('Confirmation cancelled.');
+  });
+  listen(get('library-confirm'), 'click', () => {
+    void confirmLibrary();
+  });
+  const focusRefresh = (): void => {
+    if (get<HTMLDetailsElement>('local-library').open) void refreshLibrary();
+  };
+  listen(window, 'focus', focusRefresh);
+  listen(document, 'visibilitychange', () => {
+    if (document.hidden) {
+      cancelDialog('Confirmation cancelled: page hidden.');
+      cancelReplacement('page hidden.');
+    } else focusRefresh();
   });
   get('plant-design').addEventListener('click', () => {
     choose('plant');
@@ -1265,6 +2067,8 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       (event.target instanceof HTMLElement &&
         (event.target.matches('input,select,textarea') ||
           (event.code === 'Space' && event.target.matches('button')))) ||
+      (event.target instanceof HTMLElement &&
+        !!event.target.closest('#local-library, #library-dialog, #capture-selected')) ||
       event.ctrlKey ||
       event.metaKey ||
       event.altKey ||
@@ -1306,6 +2110,8 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     frame = next;
     installRefuges(refugeSummary(next.thermalRefuges));
     selected = selection;
+    if (!stopped) acceptedObservationRun = runId;
+    updateCapture();
     dirty = true;
     if (!displayOnly) updates++;
     const s = frame.stats;
@@ -1404,6 +2210,19 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     alive = false;
     cancelReset(false);
     readGeneration++;
+    acceptedObservationRun = undefined;
+    cancelReplacement('view disposed.');
+    cancelDialog('View disposed.');
+    libraryRequest++;
+    clearTimeout(fileTimer);
+    clearTimeout(dialogTimer);
+    clearTimeout(exportTimer);
+    blueprintReader?.abort();
+    library.dispose();
+    for (const cleanup of cleanups) cleanup();
+    if (exportUrl) URL.revokeObjectURL(exportUrl);
+    candidate = undefined;
+    librarySnapshot = { count: 0, rows: [] };
     telemetry.dispose();
     cancelAnimationFrame(animation);
     terminate();
