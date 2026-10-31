@@ -1160,8 +1160,9 @@ export class Ecosystem {
     this.eventOffset = kind === 'cold' ? -0.32 : 0.32;
     this.eventUntil = this.tick + 900;
   }
-  presentation(selected = 0): WorldPresentation {
-    const species = new Map<number, Species & { organismIds: number[] }>();
+  presentation(selected = 0, includeLineage = false): WorldPresentation {
+    const species = new Map<number, Species>();
+    const memberships = new Map<number, number[]>();
     let generation = 0,
       food = 0;
     for (let i = 0; i < this.food.length; i++) {
@@ -1171,32 +1172,40 @@ export class Ecosystem {
       const s = species.get(o.species);
       if (s) {
         s.count++;
-        s.organismIds.push(o.id);
         s.generation = Math.max(s.generation, o.generation);
       } else
         species.set(o.species, {
           id: o.species,
           count: 1,
-          organismIds: [o.id],
           generation: o.generation,
           genome: o.genome,
           name: speciesName(o.genome),
         });
+      if (includeLineage) {
+        const ids = memberships.get(o.species);
+        if (ids) ids.push(o.id);
+        else memberships.set(o.species, [o.id]);
+      }
       generation = Math.max(generation, o.generation);
     }
     const organism = this.organisms.get(selected);
     const offset = this.tick < this.eventUntil ? this.eventOffset : 0;
-    const archive = this.lineageSnapshot();
-    for (const summary of archive.summaries)
-      if (summary.foundingGenome) summary.foundingGenome = observedGenome(summary.foundingGenome);
-    return {
-      lineage: {
+    let lineage: WorldPresentation['lineage'];
+    if (includeLineage) {
+      const archive = this.lineageSnapshot();
+      for (const summary of archive.summaries)
+        if (summary.foundingGenome) summary.foundingGenome = observedGenome(summary.foundingGenome);
+      lineage = {
         archive,
         current: [...species.values()].map((row) => ({
           ...row,
+          organismIds: memberships.get(row.id)!,
           genome: observedGenome(row.genome),
         })),
-      },
+      };
+    }
+    return {
+      ...(lineage ? { lineage } : {}),
       terrain: { ...this.terrain },
       thermalRefuges: refugeSummary(this.thermalRefuges),
       anchorTemperature: organism
@@ -1232,7 +1241,7 @@ export class Ecosystem {
         top: [...species.values()]
           .sort((a, b) => b.count - a.count)
           .slice(0, 5)
-          .map(({ organismIds: _organismIds, ...row }) => ({
+          .map((row) => ({
             ...row,
             genome: observedGenome(row.genome),
           })),

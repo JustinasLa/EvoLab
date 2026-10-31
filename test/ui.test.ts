@@ -78,7 +78,7 @@ class WorkerStub extends EventTarget {
           : (this.state?.replacementId ?? 1),
       revision: ++this.revision,
       world: {
-        lineage: fixture.lineage ?? world.presentation().lineage,
+        lineage: fixture.lineage ?? world.presentation(0, true).lineage,
         stats: frame.stats,
         climate: frame.climate,
         offset: frame.offset,
@@ -158,7 +158,7 @@ class WorkerStub extends EventTarget {
                 state: {
                   ...state,
                   world: {
-                    lineage: world.presentation().lineage,
+                    lineage: world.presentation(0, true).lineage,
                     stats: fixture.recovery.frame.stats,
                     climate: fixture.recovery.frame.climate,
                     offset: fixture.recovery.frame.offset,
@@ -5746,6 +5746,7 @@ describe('pixel rendering and view transforms', () => {
     expect(point(canvas, camera, -1, -1)).toBeNull();
     expect(point(canvas, camera, 450, 325)).not.toBeNull();
     draw(canvas, buffer, sample, camera, false, organism.id);
+    draw(canvas, buffer, sample, camera, false, 0, new Set([organism.id]));
     draw(canvas, buffer, sample, camera, true, 0);
     Object.defineProperty(canvas, 'clientWidth', { value: 600 });
     Object.defineProperty(canvas, 'clientHeight', { value: 400 });
@@ -6035,4 +6036,58 @@ describe('internal transport posting failures', () => {
       expect(worker.postMessage.mock.calls).toHaveLength(before);
     },
   );
+});
+
+describe('lineage exploration with real worker state', () => {
+  it('requests archive evidence only on opening, preserves paused ecology and failed-load identity, and clears on reseed', async () => {
+    const bridge = realWorker(true);
+    expect(bridge.outbox.find((data) => data.state)?.state.world.lineage).toBeUndefined();
+    bridge.deliver();
+    click('pause');
+    bridge.deliver();
+    const before = bridge.save();
+    click('ecosystem-tab');
+    const explorer = get<HTMLDetailsElement>('lineage-explorer');
+    explorer.open = true;
+    explorer.dispatchEvent(new Event('toggle'));
+    bridge.deliver();
+    expect(get('lineage-rows').children).toHaveLength(1);
+    get('lineage-rows').querySelector<HTMLButtonElement>('button')!.click();
+    const painter = vi.spyOn(viewModule, 'draw');
+    paint(0);
+    expect(painter.mock.calls.at(-1)![6]).toEqual(new Set([before.organisms[0].id]));
+    expect(bridge.save()).toEqual(before);
+    const retained = get('lineage-detail').textContent;
+    await loadText('{"invalid":true}');
+    bridge.deliver();
+    expect(get('lineage-detail').textContent).toBe(retained);
+    expect(get('lineage-rows').querySelector('[aria-pressed="true"]')).not.toBeNull();
+    click('organism-tab');
+    click('step');
+    bridge.deliver();
+    expect(bridge.save().tick).toBe(before.tick + 1);
+    click('ecosystem-tab');
+    expect(get('lineage-results').textContent).toContain(`observed tick ${before.tick + 1}`);
+    explorer.open = false;
+    explorer.dispatchEvent(new Event('toggle'));
+    click('reset');
+    bridge.deliver();
+    explorer.open = true;
+    explorer.dispatchEvent(new Event('toggle'));
+    expect(get('lineage-detail').textContent).toContain('Select a lineage');
+    expect(get('lineage-rows').querySelector('[aria-pressed="true"]')).toBeNull();
+  });
+});
+
+it('validates and retains the opt-in lineage display flag without changing ecology settings', () => {
+  const display = { epoch: 7, enabled: true, visible: false, lineage: true };
+  expect(captureCommand({ type: 'start', settings: DEFAULTS, display }, DEFAULTS)).toMatchObject({
+    display,
+  });
+  expect(() =>
+    captureCommand(
+      { type: 'start', settings: DEFAULTS, display: { ...display, lineage: false } },
+      DEFAULTS,
+    ),
+  ).toThrow('Invalid initial settings or display.');
 });

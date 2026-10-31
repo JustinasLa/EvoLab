@@ -26,6 +26,8 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
   const search = get<HTMLInputElement>('lineage-search');
   const rows = get('lineage-rows');
   const detail = get('lineage-detail');
+  const panel = get('ecosystem-panel');
+  const explorer = get<HTMLDetailsElement>('lineage-explorer');
   const clear = get<HTMLButtonElement>('lineage-clear');
   const retention = get('lineage-retention');
   const results = get('lineage-results');
@@ -85,7 +87,7 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
     detail.append(p);
   }
   function render(): void {
-    if (!data) return;
+    if (!data || panel.hidden || !explorer.open) return;
     const query = search.value.trim().toLowerCase();
     const identity = /^(?:lineage )?#?(\d+)$/.exec(query);
     const matching = [...facts.values()]
@@ -204,6 +206,25 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
       item.textContent = `Tick ${transition.tick}: ${transition.label}`;
       timeline.append(item);
     }
+    if (transitions.length) {
+      const first = transitions[0].tick,
+        last = transitions[transitions.length - 1].tick;
+      const chart = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      chart.setAttribute('viewBox', '0 0 300 64');
+      chart.setAttribute('role', 'img');
+      chart.setAttribute(
+        'aria-label',
+        'Retained events by logical tick; exact events listed below',
+      );
+      chart.classList.add('lineage-event-chart');
+      chart.innerHTML = `<path d="M16 32H284" stroke="currentColor"/><text x="16" y="60">${first}</text><text x="284" y="60" text-anchor="end">${last}</text>${transitions
+        .map((event) => {
+          const x = first === last ? 150 : 16 + ((event.tick - first) / (last - first)) * 268;
+          return `<path d="M${x} 22v20" stroke="currentColor"><title>Tick ${event.tick}: ${event.label}</title></path>`;
+        })
+        .join('')}`;
+      detail.append(chart);
+    }
     if (createdTick == null) paragraph('Creation tick unknown / pruned. No inferred birth event.');
     if (!transitions.length) paragraph('No timeline events retained for this identity.');
     detail.append(timeline);
@@ -258,7 +279,9 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
       render();
       changed();
     },
-    highlighted(value: LineagePresentation): ReadonlySet<number> {
+    reveal: render,
+    highlighted(value: LineagePresentation, frameReplacement = replacement): ReadonlySet<number> {
+      if (frameReplacement !== replacement) return new Set();
       // Membership comes from the very frame being drawn, never an organism ID cache.
       return new Set(
         data?.current.some((entry) => entry.id === selected)

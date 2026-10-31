@@ -1331,3 +1331,14 @@ dialog a {
   padding: 5px 0;
   font-size: 12px;
 }
+
+.lineage-event-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  color: #c4f16f;
+}
+.lineage-event-chart text {
+  fill: currentColor;
+  font-size: 11px;
+}

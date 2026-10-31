@@ -298,13 +298,14 @@ export interface LineagePresentation {
   current: (Species & { organismIds: number[] })[];
 }
 export type WorldPresentation = Pick<Frame, 'stats' | 'climate' | 'offset' | 'terrain'> & {
-  lineage: LineagePresentation;
+  lineage?: LineagePresentation;
   thermalRefuges: RefugeSummary;
   anchorTemperature: number | null;
   anchorRefugeUnits: number;
 };
 export type HabitatFrame = Omit<Frame, 'telemetry' | 'interventions'>;
 export interface DisplayView {
+  lineage?: true;
   epoch: number;
   enabled: boolean;
   visible: boolean;

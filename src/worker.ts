@@ -137,7 +137,7 @@ export function startWorker(
     cachedSelection = -1;
   function state(): ControlState {
     if (!cachedPresentation || cachedRevision !== revision || cachedSelection !== selected) {
-      cachedPresentation = world!.presentation(selected);
+      cachedPresentation = world!.presentation(selected, view.lineage === true);
       cachedRevision = revision;
       cachedSelection = selected;
     }
@@ -336,7 +336,8 @@ export function startWorker(
       value &&
       integer(value.epoch, 0, Number.MAX_SAFE_INTEGER) &&
       typeof value.enabled === 'boolean' &&
-      typeof value.visible === 'boolean'
+      typeof value.visible === 'boolean' &&
+      (value.lineage === undefined || value.lineage === true)
     );
   }
   const coordinates = (value: any): boolean =>
@@ -427,6 +428,7 @@ export function startWorker(
           epoch: data.display.epoch,
           enabled: data.display.enabled,
           visible: data.display.visible,
+          ...(data.display.lineage ? { lineage: true as const } : {}),
         };
         paused = failed = false;
         selected = 0;
@@ -574,6 +576,7 @@ export function startWorker(
               epoch: data.view.epoch,
               enabled: data.view.enabled,
               visible: data.view.visible,
+              ...(data.view.lineage ? { lineage: true as const } : {}),
             };
             if (!view.visible) interactive = false;
             resetRate();

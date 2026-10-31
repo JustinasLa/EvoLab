@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createLineageView } from '../src/lineage-view';
 import { markup } from '../src/view';
 import { Ecosystem } from '../src/ecosystem';
-import { DEFAULTS, type LineagePresentation } from '../src/model';
+import { DEFAULTS, encodeLegacyValue, type LineagePresentation } from '../src/model';
 import { admissionGenome, sameTickLineages, readmittedParentOrder } from './fixtures/lineage';
 import { legacyV7, advance } from './fixtures/telemetry';
 
@@ -18,13 +18,14 @@ function search(value: string) {
 }
 const fresh = () => new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0, mutation: 0 }, false);
 function update(world: Ecosystem, replacement = 1) {
-  view.update(world.presentation().lineage, world.tick, replacement);
+  view.update(world.presentation(0, true).lineage!, world.tick, replacement);
 }
 
 beforeEach(() => {
   document.body.innerHTML = '';
   root = document.createElement('div');
   root.innerHTML = markup;
+  root.querySelector<HTMLDetailsElement>('#lineage-explorer')!.open = true;
   document.body.append(root);
   changed = vi.fn();
   view = createLineageView(root, changed);
@@ -33,12 +34,13 @@ beforeEach(() => {
 describe('bounded retained lineage evidence', () => {
   it('handles controls before data and an empty archive without fabricated events', () => {
     search('');
+    view.reveal();
     const world = fresh();
     update(world);
     expect(get('lineage-results').textContent).toContain('No retained lineages');
     expect(get('lineage-rows').children).toHaveLength(0);
     expect(get<HTMLButtonElement>('lineage-clear').disabled).toBe(true);
-    expect(view.highlighted(world.presentation().lineage).size).toBe(0);
+    expect(view.highlighted(world.presentation(0, true).lineage!).size).toBe(0);
   });
 
   it('navigates a real same-tick radiation and extinction without changing ecology', () => {
@@ -57,7 +59,10 @@ describe('bounded retained lineage evidence', () => {
     expect(get('lineage-detail').textContent).toContain(
       `Parent #${parent.species} → child #${child.species}`,
     );
-    expect([...view.highlighted(world.presentation().lineage)]).toEqual([parent.id, clone.id]);
+    expect([...view.highlighted(world.presentation(0, true).lineage!)]).toEqual([
+      parent.id,
+      clone.id,
+    ]);
     expect(world.save()).toEqual(before);
     const childLink = get('lineage-detail').querySelector<HTMLButtonElement>(
       `[data-lineage-id="${child.species}"]`,
@@ -78,10 +83,10 @@ describe('bounded retained lineage evidence', () => {
     );
     expect(
       view.highlighted({
-        ...world.presentation().lineage,
+        ...world.presentation(0, true).lineage!,
         current: [
           {
-            ...world.presentation().lineage.current[0],
+            ...world.presentation(0, true).lineage!.current[0],
             id: child.species,
             organismIds: stale.map((o) => o.id),
           },
@@ -185,10 +190,30 @@ describe('bounded retained lineage evidence', () => {
     world.spawn(admissionGenome(), 10, 10);
     update(world);
     select(5);
-    expect(view.highlighted(world.presentation().lineage).size).toBe(1);
+    expect(view.highlighted(world.presentation(0, true).lineage!).size).toBe(1);
+    expect(view.highlighted(world.presentation(0, true).lineage!, 99).size).toBe(0);
     advance(world, 1);
     update(world, 2);
     expect(get('lineage-detail').textContent).toContain('Select a lineage');
-    expect(view.highlighted(world.presentation().lineage).size).toBe(0);
+    expect(view.highlighted(world.presentation(0, true).lineage!).size).toBe(0);
   });
+});
+
+it('projects detached known fields while complete accepted opaque genomes survive inspection', () => {
+  const world = fresh();
+  const organism = world.spawn(admissionGenome(), 10, 10)!;
+  organism.genome.legacyExtensions = [
+    ['opaque', encodeLegacyValue({ nested: ['retained', { count: 3 }] })],
+  ];
+  const before = world.save();
+  expect(world.presentation().lineage).toBeUndefined();
+  const projection = world.presentation(0, true).lineage!;
+  expect(projection.current[0].genome.legacyExtensions).toBeUndefined();
+  view.update(projection, world.tick, 1);
+  select(organism.species);
+  projection.current[0].organismIds.length = 0;
+  projection.current[0].genome.preference = 0;
+  projection.archive.summaries[0].foundingGenome!.preference = 0;
+  expect(world.save()).toEqual(before);
+  expect(Ecosystem.load(JSON.stringify(before)).save()).toEqual(before);
 });
