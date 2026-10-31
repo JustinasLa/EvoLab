@@ -5808,6 +5808,48 @@ describe('display-only retained-world races', () => {
   });
 });
 describe('placement preview controls', () => {
+  it.each(['pan', 'plant'])(
+    'does not redraw an absent %s preview while failed-load recovery awaits its new frame',
+    async (tool) => {
+      const draws = vi.spyOn(viewModule, 'draw');
+      const harness = realWorker(true);
+      harness.deliver();
+      paint(0);
+      harness.deliver();
+      click('pause');
+      harness.deliver();
+      paint(0);
+      harness.deliver();
+      if (tool === 'plant') {
+        click('plant-design');
+        paint(0);
+      }
+      const before = harness.save();
+      click('refresh-habitat');
+      const held = harness.outbox.splice(
+        harness.outbox.findIndex((data) => data.type === 'frame'),
+        1,
+      )[0];
+      expect(held).toBeDefined();
+      harness.deliver();
+      draws.mockClear();
+      await loadText('{}');
+      const terminal = harness.outbox.splice(
+        harness.outbox.findIndex((data) => data.type === 'error'),
+        1,
+      )[0];
+      expect(terminal.recovery).toBeDefined();
+      worker.onmessage!({ data: held } as MessageEvent);
+      worker.onmessage!({ data: terminal } as MessageEvent);
+      paint(0);
+      expect(draws).not.toHaveBeenCalled();
+      harness.deliver();
+      paint(0);
+      expect(draws).toHaveBeenCalledTimes(1);
+      expect(harness.save()).toEqual(before);
+    },
+  );
+
   const touch = (type: string, x: number, y: number, id = 7) => {
     const event = new MouseEvent(type, { clientX: x, clientY: y, bubbles: true });
     Object.defineProperties(event, { pointerType: { value: 'touch' }, pointerId: { value: id } });

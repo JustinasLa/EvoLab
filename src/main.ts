@@ -282,9 +282,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   let hover: { x: number; y: number } | undefined,
     touchAnchor: { x: number; y: number } | undefined;
   function clearPlacement(): void {
+    const preview = tool === 'plant' && (hover !== undefined || touchAnchor !== undefined);
     hover = touchAnchor = undefined;
     text('placement-feedback', '');
-    dirty = true;
+    if (preview) dirty = true;
   }
   let settingsEdits: Partial<Settings> = {};
   let confirmedSettings = { ...DEFAULTS };
@@ -1633,8 +1634,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       tab('organism');
       return;
     }
-    tool = next;
     clearPlacement();
+    tool = next;
+    if (tool === 'plant') dirty = true;
     get('cancel-placement').hidden = tool !== 'plant';
     root
       .querySelectorAll<HTMLButtonElement>('button[data-tool]')
