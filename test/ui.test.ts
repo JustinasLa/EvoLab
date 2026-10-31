@@ -1,4 +1,5 @@
 import { checkpointRecord } from '../src/checkpoints';
+import { createComparison } from '../src/experiments';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, captureCommand } from '../src/main';
 import * as model from '../src/model';
@@ -1523,6 +1524,147 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe('owned command admission and real-worker interleavings', () => {
+  it('preserves native comparison disclosure activation without a sandbox playback command', () => {
+    const summary = get('comparisons').querySelector('summary')!;
+    const before = worker.commands.mock.calls.length;
+    const space = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      code: 'Space',
+      key: ' ',
+    });
+    summary.dispatchEvent(space);
+    expect(space.defaultPrevented).toBe(false);
+    expect(worker.commands.mock.calls).toHaveLength(before);
+  });
+  it('captures comparison sources through complete native Save without advancing or replacing the sandbox', () => {
+    const endpoint = {
+      onmessage: null,
+      onerror: null,
+      onmessageerror: null,
+      postMessage: vi.fn(),
+      terminate: vi.fn(),
+    };
+    const construct = vi.fn(function () {
+      return endpoint;
+    });
+    vi.stubGlobal('Worker', construct);
+    const harness = realWorker(true);
+    click('comparison-start');
+    expect(get('comparison-status').textContent).toContain('busy or unavailable');
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    const before = harness.save();
+    click('comparison-start');
+    harness.deliver();
+    expect(construct).toHaveBeenCalledTimes(1);
+    const source = endpoint.postMessage.mock.calls[0][0];
+    expect(source.type).toBe('start');
+    expect(JSON.parse(source.text)).toEqual(before);
+    expect(harness.save()).toEqual(before);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    click('load');
+    expect(endpoint.terminate).toHaveBeenCalledTimes(1);
+    expect(get('comparison-status').textContent).toContain('lifecycle changed');
+  });
+  for (const phase of ['active', 'complete'] as const) {
+    for (const outcome of ['valid', 'invalid', 'read-error'] as const) {
+      it(`clears a ${phase} comparison started during a delayed ${outcome} world read`, async () => {
+        const endpoint = {
+          onmessage: null as ((event: MessageEvent) => void) | null,
+          onerror: null,
+          onmessageerror: null,
+          postMessage: vi.fn(),
+          terminate: vi.fn(),
+        };
+        vi.stubGlobal(
+          'Worker',
+          vi.fn(function () {
+            return endpoint;
+          }),
+        );
+        vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+        const harness = realWorker(true);
+        harness.deliver();
+        click('pause');
+        harness.deliver();
+        const before = harness.save();
+        let resolve!: (text: string) => void;
+        let reject!: (error: Error) => void;
+        upload({
+          size: 1,
+          text: () =>
+            new Promise<string>((yes, no) => {
+              resolve = yes;
+              reject = no;
+            }),
+        });
+        set('comparison-intervention', 'none', 'change');
+        set('comparison-delay', '0');
+        set('comparison-duration', '31');
+        click('comparison-start');
+        harness.deliver();
+        expect(endpoint.postMessage).toHaveBeenCalledTimes(1);
+        const source = endpoint.postMessage.mock.calls[0][0];
+        expect(JSON.parse(source.text)).toEqual(before);
+        const runner = createComparison(source.text, source.plan);
+        while (runner.advance(() => 0).tick < source.plan.horizonTick) {}
+        const completion = { type: 'complete', result: runner.result() };
+        runner.dispose();
+        const deliver = endpoint.onmessage!;
+        if (phase === 'complete') {
+          deliver({ data: completion } as MessageEvent);
+          expect(get('comparison-results').querySelector('table')).not.toBeNull();
+          click('comparison-control');
+          expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+        } else expect(get<HTMLButtonElement>('comparison-start').disabled).toBe(true);
+        const replacement = new Ecosystem(DEFAULTS, false);
+        replacement.step();
+        if (outcome === 'read-error') reject(new Error('Unreadable selected world.'));
+        else resolve(outcome === 'valid' ? JSON.stringify(replacement.save()) : '{}');
+        await Promise.resolve();
+        harness.deliver();
+        expect(endpoint.terminate).toHaveBeenCalledTimes(1);
+        expect(endpoint.onmessage).toBeNull();
+        expect(get('comparison-status').textContent).toContain('lifecycle changed');
+        expect(get('comparison-results').children).toHaveLength(0);
+        expect(get<HTMLButtonElement>('comparison-start').disabled).toBe(false);
+        expect(get<HTMLButtonElement>('comparison-cancel').disabled).toBe(true);
+        expect(get<HTMLButtonElement>('comparison-control').disabled).toBe(true);
+        expect(get<HTMLButtonElement>('comparison-treatment').disabled).toBe(true);
+        if (phase === 'complete') expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:world');
+        deliver({ data: completion } as MessageEvent);
+        expect(get('comparison-results').children).toHaveLength(0);
+        expect(harness.save()).toEqual(outcome === 'valid' ? replacement.save() : before);
+      });
+    }
+  }
+  it('routes rejected comparison Saves and transport failures without downloads or wedged ownership', () => {
+    click('comparison-start');
+    worker.emit({ type: 'error', message: 'Complete checkpoint rejected.', fatal: false });
+    expect(get('comparison-status').textContent).toContain('checkpoint rejected');
+    worker.postMessage.mockImplementationOnce(() => {
+      throw new DOMException('clone', 'DataCloneError');
+    });
+    click('comparison-start');
+    expect(get('comparison-status').textContent).toContain('busy or unavailable');
+    expect(get<HTMLButtonElement>('comparison-start').disabled).toBe(false);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+  it('rejects a delayed comparison capture when confirmed reset has taken ownership', () => {
+    const construct = vi.fn();
+    vi.stubGlobal('Worker', construct);
+    const harness = realWorker(true);
+    harness.deliver();
+    click('comparison-start');
+    click('reset');
+    click('confirm-reset');
+    harness.deliver();
+    expect(construct).not.toHaveBeenCalled();
+    expect(get('comparison-status').textContent).toContain('lifecycle changed');
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
   it('rejects invalid slider edits, non-Error reads and conflicting same-run replacement identities', async () => {
     const harness = realWorker(true);
     harness.deliver();
