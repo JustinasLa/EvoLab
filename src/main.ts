@@ -1993,7 +1993,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     Object.assign(camera, { zoom: 1, x: 0, y: 0 });
     dirty = true;
   };
-  canvas.addEventListener('dblclick', fit);
+  canvas.addEventListener('dblclick', () => {
+    if (tool !== 'plant') fit();
+  });
   get('fit').addEventListener('click', fit);
   get('zoom-in').addEventListener('click', () => setZoom(camera.zoom * 1.4));
   get('zoom-out').addEventListener('click', () => setZoom(camera.zoom / 1.4));

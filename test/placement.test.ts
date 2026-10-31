@@ -102,6 +102,7 @@ describe('placement geometry and detached designer transforms', () => {
     const world = new Ecosystem(DEFAULTS, false);
     const genome = founder(0);
     world.walls[index(0, 0)] = 1;
+    world.food[index(WIDTH - 1, 0)] = 1;
     const before = world.save();
     expect(world.paint('plant', 0, 0, 0, genome).placement).toBeNull();
     expect(world.save()).toEqual(before);

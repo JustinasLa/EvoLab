@@ -5825,8 +5825,10 @@ describe('placement preview controls', () => {
     expect(get('placement-feedback').textContent).toContain('Valid in displayed tick 0 at 0, 0');
     expect(drawSpy.mock.calls.at(-1)![6]!.positions).toContain(model.index(239, 0));
     click('zoom-in');
+    pointer('dblclick');
     paint(2);
     const camera = drawSpy.mock.calls.at(-1)![3];
+    expect(camera.zoom).toBe(1.4);
     v = viewport(canvas, camera);
     pointer('pointermove', v.left + 239.5 * v.scale, v.top + 155.5 * v.scale);
     paint(3);
