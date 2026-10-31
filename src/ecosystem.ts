@@ -1084,7 +1084,8 @@ export class Ecosystem {
   }
   step(): void {
     this.tick++;
-    const daylight = 0.65 + 0.35 * Math.sin(this.tick / 180);
+    const daylight = 0.65 + 0.35 * Math.sin(this.tick / 180),
+      shadeUnits = this.shadeHabitats.enabled ? this.shadeHabitats.units : null;
     for (const o of [...this.organisms.values()]) {
       if (!this.organisms.has(o.id)) continue;
       o.age++;
@@ -1108,12 +1109,10 @@ export class Ecosystem {
       const places = positions(o);
       for (let c = 0; c < o.genome.cells.length; c++) {
         const type = o.genome.cells[c].type,
-          p = places[c],
-          x = p % WIDTH,
-          y = Math.floor(p / WIDTH);
+          p = places[c];
         if (type === 4) {
           before = o.energy;
-          const activeUnits = this.shadeHabitats.enabled ? this.shadeHabitats.units[p] : 0;
+          const activeUnits = shadeUnits ? shadeUnits[p] : 0;
           if (activeUnits === 0) o.energy += 0.04 * daylight * (1 - stress);
           else o.energy += 0.04 * daylight * (1 - stress) * ((16 - activeUnits) / 16);
           this.recordEnergy('leavesGained', o.energy - before);
@@ -1126,11 +1125,13 @@ export class Ecosystem {
                 ((16 - activeUnits) / 16);
           if (this.random.next() < foodChance) {
             const [dx, dy] = DIRECTIONS[this.random.int(4)],
-              n = index(x + dx, y + dy);
+              n = index((p % WIDTH) + dx, Math.floor(p / WIDTH) + dy);
             if (!this.occupied[n] && !this.walls[n]) this.food[n] = 1;
           }
         }
-        if (type === 3 || type === 6)
+        if (type === 3 || type === 6) {
+          const x = p % WIDTH,
+            y = Math.floor(p / WIDTH);
           for (const [dx, dy] of DIRECTIONS) {
             const n = index(x + dx, y + dy);
             if (type === 3 && this.food[n]) {
@@ -1152,6 +1153,7 @@ export class Ecosystem {
               }
             }
           }
+        }
       }
       if (o.genome.cells.some((c) => c.type === 5) && o.age % o.genome.tempo === 0) {
         if (o.genome.cells.some((c) => c.type === 8)) {
