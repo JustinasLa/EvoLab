@@ -6048,7 +6048,7 @@ test('D12-5 native mouse and pen take over a staged touch ghost before placing',
   for (const [i, pointerType] of (['mouse', 'pen'] as const).entries()) {
     await page.locator('#plant-design').click();
     const a = await placementCoordinate(page, 100, 70);
-    const b = await placementCoordinate(page, 110 + i * 10, 80);
+    let b = await placementCoordinate(page, 110 + i * 10, 80);
     await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [a] });
     await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     await expect(page.locator('#placement-feedback')).toContainText('at 100, 70');
@@ -6058,6 +6058,12 @@ test('D12-5 native mouse and pen take over a staged touch ghost before placing',
     expect(await terrainSave(page, `D12-5-${pointerType}-world-unchanged.json`)).toEqual(
       reference.save(),
     );
+    // Save's real button activation can scroll the mobile page. Resolve the same
+    // world anchor again before sending native screen-coordinate input.
+    b = await placementCoordinate(page, 110 + i * 10, 80);
+    await session.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...b, pointerType });
+    await expect(page.locator('#placement-feedback')).toContainText(`at ${110 + i * 10}, 80`);
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.id, b)).toBe('world');
     await session.send('Input.dispatchMouseEvent', {
       type: 'mousePressed',
       ...b,
