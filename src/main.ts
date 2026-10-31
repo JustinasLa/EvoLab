@@ -1333,12 +1333,16 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           stop();
         }
         availability();
+        if (entry.checkpoint)
+          checkpoints.failed('Checkpoint Save could not be posted. Retry explicitly.');
         notice('Could not post this action. No automatic retry was queued.');
         return true;
       } else {
         terminate();
         stop();
       }
+      if (entry.checkpoint)
+        checkpoints.failed('Checkpoint Save could not be posted. Retry explicitly.');
       notice('Could not post this action. No automatic retry was queued.');
     }
     return false;
@@ -1570,6 +1574,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     if (focus) get('reset').focus();
   }
   function stop(): void {
+    checkpoints.invalidate();
     stopped = true;
     invalidateObservation();
     paused = true;

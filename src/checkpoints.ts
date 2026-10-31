@@ -92,6 +92,17 @@ export function classifyCheckpoint(slot: number, value: unknown): Checkpoint {
     };
   }
 }
+// Native request callbacks run after transaction admission; catch synchronous
+// storage failures here so quota errors retain their actionable classification.
+function guarded(fail: (error: unknown) => void, callback: () => void): () => void {
+  return () => {
+    try {
+      callback();
+    } catch (error) {
+      fail(error);
+    }
+  };
+}
 export function createCheckpoints(
   options: {
     factory?: () => IDBFactory | undefined;
@@ -305,21 +316,21 @@ export function createCheckpoints(
   }
   async function list(): Promise<{ rows: Checkpoint[]; count: number; bytes: number }> {
     await open();
-    return transaction('readonly', (store, accept) => {
+    return transaction('readonly', (store, accept, fail) => {
       const rows: Checkpoint[] = [];
       let bytes = 0;
       const count = store.count();
-      count.onsuccess = () => {
+      count.onsuccess = guarded(fail, () => {
         for (let slot = 1; slot <= CHECKPOINT_CAPACITY; slot++) {
           const request = store.get(slot);
-          request.onsuccess = () => {
+          request.onsuccess = guarded(fail, () => {
             const value: unknown = request.result;
             rows.push(classifyCheckpoint(slot, value));
             if (typeof value === 'string') bytes += new TextEncoder().encode(value).byteLength;
             if (rows.length === CHECKPOINT_CAPACITY) accept({ rows, count: count.result, bytes });
-          };
+          });
         }
-      };
+      });
     });
   }
   async function access(entry: Checkpoint, replacement?: string | null): Promise<Checkpoint> {
@@ -336,16 +347,20 @@ export function createCheckpoints(
       replacement === undefined ? 'readonly' : 'readwrite',
       (store, accept, fail) => {
         const count = store.count();
-        count.onsuccess = () => {
+        count.onsuccess = guarded(fail, () => {
           if (replacement && count.result > CHECKPOINT_CAPACITY) {
             fail(new CheckpointError('full'));
             return;
           }
           const request = store.get(entry.slot);
-          request.onsuccess = () => {
+          request.onsuccess = guarded(fail, () => {
             const current = classifyCheckpoint(entry.slot, request.result);
             if (current.readonly || current.token !== entry.token) {
               fail(new CheckpointError('conflict'));
+              return;
+            }
+            if (replacement && current.token === undefined && count.result >= CHECKPOINT_CAPACITY) {
+              fail(new CheckpointError('full'));
               return;
             }
             if (replacement === null) store.delete(entry.slot);
@@ -355,8 +370,8 @@ export function createCheckpoints(
                 ? current
                 : classifyCheckpoint(entry.slot, replacement === null ? undefined : replacement),
             );
-          };
-        };
+          });
+        });
       },
     );
   }

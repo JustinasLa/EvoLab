@@ -5,6 +5,7 @@ export function mountCheckpoints(
   hooks: { context: () => string; capture: () => boolean; restore: (world: string) => boolean },
 ) {
   const get = <T extends HTMLElement>(id: string): T => root.querySelector<T>('#' + id)!;
+  const dialog = get<HTMLDialogElement>('checkpoint-dialog');
   let alive = true,
     working = false,
     generation = 0;
@@ -23,7 +24,7 @@ export function mountCheckpoints(
   };
   const cancel = (): void => {
     confirmation = undefined;
-    get<HTMLDialogElement>('checkpoint-dialog').close();
+    dialog.close();
   };
   const storage = createCheckpoints({
     status,
@@ -54,7 +55,7 @@ export function mountCheckpoints(
       if (!alive || owner !== generation) return;
       rows = snapshot.rows;
       get('checkpoint-usage').textContent =
-        `${snapshot.count} / 5 checkpoints · ${snapshot.bytes.toLocaleString()} bytes in five slots${snapshot.count > 5 ? ' · overfull storage; saves blocked' : ''}`;
+        `${snapshot.count} / 5 checkpoints · ${snapshot.bytes.toLocaleString()} known UTF-8 bytes in five slots${snapshot.count > 5 ? ' · overfull storage; saves blocked' : ''}`;
       const select = get<HTMLSelectElement>('checkpoint-slot');
       const previous = select.value;
       select.replaceChildren(
@@ -115,11 +116,11 @@ export function mountCheckpoints(
       status('Enter a checkpoint name (1–80 characters).');
       return;
     }
-    if (action === 'save' && !entry.token) {
+    if (action === 'save' && entry.token === undefined) {
       requestCapture(entry, name);
       return;
     }
-    if (!entry.token || (action === 'restore' && !entry.world)) {
+    if (entry.token === undefined || (action === 'restore' && !entry.world)) {
       status('This slot has no restorable checkpoint.');
       return;
     }
@@ -131,7 +132,7 @@ export function mountCheckpoints(
     };
     get('checkpoint-confirm-description').textContent =
       `${action === 'save' ? 'Overwrite' : action === 'restore' ? 'Restore' : 'Delete'} slot ${entry.slot}: ${entry.name ?? 'corrupt checkpoint'}${entry.tick === undefined ? '' : ` · tick ${entry.tick} · seed ${entry.seed}`}? ${action === 'restore' ? 'The active world will be replaced only after complete validation. Playback follows Pause on extinction, as with file import. Camera is unchanged.' : 'Existing checkpoint bytes will be lost. This cannot be undone.'} The live world may continue while this dialog is open.`;
-    get<HTMLDialogElement>('checkpoint-dialog').showModal();
+    dialog.showModal();
     get('checkpoint-cancel').focus();
   }
   async function confirm(): Promise<void> {

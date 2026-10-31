@@ -9,6 +9,7 @@ import {
   positions,
   Random,
   observedOrganism,
+  encodeLegacyValue,
   type WorldFile,
   type Genome,
   type CellType,
@@ -5801,4 +5802,251 @@ test('B23-7 manual disclosure, keyboard controls and responsive views preserve t
   expect(errors).toEqual([]);
   expect(external).toEqual([]);
   await refugeProtocol(page);
+});
+
+async function checkpointBytes(
+  page: import('@playwright/test').Page,
+  slot: number,
+  value?: string,
+) {
+  return page.evaluate(
+    async ({ slot, value }) => {
+      const request = indexedDB.open('evolab-world-checkpoints', 1);
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      try {
+        return await new Promise<string | undefined>((resolve, reject) => {
+          const tx = db.transaction('entries', value === undefined ? 'readonly' : 'readwrite');
+          const store = tx.objectStore('entries');
+          let result: string | undefined;
+          if (value === undefined) {
+            const read = store.get(slot);
+            read.onsuccess = () => {
+              result = read.result;
+            };
+          } else store.put(value, slot);
+          tx.oncomplete = () => resolve(result);
+          tx.onabort = () => reject(tx.error);
+        });
+      } finally {
+        db.close();
+      }
+    },
+    { slot, value },
+  );
+}
+async function openCheckpoints(page: import('@playwright/test').Page) {
+  await page.locator('#local-checkpoints').evaluate((element: HTMLDetailsElement) => {
+    element.open = true;
+  });
+  await page.locator('#checkpoint-refresh').click();
+  await expect(page.locator('#checkpoint-status')).toContainText('refreshed');
+}
+async function confirmCheckpoint(
+  page: import('@playwright/test').Page,
+  action: 'restore' | 'delete',
+) {
+  await page.locator('#checkpoint-' + action).click();
+  await expect(page.locator('#checkpoint-dialog')).toBeVisible();
+  await page.locator('#checkpoint-confirm').click();
+}
+test('local complete checkpoints survive reload, require confirmations, and continue identically to downloaded worlds', async ({
+  page,
+}, info) => {
+  await observeTerrainNative(page);
+  await page.goto('/');
+  await terrainNativeFrame(page);
+  const candidate = new Ecosystem({ ...DEFAULTS, seed: 19019 });
+  for (let tick = 0; tick < 95; tick++) candidate.step();
+  candidate.shock('heat');
+  candidate.changeRefugeMode(true);
+  candidate.paintRefuge({ rulesVersion: 1, tool: 'warm', radius: 1, units: 7 }, 120, 78);
+  Object.defineProperty(candidate.settings, '__proto__', {
+    value: { opaque: 'own data' },
+    enumerable: true,
+  });
+  for (const organism of candidate.organisms.values()) {
+    (organism as any).opaque = { identity: organism.id };
+    organism.genome.legacyExtensions = [
+      ['retained', encodeLegacyValue({ values: [Infinity, -0, 'literal'] })],
+    ];
+    organism.genome.cells[0].legacyExtensions = [
+      ['cell', encodeLegacyValue({ nested: ['retained'] })],
+    ];
+  }
+  const initialRun = await page.evaluate(() => window.terrainNative.lifecycle.at(-1)!.runId);
+  await importWorld(page, candidate.save());
+  await expect
+    .poll(() => page.evaluate(() => window.terrainNative.lifecycle.at(-1)!.runId))
+    .toBeGreaterThan(initialRun);
+  await terrainNativeFrame(page);
+  await openCheckpoints(page);
+  await page.locator('#checkpoint-name').fill('Literal <checkpoint> 🌿');
+  const baseline = await downloadPausedWorld(page);
+  await expect(page.locator('#save')).toBeEnabled();
+  await page.locator('#checkpoint-save').click();
+  await expect(page.locator('#checkpoint-status')).toContainText('Complete checkpoint saved.');
+  const stored = await checkpointBytes(page, 1);
+  expect(JSON.parse(stored!).world).toBe(baseline.toString());
+  await expect(page.locator('#checkpoint-slot')).toContainText('Literal <checkpoint> 🌿');
+  await expect(page.locator('#checkpoint-usage')).toContainText('1 / 5');
+  await expect(page.locator('#save')).toBeEnabled();
+  await page.locator('#checkpoint-save').click();
+  await expect(page.locator('#checkpoint-confirm-description')).toContainText('Overwrite');
+  await page.locator('#checkpoint-cancel').click();
+  expect(await checkpointBytes(page, 1)).toBe(stored);
+  await page.reload();
+  await terrainNativeFrame(page);
+  await openCheckpoints(page);
+  expect(await checkpointBytes(page, 1)).toBe(stored);
+  const beforeRestoreRun = await page.evaluate(() => window.terrainNative.lifecycle.at(-1)!.runId);
+  await confirmCheckpoint(page, 'restore');
+  await expect
+    .poll(() => page.evaluate(() => window.terrainNative.lifecycle.at(-1)!.runId))
+    .toBeGreaterThan(beforeRestoreRun);
+  await terrainNativeFrame(page);
+  const restored = await downloadPausedWorld(page);
+  const expected = Ecosystem.load(baseline.toString());
+  const loaded = JSON.parse(restored.toString()) as WorldFile;
+  expect(loaded.tick).toBeGreaterThanOrEqual(expected.tick);
+  while (expected.tick < loaded.tick) expected.step();
+  expect(loaded).toEqual(expected.save());
+  await page.locator('#step').click();
+  await expect(page.locator('#tick')).toHaveText(`TICK ${(loaded.tick + 1).toLocaleString()}`);
+  expected.step();
+  const localContinuation = await downloadPausedWorld(page);
+  expect(JSON.parse(localContinuation.toString())).toEqual(expected.save());
+  // Load the exact downloaded source through the independent file UI, then compare every native field at the same completed tick.
+  const beforeFileRun = await page.evaluate(() => window.terrainNative.lifecycle.at(-1)!.runId);
+  await page
+    .locator('#file')
+    .setInputFiles({ name: 'download.json', mimeType: 'application/json', buffer: baseline });
+  await expect
+    .poll(() => page.evaluate(() => window.terrainNative.lifecycle.at(-1)!.runId))
+    .toBeGreaterThan(beforeFileRun);
+  await terrainNativeFrame(page);
+  const downloaded = JSON.parse((await downloadPausedWorld(page)).toString()) as WorldFile;
+  const fileExpected = Ecosystem.load(baseline.toString());
+  while (fileExpected.tick < downloaded.tick) fileExpected.step();
+  expect(downloaded).toEqual(fileExpected.save());
+  await page.locator('#step').click();
+  await expect(page.locator('#tick')).toHaveText(`TICK ${(downloaded.tick + 1).toLocaleString()}`);
+  fileExpected.step();
+  expect(JSON.parse((await downloadPausedWorld(page)).toString())).toEqual(fileExpected.save());
+  await openCheckpoints(page);
+  for (let slot = 2; slot <= 5; slot++) {
+    await page.locator('#checkpoint-slot').selectOption(String(slot));
+    await expect(page.locator('#save')).toBeEnabled();
+    await page.locator('#checkpoint-save').click();
+    await expect(page.locator('#checkpoint-status')).toContainText('Complete checkpoint saved.');
+  }
+  await expect(page.locator('#checkpoint-usage')).toContainText('5 / 5');
+  await confirmCheckpoint(page, 'delete');
+  await expect(page.locator('#checkpoint-status')).toContainText('Checkpoint deleted.');
+  expect(await checkpointBytes(page, 5)).toBeUndefined();
+  await info.attach('complete-checkpoint-continuation.json', {
+    contentType: 'application/json',
+    body: JSON.stringify({
+      sourceTick: JSON.parse(baseline.toString()).tick,
+      localTick: loaded.tick + 1,
+      fileTick: downloaded.tick + 1,
+      sourceSHA256: createHash('sha256').update(baseline).digest('hex'),
+      localSHA256: createHash('sha256').update(localContinuation).digest('hex'),
+      comparison:
+        'complete native worlds including RNG, order, counters, lineage, telemetry, interventions and opaque data; receipt-driven Pause, then exact Step',
+    }),
+  });
+});
+
+test('corrupt local checkpoints, failed complete validation, CAS conflicts and quota preserve the active world and original stored bytes', async ({
+  page,
+}, info) => {
+  await observeTerrainNative(page);
+  await page.goto('/');
+  await terrainNativeFrame(page);
+  await openCheckpoints(page);
+  await expect(page.locator('#save')).toBeEnabled();
+  await page.locator('#checkpoint-save').click();
+  await expect(page.locator('#checkpoint-status')).toContainText('Complete checkpoint saved.');
+  const original = await checkpointBytes(page, 1),
+    before = await downloadPausedWorld(page);
+  await page.locator('#checkpoint-restore').click();
+  const changed = JSON.stringify({ ...JSON.parse(original!), name: 'Another tab revision' });
+  await checkpointBytes(page, 1, changed);
+  await page.locator('#checkpoint-confirm').click();
+  await expect(page.locator('#checkpoint-status')).toContainText('changed or disappeared');
+  expect(await downloadPausedWorld(page)).toEqual(before);
+  const invalid = JSON.parse(before.toString());
+  invalid.organisms[0].genome.cells = [];
+  await checkpointBytes(
+    page,
+    1,
+    JSON.stringify({ ...JSON.parse(original!), world: JSON.stringify(invalid) }),
+  );
+  await page.locator('#checkpoint-refresh').click();
+  await expect(page.locator('#checkpoint-status')).toContainText('refreshed');
+  await confirmCheckpoint(page, 'restore');
+  await expect
+    .poll(() => page.evaluate(() => window.terrainNative.errors.at(-1)?.code))
+    .toBe('load-failed');
+  const failedRun = await page.evaluate(() => window.terrainNative.errors.at(-1).runId);
+  await terrainNativeFrame(page, failedRun);
+  expect(await downloadPausedWorld(page)).toEqual(before);
+  await checkpointBytes(page, 1, '{corrupt');
+  await page.locator('#checkpoint-refresh').click();
+  await expect(page.locator('#checkpoint-slot')).toContainText('Corrupt checkpoint');
+  await page.locator('#checkpoint-restore').click();
+  await expect(page.locator('#checkpoint-status')).toContainText('no restorable');
+  await confirmCheckpoint(page, 'delete');
+  await expect(page.locator('#checkpoint-status')).toContainText('deleted');
+  await checkpointBytes(page, 1, original!);
+  await page.locator('#checkpoint-refresh').click();
+  await expect(page.locator('#checkpoint-status')).toContainText('refreshed');
+  await page.evaluate(() => {
+    IDBObjectStore.prototype.put = function () {
+      throw new DOMException('Test storage quota exhausted', 'QuotaExceededError');
+    };
+  });
+  await expect(page.locator('#save')).toBeEnabled();
+  await page.locator('#checkpoint-save').click();
+  await page.locator('#checkpoint-confirm').click();
+  await expect(page.locator('#checkpoint-status')).toContainText('storage is full');
+  expect(await checkpointBytes(page, 1)).toBe(original);
+  expect(await downloadPausedWorld(page)).toEqual(before);
+  await page.locator('#step').click();
+  await expect(page.locator('#tick')).toHaveText(
+    `TICK ${(JSON.parse(before.toString()).tick + 1).toLocaleString()}`,
+  );
+  await info.attach('checkpoint-faults.json', {
+    contentType: 'application/json',
+    body: JSON.stringify({
+      conflict: 'exact bytes checked after confirmation',
+      corruption: 'explicit deletion',
+      invalidWorld: 'real worker load-failed with exact active-world recovery',
+      quota: 'native IndexedDB put throws; original bytes unchanged; exact Step remains available',
+    }),
+  });
+});
+
+test('unavailable checkpoint storage leaves explicit download and exact Step available', async ({
+  page,
+}) => {
+  await observeTerrainNative(page);
+  await page.addInitScript(() => {
+    IDBFactory.prototype.open = function () {
+      throw new DOMException('Test denied storage', 'SecurityError');
+    };
+  });
+  await page.goto('/');
+  await terrainNativeFrame(page);
+  await page.locator('#local-checkpoints').evaluate((element: HTMLDetailsElement) => {
+    element.open = true;
+  });
+  await page.locator('#checkpoint-refresh').click();
+  await expect(page.locator('#checkpoint-status')).toContainText('unavailable');
+  const before = JSON.parse((await downloadPausedWorld(page)).toString());
+  await page.locator('#step').click();
+  await expect(page.locator('#tick')).toHaveText(`TICK ${(before.tick + 1).toLocaleString()}`);
 });
