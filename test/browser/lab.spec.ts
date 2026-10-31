@@ -5920,11 +5920,73 @@ test.describe('retained lineage explorer', () => {
     const replacement = new Ecosystem(DEFAULTS, false);
     replacement.spawn(admissionGenome(), 10, 10);
     replacement.spawn(admissionGenome(), 12, 10);
+    await page.locator('#lineage-detail button').focus();
     await importTelemetryWorld(page, replacement.save());
+    await expect(search).toBeFocused();
+    await page.keyboard.press('Space');
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    expect(await downloadWorld(page)).toEqual(Buffer.from(JSON.stringify(replacement.save())));
     await expect(page.locator('#lineage-detail')).toContainText('Select a lineage');
     await expect(page.locator('#lineage-rows [aria-pressed="true"]')).toHaveCount(0);
     const screenshot = await page.locator('#lineage-explorer').screenshot();
     await info.attach('lineage-explorer', { body: screenshot, contentType: 'image/png' });
+  });
+
+  test('held native pagination cannot cross an asynchronous world replacement', async ({
+    page,
+  }, info) => {
+    await observeTerrainNative(page);
+    await page.goto('/');
+    await terrainNativeFrame(page);
+    const world = sameTickLineages();
+    await importTelemetryWorld(page, world.save());
+    await page.locator('#ecosystem-tab').click();
+    await page.locator('#lineage-heading').click();
+    const target = page.getByRole('button', { name: 'Next lineages' });
+    await target.scrollIntoViewIfNeeded();
+    await target.focus();
+    const box = (await target.boundingBox())!;
+    const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    const session =
+      info.project.name === 'mobile' ? await page.context().newCDPSession(page) : null;
+    if (session)
+      await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] });
+    else {
+      await page.mouse.move(point.x, point.y);
+      await page.mouse.down();
+    }
+    const replacement = Ecosystem.load(JSON.stringify(world.save()));
+    replacement.step();
+    await page.locator('#file').setInputFiles({
+      name: 'held-pager-replacement.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify(replacement.save())),
+    });
+    await expect(page.locator('#notice')).toContainText('World restored');
+    await expect(page.locator('#lineage-observed')).toHaveText(
+      `Observed at tick ${replacement.tick}.`,
+    );
+    await expect(target).toBeEnabled();
+    expect(await target.boundingBox()).toEqual(box);
+    expect(
+      await target.evaluate(
+        (button, at) => document.elementFromPoint(at.x, at.y)?.closest('button') === button,
+        point,
+      ),
+    ).toBe(true);
+    if (session) {
+      await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await session.detach();
+    } else await page.mouse.up();
+    await expect(page.locator('#lineage-results')).toContainText('showing 1–40');
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    expect(await terrainSave(page, 'held-pager-replacement-after.json')).toEqual(
+      replacement.save(),
+    );
+    await target.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#lineage-results')).toContainText('showing 41–80');
+    expect(await terrainSave(page, 'fresh-pager-after.json')).toEqual(replacement.save());
   });
 
   test('live observations preserve a held navigation target and timeline scroll', async ({

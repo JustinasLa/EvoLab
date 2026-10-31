@@ -84,6 +84,7 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
   let tick = 0;
   let facts = new Map<number, Evidence>();
   const pressed = new Set<number>();
+  const pressOwners = new WeakMap<Element, { replacement: number | undefined }>();
   let deferred = false;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   const flushDeferred = (): void => {
@@ -95,8 +96,19 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
     }, 0);
   };
   const beginPress = (event: PointerEvent): void => {
-    if (event.target instanceof Element && event.target.closest('button'))
+    const button = event.target instanceof Element ? event.target.closest('button') : null;
+    if (button) {
       pressed.add(event.pointerId);
+      pressOwners.set(button, { replacement });
+    }
+  };
+  const blockOldPress = (event: MouseEvent): void => {
+    const button = event.target instanceof Element ? event.target.closest('button') : null;
+    const owner = button && pressOwners.get(button);
+    if (event.detail > 0 && owner && owner.replacement !== replacement) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
   };
   const endPress = (event: PointerEvent): void => {
     pressed.delete(event.pointerId);
@@ -107,6 +119,7 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
     flushDeferred();
   };
   explorer.addEventListener('pointerdown', beginPress);
+  explorer.addEventListener('click', blockOldPress, true);
   window.addEventListener('pointerup', endPress);
   window.addEventListener('pointercancel', endPress);
   window.addEventListener('blur', cancelPresses);
@@ -351,6 +364,9 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
   return {
     update(value: LineagePresentation, at: number, replacementId: number): void {
       if (replacement !== replacementId) {
+        const active = document.activeElement;
+        if ((rows.contains(active) || detail.contains(active)) && !panel.hidden && explorer.open)
+          search.focus({ preventScroll: true });
         pressed.clear();
         deferred = false;
         rows.replaceChildren();
@@ -387,6 +403,7 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
       pressed.clear();
       deferred = false;
       explorer.removeEventListener('pointerdown', beginPress);
+      explorer.removeEventListener('click', blockOldPress, true);
       window.removeEventListener('pointerup', endPress);
       window.removeEventListener('pointercancel', endPress);
       window.removeEventListener('blur', cancelPresses);

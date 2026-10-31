@@ -375,6 +375,44 @@ describe('bounded retained lineage evidence', () => {
     expect(view.highlighted(evidence).size).toBe(0);
   });
 
+  for (const scope of ['rows', 'detail'] as const) {
+    it(`recovers focused ${scope} navigation before asynchronous replacement removes it`, () => {
+      const world = fresh();
+      const parent = world.spawn(admissionGenome(), 10, 10)!;
+      const child = world.spawn(admissionGenome(), 12, 10, undefined, parent)!;
+      update(world);
+      select(parent.species);
+      const target = get(`lineage-${scope}`).querySelector<HTMLButtonElement>(
+        `[data-lineage-id="${child.species}"]`,
+      )!;
+      target.focus();
+      update(fresh(), 2);
+      expect(target.isConnected).toBe(false);
+      expect(document.activeElement).toBe(get('lineage-search'));
+    });
+  }
+
+  it('rejects a stale held pager activation while admitting fresh pointer and keyboard navigation', () => {
+    const world = sameTickLineages();
+    update(world);
+    const next = root.querySelector<HTMLButtonElement>('.lineage-pages button:last-child')!;
+    const pointer = (type: string, id: number) =>
+      Object.assign(new MouseEvent(type, { bubbles: true }), { pointerId: id });
+    next.dispatchEvent(pointer('pointerdown', 1));
+    world.step();
+    update(world, 2);
+    window.dispatchEvent(pointer('pointerup', 1));
+    const stale = new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 });
+    expect(next.dispatchEvent(stale)).toBe(false);
+    expect(get('lineage-results').textContent).toContain('showing 1–40');
+    next.dispatchEvent(pointer('pointerdown', 2));
+    window.dispatchEvent(pointer('pointerup', 2));
+    next.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+    expect(get('lineage-results').textContent).toContain('showing 41–80');
+    next.click();
+    expect(get('lineage-results').textContent).toContain('showing 81–120');
+  });
+
   it('clears identity on world replacement even when IDs are reused', () => {
     const world = fresh();
     world.spawn(admissionGenome(), 10, 10);
