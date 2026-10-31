@@ -105,6 +105,8 @@ declare global {
       fullDesign: any | null;
       pauseOnLifecycle: boolean;
       fifoPauses: number;
+      manualDeliveries: number;
+      lastManualDelivered: number | null;
     };
     publicationFault: {
       arm: () => Promise<void>;
@@ -319,6 +321,8 @@ async function observeTerrainNative(
       fullDesign: null,
       pauseOnLifecycle: true,
       fifoPauses: 0,
+      manualDeliveries: 0,
+      lastManualDelivered: null,
     };
     window.Worker = new Proxy(window.Worker, {
       construct(target, args, newTarget) {
@@ -350,15 +354,21 @@ async function observeTerrainNative(
             return result;
           },
         });
-        const descriptor = Object.getOwnPropertyDescriptor(Worker.prototype, 'onmessage')!;
+        const descriptor =
+          Object.getOwnPropertyDescriptor(worker, 'onmessage') ??
+          Object.getOwnPropertyDescriptor(Worker.prototype, 'onmessage')!;
         let handler: ((event: MessageEvent) => void) | null = null;
         Object.defineProperty(worker, 'onmessage', {
           get: () => handler,
           set(next: ((event: MessageEvent) => void) | null) {
             handler = next;
             descriptor.set!.call(worker, (event: MessageEvent) => {
-              next?.(event);
+              next?.call(worker, event);
               const data = event.data;
+              if (data.type === 'manual-result') {
+                window.terrainNative.manualDeliveries++;
+                window.terrainNative.lastManualDelivered = data.commandId;
+              }
               const receipt = window.terrainNative.lifecycle.at(-1);
               if (
                 pauseAt === 'lifecycle-post' &&
@@ -369,6 +379,7 @@ async function observeTerrainNative(
                 data.state &&
                 !data.state.playback.paused
               ) {
+                receipt.pageStateBeforePause = document.getElementById('run-state')!.textContent;
                 receipt.pausePostedSequence = ++sequence;
                 awaitingPause = receipt;
                 document.getElementById('pause')!.click();
@@ -567,7 +578,14 @@ for (const preset of ['open-field', 'porous-ridges', 'chambered-refuges'] as con
     await observeTerrainNative(page);
     await page.goto('/');
     await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    await terrainNativeFrame(page);
     const baseline = new Ecosystem();
+    const startup = await terrainSave(page, `${preset}-startup.json`);
+    expect((await page.evaluate(() => window.terrainNative.lifecycle.at(-1)))!.completedTick).toBe(
+      0,
+    );
+    advance(baseline, startup.tick);
+    expect(startup).toEqual(baseline.save());
     expect((await terrainNativeFrame(page)).frame).toEqual(terrainExpectedFrame(baseline));
     await terrainSettings(page);
     await page.locator('#terrain-preset').selectOption(preset);
@@ -583,12 +601,13 @@ for (const preset of ['open-field', 'porous-ridges', 'chambered-refuges'] as con
     const reference = new Ecosystem(DEFAULTS, true, {
       terrain: { version: 1, preset, seed: null },
     });
-    const initial = await terrainSave(page, `${preset}-reset.json`);
-    expect(initial).toEqual(reference.save());
-    expect(initial.tick).toBe(0);
-    expect(initial.organisms).toHaveLength(1);
-    expect(initial.food).toEqual([]);
-    expect(initial.organisms[0]).toMatchObject({
+    const resetReceipt = await page.evaluate(() => window.terrainNative.lifecycle.at(-1)!);
+    expect(resetReceipt.completedTick).toBe(0);
+    const seed = reference.save();
+    expect(seed.tick).toBe(0);
+    expect(seed.organisms).toHaveLength(1);
+    expect(seed.food).toEqual([]);
+    expect(seed.organisms[0]).toMatchObject({
       x: 120,
       y: 78,
       age: 0,
@@ -596,14 +615,16 @@ for (const preset of ['open-field', 'porous-ridges', 'chambered-refuges'] as con
       children: 0,
       generation: 0,
     });
-    expect(initial.walls).toEqual(
-      Array.from(generateTerrain(initial.terrain, 42)).flatMap((value, cell) =>
-        value ? [cell] : [],
-      ),
+    expect(seed.walls).toEqual(
+      Array.from(generateTerrain(seed.terrain, 42)).flatMap((value, cell) => (value ? [cell] : [])),
     );
+    const initial = await terrainSave(page, `${preset}-reset.json`);
+    advance(reference, initial.tick);
+    expect(initial).toEqual(reference.save());
+    expect((await terrainNativeFrame(page)).frame).toEqual(terrainExpectedFrame(reference));
     await page.locator('#step').click();
     reference.step();
-    await expect(page.locator('#tick')).toHaveText('TICK 1');
+    await expect(page.locator('#tick')).toHaveText(`TICK ${reference.tick}`);
     expect((await terrainNativeFrame(page)).frame).toEqual(terrainExpectedFrame(reference));
     expect(reference.save().telemetry.pending.energy.leavesGained).toBeGreaterThan(0);
     const stepped = await terrainSave(page, `${preset}-step.json`);
@@ -5265,89 +5286,110 @@ test('B23-3 wrapped additive manual dabs share camera coordinates and never edit
   await refugeProtocol(page);
 });
 
-test('B23-4 capacity and late-load rejection preserve full state while stale manual owners drain across replacement', async ({
-  page,
-}) => {
-  await observeMeasurementOwnership(page);
-  await observeTerrainNative(page, 'lifecycle-receipt');
-  await page.goto('/');
-  await terrainNativeFrame(page);
-  const original = JSON.parse(fixtureText('capture-attempt3/inputs/threshold-0.75-open.json'));
-  const candidate = {
-      ...original,
-      version: 7,
-      thermalRefuges: {
-        version: 1,
-        enabled: true,
-        cells: Array.from({ length: 4096 }, (_, position) => [position, 32]),
+for (const pauseAt of ['lifecycle-post', 'lifecycle-receipt'] as const) {
+  test(`B23-4 capacity and late-load rejection preserve full state while stale manual owners drain across replacement / ${pauseAt}`, async ({
+    page,
+  }) => {
+    await observeMeasurementOwnership(page);
+    await observeTerrainNative(page, pauseAt);
+    await page.goto('/');
+    await terrainNativeFrame(page);
+    const original = JSON.parse(fixtureText('capture-attempt3/inputs/threshold-0.75-open.json'));
+    const candidate = {
+        ...original,
+        version: 7,
+        thermalRefuges: {
+          version: 1,
+          enabled: true,
+          cells: Array.from({ length: 4096 }, (_, position) => [position, 32]),
+        },
+        interventions: { ...original.interventions, version: 3 },
       },
-      interventions: { ...original.interventions, version: 3 },
-    },
-    text = JSON.stringify(candidate),
-    reference = Ecosystem.load(text);
-  advance(reference, await refugeLoad(page, text));
-  await refugeSelected(page);
-  const before = await terrainSave(page, 'capacity-before.json');
-  expect(before).toEqual(reference.save());
-  await refugeControls(page, 8, 4);
-  await refugePaint(page, 'warm', 120, 78);
-  await expect(page.locator('#notice')).toContainText('capacity');
-  const bad = structuredClone(candidate);
-  bad.thermalRefuges.cells[4095][1] = 33;
-  await page.locator('#file').setInputFiles({
-    name: 'late-malformed-field.json',
-    mimeType: 'application/json',
-    buffer: Buffer.from(JSON.stringify(bad)),
-  });
-  await expect(page.locator('#notice')).toContainText('Invalid painted temperature cell');
-  const recoveryRun = await page.evaluate(() => window.terrainNative.errors.at(-1).runId);
-  const retained = await terrainSave(page, 'capacity-recovered.json');
-  expect(retained).toEqual(before);
-  await expect.poll(() => page.evaluate(() => window.terrainNative.selected?.id)).toBe(1);
-  await page.locator('#step').click();
-  reference.step();
-  await expect(page.locator('#tick')).toHaveText(`TICK ${reference.tick.toLocaleString()}`);
-  expect((await terrainNativeFrame(page, recoveryRun)).frame).toEqual(
-    terrainExpectedFrame(reference),
-  );
-  await page.evaluate(() => {
-    window.measurementGate.deliveryBlocked = true;
-  });
-  try {
-    await refugeMode(page, false);
-    await expect
-      .poll(() =>
-        page.evaluate(
-          () =>
-            [...window.measurementGate.pending.values()].filter(
-              (owner: any) => owner.operation === 'refuge-mode',
-            ).length,
-        ),
-      )
-      .toBe(1);
-    const replacement = Ecosystem.load(text);
-    const loading = refugeLoad(page, text);
-    await expect(page.locator('#save')).toBeDisabled();
-    await page.evaluate(() => window.measurementGate.releaseResults());
-    const tick = await loading;
-    advance(replacement, tick);
-    await expect(page.locator('#refuge-enabled')).toBeChecked();
+      text = JSON.stringify(candidate),
+      reference = Ecosystem.load(text);
+    advance(reference, await refugeLoad(page, text));
+    await refugeSelected(page);
+    const before = await terrainSave(page, 'capacity-before.json');
+    expect(before).toEqual(reference.save());
+    await refugeControls(page, 8, 4);
+    await refugePaint(page, 'warm', 120, 78);
+    await expect(page.locator('#notice')).toContainText('capacity');
+    const bad = structuredClone(candidate);
+    bad.thermalRefuges.cells[4095][1] = 33;
+    await page.locator('#file').setInputFiles({
+      name: 'late-malformed-field.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify(bad)),
+    });
+    await expect(page.locator('#notice')).toContainText('Invalid painted temperature cell');
+    const recoveryRun = await page.evaluate(() => window.terrainNative.errors.at(-1).runId);
+    const retained = await terrainSave(page, 'capacity-recovered.json');
+    expect(retained).toEqual(before);
+    await expect.poll(() => page.evaluate(() => window.terrainNative.selected?.id)).toBe(1);
     await page.locator('#step').click();
-    replacement.step();
-    const final = await terrainSave(page, 'capacity-new-run-step.json');
-    expect(final).toEqual(replacement.save());
-    expect(final.thermalRefuges.enabled).toBe(true);
-    await expect.poll(() => page.evaluate(() => window.measurementGate.pending.size)).toBe(0);
-  } finally {
-    await page.evaluate(() => window.measurementGate.releaseResults());
-  }
-  const successful = await page.evaluate(() => window.terrainNative.lifecycle);
-  expectReceiptDrivenTerrainPauses(successful);
-  await test.info().attach('capacity-owner-recovery.json', {
-    body: JSON.stringify({ successful, completeRetainedSave: true, capacity: 4096 }),
-    contentType: 'application/json',
+    reference.step();
+    await expect(page.locator('#tick')).toHaveText(`TICK ${reference.tick.toLocaleString()}`);
+    expect((await terrainNativeFrame(page, recoveryRun)).frame).toEqual(
+      terrainExpectedFrame(reference),
+    );
+    const deliveredBefore = await page.evaluate(() => window.terrainNative.manualDeliveries);
+    await page.evaluate(() => {
+      window.measurementGate.deliveryBlocked = true;
+    });
+    try {
+      await refugeMode(page, false);
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              [...window.measurementGate.pending.values()].filter(
+                (owner: any) => owner.operation === 'refuge-mode',
+              ).length,
+          ),
+        )
+        .toBe(1);
+      const held = await page.evaluate(() => {
+        const native = window.terrainNative;
+        return {
+          id: native.manual.commandId,
+          operation: native.manual.operation,
+          pending: window.measurementGate.pending.has(native.manual.commandId),
+          delivered: native.manualDeliveries,
+          lastDelivered: native.lastManualDelivered,
+        };
+      });
+      expect(held.operation).toBe('refuge-mode');
+      expect(held.pending).toBe(true);
+      expect(held.delivered).toBe(deliveredBefore);
+      expect(held.lastDelivered).not.toBe(held.id);
+      const replacement = Ecosystem.load(text);
+      const loading = refugeLoad(page, text);
+      await expect(page.locator('#save')).toBeDisabled();
+      await page.evaluate(() => window.measurementGate.releaseResults());
+      await expect
+        .poll(() => page.evaluate(() => window.terrainNative.manualDeliveries))
+        .toBe(deliveredBefore + 1);
+      expect(await page.evaluate(() => window.terrainNative.lastManualDelivered)).toBe(held.id);
+      const tick = await loading;
+      advance(replacement, tick);
+      await expect(page.locator('#refuge-enabled')).toBeChecked();
+      await page.locator('#step').click();
+      replacement.step();
+      const final = await terrainSave(page, 'capacity-new-run-step.json');
+      expect(final).toEqual(replacement.save());
+      expect(final.thermalRefuges.enabled).toBe(true);
+      await expect.poll(() => page.evaluate(() => window.measurementGate.pending.size)).toBe(0);
+    } finally {
+      await page.evaluate(() => window.measurementGate.releaseResults());
+    }
+    const successful = await page.evaluate(() => window.terrainNative.lifecycle);
+    expectReceiptDrivenTerrainPauses(successful);
+    await test.info().attach('capacity-owner-recovery.json', {
+      body: JSON.stringify({ successful, completeRetainedSave: true, capacity: 4096 }),
+      contentType: 'application/json',
+    });
   });
-});
+}
 
 test('B23-5 authoritative anchor temperature determines real survival, body food and extinction without rescue', async ({
   page,
