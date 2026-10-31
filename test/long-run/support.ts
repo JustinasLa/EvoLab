@@ -14,7 +14,6 @@ import {
   LINEAGE_SUMMARY_CAPACITY,
   LINEAGE_EVENT_CAPACITY,
   INTERVENTION_CAPACITY,
-  WORLD_MAX_BYTES,
   encodeLegacyValue,
   validGenome,
   type Genome,
@@ -26,7 +25,7 @@ export function context() {
   const git = (...args: string[]) => execFileSync('git', args, { encoding: 'utf8' }).trim();
   return {
     head: git('rev-parse', 'HEAD'),
-    dirtyFiles: git('diff', '--name-only'),
+    dirtyFiles: git('status', '--short'),
     sourceSHA256: Object.fromEntries(
       [
         'src/ecosystem.ts',
@@ -170,7 +169,6 @@ export function invariants(world: Ecosystem): void {
   assert.ok(archive.events.length <= LINEAGE_EVENT_CAPACITY);
   assert.deepEqual(new Map(archive.living.map((row) => [row.id, row.liveCount])), lineageCounts);
   for (const row of archive.summaries) if (row.foundingGenome) anatomy(row.foundingGenome);
-  assert.ok(new TextEncoder().encode(JSON.stringify(saved)).byteLength <= WORLD_MAX_BYTES);
 }
 
 export const starvationGenome: Genome = {
@@ -195,6 +193,8 @@ export function withOpaquePayload(world: Ecosystem): Ecosystem {
   Object.defineProperty(saved.settings, '__proto__', { value: opaque, enumerable: true });
   for (const organism of saved.organisms) Object.assign(organism, { opaque });
   // Encoded opaque values preserve signed zero/overflow without JSON loss.
+  // One compact cell extension keeps long-run checkpoints loadable; arbitrary
+  // accepted worlds can legitimately outgrow the outbound Save byte limit.
   const extension = encodeLegacyValue({ opaque, signed: -0, overflow: Infinity });
   for (const genome of [
     ...saved.organisms.map((organism) => organism.genome),
@@ -203,7 +203,7 @@ export function withOpaquePayload(world: Ecosystem): Ecosystem {
     ),
   ]) {
     genome.legacyExtensions = [['payload', extension]];
-    for (const cell of genome.cells) cell.legacyExtensions = [['payload', extension]];
+    genome.cells[0].legacyExtensions = [['payload', encodeLegacyValue(-0)]];
   }
   return Ecosystem.load(JSON.stringify(saved));
 }

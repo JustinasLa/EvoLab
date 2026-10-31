@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { it } from 'vitest';
 import { Ecosystem } from '../../src/ecosystem';
-import { DEFAULTS, LIMIT } from '../../src/model';
+import { DEFAULTS, LIMIT, WORLD_MAX_BYTES } from '../../src/model';
 import { context, digest, invariants, receipt, starved, withOpaquePayload } from './support';
 
 const TICKS = 100_000;
@@ -35,6 +35,7 @@ for (const fixture of corpus)
       maxPopulation: world.organisms.size,
       populationTickSum: 0,
       invariantChecks: 0,
+      maxCheckpointBytes: 0,
       maxConcurrentContinuations: 0,
       checkpoints: [] as {
         tick: number;
@@ -80,6 +81,9 @@ for (const fixture of corpus)
         if (checkpoints.includes(world.tick)) {
           check(world);
           const complete = JSON.stringify(world.save());
+          const bytes = new TextEncoder().encode(complete).byteLength;
+          evidence.maxCheckpointBytes = Math.max(evidence.maxCheckpointBytes, bytes);
+          assert.ok(bytes <= WORLD_MAX_BYTES, 'this fixture remains a loadable checkpoint');
           const restored = Ecosystem.load(complete);
           check(restored);
           assert.equal(
