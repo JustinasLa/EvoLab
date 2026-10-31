@@ -3044,12 +3044,14 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         displayedSelected = pendingFrame.selectedId;
         pendingFrame = null;
       }
-      const anchor = tool === 'plant' && hover ? point(canvas, camera, hover.x, hover.y) : null;
+      const anchor =
+        tool === 'plant'
+          ? (touchAnchor ?? (hover ? point(canvas, camera, hover.x, hover.y) : null))
+          : null;
       const ghost =
         anchor && validGenome(blueprint)
           ? placementGhost(frame!, blueprint, anchor.x, anchor.y)
           : undefined;
-      get('cancel-placement').hidden = tool !== 'plant';
       text(
         'placement-feedback',
         tool !== 'plant'

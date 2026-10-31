@@ -6002,6 +6002,43 @@ test('D12-2 touch previews and transform controls preserve complete payloads unt
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
 });
 
+test('D12-4 native touch drag keeps confirmation and ghost aligned through camera changes', async ({
+  page,
+}, info) => {
+  const reference = placementWorld();
+  await loadPlacementWorld(page, reference);
+  await page.locator('#plant-design').click();
+  const session = await page.context().newCDPSession(page);
+  const a = await placementCoordinate(page, 100, 70);
+  const b = await placementCoordinate(page, 110, 80);
+  await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [a] });
+  await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [b] });
+  await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await expect(page.locator('#placement-feedback')).toContainText('at 100, 70');
+  await expect(page.locator('#placement-feedback')).toContainText('Tap this anchor again');
+  await page.locator('#zoom-in').click();
+  await page.setViewportSize({
+    width: info.project.name === 'mobile' ? 1280 : 390,
+    height: 800,
+  });
+  await expect(page.locator('#placement-feedback')).toContainText('at 100, 70');
+  expect(await terrainSave(page, 'D12-4-staged-world-unchanged.json')).toEqual(reference.save());
+  const next = await placementCoordinate(page, 110, 80, 1.4);
+  const tap = async () => {
+    await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [next] });
+    await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  };
+  await tap();
+  await expect(page.locator('#placement-feedback')).toContainText('at 110, 80');
+  expect(await page.evaluate(() => window.terrainNative.manual?.operation)).not.toBe('paint');
+  await tap();
+  await expect(page.locator('#notice')).toContainText('Organism placed');
+  const outcome = reference.paint('plant', 110, 80, 0, founder(0));
+  reference.appendIntervention({ kind: 'placement', detail: outcome.placement! });
+  expect(await terrainSave(page, 'D12-4-confirmed-world-anchor.json')).toEqual(reference.save());
+  await session.detach();
+});
+
 test('D12-3 stale valid preview cannot override worker occupancy and failure makes one legacy attempt', async ({
   page,
 }) => {

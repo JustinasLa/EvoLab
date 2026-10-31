@@ -5883,6 +5883,44 @@ describe('placement preview controls', () => {
     click('cancel-placement');
     expect(canvasTool()).toBe('pan');
   });
+  it('keeps an armed touch ghost at its world anchor through dragging, zoom and resize', () => {
+    const drawSpy = vi.spyOn(viewModule, 'draw');
+    emit(new Ecosystem(DEFAULTS, false).frame());
+    paint(0);
+    click('plant-design');
+    const canvas = get<HTMLCanvasElement>('world');
+    const v = viewport(canvas, { zoom: 1, x: 0, y: 0 });
+    const commands = worker.commands.mock.calls.length;
+    const a = { x: v.left + 100.5 * v.scale, y: v.top + 70.5 * v.scale };
+    const b = { x: v.left + 110.5 * v.scale, y: v.top + 80.5 * v.scale };
+    touch('pointerdown', a.x, a.y);
+    touch('pointermove', b.x, b.y);
+    touch('pointerup', b.x, b.y);
+    paint(1);
+    const expected = model.positions({ genome: founder(0), x: 100, y: 70, rotation: 0 });
+    expect(drawSpy.mock.calls.at(-1)![6]!.positions).toEqual(expected);
+    expect(get('placement-feedback').textContent).toContain('at 100, 70');
+    click('zoom-in');
+    paint(2);
+    Object.defineProperty(canvas, 'clientWidth', { value: 600 });
+    window.dispatchEvent(new Event('resize'));
+    paint(3);
+    expect(drawSpy.mock.calls.at(-1)![6]!.positions).toEqual(expected);
+    expect(get('placement-feedback').textContent).toContain('at 100, 70');
+    expect(worker.commands).toHaveBeenCalledTimes(commands);
+    const camera = drawSpy.mock.calls.at(-1)![3];
+    const changed = viewport(canvas, camera);
+    const next = { x: changed.left + 110.5 * changed.scale, y: changed.top + 80.5 * changed.scale };
+    touch('pointerdown', next.x, next.y);
+    touch('pointerup', next.x, next.y);
+    paint(4);
+    expect(get('placement-feedback').textContent).toContain('at 110, 80');
+    expect(worker.commands).toHaveBeenCalledTimes(commands);
+    touch('pointerdown', next.x, next.y);
+    touch('pointerup', next.x, next.y);
+    expect(worker.commands).toHaveBeenCalledTimes(commands + 1);
+    expect(worker.commands.mock.calls.at(-1)![0]).toMatchObject({ type: 'paint', x: 110, y: 80 });
+  });
   function canvasTool() {
     return get('world').dataset.tool;
   }
