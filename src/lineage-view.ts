@@ -90,6 +90,8 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
     if (!data || panel.hidden || !explorer.open) return;
     const query = search.value.trim().toLowerCase();
     const identity = /^(?:lineage )?#?(\d+)$/.exec(query);
+    const active = document.activeElement as HTMLElement | null;
+    const focusedId = rows.contains(active) ? active?.dataset.lineageId : undefined;
     const matching = [...facts.values()]
       .sort((a, b) => b.id - a.id)
       .filter((entry) =>
@@ -97,6 +99,10 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
           ? entry.id === Number(identity[1])
           : `lineage #${entry.id} ${category(entry)} ${state(entry)}`.toLowerCase().includes(query),
       );
+    if (focusedId) {
+      const position = matching.findIndex((entry) => entry.id === Number(focusedId));
+      if (position >= 0) page = Math.floor(position / PAGE_SIZE);
+    }
     page = Math.min(page, Math.max(0, Math.ceil(matching.length / PAGE_SIZE) - 1));
     previous.disabled = page === 0;
     next.disabled = (page + 1) * PAGE_SIZE >= matching.length;
@@ -107,8 +113,6 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
         ? 'No matching lineages.'
         : 'No retained lineages. Earlier ancestry is unknown.';
     // Restore keyboard focus to the same identity across observations.
-    const active = document.activeElement as HTMLElement | null;
-    const focusedId = rows.contains(active) ? active?.dataset.lineageId : undefined;
     const detailFocusedId = detail.contains(active) ? active?.dataset.lineageId : undefined;
     rows.replaceChildren();
     for (const entry of visible) {
@@ -127,7 +131,7 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
       rows.append(li);
     }
     if (focusedId)
-      rows.querySelector<HTMLButtonElement>(`[data-lineage-id="${focusedId}"]`)?.focus();
+      (rows.querySelector<HTMLButtonElement>(`[data-lineage-id="${focusedId}"]`) ?? search).focus();
     clear.disabled = selected === undefined;
     detail.replaceChildren();
     const entry = selected === undefined ? undefined : facts.get(selected);
@@ -229,7 +233,9 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
     if (!transitions.length) paragraph('No timeline events retained for this identity.');
     detail.append(timeline);
     if (detailFocusedId)
-      detail.querySelector<HTMLButtonElement>(`[data-lineage-id="${detailFocusedId}"]`)?.focus();
+      (
+        detail.querySelector<HTMLButtonElement>(`[data-lineage-id="${detailFocusedId}"]`) ?? detail
+      ).focus();
   }
   search.addEventListener('input', () => {
     page = 0;

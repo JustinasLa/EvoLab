@@ -220,3 +220,24 @@ it('projects detached known fields while complete accepted opaque genomes surviv
   expect(world.save()).toEqual(before);
   expect(Ecosystem.load(JSON.stringify(before)).save()).toEqual(before);
 });
+
+it('keeps keyboard identity on its page when births arrive and returns focus to search when a status filter removes it', () => {
+  const world = sameTickLineages();
+  update(world);
+  const focused = get('lineage-rows').querySelector<HTMLButtonElement>('button')!;
+  const id = Number(focused.dataset.lineageId);
+  focused.focus();
+  for (let i = 0; i < 40; i++) world.spawn(admissionGenome(), i, 10);
+  update(world);
+  expect((document.activeElement as HTMLElement).dataset.lineageId).toBe(String(id));
+  expect(get('lineage-results').textContent).toContain('showing 41–80');
+  search('living');
+  get('lineage-rows').querySelector<HTMLButtonElement>('button')!.focus();
+  const removed = Number((document.activeElement as HTMLElement).dataset.lineageId);
+  world.kill(
+    [...world.organisms.values()].find((organism) => organism.species === removed)!,
+    'manual',
+  );
+  update(world);
+  expect(document.activeElement).toBe(get('lineage-search'));
+});
