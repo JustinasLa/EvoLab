@@ -14,10 +14,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build and test
+  verify:
+    name: Verify (${{ matrix.project }})
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [desktop, mobile]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -35,13 +39,13 @@ jobs:
         run: npm run build
       - name: Install browser
         run: npx playwright install --with-deps chromium
-      - name: Desktop and mobile browser tests
-        run: npm run test:browser
+      - name: Browser tests (${{ matrix.project }})
+        run: npm run test:browser -- --project ${{ matrix.project }}
       - name: Upload coverage and browser reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: test-reports
+          name: test-reports-${{ matrix.project }}
           path: |
             coverage/
             playwright-report/
@@ -50,6 +54,17 @@ jobs:
       - name: Upload static application
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: evolab-web
+          name: evolab-web-${{ matrix.project }}
           path: dist/
           if-no-files-found: error
+  build:
+    name: Build and test
+    needs: verify
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Require every verification project to pass
+        env:
+          VERIFY_RESULT: ${{ needs.verify.result }}
+        run: test "$VERIFY_RESULT" = success
