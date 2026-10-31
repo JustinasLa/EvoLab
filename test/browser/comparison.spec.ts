@@ -14,7 +14,10 @@ declare global {
       terminated: number;
       liveSaves: number;
       types: string[];
+      holdCompletion: boolean;
+      releaseCompletion: (() => void) | null;
     };
+    comparisonRead: { started: boolean; release: () => void };
   }
 }
 test.beforeEach(async ({ page }) => {
@@ -27,6 +30,8 @@ test.beforeEach(async ({ page }) => {
       terminated: 0,
       liveSaves: 0,
       types: [] as string[],
+      holdCompletion: false,
+      releaseCompletion: null as (() => void) | null,
     });
     const Native = Worker;
     window.Worker = class extends Native {
@@ -35,9 +40,17 @@ test.beforeEach(async ({ page }) => {
         super(url, options);
         this.comparison = String(url).includes('comparison-worker');
         if (this.comparison) records.created++;
-        this.addEventListener('message', ({ data }) => {
+        this.addEventListener('message', (event) => {
+          const { data } = event;
           if (this.comparison && data.type === 'progress') records.progress++;
-          if (this.comparison && data.type === 'complete') records.result = data.result;
+          if (this.comparison && data.type === 'complete') {
+            records.result = data.result;
+            if (records.holdCompletion) {
+              const handler = this.onmessage;
+              records.releaseCompletion = () => handler?.call(this, event);
+              event.stopImmediatePropagation();
+            }
+          }
           if (!this.comparison && data.type === 'saved') records.liveSaves++;
         });
       }
@@ -191,6 +204,95 @@ test('native cancel/reset/import fences late captures and releases active worker
   await expect(page.locator('#comparison-results')).toBeEmpty();
   await expect(page.locator('#comparison-start')).toBeEnabled();
 });
+
+for (const phase of ['active', 'complete'] as const) {
+  for (const outcome of ['valid', 'invalid', 'read-error'] as const) {
+    test(`native delayed ${outcome} import clears a newer ${phase} comparison`, async ({
+      page,
+    }) => {
+      const baseline = await download(page, '#save');
+      const replacement = new Ecosystem(DEFAULTS, false);
+      replacement.step();
+      await page.evaluate(
+        ({ readError, holdCompletion }) => {
+          const text = File.prototype.text;
+          window.comparisonNative.holdCompletion = holdCompletion;
+          window.comparisonRead = {
+            started: false,
+            release: () => {
+              throw new Error('Read not started');
+            },
+          };
+          File.prototype.text = function () {
+            const file = this;
+            window.comparisonRead.started = true;
+            return new Promise<string>((resolve, reject) => {
+              window.comparisonRead.release = () => {
+                File.prototype.text = text;
+                if (readError) reject(new Error('Unreadable selected world.'));
+                else text.call(file).then(resolve, reject);
+              };
+            });
+          };
+        },
+        { readError: outcome === 'read-error', holdCompletion: phase === 'active' },
+      );
+      await page.locator('#file').setInputFiles({
+        name: 'delayed-comparison-world.json',
+        mimeType: 'application/json',
+        buffer: Buffer.from(outcome === 'valid' ? JSON.stringify(replacement.save()) : '{}'),
+      });
+      await expect.poll(() => page.evaluate(() => window.comparisonRead.started)).toBe(true);
+      await page.locator('#comparison-intervention').selectOption('none');
+      await page.locator('#comparison-duration').fill('31');
+      await page.locator('#comparison-delay').fill('0');
+      await page.locator('#comparison-start').click();
+      await expect
+        .poll(() => page.evaluate(() => window.comparisonNative.result !== null))
+        .toBe(true);
+      const native = await page.evaluate(() => window.comparisonNative);
+      expect(JSON.parse(native.result!.control.state)).toEqual(
+        expected(native.source, native.result!.plan.horizonTick),
+      );
+      if (phase === 'active') {
+        await expect(page.locator('#comparison-start')).toBeDisabled();
+        expect(native.created - native.terminated).toBe(1);
+        expect(await page.evaluate(() => window.comparisonNative.releaseCompletion !== null)).toBe(
+          true,
+        );
+      } else {
+        await expect(page.locator('#comparison-status')).toContainText('Complete:');
+        await expect(page.locator('#comparison-control')).toBeEnabled();
+      }
+      await page.evaluate(() => window.comparisonRead.release());
+      await expect(page.locator('#notice')).toContainText(
+        outcome === 'valid'
+          ? 'World restored'
+          : outcome === 'invalid'
+            ? 'valid EvoLab'
+            : 'Unreadable selected world',
+      );
+      await expect(page.locator('#comparison-status')).toContainText('lifecycle changed');
+      await expect(page.locator('#comparison-results')).toBeEmpty();
+      await expect(page.locator('#comparison-start')).toBeEnabled();
+      await expect(page.locator('#comparison-cancel')).toBeDisabled();
+      await expect(page.locator('#comparison-control')).toBeDisabled();
+      await expect(page.locator('#comparison-treatment')).toBeDisabled();
+      expect(
+        await page.evaluate(() => {
+          const value = window.comparisonNative;
+          value.releaseCompletion?.();
+          return value.created === value.terminated;
+        }),
+      ).toBe(true);
+      await expect(page.locator('#comparison-results')).toBeEmpty();
+      await expect(page.locator('#run-state')).toHaveText('PAUSED');
+      expect(JSON.parse(await download(page, '#save'))).toEqual(
+        outcome === 'valid' ? replacement.save() : JSON.parse(baseline),
+      );
+    });
+  }
+}
 
 test('native empty checkpoints retain honest extinction and the maximum bounded sample horizon', async ({
   page,

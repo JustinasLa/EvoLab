@@ -2458,6 +2458,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       if (request.file.size > WORLD_MAX_BYTES) throw new Error('World file exceeds 2.5 MB.');
       const content = await request.file.text();
       if (current()) {
+        comparisons.invalidate();
         if (lifecycleBusy())
           notice('World replacement capacity busy; choose the file again after acknowledgement.');
         else {
@@ -2466,7 +2467,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         }
       }
     } catch (error) {
-      if (current()) notice(error instanceof Error ? error.message : 'Could not read this world.');
+      if (current()) {
+        comparisons.invalidate();
+        notice(error instanceof Error ? error.message : 'Could not read this world.');
+      }
     } finally {
       reading = false;
       if (request.request === worldRequest) worldInput.value = '';
