@@ -172,6 +172,7 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
     if (focusedId && document.activeElement !== active)
       (rows.querySelector<HTMLButtonElement>(`[data-lineage-id="${focusedId}"]`) ?? search).focus();
     clear.disabled = selected === undefined;
+    if (active === clear && clear.disabled) search.focus({ preventScroll: true });
     const content = document.createElement('div');
     const paragraph = (text: string): void => {
       const p = document.createElement('p');

@@ -5900,7 +5900,13 @@ test.describe('retained lineage explorer', () => {
     );
     expect(await downloadWorld(page)).toEqual(before);
     await expect(page.locator('#run-state')).toHaveText('PAUSED');
-    await page.locator('#lineage-clear').click();
+    await page.locator('#lineage-clear').focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#lineage-clear')).toBeDisabled();
+    await expect(search).toBeFocused();
+    await page.keyboard.press('Space');
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    expect(await downloadWorld(page)).toEqual(before);
     await expect(page.locator('#lineage-detail')).toContainText('Select a lineage');
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
@@ -5991,7 +5997,7 @@ test.describe('retained lineage explorer', () => {
     await requestPause(page);
     await expect(page.locator('#save')).toBeEnabled();
     const after = JSON.parse((await downloadPausedWorld(page)).toString()) as WorldFile;
-    const reference = Ecosystem.load(before);
+    const reference = Ecosystem.load(JSON.stringify(before));
     while (reference.tick < after.tick) reference.step();
     expect(after).toEqual(reference.save());
   });
@@ -6012,7 +6018,7 @@ test.describe('retained lineage explorer', () => {
     await page.locator('#lineage-rows button').click();
     const before = await terrainSave(page, 'focused-extinction-before.json');
     expect(before.organisms.map((organism) => organism.id)).toContain(first.id);
-    const reference = Ecosystem.load(before);
+    const reference = Ecosystem.load(JSON.stringify(before));
     const target = page.locator(`#lineage-detail button[data-lineage-id="${second.species}"]`);
     await target.focus();
     await page.evaluate(() => {
@@ -6059,7 +6065,7 @@ test.describe('retained lineage explorer', () => {
       await page.locator('#lineage-search').fill(String(selected));
       await page.locator('#lineage-rows button').click();
       const before = await terrainSave(page, `eviction-${selectedEvidence}-before.json`);
-      const reference = Ecosystem.load(before);
+      const reference = Ecosystem.load(JSON.stringify(before));
       const id = selectedEvidence === 'retained' ? retained.species : parent.species;
       const target = page.locator(`#lineage-detail button[data-lineage-id="${id}"]`);
       await target.scrollIntoViewIfNeeded();
@@ -6117,7 +6123,9 @@ test.describe('retained lineage explorer', () => {
       await page.locator('#lineage-search').fill('extinct');
       await expect(page.locator('#lineage-results')).toContainText('41 matching');
       if (pager === 'previous') await page.getByRole('button', { name: 'Next lineages' }).click();
-      const reference = Ecosystem.load(await terrainSave(page, `pager-${pager}-before.json`));
+      const reference = Ecosystem.load(
+        JSON.stringify(await terrainSave(page, `pager-${pager}-before.json`)),
+      );
       const target = page.getByRole('button', {
         name: pager === 'previous' ? 'Previous lineages' : 'Next lineages',
       });

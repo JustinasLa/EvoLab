@@ -192,7 +192,10 @@ export function extinctionOccupancyContradiction(): WorldFile {
 
 /** The next real tick prunes the extinct child's last summary/creation evidence. */
 export function relationshipEviction() {
-  const world = new Ecosystem({ ...DEFAULTS, mutation: 1, climate: 0, nutrients: 0 }, false);
+  const world = new Ecosystem(
+    { ...DEFAULTS, seed: 2, mutation: 0.4, climate: 0, nutrients: 0 },
+    false,
+  );
   const parent = world.spawn(admissionGenome(), 120, 78)!;
   const extinct = world.spawn(admissionGenome(), 122, 78, undefined, parent)!;
   world.kill(extinct, 'manual');
@@ -211,7 +214,10 @@ export function relationshipEviction() {
 
 /** Three funded births prune one of exactly 41 extinct identities from the event ring. */
 export function paginationEviction() {
-  const world = new Ecosystem({ ...DEFAULTS, mutation: 1, climate: 0, nutrients: 0 }, false);
+  const world = new Ecosystem(
+    { ...DEFAULTS, seed: 0, mutation: 0.4, climate: 0, nutrients: 0 },
+    false,
+  );
   for (let i = 0; i < 41; i++) {
     const extinct = world.spawn(admissionGenome(), 10, 10)!;
     world.kill(extinct, 'manual');

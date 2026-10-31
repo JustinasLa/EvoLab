@@ -159,6 +159,21 @@ describe('bounded retained lineage evidence', () => {
     expect(get('lineage-detail').textContent).toContain(`Lineage #${second.species} · Living`);
   });
 
+  for (const fixture of ['relationship', 'pagination'] as const) {
+    it(`validates complete native ${fixture} fixture continuation at its eviction boundary`, () => {
+      const world =
+        fixture === 'relationship' ? relationshipEviction().world : paginationEviction();
+      const before = world.save();
+      const restored = Ecosystem.load(JSON.stringify(before));
+      expect(restored.save()).toEqual(before);
+      world.step();
+      restored.step();
+      expect(restored.save()).toEqual(world.save());
+      expect(restored.births - before.births).toBe(3);
+      expect(restored.save().nextSpecies - before.nextSpecies).toBe(2);
+    });
+  }
+
   it('keeps a retained child and separator together when earlier relationship evidence expires', () => {
     const { world, parent, extinct, retained } = relationshipEviction();
     update(world);
@@ -243,6 +258,20 @@ describe('bounded retained lineage evidence', () => {
     expect(get('lineage-results').textContent).toContain('316 matching');
     search('extinct');
     expect(get('lineage-rows').children).toHaveLength(0);
+  });
+
+  it('returns Clear selection focus to search without changing the complete world', () => {
+    const world = fresh();
+    const organism = world.spawn(admissionGenome(), 10, 10)!;
+    update(world);
+    select(organism.species);
+    const before = world.save();
+    get('lineage-clear').focus();
+    get('lineage-clear').click();
+    expect(get<HTMLButtonElement>('lineage-clear').disabled).toBe(true);
+    expect(document.activeElement).toBe(get('lineage-search'));
+    expect(get('lineage-detail').textContent).toContain('Select a lineage');
+    expect(world.save()).toEqual(before);
   });
 
   it('labels legacy peaks, unknown anatomy and missing ancestry honestly', () => {
