@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Ecosystem } from '../src/ecosystem';
-import { cloneGenome, founder, type Genome } from '../src/model';
+import { cloneGenome, founder, validGenome, type Genome } from '../src/model';
+import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
 import { main8Fixture, restoreMain8 } from './fixtures/sensory-main8';
 import { storedSensoryGenome } from './fixtures/sensory-legacy';
 import { advance } from './fixtures/telemetry';
@@ -47,6 +48,37 @@ describe('world9 passive sensory composition with accepted world8 archives', () 
     saved.lineageArchive.summaries[0].foundingGenome!.legacyExtensions![0][0] = 'changed';
     expect(world.lineageSnapshot().summaries[0].foundingGenome).toEqual(original);
   });
+
+  it.each(['living', 'extinct founding'] as const)(
+    'rejects unsupported active behavior2 in a %s genome without changing passive continuation',
+    (boundary) => {
+      const world = new Ecosystem(undefined, false);
+      const placed = world.spawn(storedSensoryGenome(), 20, 20)!;
+      if (boundary === 'extinct founding') world.kill(placed, 'manual');
+      const before = world.save(),
+        candidate = structuredClone(before),
+        genome =
+          boundary === 'living'
+            ? candidate.organisms[0].genome
+            : candidate.lineageArchive.summaries[0].foundingGenome!;
+      genome.behavior.version = 2 as any;
+      expect(validGenome(genome)).toBe(false);
+      expect(() => cloneGenome(genome)).toThrow('Invalid inherited genome');
+      const blueprint = JSON.parse(
+        serializeBlueprint({ name: 'Passive', description: '', genome: storedSensoryGenome() }),
+      );
+      blueprint.genome = genome;
+      expect(() => parseBlueprint(JSON.stringify(blueprint))).toThrow('Blueprint needs');
+      expect(() => Ecosystem.load(JSON.stringify(candidate))).toThrow(
+        boundary === 'living' ? 'organism' : 'lineage archive',
+      );
+      expect(world.save()).toEqual(before);
+      const control = Ecosystem.load(JSON.stringify(before));
+      advance(world, 30);
+      advance(control, 30);
+      expect(world.save()).toEqual(control.save());
+    },
+  );
 
   it.each(['missing', 'action', 'cell', 'opaque'])(
     'rejects a malformed final extinct founding genome before replacement: %s',
