@@ -1,5 +1,145 @@
 import { test, expect } from '@playwright/test';
-import { finalizeFortyEvidence, salvageFortyFailure } from './forty-control-fixture';
+import type { ControlState } from '../../src/model';
+import {
+  finalizeFortyEvidence,
+  salvageFortyFailure,
+  snapshotFortyCommands,
+} from './forty-control-fixture';
+
+test('incremental command snapshots retain complete compact evidence and check cached epochs', async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    const fixture = (window.fortyFixture = {
+      epoch: 'snapshot-test',
+      active: true,
+      deadline: Infinity,
+      windowDeadline: Infinity,
+      documentId: 'document',
+      workerIds: ['worker'],
+      commands: [],
+      commandRevision: 0,
+      commandRevisions: [],
+      phase: null,
+      expected: null,
+      runId: 1,
+      replacementId: 2,
+      violation: null,
+      samples: {},
+      check(epoch) {
+        if (epoch !== this.epoch || !this.active) throw new Error('Expired snapshot epoch.');
+      },
+      identity() {
+        return {
+          documentId: this.documentId,
+          workerId: this.workerIds[0],
+          workers: this.workerIds.length,
+          runId: this.runId,
+          replacementId: this.replacementId,
+        };
+      },
+    });
+    for (let sequence = 0; sequence < 2; sequence++) {
+      fixture.commands.push({
+        sequence,
+        workerId: 'worker',
+        operationId: `operation-${sequence}`,
+        type: 'save',
+        commandId: sequence + 1,
+        runId: 1,
+        postedAt: 10 + sequence,
+      });
+      fixture.commandRevisions.push(++fixture.commandRevision);
+    }
+  });
+  const initial = await page.evaluate(snapshotFortyCommands, {
+    epoch: 'snapshot-test',
+    revision: null,
+  });
+  expect(initial.commands).toHaveLength(2);
+  expect(initial.count).toBe(2);
+  const retained = initial.commands!;
+  expect(
+    await page.evaluate(snapshotFortyCommands, {
+      epoch: 'snapshot-test',
+      revision: initial.revision,
+    }),
+  ).toEqual({ ...initial, commands: null });
+  for (let sequence = 0; sequence < 2; sequence++) {
+    const previous = await page.evaluate(() => window.fortyFixture.commandRevision);
+    await page.evaluate((sequence) => {
+      const fixture = window.fortyFixture;
+      fixture.commands[sequence].terminal = {
+        type: 'saved',
+        operation: 'save',
+        runId: 1,
+        commandId: sequence + 1,
+        receivedAt: 20 + sequence,
+        state: { replacementId: 2, world: { stats: { tick: 30 + sequence } } } as ControlState,
+        text: 'Complete native bytes are retained separately.',
+      };
+      fixture.commandRevisions[sequence] = ++fixture.commandRevision;
+    }, sequence);
+    const changed = await page.evaluate(snapshotFortyCommands, {
+      epoch: 'snapshot-test',
+      revision: previous,
+    });
+    expect(changed.commands).toHaveLength(1);
+    expect(changed.commands![0]).toEqual({
+      ...retained[sequence],
+      terminal: {
+        type: 'saved',
+        operation: 'save',
+        runId: 1,
+        commandId: sequence + 1,
+        receivedAt: 20 + sequence,
+        replacementId: 2,
+        tick: 30 + sequence,
+      },
+    });
+    retained[sequence] = changed.commands![0];
+    const complete = await page.evaluate(snapshotFortyCommands, {
+      epoch: 'snapshot-test',
+      revision: null,
+    });
+    expect(complete.commands).toEqual(retained);
+    expect(complete.count).toBe(2);
+  }
+  const previous = await page.evaluate(() => window.fortyFixture.commandRevision);
+  await page.evaluate(() => {
+    const fixture = window.fortyFixture;
+    fixture.commands.push({
+      ...fixture.commands[1],
+      sequence: 2,
+      commandId: 3,
+      terminal: undefined,
+    });
+    fixture.commandRevisions.push(++fixture.commandRevision);
+  });
+  const appended = await page.evaluate(snapshotFortyCommands, {
+    epoch: 'snapshot-test',
+    revision: previous,
+  });
+  expect(appended.commands).toEqual([
+    { ...retained[1], sequence: 2, commandId: 3, terminal: undefined },
+  ]);
+  expect(appended.count).toBe(3);
+  await expect(
+    page.evaluate(snapshotFortyCommands, {
+      epoch: 'obsolete',
+      revision: await page.evaluate(() => window.fortyFixture.commandRevision),
+    }),
+  ).rejects.toThrow('Expired snapshot epoch.');
+  await page.evaluate(() => {
+    window.fortyFixture.active = false;
+  });
+  await expect(
+    page.evaluate(snapshotFortyCommands, {
+      epoch: 'snapshot-test',
+      revision: appended.revision,
+    }),
+  ).rejects.toThrow('Expired snapshot epoch.');
+});
 
 for (const failAt of ['snapshot', 'write', 'rename', 'attach', 'invalidate-browser', 'endpoint']) {
   test(`forty-control finalization remains incomplete on interrupted ${failAt}`, async () => {

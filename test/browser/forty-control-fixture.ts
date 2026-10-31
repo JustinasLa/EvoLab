@@ -115,6 +115,7 @@ type BrowserFixture = {
   workerIds: string[];
   commands: Command[];
   commandRevision: number;
+  commandRevisions: number[];
   phase: string | null;
   expected: { runId: number; replacementId: number } | null;
   runId: number | null;
@@ -192,6 +193,7 @@ function installBrowserFixture(epoch: string): void {
     workerIds: [],
     commands: [],
     commandRevision: 0,
+    commandRevisions: [],
     phase: null,
     expected: null,
     runId: null,
@@ -271,7 +273,7 @@ function installBrowserFixture(epoch: string): void {
             runId: data.runId,
             postedAt: performance.now(),
           });
-          state.commandRevision++;
+          state.commandRevisions.push(++state.commandRevision);
         }
         return Reflect.apply(nativePost, worker, messages);
       };
@@ -313,7 +315,7 @@ function installBrowserFixture(epoch: string): void {
           state: data.state ?? data.recovery?.state,
           ...(data.type === 'saved' ? { text: data.text } : {}),
         };
-        state.commandRevision++;
+        state.commandRevisions[command.sequence] = ++state.commandRevision;
         if (data.type === 'error')
           state.violation = `Command ${command.type}/${command.commandId} failed: ${data.message}`;
       });
@@ -1038,42 +1040,18 @@ export async function runFortyControls(options: {
   const partialBuffers = new Map<string, Buffer>();
   const snapshotCommands = async () => {
     const snapshot = await fence.wait(() =>
-      page.evaluate(
-        ({ epoch, revision }) => {
-          const f = window.fortyFixture;
-          // Every checkpoint still crosses the browser fence, even on a cache hit.
-          f.check(epoch);
-          return {
-            identity: f.identity(),
-            revision: f.commandRevision,
-            commands:
-              f.commandRevision === revision
-                ? null
-                : f.commands.map(({ terminal, ...c }) => ({
-                    ...c,
-                    terminal: terminal
-                      ? {
-                          type: terminal.type,
-                          operation: terminal.operation,
-                          runId: terminal.runId,
-                          commandId: terminal.commandId,
-                          receivedAt: terminal.receivedAt,
-                          replacementId: terminal.state.replacementId,
-                          tick: terminal.state.world.stats.tick,
-                        }
-                      : undefined,
-                  })),
-          };
-        },
-        { epoch: fence.epoch, revision: commandRevision },
-      ),
+      page.evaluate(snapshotFortyCommands, { epoch: fence.epoch, revision: commandRevision }),
     );
     commandSnapshotChecks++;
     if (snapshot.commands !== null) {
-      commands = snapshot.commands;
+      for (const command of snapshot.commands) {
+        expect(command.sequence).toBeLessThanOrEqual(commands.length);
+        commands[command.sequence] = command;
+      }
       commandRevision = snapshot.revision;
       commandSnapshotTransfers++;
     }
+    expect(commands).toHaveLength(snapshot.count);
     expect(commands.length).toBeLessThanOrEqual(MAX_COMMANDS);
     return snapshot.identity;
   };
@@ -1539,4 +1517,39 @@ export async function runFortyControls(options: {
     page.off('close', onClose);
     framework.bodyEndedAt = performance.now();
   }
+}
+
+export function snapshotFortyCommands({
+  epoch,
+  revision,
+}: {
+  epoch: string;
+  revision: number | null;
+}) {
+  const fixture = window.fortyFixture;
+  fixture.check(epoch);
+  return {
+    identity: fixture.identity(),
+    revision: fixture.commandRevision,
+    count: fixture.commands.length,
+    commands:
+      fixture.commandRevision === revision
+        ? null
+        : fixture.commands
+            .filter((command) => fixture.commandRevisions[command.sequence] > (revision ?? -1))
+            .map(({ terminal, ...command }) => ({
+              ...command,
+              terminal: terminal
+                ? {
+                    type: terminal.type,
+                    operation: terminal.operation,
+                    runId: terminal.runId,
+                    commandId: terminal.commandId,
+                    receivedAt: terminal.receivedAt,
+                    replacementId: terminal.state.replacementId,
+                    tick: terminal.state.world.stats.tick,
+                  }
+                : undefined,
+            })),
+  };
 }

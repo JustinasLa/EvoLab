@@ -44,6 +44,8 @@ import {
 import { fixtureText, acceptedReference, predecessor } from '../fixtures/refuges';
 import { localTemperature, refugeSummary } from '../../src/refuges';
 import { DEFAULT_TERRAIN, generateTerrain } from '../../src/terrain';
+import { transformDesign } from '../../src/view';
+import { storedSensoryGenome } from '../fixtures/sensory-legacy';
 import { readFileSync } from 'node:fs';
 import {
   admissionGenome,
@@ -81,6 +83,7 @@ declare global {
         monotonicMs: number;
       }[];
     };
+    placementDelivery?: { hold: boolean; release: (() => void) | null };
     refugePixels: { tick: number; climate: number; offset: number; colors: number[][] } | null;
     terrainNative: {
       frame: Frame | null;
@@ -399,6 +402,14 @@ async function observeTerrainNative(
           set(next: ((event: MessageEvent) => void) | null) {
             handler = next;
             descriptor.set!.call(worker, (event: MessageEvent) => {
+              if (window.placementDelivery?.hold && event.data.type === 'frame') {
+                window.placementDelivery.hold = false;
+                window.placementDelivery.release = () => {
+                  window.placementDelivery!.release = null;
+                  next?.call(worker, event);
+                };
+                return;
+              }
               const data = event.data;
               // The gate may invoke this wrapper before the raw observer listener.
               // Establish the matching receipt independently of listener registration order.
@@ -6021,6 +6032,322 @@ test('B23-7 manual disclosure, keyboard controls and responsive views preserve t
   expect(errors).toEqual([]);
   expect(external).toEqual([]);
   await refugeProtocol(page);
+});
+
+function placementWorld(): Ecosystem {
+  return new Ecosystem({ ...DEFAULTS, seed: 12 }, false, {
+    terrain: { version: 1, preset: 'open-field', seed: null },
+  });
+}
+async function loadPlacementWorld(page: import('@playwright/test').Page, world: Ecosystem) {
+  await observeTerrainNative(page);
+  await page.goto('/');
+  await terrainNativeFrame(page);
+  await page.locator('#file').setInputFiles({
+    name: 'placement-world.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(world.save())),
+  });
+  await expect(page.locator('#world-label')).toHaveText('WORLD 0012');
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  await terrainNativeFrame(page);
+}
+async function placementCoordinate(
+  page: import('@playwright/test').Page,
+  x: number,
+  y: number,
+  zoom = 1,
+  panX = 0,
+  panY = 0,
+) {
+  await page.locator('#world').scrollIntoViewIfNeeded();
+  return page.locator('#world').evaluate(
+    (canvas: HTMLCanvasElement, p) => {
+      const rect = canvas.getBoundingClientRect();
+      const scale = Math.min(canvas.clientWidth / 240, canvas.clientHeight / 156) * p.zoom;
+      return {
+        x: rect.left + (canvas.clientWidth - 240 * scale) / 2 + p.panX + (p.x + 0.5) * scale,
+        y: rect.top + (canvas.clientHeight - 156 * scale) / 2 + p.panY + (p.y + 0.5) * scale,
+      };
+    },
+    { x, y, zoom, panX, panY },
+  );
+}
+
+test('D12-1 all wrapped ghost cells agree with rotation and the full-world camera at every seam', async ({
+  page,
+}, info) => {
+  const reference = placementWorld();
+  await loadPlacementWorld(page, reference);
+  const genome: Genome = {
+    ...founder(0),
+    cells: [
+      { x: 0, y: 0, type: 3 },
+      { x: 1, y: 0, type: 4 },
+      { x: 2, y: 0, type: 5 },
+      { x: 0, y: 1, type: 8 },
+    ],
+  };
+  await page.locator('#blueprint-file').setInputFiles({
+    name: 'asymmetric.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(serializeBlueprint({ name: 'Asymmetric', description: '', genome })),
+  });
+  await expect(page.locator('#designer-file-status')).toContainText('loaded');
+  await page.locator('#zoom-out').click();
+  const zoom = 1 / 1.4;
+  const center = await placementCoordinate(page, 120, 78, zoom);
+  await page.mouse.move(center.x, center.y);
+  await page.mouse.down();
+  await page.mouse.move(center.x + 20, center.y + 10);
+  await page.mouse.up();
+  await page.locator('#plant-design').click();
+  const receipts: {
+    rotation: number;
+    x: number;
+    y: number;
+    positions: number[];
+    colors: number[][];
+  }[] = [];
+  for (let rotation = 0; rotation < 4; rotation++) {
+    for (const [x, y] of [
+      [0, 0],
+      [239, 0],
+      [0, 155],
+      [239, 155],
+    ]) {
+      const at = await placementCoordinate(page, x, y, zoom, 20, 10);
+      await page.mouse.move(at.x, at.y);
+      await expect(page.locator('#placement-feedback')).toContainText(
+        `Valid in displayed tick 0 at ${x}, ${y}.`,
+      );
+      const footprint = positions({ genome, x, y, rotation });
+      const colors = await page.locator('#world').evaluate(
+        (canvas: HTMLCanvasElement, p) => {
+          const scale = Math.min(canvas.clientWidth / 240, canvas.clientHeight / 156) * p.zoom;
+          const left = (canvas.clientWidth - 240 * scale) / 2 + 20,
+            top = (canvas.clientHeight - 156 * scale) / 2 + 10;
+          const ratio = canvas.width / canvas.clientWidth;
+          return p.footprint.map((i) =>
+            Array.from(
+              canvas
+                .getContext('2d')!
+                .getImageData(
+                  Math.floor((left + ((i % 240) + 0.5) * scale) * ratio),
+                  Math.floor((top + (Math.floor(i / 240) + 0.5) * scale) * ratio),
+                  1,
+                  1,
+                ).data,
+            ),
+          );
+        },
+        { zoom, footprint },
+      );
+      for (const color of colors) {
+        expect(color[1]).toBeGreaterThan(80);
+        expect(color[1]).toBeGreaterThan(color[0]);
+      }
+      receipts.push({ rotation, x, y, positions: footprint, colors });
+    }
+    await page.locator('#rotate-design').click();
+  }
+  await page.setViewportSize(
+    info.project.name === 'mobile' ? { width: 430, height: 932 } : { width: 1100, height: 760 },
+  );
+  const at = await placementCoordinate(page, 120, 78, zoom, 20, 10);
+  await page.mouse.move(at.x, at.y);
+  await expect(page.locator('#placement-feedback')).toContainText('at 120, 78.');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#world')).toHaveAttribute('data-tool', 'pan');
+  expect(await terrainSave(page, 'D12-1-world-unchanged.json')).toEqual(reference.save());
+  await info.attach('D12-1-footprints.json', {
+    contentType: 'application/json',
+    body: JSON.stringify(receipts),
+  });
+});
+
+test('D12-2 touch previews and transform controls preserve complete payloads until explicit paused placement', async ({
+  page,
+}, info) => {
+  const reference = placementWorld(),
+    original = storedSensoryGenome();
+  await loadPlacementWorld(page, reference);
+  await page.locator('#blueprint-file').setInputFiles({
+    name: 'full.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      serializeBlueprint({
+        name: 'Full passive design',
+        description: 'Retain all cells',
+        genome: original,
+      }),
+    ),
+  });
+  await expect(page.locator('#designer-file-status')).toContainText('loaded');
+  await page.locator('#rotate-design').focus();
+  await page.keyboard.press('Enter');
+  await page.locator('#mirror-design').click();
+  const transformed = transformDesign(transformDesign(original, 'rotate'), 'mirror');
+  await page.locator('#plant-design').click();
+  const at = await placementCoordinate(page, 0, 0);
+  if (info.project.name === 'mobile') {
+    await page.touchscreen.tap(at.x, at.y);
+    await expect(page.locator('#placement-feedback')).toContainText('Tap this anchor again');
+    expect(await page.evaluate(() => window.terrainNative.manual?.operation)).not.toBe('paint');
+    await page.locator('#cancel-placement').click();
+    await page.locator('#plant-design').click();
+    const next = await placementCoordinate(page, 0, 0);
+    await page.touchscreen.tap(next.x, next.y);
+    await expect(page.locator('#placement-feedback')).toContainText('Tap this anchor again');
+    await page.touchscreen.tap(next.x, next.y);
+  } else {
+    await page.locator('#world').focus();
+    await page.keyboard.press('r');
+    await page.keyboard.press('r');
+    await page.keyboard.press('r');
+    await page.keyboard.press('r');
+    await page.mouse.move(at.x, at.y);
+    await expect(page.locator('#placement-feedback')).toContainText('Valid');
+    await page.mouse.click(at.x, at.y);
+  }
+  await expect(page.locator('#notice')).toContainText('Organism placed');
+  const outcome = reference.paint('plant', 0, 0, 0, transformed);
+  reference.appendIntervention({ kind: 'placement', detail: outcome.placement! });
+  const saved = await terrainSave(page, 'D12-2-complete-transformed-placement.json');
+  expect(saved).toEqual(reference.save());
+  expect(saved.organisms[0].genome).toEqual(transformed);
+  await page.locator('#step').click();
+  reference.step();
+  expect((await terrainNativeFrame(page)).frame).toEqual(terrainExpectedFrame(reference));
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+});
+
+test('D12-4 native touch drag keeps confirmation and ghost aligned through camera changes', async ({
+  page,
+}, info) => {
+  const reference = placementWorld();
+  await loadPlacementWorld(page, reference);
+  await page.locator('#plant-design').click();
+  const session = await page.context().newCDPSession(page);
+  const a = await placementCoordinate(page, 100, 70);
+  const b = await placementCoordinate(page, 110, 80);
+  await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [a] });
+  await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [b] });
+  await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await expect(page.locator('#placement-feedback')).toContainText('at 100, 70');
+  await expect(page.locator('#placement-feedback')).toContainText('Tap this anchor again');
+  await page.locator('#zoom-in').click();
+  await page.setViewportSize({
+    width: info.project.name === 'mobile' ? 1280 : 390,
+    height: 800,
+  });
+  await expect(page.locator('#placement-feedback')).toContainText('at 100, 70');
+  expect(await terrainSave(page, 'D12-4-staged-world-unchanged.json')).toEqual(reference.save());
+  const next = await placementCoordinate(page, 110, 80, 1.4);
+  const tap = async () => {
+    await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [next] });
+    await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  };
+  await tap();
+  await expect(page.locator('#placement-feedback')).toContainText('at 110, 80');
+  expect(await page.evaluate(() => window.terrainNative.manual?.operation)).not.toBe('paint');
+  await tap();
+  await expect(page.locator('#notice')).toContainText('Organism placed');
+  const outcome = reference.paint('plant', 110, 80, 0, founder(0));
+  reference.appendIntervention({ kind: 'placement', detail: outcome.placement! });
+  expect(await terrainSave(page, 'D12-4-confirmed-world-anchor.json')).toEqual(reference.save());
+  await session.detach();
+});
+
+test('D12-5 native mouse and pen take over a staged touch ghost before placing', async ({
+  page,
+}) => {
+  const reference = placementWorld();
+  await loadPlacementWorld(page, reference);
+  const session = await page.context().newCDPSession(page);
+  for (const [i, pointerType] of (['mouse', 'pen'] as const).entries()) {
+    await page.locator('#plant-design').click();
+    const a = await placementCoordinate(page, 100, 70);
+    let b = await placementCoordinate(page, 110 + i * 10, 80);
+    await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [a] });
+    await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await expect(page.locator('#placement-feedback')).toContainText('at 100, 70');
+    await session.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...b, pointerType });
+    await expect(page.locator('#placement-feedback')).toContainText(`at ${110 + i * 10}, 80`);
+    await expect(page.locator('#placement-feedback')).not.toContainText('Tap this anchor again');
+    expect(await terrainSave(page, `D12-5-${pointerType}-world-unchanged.json`)).toEqual(
+      reference.save(),
+    );
+    // Save's real button activation can scroll the mobile page. Resolve the same
+    // world anchor again before sending native screen-coordinate input.
+    b = await placementCoordinate(page, 110 + i * 10, 80);
+    await session.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...b, pointerType });
+    await expect(page.locator('#placement-feedback')).toContainText(`at ${110 + i * 10}, 80`);
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.id, b)).toBe('world');
+    await session.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      ...b,
+      pointerType,
+      button: 'left',
+      buttons: 1,
+      clickCount: 1,
+    });
+    await session.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      ...b,
+      pointerType,
+      button: 'left',
+      buttons: 0,
+      clickCount: 1,
+    });
+    await expect(page.locator('#notice')).toContainText('Organism placed');
+    const outcome = reference.paint('plant', 110 + i * 10, 80, 0, founder(0));
+    reference.appendIntervention({ kind: 'placement', detail: outcome.placement! });
+    expect(await terrainSave(page, `D12-5-${pointerType}-confirmed-world-anchor.json`)).toEqual(
+      reference.save(),
+    );
+  }
+  await session.detach();
+});
+
+test('D12-3 stale valid preview cannot override worker occupancy and failure makes one legacy attempt', async ({
+  page,
+}) => {
+  const reference = placementWorld();
+  await loadPlacementWorld(page, reference);
+  await page.locator('#plant-design').click();
+  let at = await placementCoordinate(page, 25, 25);
+  await page.mouse.move(at.x, at.y);
+  await expect(page.locator('#placement-feedback')).toContainText('Valid');
+  await page.evaluate(() => {
+    window.placementDelivery = { hold: true, release: null };
+  });
+  await page.getByRole('button', { name: 'Wall', exact: true }).click();
+  await page.locator('#brush').evaluate((input: HTMLInputElement) => {
+    input.value = '0';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  at = await placementCoordinate(page, 25, 25);
+  await page.mouse.click(at.x, at.y);
+  await expect.poll(() => page.evaluate(() => !!window.placementDelivery?.release)).toBe(true);
+  const outcome = reference.paint('wall', 25, 25, 0, founder(0));
+  reference.recordPaint(outcome, 'wall', 0, 25, 25, null);
+  await page.locator('#plant-design').click();
+  at = await placementCoordinate(page, 25, 25);
+  await page.mouse.move(at.x, at.y);
+  await expect(page.locator('#placement-feedback')).toContainText('Valid');
+  await page.mouse.click(at.x, at.y);
+  await expect(page.locator('#notice')).toContainText('Placement blocked');
+  expect(reference.paint('plant', 25, 25, 0, founder(0)).placement).toBeNull();
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  await page.evaluate(() => window.placementDelivery!.release!());
+  await expect(page.locator('#placement-feedback')).toContainText('Blocked');
+  const saved = await terrainSave(page, 'D12-3-blocked-world-exact.json');
+  expect(saved).toEqual(reference.save());
+  const errors = await page.evaluate(() => window.terrainNative.errors);
+  expect(errors).toHaveLength(1);
+  expect(errors[0]).toMatchObject({ operation: 'paint', code: 'invalid-command' });
+  expect(errors[0].fatal).not.toBe(true);
 });
 
 async function checkpointBytes(

@@ -1954,7 +1954,11 @@ describe('correlated manual/export worker protocol', () => {
     harness.post('paint', { tool: 'plant', x: 1, y: 1, radius: 0, genome: founder(0) });
     expect(harness.last('manual-result')).toMatchObject({ status: 'applied', rowSequence: 1 });
     harness.post('paint', { tool: 'plant', x: 1, y: 1, radius: 0, genome: founder(0) });
-    expect(harness.last('manual-result')).toMatchObject({ status: 'no-op', rowSequence: null });
+    expect(harness.last('error')).toMatchObject({
+      operation: 'paint',
+      message:
+        'Placement blocked by a wall, organism or population limit. Nothing was placed; choose another position.',
+    });
     harness.post('settings', { settings: { nutrients: 7 } });
     expect(harness.last('manual-result')).toMatchObject({ status: 'applied', rowSequence: 2 });
     harness.post('shock', { kind: 'cold' });
