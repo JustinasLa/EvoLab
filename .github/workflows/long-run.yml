@@ -1,0 +1,41 @@
+name: Long-run reliability
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: long-run-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  long-run:
+    name: Seed corpus and throughput receipts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Deterministic 100000-tick seed corpus
+        run: npm run test:soak
+      - name: Separate contextual throughput measurements
+        run: npm run bench:ecosystem
+      - name: Upload complete long-run receipts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: long-run-receipts
+          path: .scratch/long-run/
+          if-no-files-found: error
