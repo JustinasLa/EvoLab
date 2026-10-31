@@ -745,6 +745,10 @@ export function startWorker(
             if (stroke) stroke.count++;
             const population = world.organisms.size;
             const outcome = world.paint(data.tool, data.x, data.y, data.radius, data.genome);
+            if (data.tool === 'plant' && !outcome.placement)
+              throw new Error(
+                'Placement blocked by a wall, organism or population limit. Nothing was placed; choose another position.',
+              );
             let sequence: number | null = null;
             if (outcome.placement)
               sequence = world.appendIntervention({ kind: 'placement', detail: outcome.placement });
