@@ -20,7 +20,7 @@ export function storedSensoryGenome(): Genome {
   };
   return genome;
 }
-function inverseOpaque(tokens: LegacyValue): unknown {
+export function inverseOpaque(tokens: LegacyValue): unknown {
   const containers: { value: object; keys: string[]; next: number }[] = [];
   let root: unknown;
   for (const token of tokens) {

@@ -18,7 +18,12 @@ import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../../s
 import { writeFile } from 'node:fs/promises';
 import { cpus, platform, totalmem } from 'node:os';
 import { Ecosystem } from '../../src/ecosystem';
-import { syntheticHistoricalWorld, restoreHistoricalWorld } from '../fixtures/sensory-legacy';
+import {
+  syntheticHistoricalWorld,
+  restoreHistoricalWorld,
+  restoreHistoricalGenome,
+  inverseOpaque,
+} from '../fixtures/sensory-legacy';
 import { registerNativeEvidence } from './sensory-evidence';
 
 registerNativeEvidence();
@@ -3221,7 +3226,13 @@ test('lineage v5 unknown history survives real extinction, native v6 reload and 
   const source = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0, mutation: 0 }, false);
   advance(source, 29);
   const organism = source.spawn(
-    { cells: [{ x: 0, y: 0, type: 7 }], preference: 0.5, tolerance: 0.3, tempo: 2 },
+    {
+      behavior: { version: 1, mode: 'legacy' },
+      cells: [{ x: 0, y: 0, type: 7 }],
+      preference: 0.5,
+      tolerance: 0.3,
+      tempo: 2,
+    },
     40,
     40,
   )!;
@@ -4842,14 +4853,14 @@ test('designer, world tools, camera, shortcuts and invalid saves behave in Chrom
 });
 
 async function refugeLoad(page: import('@playwright/test').Page, text: string): Promise<number> {
-  const before = await page.evaluate(() => window.terrainNative.lifecycle.length);
+  const before = await page.evaluate(() => window.terrainNative.lifecycle.at(-1)?.runId ?? -1);
   await page.locator('#file').setInputFiles({
     name: 'original-refuge-fixture.json',
     mimeType: 'application/json',
     buffer: Buffer.from(text),
   });
   await expect
-    .poll(() => page.evaluate(() => window.terrainNative.lifecycle.length))
+    .poll(() => page.evaluate(() => window.terrainNative.lifecycle.at(-1)?.runId ?? -1))
     .toBeGreaterThan(before);
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
   await expect
@@ -5352,15 +5363,39 @@ function refugeGraph(value: any): object {
   return { root, nodes };
 }
 
-async function refugeSelected(page: import('@playwright/test').Page) {
-  await page.getByRole('button', { name: 'Inspect', exact: true }).click();
-  const anchor = await coordinate(page, 120, 78);
-  await page.mouse.click(anchor.x, anchor.y);
-  await expect.poll(() => page.evaluate(() => window.terrainNative.selected?.id)).toBe(1);
-  return page.evaluate((encoder) => {
-    const encode = Function(`return (${encoder})`)();
-    return encode(window.terrainNative.selected);
-  }, refugeGraph.toString());
+// Invert the complete current genome/cell carriers before comparing the genuine
+// predecessor graph. Raw organism properties stay on their original native path.
+async function refugeSelected(page: import('@playwright/test').Page, checks = false) {
+  if (!checks) {
+    await page.getByRole('button', { name: 'Inspect', exact: true }).click();
+    const anchor = await coordinate(page, 120, 78);
+    await page.mouse.click(anchor.x, anchor.y);
+    await expect.poll(() => page.evaluate(() => window.terrainNative.selected?.id)).toBe(1);
+  }
+  return page.evaluate(
+    ({ encoder, decoder, restorer, checks }) => {
+      const encode = Function(`return (${encoder})`)();
+      const inverseOpaque = Function(`return (${decoder})`)();
+      const restore = Function('inverseOpaque', `return (${restorer})`)(inverseOpaque);
+      const native = window.terrainNative.selected;
+      const selected = { ...native, genome: restore(native.genome) };
+      if (checks)
+        return [selected, selected.genome, selected.genome.cells[0]].map((value) => ({
+          positive: Object.is(value.positive, Infinity),
+          negative: Object.is(value.negative, -Infinity),
+          signedZero: Object.is(value.negativeZero, -0),
+          ownProto: Object.hasOwn(value, '__proto__'),
+          ordinary: Object.getPrototypeOf(value) === Object.prototype,
+        }));
+      return encode(selected);
+    },
+    {
+      encoder: refugeGraph.toString(),
+      decoder: inverseOpaque.toString(),
+      restorer: restoreHistoricalGenome.toString(),
+      checks,
+    },
+  );
 }
 
 test('B23-6 complete direct raw families, deepest common native path, current reload and cap failure retain original boundaries', async ({
@@ -5371,21 +5406,11 @@ test('B23-6 complete direct raw families, deepest common native path, current re
   await terrainNativeFrame(page);
   const raw = fixtureText('native-depth-direct/inputs/desktop-combined-1087.json'),
     original = acceptedReference(raw);
+  let expected = Ecosystem.load(raw);
   advance(original, await refugeLoad(page, raw));
+  advance(expected, original.tick - expected.tick);
   expect(await refugeSelected(page)).toEqual(refugeGraph(original.save().organisms[0]));
-  const rawChecks = await page.evaluate(() =>
-    [
-      window.terrainNative.selected,
-      window.terrainNative.selected.genome,
-      window.terrainNative.selected.genome.cells[0],
-    ].map((value) => ({
-      positive: Object.is(value.positive, Infinity),
-      negative: Object.is(value.negative, -Infinity),
-      signedZero: Object.is(value.negativeZero, -0),
-      ownProto: Object.hasOwn(value, '__proto__'),
-      ordinary: Object.getPrototypeOf(value) === Object.prototype,
-    })),
-  );
+  const rawChecks = await refugeSelected(page, true);
   expect(rawChecks).toEqual(
     Array.from({ length: 3 }, () => ({
       positive: true,
@@ -5396,22 +5421,40 @@ test('B23-6 complete direct raw families, deepest common native path, current re
     })),
   );
   const first = await terrainSave(page, 'direct-deep-first.json');
-  expect(predecessor(first)).toEqual(JSON.parse(JSON.stringify(original.save())));
-  const normalized = acceptedReference(JSON.stringify(original.save())),
-    expected = Ecosystem.load(JSON.stringify(original.save()));
-  advance(normalized, await refugeLoad(page, JSON.stringify(first)));
-  advance(expected, normalized.tick);
+  expect(first).toEqual(JSON.parse(JSON.stringify(expected.save())));
+  const originalOutput = JSON.parse(JSON.stringify(original.save()));
+  originalOutput.organisms.forEach((organism: any, position: number) => {
+    organism.genome = original.save().organisms[position].genome;
+  });
+  expect(predecessor(first)).toEqual(originalOutput);
+  const normalized = acceptedReference(JSON.stringify(original.save()));
+  expected = Ecosystem.load(JSON.stringify(expected.save()));
+  const reloadedTick = await refugeLoad(page, JSON.stringify(first));
+  advance(normalized, reloadedTick - normalized.tick);
+  advance(original, reloadedTick - original.tick);
+  advance(expected, reloadedTick - expected.tick);
   await refugeMode(page, true);
   expected.changeRefugeMode(true);
-  expect(await refugeSelected(page)).toEqual(refugeGraph(normalized.save().organisms[0]));
+  expect(await refugeSelected(page)).toEqual(
+    refugeGraph({
+      ...normalized.save().organisms[0],
+      genome: original.save().organisms[0].genome,
+    }),
+  );
   const second = await terrainSave(page, 'direct-deep-reloaded.json');
   expect(second).toEqual(expected.save());
   await page.locator('#step').click();
   expected.step();
   normalized.step();
+  original.step();
   const third = await terrainSave(page, 'direct-deep-step.json');
   expect(third).toEqual(expected.save());
-  expect(third.organisms).toEqual(normalized.save().organisms);
+  expect(restoreHistoricalWorld(third).organisms).toEqual(
+    normalized.save().organisms.map((organism, position) => ({
+      ...organism,
+      genome: original.save().organisms[position].genome,
+    })),
+  );
   const cap = fixtureText('capture-direct/inputs/native-cap-v5.json'),
     capReference = acceptedReference(cap);
   advance(capReference, await refugeLoad(page, cap));
@@ -5450,19 +5493,41 @@ test('B23-6 complete direct raw families, deepest common native path, current re
     }),
     contentType: 'application/json',
   });
-  const previousErrors = await page.evaluate(() => window.terrainNative.errors.length);
-  await page.locator('#file').setInputFiles({
-    name: 'original-adjacent-unsupported-1088.json',
-    mimeType: 'application/json',
-    buffer: Buffer.from(fixtureText('native-depth-direct/inputs/desktop-combined-1088.json')),
+  const frozen = JSON.parse(readFileSync('test/fixtures/refuges/provenance.json', 'utf8'));
+  const historicalBoundary = frozen.combinedRawBoundaries.find(
+    (row: any) => row.project === test.info().project.name,
+  );
+  expect(historicalBoundary).toMatchObject({
+    deepestCompleteCommonPath: 1087,
+    adjacentUnsupported: 1088,
   });
-  await expect
-    .poll(() => page.evaluate(() => window.terrainNative.errors.length))
-    .toBeGreaterThan(previousErrors);
-  await expect(page.locator('#run-state')).toHaveText('STOPPED');
-  await expect(page.locator('#notice')).toContainText('The action completed');
-  await test.info().attach('original-adjacent-native-limitation.json', {
-    body: JSON.stringify(await page.evaluate(() => window.terrainNative.errors.at(-1))),
+  const adjacentRaw = fixtureText('native-depth-direct/inputs/desktop-combined-1088.json');
+  const adjacent = Ecosystem.load(adjacentRaw),
+    adjacentOriginal = acceptedReference(adjacentRaw);
+  const previousErrors = await page.evaluate(() => window.terrainNative.errors.length);
+  const adjacentTick = await refugeLoad(page, adjacentRaw);
+  advance(adjacent, adjacentTick - adjacent.tick);
+  advance(adjacentOriginal, adjacentTick - adjacentOriginal.tick);
+  expect(await refugeSelected(page)).toEqual(refugeGraph(adjacentOriginal.save().organisms[0]));
+  const adjacentSaved = await terrainSave(page, 'original-adjacent-now-supported.json');
+  expect(adjacentSaved).toEqual(JSON.parse(JSON.stringify(adjacent.save())));
+  await page.locator('#step').click();
+  adjacent.step();
+  adjacentOriginal.step();
+  await expect(page.locator('#tick')).toHaveText(`TICK ${adjacent.tick.toLocaleString()}`);
+  const adjacentStepped = await terrainSave(page, 'original-adjacent-supported-step.json');
+  expect(adjacentStepped).toEqual(JSON.parse(JSON.stringify(adjacent.save())));
+  expect(await refugeSelected(page)).toEqual(refugeGraph(adjacentOriginal.save().organisms[0]));
+  expect(await page.evaluate(() => window.terrainNative.errors.length)).toBe(previousErrors);
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  await test.info().attach('original-adjacent-native-continuation.json', {
+    body: JSON.stringify({
+      historicalBoundary,
+      currentFlatCarrierPathSupported: true,
+      inputBytes: Buffer.byteLength(adjacentRaw),
+      tick: adjacentTick,
+      stepTick: adjacentStepped.tick,
+    }),
     contentType: 'application/json',
   });
 });

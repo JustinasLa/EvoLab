@@ -893,6 +893,7 @@ export class Ecosystem {
     parent: Organism | undefined,
     rotation: number,
     transition: LineageTransition,
+    ecological = false,
   ): Organism | undefined {
     if (this.organisms.size >= LIMIT) return;
     const o: Organism = {
@@ -911,9 +912,12 @@ export class Ecosystem {
           ? [...parent.ancestry]
           : [...parent.ancestry, parent.species].slice(-8)
         : [],
-      genome: cloneGenome(genome),
+      genome: ecological ? genome : cloneGenome(genome),
     };
     if (!this.canPlace(o)) return;
+    // Ecological inputs are existing validated genomes or their bounded mutation.
+    // Read-only occupancy checks need no copy; admitted offspring own a full one.
+    if (ecological) o.genome = structuredClone(genome);
     this.nextId++;
     this.organisms.set(o.id, o);
     for (const i of positions(o)) {
@@ -1072,6 +1076,7 @@ export class Ecosystem {
             o,
             this.random.int(4),
             changed ? { kind: 'mutation', parentId: o.species } : { kind: 'clone' },
+            true,
           );
           if (child) {
             if (changed) this.nextSpecies++;
