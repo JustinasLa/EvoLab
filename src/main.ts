@@ -1968,8 +1968,8 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     if (!touchAnchor) clearPlacement();
   });
   const release = (event: Event): void => {
-    if (event.type === 'blur' || event.type === 'pointercancel') clearPlacement();
     if ('pointerId' in event && event.pointerId !== ownerPointer) return;
+    if (event.type === 'blur' || event.type === 'pointercancel') clearPlacement();
     endStroke();
   };
   window.addEventListener('pointerup', release);

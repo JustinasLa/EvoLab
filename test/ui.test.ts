@@ -5863,6 +5863,7 @@ describe('placement preview controls', () => {
     const commands = worker.commands.mock.calls.length;
     touch('pointerdown', x, y);
     touch('pointermove', x, y, 9);
+    touch('pointercancel', x, y, 9);
     touch('pointerup', x, y);
     pointer('pointerleave');
     paint(1);
