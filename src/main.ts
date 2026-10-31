@@ -1144,6 +1144,16 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     dragging = false;
     if (alive) availability();
   }
+  function postInternal(data: Record<string, unknown>): void {
+    if (terminated) return;
+    try {
+      worker.postMessage(data);
+    } catch {
+      terminate();
+      stop();
+      notice('The worker connection failed. Reload the page to restart.');
+    }
+  }
   function postTracked(
     type: CommandPayload['type'],
     payload: Record<string, unknown> = {},
@@ -1185,7 +1195,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     const token = heldDisplay;
     heldDisplay = null;
     displayWatermark = token.sequence;
-    worker.postMessage({
+    postInternal({
       type: 'flow-ack',
       channel: 'display',
       runId: token.runId,
@@ -1214,7 +1224,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         runId,
         commandId: wireId,
       };
-      worker.postMessage({ type: 'display-view', view, runId, commandId: wireId });
+      postInternal({ type: 'display-view', view, runId, commandId: wireId });
       return false;
     }
     const entry = pending.shift();
@@ -2674,7 +2684,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         accept(data.state, data.telemetry);
       if (data.sequence <= progressWatermark) return;
       progressWatermark = data.sequence;
-      worker.postMessage({
+      postInternal({
         type: 'flow-ack',
         channel: 'progress',
         runId: data.runId,
@@ -2964,7 +2974,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         const token = consumed;
         heldDisplay = null;
         displayWatermark = token.sequence;
-        worker.postMessage({
+        postInternal({
           type: 'flow-ack',
           channel: 'display',
           runId: token.runId,

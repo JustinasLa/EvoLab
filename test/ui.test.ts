@@ -5958,3 +5958,57 @@ describe('explicit painted temperature controls and authoritative views', () => 
     expect(organismHtml(selected, candidate.frame())).toContain('0 (0 units)');
   });
 });
+
+describe('internal transport posting failures', () => {
+  it.each(['Error', 'DataCloneError'])(
+    'terminates latest-view posting failure %s without wedging command credit',
+    (kind) => {
+      const harness = realWorker(true);
+      harness.deliver();
+      const nativePost = worker.postMessage.getMockImplementation()!;
+      worker.postMessage.mockImplementation((data) => {
+        if (data.type === 'display-view') {
+          if (kind === 'DataCloneError') throw new DOMException('proven internal nonpost', kind);
+          throw new Error('internal transport failed');
+        }
+        nativePost(data);
+      });
+      click('render-habitat');
+      expect(worker.terminate).toHaveBeenCalledTimes(1);
+      expect(get('run-state').textContent).toBe('STOPPED');
+      const before = worker.commands.mock.calls.length;
+      click('save');
+      expect(worker.commands.mock.calls).toHaveLength(before);
+    },
+  );
+  it.each(['progress', 'display-rendered', 'display-discarded'])(
+    'terminates failed internal acknowledgement %s',
+    (channel) => {
+      const harness = realWorker(true);
+      const nativePost = worker.postMessage.getMockImplementation()!;
+      worker.postMessage.mockImplementation((data) => {
+        if (
+          data.type === 'flow-ack' &&
+          data.channel === (channel === 'progress' ? 'progress' : 'display')
+        )
+          throw new Error('internal acknowledgement failed');
+        nativePost(data);
+      });
+      expect(() => {
+        harness.deliver();
+        if (channel === 'display-rendered') paint(0);
+        if (channel === 'display-discarded') {
+          click('render-habitat');
+          harness.deliver();
+        }
+      }).not.toThrow();
+      expect(worker.terminate).toHaveBeenCalledTimes(1);
+      expect(get('run-state').textContent).toBe('STOPPED');
+      const before = worker.postMessage.mock.calls.length;
+      worker.onmessage!({
+        data: { type: 'progress', runId: 1, sequence: Number.MAX_SAFE_INTEGER },
+      } as MessageEvent);
+      expect(worker.postMessage.mock.calls).toHaveLength(before);
+    },
+  );
+});
