@@ -3036,10 +3036,10 @@ describe('explicit bounded local library', () => {
     root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
     harness.deliver();
     const before = harness.save();
-    expect(before.version).toBe(9);
+    expect(before.version).toBe(10);
     expect(before.lineageArchive.summaries.length).toBeGreaterThan(0);
     expect(before.telemetry.version).toBe(2);
-    expect(before.interventions.version).toBe(3);
+    expect(before.interventions.version).toBe(4);
     expect(before.thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
     expect(before.interventions.entries).toHaveLength(1);
     storage.values.set(first, encodeRecord(draft('composed design'), 1));

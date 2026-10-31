@@ -72,6 +72,29 @@ afterEach(() => {
 });
 
 describe('bounded model-dependent telemetry presentation', () => {
+  it('handles shade history4 variants and same-sequence stroke updates without inventing energy samples', () => {
+    const world = new Ecosystem(DEFAULTS, false);
+    world.changeShadeMode(true);
+    show(world.frame());
+    expect(get('telemetry-intervention-details').textContent).toContain(
+      'Painted shade modeOFF → ON',
+    );
+    const brush = { rulesVersion: 1 as const, tool: 'shade' as const, units: 4, radius: 0 };
+    const first = world.paintShade(brush, 0, 0);
+    show(world.frame());
+    expect(get('telemetry-intervention-details').textContent).toContain('Effective commands1');
+    world.paintShade(brush, 1, 0, first.rowSequence);
+    show(world.frame());
+    expect(get('telemetry-intervention-details').textContent).toContain('Effective commands2');
+    expect(get('telemetry-intervention-details').textContent).toContain('attenuation history');
+    world.clearShade();
+    show(world.frame());
+    expect(get('telemetry-intervention-details').textContent).toContain(
+      'Painted shade cells removed2',
+    );
+    expect(world.telemetrySnapshot().samples).toEqual([]);
+    expect(get('telemetry-plots').querySelector('svg')).toBeNull();
+  });
   it('distinguishes unknown sources, received empty sources and progress beyond the source boundary', () => {
     controller.update({
       status: 'accepted',

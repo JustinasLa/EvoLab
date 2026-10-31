@@ -89,6 +89,7 @@ function historicalScalars(saved: WorldFile) {
   const {
     terrain: _terrain,
     thermalRefuges: _refuges,
+    shadeHabitats: _shade,
     lineageArchive: _archive,
     ...historical
   } = structuredClone(saved);

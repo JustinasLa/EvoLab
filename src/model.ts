@@ -4,7 +4,7 @@ export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 9;
+export const WORLD_VERSION = 10;
 export const LINEAGE_SUMMARY_CAPACITY = 256;
 export const LINEAGE_EVENT_CAPACITY = 512;
 export const INTERVENTION_CAPACITY = 128;
@@ -161,6 +161,42 @@ export interface TerrainRecipe {
   seed: number | null;
 }
 export const DEFAULTS: Settings = { seed: 42, mutation: 0.12, nutrients: 5, climate: 0.8 };
+export type ShadeTool = 'shade' | 'lighten' | 'erase-shade';
+export interface ShadeBrush {
+  rulesVersion: 1;
+  tool: ShadeTool;
+  radius: number;
+  units: number;
+}
+export interface ShadePlane {
+  version: 1;
+  enabled: boolean;
+  units: Uint8Array;
+}
+export interface ShadeField extends ShadePlane {
+  nonzeroCells: number;
+}
+export interface ShadeFile {
+  version: 1;
+  enabled: boolean;
+  cells: [number, number][];
+}
+export interface ShadeSummary {
+  version: 1;
+  enabled: boolean;
+  nonzeroCells: number;
+  capacity: 4096;
+  unitsPerFullLight: 16;
+  minimumStoredLightUnits: number;
+  maximumStoredLightUnits: number;
+  sumShadeUnits: number;
+}
+export interface SelectedLeafLight {
+  leafCells: number;
+  minimumLightUnits: number;
+  maximumLightUnits: number;
+  sumLightUnits: number;
+}
 export type RefugeTool = 'warm' | 'cool' | 'erase-temperature';
 export type Tool = 'inspect' | 'pan' | 'food' | 'wall' | 'erase' | 'plant' | RefugeTool;
 export interface RefugePlane {
@@ -558,6 +594,7 @@ export interface WorldEcology {
 }
 export interface WorldFile extends WorldEcology {
   version: typeof WORLD_VERSION;
+  shadeHabitats: ShadeFile;
   lineageArchive: LineageArchiveState;
   thermalRefuges: RefugeFile;
   terrain: TerrainRecipe;
@@ -567,20 +604,28 @@ export interface WorldFile extends WorldEcology {
 export type HistoricalWorldEcology = Omit<WorldEcology, 'organisms'> & {
   organisms: HistoricalOrganism[];
 };
+export interface WorldFileV9 extends WorldEcology {
+  version: 9;
+  lineageArchive: LineageArchiveState;
+  thermalRefuges: RefugeFile;
+  terrain: TerrainRecipe;
+  telemetry: TelemetryState;
+  interventions: InterventionStateV3;
+}
 export interface WorldFileV8 extends HistoricalWorldEcology {
   version: 8;
   lineageArchive: LineageArchiveState;
   thermalRefuges: RefugeFile;
   terrain: TerrainRecipe;
   telemetry: TelemetryState;
-  interventions: InterventionState;
+  interventions: InterventionStateV3;
 }
 export interface WorldFileV7 extends HistoricalWorldEcology {
   version: 7;
   thermalRefuges: RefugeFile;
   terrain: TerrainRecipe;
   telemetry: TelemetryState;
-  interventions: InterventionState;
+  interventions: InterventionStateV3;
 }
 export interface WorldFileV6 extends HistoricalWorldEcology {
   version: 6;
@@ -659,7 +704,18 @@ export type RefugeEffect =
   | { kind: 'refuge-mode'; detail: { rulesVersion: 1; before: boolean; after: boolean } }
   | { kind: 'refuge-paint'; detail: RefugePaintDetail }
   | { kind: 'refuge-clear'; detail: { rulesVersion: 1; removedCells: number } };
-export type InterventionEffect = InterventionEffectV2 | RefugeEffect;
+export type InterventionEffectV3 = InterventionEffectV2 | RefugeEffect;
+export interface ShadePaintDetail extends ShadeBrush {
+  first: Coordinate;
+  last: Coordinate;
+  successfulCommands: number;
+  changedBrushCells: number;
+}
+export type ShadeEffect =
+  | { kind: 'shade-mode'; detail: { rulesVersion: 1; before: boolean; after: boolean } }
+  | { kind: 'shade-paint'; detail: ShadePaintDetail }
+  | { kind: 'shade-clear'; detail: { rulesVersion: 1; removedCells: number } };
+export type InterventionEffect = InterventionEffectV3 | ShadeEffect;
 export type InterventionEntryV1 = InterventionEffectV1 & {
   sequence: number;
   origin: 'manual';
@@ -674,9 +730,17 @@ export type InterventionEntryV2 =
       firstTick: number;
       lastTick: number;
     });
-export type InterventionEntry =
+export type InterventionEntryV3 =
   | InterventionEntryV2
   | (RefugeEffect & {
+      sequence: number;
+      origin: 'manual';
+      firstTick: number;
+      lastTick: number;
+    });
+export type InterventionEntry =
+  | InterventionEntryV3
+  | (ShadeEffect & {
       sequence: number;
       origin: 'manual';
       firstTick: number;
@@ -696,10 +760,15 @@ export interface InterventionStateV2 extends Omit<InterventionStateV1, 'version'
   version: 2;
   entries: InterventionEntryV2[];
 }
-export interface InterventionState extends Omit<InterventionStateV1, 'version' | 'entries'> {
+export interface InterventionStateV3 extends Omit<InterventionStateV1, 'version' | 'entries'> {
   version: 3;
+  entries: InterventionEntryV3[];
+}
+export interface InterventionStateV4 extends Omit<InterventionStateV1, 'version' | 'entries'> {
+  version: 4;
   entries: InterventionEntry[];
 }
+export type InterventionState = InterventionStateV4;
 export interface PaintOutcome {
   changedBrushCells: number;
   removedOrganisms: number;
@@ -710,6 +779,7 @@ export interface MeasurementSource {
     worldVersion: typeof WORLD_VERSION;
     terrain: TerrainRecipe;
     thermalRefuges: RefugeSummary;
+    shadeHabitats: ShadeSummary;
     completedTick: number;
     seed: number;
     settings: Settings;

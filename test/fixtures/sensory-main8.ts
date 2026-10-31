@@ -34,8 +34,10 @@ export function restoreMain8(saved: WorldFile) {
         tempo: genome.tempo,
       } as typeof row.foundingGenome;
     }
+  const { shadeHabitats: _shadeHabitats, ...retained } = saved;
   return {
-    ...saved,
+    ...retained,
+    interventions: { ...saved.interventions, version: 3 },
     version: 8,
     organisms: restoreHistoricalWorld(saved).organisms,
     lineageArchive: archive,

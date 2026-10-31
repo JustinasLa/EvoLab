@@ -57,12 +57,13 @@ export function measurementEnvelope(source: MeasurementSource) {
     evicted = manual.totalEntries - manual.entries.length;
   const envelope = {
     format: 'evolab-drift-measurements',
-    version: 3,
-    rules: { id: 'evolab-drift-cellular', version: 2 },
+    version: 4,
+    rules: { id: 'evolab-drift-cellular', version: 3 },
     snapshot: {
       worldVersion: source.snapshot.worldVersion,
       terrain: { ...source.snapshot.terrain },
       thermalRefuges: { ...source.snapshot.thermalRefuges },
+      shadeHabitats: { ...source.snapshot.shadeHabitats },
       completedTick,
       seed: source.snapshot.seed,
       settings: knownSettings(source.snapshot.settings),
@@ -124,7 +125,7 @@ export function measurementEnvelope(source: MeasurementSource) {
         includesSameTickPostBoundaryEdits: true,
       },
       interpretation:
-        'Artificial-life observations, not causal history or a complete replay file. Painted temperature metadata describes the capture, not historical modes or thermal dose. The complete field requires a world Save; imported prior paint history may be unknown.',
+        'Artificial-life observations, not causal history or a complete replay file. Painted temperature and shade metadata describe the capture, not historical modes, thermal dose or leaf exposure. Complete fields require a world Save; imported prior paint history may be unknown.',
     },
     telemetry: structuredClone(telemetry),
     interventions: structuredClone(manual),

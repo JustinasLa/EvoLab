@@ -1,45 +1,33 @@
-import { WIDTH, HEIGHT, index, integer, clamp, positions, type Organism } from './model';
+import {
+  WIDTH,
+  HEIGHT,
+  index,
+  integer,
+  clamp,
+  positions,
+  type Organism,
+  type ShadeTool,
+  type ShadeBrush,
+  type ShadePlane,
+  type ShadeField,
+  type ShadeFile,
+  type ShadeSummary,
+  type SelectedLeafLight,
+} from './model';
+export type {
+  ShadeTool,
+  ShadeBrush,
+  ShadePlane,
+  ShadeField,
+  ShadeFile,
+  ShadeSummary,
+  SelectedLeafLight,
+} from './model';
 
 export const SHADE_CAPACITY = 4096;
 export const SHADE_MAX_BYTES = 65_536;
 export const SHADE_UNITS_PER_FULL_LIGHT = 16;
 
-export type ShadeTool = 'shade' | 'lighten' | 'erase-shade';
-export interface ShadeBrush {
-  rulesVersion: 1;
-  tool: ShadeTool;
-  radius: number;
-  units: number;
-}
-export interface ShadePlane {
-  version: 1;
-  enabled: boolean;
-  units: Uint8Array;
-}
-export interface ShadeField extends ShadePlane {
-  nonzeroCells: number;
-}
-export interface ShadeFile {
-  version: 1;
-  enabled: boolean;
-  cells: [number, number][];
-}
-export interface ShadeSummary {
-  version: 1;
-  enabled: boolean;
-  nonzeroCells: number;
-  capacity: 4096;
-  unitsPerFullLight: 16;
-  minimumStoredLightUnits: number;
-  maximumStoredLightUnits: number;
-  sumShadeUnits: number;
-}
-export interface SelectedLeafLight {
-  leafCells: number;
-  minimumLightUnits: number;
-  maximumLightUnits: number;
-  sumLightUnits: number;
-}
 export interface ShadeDab {
   changes: [number, number][];
   nonzeroCells: number;

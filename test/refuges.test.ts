@@ -306,6 +306,7 @@ describe('painted temperature mechanics and genuine accepted-base equivalence', 
     const {
       interventions: _afterLog,
       thermalRefuges: _field,
+      shadeHabitats: _shade,
       lineageArchive: _archive,
       version: _version,
       ...afterEcology

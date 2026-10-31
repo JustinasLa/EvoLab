@@ -165,6 +165,55 @@ function decode(text: string): any {
 }
 
 describe('bounded retained measurement codec', () => {
+  it.each([true, false])(
+    'projects only strict shade capture metadata and history4 for mode %s',
+    (enabled) => {
+      const world = new Ecosystem(DEFAULTS, false);
+      world.changeShadeMode(true);
+      const first = world.paintShade({ rulesVersion: 1, tool: 'shade', units: 8, radius: 0 }, 0, 0);
+      world.paintShade({ rulesVersion: 1, tool: 'shade', units: 16, radius: 0 }, 1, 0);
+      world.changeShadeMode(enabled);
+      (world.settings as any).secretOpaque = 'unmeasured shade opaque';
+      const before = world.save(),
+        source = world.measurements(first.rowSequence);
+      const json = restore(JSON.parse(serializeMeasurements(source, 'json').text));
+      expect(decode(serializeMeasurements(source, 'csv').text)).toEqual(json);
+      expect(json).toMatchObject({
+        version: 4,
+        rules: { version: 3 },
+        snapshot: {
+          worldVersion: 10,
+          shadeHabitats: {
+            version: 1,
+            enabled,
+            nonzeroCells: 2,
+            capacity: 4096,
+            unitsPerFullLight: 16,
+            minimumStoredLightUnits: 0,
+            maximumStoredLightUnits: 16,
+            sumShadeUnits: 24,
+          },
+        },
+        interventions: { version: 4 },
+      });
+      expect(Object.keys(json.snapshot.shadeHabitats)).toEqual([
+        'version',
+        'enabled',
+        'nonzeroCells',
+        'capacity',
+        'unitsPerFullLight',
+        'minimumStoredLightUnits',
+        'maximumStoredLightUnits',
+        'sumShadeUnits',
+      ]);
+      expect(JSON.stringify(json)).not.toContain('unmeasured shade opaque');
+      expect(json.snapshot.shadeHabitats).not.toHaveProperty('cells');
+      expect(json.snapshot.shadeHabitats).not.toHaveProperty('units');
+      source.snapshot.shadeHabitats.nonzeroCells = 4096;
+      json.interventions.entries.length = 0;
+      expect(world.save()).toEqual(before);
+    },
+  );
   it.each(['legacy-json', 'evolved-json', 'legacy-csv', 'evolved-csv'])(
     'observes the current world without changing inherited data: %s',
     (variant) => {
@@ -179,12 +228,12 @@ describe('bounded retained measurement codec', () => {
         envelope = measurementEnvelope(source);
       const serialized = serializeMeasurements(source, format);
       expect(serialized.byteLength).toBe(new TextEncoder().encode(serialized.text).length);
-      expect(envelope.snapshot.worldVersion).toBe(9);
+      expect(envelope.snapshot.worldVersion).toBe(10);
       expect(envelope).toMatchObject({
-        version: 3,
-        rules: { version: 2 },
+        version: 4,
+        rules: { version: 3 },
         telemetry: { version: 2 },
-        interventions: { version: 3 },
+        interventions: { version: 4 },
       });
       expect(serialized.text).not.toContain('native-B5');
       expect(serialized.text).not.toContain('legacyExtensions');
@@ -198,7 +247,7 @@ describe('bounded retained measurement codec', () => {
     const envelope = measurementEnvelope(source);
     expect(source.snapshot.worldVersion).toBe(WORLD_VERSION);
     expect(world.save().version).toBe(WORLD_VERSION);
-    expect(envelope.version).toBe(3);
+    expect(envelope.version).toBe(4);
     expect(envelope.telemetry).toEqual(world.save().telemetry);
     expect(envelope.interventions).toEqual(world.save().interventions);
     expect(envelope).not.toHaveProperty('lineageArchive');
@@ -227,10 +276,10 @@ describe('bounded retained measurement codec', () => {
         decoded = decode(serializeMeasurements(source, 'csv').text);
       expect(decoded).toEqual(json);
       expect(json).toMatchObject({
-        version: 3,
-        rules: { version: 2 },
+        version: 4,
+        rules: { version: 3 },
         snapshot: {
-          worldVersion: 9,
+          worldVersion: 10,
           thermalRefuges: {
             version: 1,
             enabled,
@@ -242,7 +291,7 @@ describe('bounded retained measurement codec', () => {
             sumUnits: painted ? -4 : 0,
           },
         },
-        interventions: { version: 3 },
+        interventions: { version: 4 },
       });
       expect(Object.keys(json.snapshot.thermalRefuges)).toEqual([
         'version',
@@ -261,22 +310,24 @@ describe('bounded retained measurement codec', () => {
         expect(json.interventions.entries.map((entry: any) => entry.kind)).toContain(
           'refuge-clear',
         );
-      expect(json.windows.interpretation).toContain('not historical modes or thermal dose');
+      expect(json.windows.interpretation).toContain(
+        'not historical modes, thermal dose or leaf exposure',
+      );
       source.snapshot.thermalRefuges.nonzeroCells = 4096;
       source.interventions.entries.length = 0;
       expect(world.save()).toEqual(before);
     },
   );
-  it('uses envelope3 and exact terrain metadata/detail without expanding numeric settings or changing CSV columns', () => {
+  it('uses envelope4 and exact terrain metadata/detail without expanding numeric settings or changing CSV columns', () => {
     const world = new Ecosystem();
     (world.settings as any).retained = { literal: 'unmeasured opaque value' };
     world.changeTerrain('clear');
     world.changeTerrain('regenerate', { version: 1, preset: 'open-field', seed: -0 });
     const source = world.measurements(),
       envelope = measurementEnvelope(source);
-    expect(envelope.version).toBe(3);
-    expect(envelope.rules.version).toBe(2);
-    expect(envelope.snapshot.worldVersion).toBe(9);
+    expect(envelope.version).toBe(4);
+    expect(envelope.rules.version).toBe(3);
+    expect(envelope.snapshot.worldVersion).toBe(10);
     expect(envelope.snapshot.terrain).toEqual(world.terrain);
     expect(envelope.snapshot.settings).toEqual(DEFAULTS);
     expect(envelope.negativeZeroPaths).toContain('/snapshot/terrain/seed');

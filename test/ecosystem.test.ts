@@ -135,6 +135,7 @@ describe('approved seeded terrain, opaque extension and exact continuation contr
         const {
           terrain,
           thermalRefuges,
+          shadeHabitats: _shadeHabitats,
           lineageArchive: _lineageArchive,
           ...snapshot
         } = world.save();
@@ -2674,7 +2675,7 @@ describe('measured thermal adaptation', () => {
         ...ecology(world.save()),
         lineageArchive: saved.lineageArchive,
         interventions: {
-          version: 3,
+          version: 4,
           originTick: tick,
           originKind: 'legacy-import',
           originSettings: { ...world.settings },
@@ -2808,10 +2809,12 @@ describe('telemetry persistence, migration and complete candidate validation', (
             lineageArchive,
             terrain,
             thermalRefuges,
+            shadeHabitats,
             ...actualEcology
           } = ecology(world.save());
-        expect(world.save().version).toBe(9);
+        expect(world.save().version).toBe(10);
         expect(thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
+        expect(shadeHabitats).toEqual({ version: 1, enabled: false, cells: [] });
         expect(terrain).toEqual(DEFAULT_TERRAIN);
         expect(lineageArchive).toMatchObject({
           originKind: 'legacy-import',
@@ -2819,7 +2822,7 @@ describe('telemetry persistence, migration and complete candidate validation', (
           events: [],
         });
         expect(interventions).toEqual({
-          version: 3,
+          version: 4,
           originTick: tick,
           originKind: 'legacy-import',
           originSettings: { ...file.settings },
