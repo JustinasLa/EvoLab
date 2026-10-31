@@ -235,7 +235,12 @@ let root: HTMLDivElement, worker: WorkerStub, dispose: () => void, paint: FrameR
 const world = new Ecosystem(),
   sample = world.frame(),
   organism = [...world.organisms.values()][0];
-const get = <T extends HTMLElement>(id: string): T => root.querySelector(`#${id}`)!;
+const get = <T extends HTMLElement>(id: string): T => {
+  const element = root.ownerDocument.getElementById(id);
+  return element && element !== root && root.contains(element)
+    ? (element as T)
+    : root.querySelector<T>(`#${id}`)!;
+};
 const click = (id: string) => {
   get(id).click();
   if (id === 'reset' && get<HTMLDialogElement>('reset-dialog').open) get('confirm-reset').click();

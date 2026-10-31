@@ -64,6 +64,10 @@ type Counters = {
 };
 type Receipt = {
   commandId: number;
+  runId: number;
+  responseType: string;
+  code?: string;
+  message?: string;
   type: string;
   postedAt: number;
   receivedAt: number;
@@ -76,6 +80,7 @@ declare global {
       receipt: Receipt | null;
       loadedReceipt: { commandId: number; state: ControlState } | null;
       pauseReceipt: Receipt | null;
+      runToReceipt: Receipt | null;
       releaseRead?: (() => void) | null;
       counters: Counters | null;
       frames: number;
@@ -173,6 +178,7 @@ async function observe(
       receipt: null,
       loadedReceipt: null,
       pauseReceipt: null,
+      runToReceipt: null,
       counters: null,
       frames: 0,
       metadataBytes: 0,
@@ -195,13 +201,15 @@ async function observe(
     window.Worker = new Proxy(window.Worker, {
       construct(target, args: ConstructorParameters<typeof Worker>, newTarget) {
         const worker: Worker = Reflect.construct(target, args, newTarget);
-        let posted: { commandId: number; type: string; postedAt: number } | null = null;
+        let posted: { commandId: number; runId: number; type: string; postedAt: number } | null =
+          null;
         const nativePost = worker.postMessage;
         worker.postMessage = function (...messages: Parameters<typeof nativePost>) {
           const command = messages[0];
           if (command.type !== 'flow-ack')
             posted = {
               commandId: command.commandId,
+              runId: command.runId,
               type: command.type,
               postedAt: performance.now(),
             };
@@ -214,23 +222,27 @@ async function observe(
           if (data.type === 'frame') {
             evidence.frames++;
             evidence.frameAt = performance.now();
-          } else
-            evidence.metadataBytes += new TextEncoder().encode(JSON.stringify(data)).byteLength;
-          if (data.type === 'progress' || data.type === 'telemetry')
-            evidence.telemetryJSONBytes += new TextEncoder().encode(
-              JSON.stringify(data),
-            ).byteLength;
+          } else {
+            const bytes = new TextEncoder().encode(JSON.stringify(data)).byteLength;
+            evidence.metadataBytes += bytes;
+            if (data.type === 'progress' || data.type === 'telemetry')
+              evidence.telemetryJSONBytes += bytes;
+          }
           if (data.type === 'saved') {
             evidence.savedText = data.text;
             evidence.saveTextBytes += new TextEncoder().encode(data.text).byteLength;
           }
-          if (posted && data.commandId === posted.commandId) {
+          if (posted && data.commandId === posted.commandId && data.runId === posted.runId) {
             evidence.receipt = {
               ...posted,
+              responseType: data.type,
+              code: data.code,
+              message: data.message,
               receivedAt: performance.now(),
               state: data.state ?? data.recovery?.state,
             };
             if (posted.type === 'pause') evidence.pauseReceipt = evidence.receipt;
+            if (posted.type === 'run-to') evidence.runToReceipt = evidence.receipt;
             posted = null;
           }
         });
@@ -803,6 +815,41 @@ test('requested Chromium lifecycle transition records actual visibility and comp
   await session.detach();
 });
 
+test('native past absolute targets retain correlated rejection and the complete paused world', async ({
+  page,
+}) => {
+  await observe(page);
+  await page.goto('/');
+  const world = Ecosystem.load(JSON.stringify(fixture(64)));
+  for (let count = 0; count < 36; count++) world.step();
+  const file = world.save();
+  await load(page, file, true, 12);
+  const before = await downloadWorld(page);
+  const identity = await page.evaluate(() => ({
+    commandId: window.longRun.receipt!.commandId,
+    runId: window.longRun.receipt!.runId,
+    replacementId: window.longRun.state!.replacementId,
+  }));
+  const targetTick = file.tick - 5;
+  await page.locator('#target-tick').fill(String(targetTick));
+  await page.locator('#target-tick').press('Enter');
+  await page.waitForFunction(
+    (id) => (window.longRun.runToReceipt?.commandId ?? 0) > id,
+    identity.commandId,
+  );
+  const receipt = await page.evaluate(() => window.longRun.runToReceipt!);
+  expect(receipt.responseType).toBe('error');
+  expect(receipt.code).toBe('invalid-target');
+  expect(receipt.message).toBe('That absolute tick has already passed.');
+  expect(receipt.runId).toBe(identity.runId);
+  expect(receipt.state.replacementId).toBe(identity.replacementId);
+  expect(receipt.state.target).toBeNull();
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  const after = await downloadWorld(page);
+  expect(after.world).toEqual(before.world);
+  expect(after.raw.equals(before.raw)).toBe(true);
+});
+
 test('native exact targets, suspended cancellation and render-off editing preserve complete saves', async ({
   page,
 }, testInfo) => {
@@ -813,15 +860,61 @@ test('native exact targets, suspended cancellation and render-off editing preser
   let renderedSave: Buffer | undefined;
   const capture = async (name: string) => {
     const path = testInfo.outputPath(`${name}.png`);
-    await page.screenshot({ path, fullPage: true });
+    await page.screenshot({ path, fullPage: true, scale: 'css' });
     await testInfo.attach(name, { path, contentType: 'image/png' });
   };
   for (const speed of [1, 4, 12])
     for (const render of [true, false]) {
       await load(page, file, render, speed);
-      await page.locator('#target-tick').fill(String(file.tick + 31));
+      const setup = await page.evaluate(() => {
+        const { state, loadedReceipt, pauseReceipt, receipt } = window.longRun;
+        return {
+          tick: state!.world.stats.tick,
+          replacementId: state!.replacementId,
+          loadedCommandId: loadedReceipt!.commandId,
+          loadedTick: loadedReceipt!.state.world.stats.tick,
+          pauseCommandId: pauseReceipt?.commandId,
+          pausedTick: pauseReceipt?.state.world.stats.tick,
+          runId: receipt!.runId,
+          beforeCommandId: receipt!.commandId,
+        };
+      });
+      const targetTick = file.tick + 31;
+      expect(
+        setup.tick,
+        JSON.stringify({ phase: 'absolute-target-admission', speed, render, targetTick, setup }),
+      ).toBeLessThanOrEqual(targetTick);
+      await page.locator('#target-tick').fill(String(targetTick));
       await page.locator('#target-tick').press('Enter');
-      await page.waitForFunction(() => window.longRun.state?.target?.status === 'reached');
+      await page.waitForFunction((before) => {
+        const receipt = window.longRun.runToReceipt;
+        return receipt && receipt.commandId > before;
+      }, setup.beforeCommandId);
+      const receipt = await page.evaluate(() => window.longRun.runToReceipt!);
+      expect(
+        receipt.responseType,
+        JSON.stringify({
+          phase: 'absolute-target-terminal',
+          speed,
+          render,
+          targetTick,
+          setup,
+          receipt,
+        }),
+      ).toBe('control');
+      expect(receipt.runId).toBe(setup.runId);
+      expect(receipt.state.replacementId).toBe(setup.loadedCommandId);
+      expect(receipt.state.target!.id).toBe(receipt.commandId);
+      expect(receipt.state.target!.targetTick).toBe(targetTick);
+      await page.waitForFunction(
+        ({ id, targetTick }) => {
+          const target = window.longRun.state?.target;
+          return (
+            target?.id === id && target.targetTick === targetTick && target.status === 'reached'
+          );
+        },
+        { id: receipt.commandId, targetTick },
+      );
       const download = await downloadWorld(page),
         saved = download.world;
       await expectExactDownload(page, file, download);
@@ -1297,20 +1390,49 @@ test('actual worker matches independent browser ecology and raw on/off bytes acr
   await page.goto('/');
   const file = fixture(64),
     rendered = new Map<number, Buffer>();
-  for (const render of [true, false]) {
-    await load(page, file, render, 4);
-    await page.locator('#target-tick').fill('7802');
-    await page.locator('#run-to-tick').click();
-    await page.waitForFunction(() => window.longRun.state?.target?.status === 'reached');
-    for (const tick of [7802, 7803]) {
-      if (tick === 7803) await page.locator('#step').click();
-      const download = await downloadWorld(page);
-      expect(download.world.tick).toBe(tick);
-      await expectExactDownload(page, file, download);
-      if (render) rendered.set(tick, download.raw);
-      else expect(download.raw.equals(rendered.get(tick)!)).toBe(true);
-      await attachRawSave(testInfo, `runtime-${tick}-${render}`, download.raw);
+  // Both native branches use the same input checkpoint and endpoints. Continue
+  // one independent real engine once; compare every complete download and byte
+  // stream against these expectations without deriving them from worker output.
+  let phase = 'independent-reference';
+  try {
+    const expected = await page.evaluate(async (file) => {
+      const modulePath = '/__reference/engine.js';
+      const { Ecosystem } = await import(modulePath);
+      const reference = Ecosystem.load(JSON.stringify(file));
+      const endpoints: Record<number, string> = {};
+      for (const tick of [7802, 7803]) {
+        while (reference.tick < tick) reference.step();
+        endpoints[tick] = JSON.stringify(reference.save());
+      }
+      return endpoints;
+    }, file);
+    for (const render of [true, false]) {
+      phase = `load render=${render}`;
+      await load(page, file, render, 4);
+      phase = `target7802 render=${render}`;
+      await page.locator('#target-tick').fill('7802');
+      await page.locator('#run-to-tick').click();
+      await page.waitForFunction(() => window.longRun.state?.target?.status === 'reached');
+      for (const tick of [7802, 7803]) {
+        phase = `download tick=${tick} render=${render}`;
+        if (tick === 7803) await page.locator('#step').click();
+        const download = await downloadWorld(page);
+        expect(download.world.tick).toBe(tick);
+        expect(download.world).toEqual(JSON.parse(expected[tick]));
+        expect(download.raw.equals(Buffer.from(expected[tick]))).toBe(true);
+        if (render) rendered.set(tick, download.raw);
+        else expect(download.raw.equals(rendered.get(tick)!)).toBe(true);
+        phase = `attach tick=${tick} render=${render}`;
+        await attachRawSave(testInfo, `runtime-${tick}-${render}`, download.raw);
+      }
     }
+  } catch (error) {
+    try {
+      console.error('raw-ecology-phase', JSON.stringify({ phase, project: testInfo.project.name }));
+    } catch {
+      // Diagnostics must never replace the original native assertion or timeout.
+    }
+    throw error;
   }
 });
 
