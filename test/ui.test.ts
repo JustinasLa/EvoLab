@@ -5921,6 +5921,50 @@ describe('placement preview controls', () => {
     expect(worker.commands).toHaveBeenCalledTimes(commands + 1);
     expect(worker.commands.mock.calls.at(-1)![0]).toMatchObject({ type: 'paint', x: 110, y: 80 });
   });
+  it.each(['mouse', 'pen'])(
+    'releases staged touch ownership to a %s preview and stamp',
+    (pointerType) => {
+      const drawSpy = vi.spyOn(viewModule, 'draw');
+      const harness = realWorker(true);
+      harness.deliver();
+      click('pause');
+      harness.deliver();
+      paint(0);
+      click('plant-design');
+      const before = harness.save();
+      const canvas = get<HTMLCanvasElement>('world');
+      const v = viewport(canvas, { zoom: 1, x: 0, y: 0 });
+      touch('pointerdown', v.left + 100.5 * v.scale, v.top + 70.5 * v.scale);
+      touch('pointerup', v.left + 100.5 * v.scale, v.top + 70.5 * v.scale);
+      paint(1);
+      expect(get('placement-feedback').textContent).toContain('at 100, 70');
+      const x = v.left + 110.5 * v.scale,
+        y = v.top + 80.5 * v.scale;
+      const input = (type: string) => {
+        const event = new MouseEvent(type, { clientX: x, clientY: y, bubbles: true });
+        Object.defineProperties(event, {
+          pointerType: { value: pointerType },
+          pointerId: { value: 8 },
+        });
+        canvas.dispatchEvent(event);
+      };
+      input('pointermove');
+      paint(2);
+      expect(get('placement-feedback').textContent).toContain('at 110, 80');
+      expect(get('placement-feedback').textContent).not.toContain('Tap this anchor again');
+      expect(drawSpy.mock.calls.at(-1)![6]!.positions).toEqual(
+        model.positions({ genome: founder(0), x: 110, y: 80, rotation: 0 }),
+      );
+      expect(harness.save()).toEqual(before);
+      input('pointerdown');
+      input('pointerup');
+      harness.deliver();
+      expect(
+        worker.commands.mock.calls.findLast(([data]) => data.type === 'paint')![0],
+      ).toMatchObject({ x: 110, y: 80 });
+      expect(harness.save().organisms.at(-1)).toMatchObject({ x: 110, y: 80 });
+    },
+  );
   function canvasTool() {
     return get('world').dataset.tool;
   }

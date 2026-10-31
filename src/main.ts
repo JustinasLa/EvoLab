@@ -1937,6 +1937,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     const rect = canvas.getBoundingClientRect();
     hover = { x: event.clientX - rect.left, y: event.clientY - rect.top };
     dirty = true;
+    if (tool === 'plant' && event.pointerType !== 'touch') touchAnchor = undefined;
     if (tool === 'plant' && event.pointerType === 'touch') {
       const anchor = point(canvas, camera, hover.x, hover.y);
       if (!anchor) return;
@@ -1951,6 +1952,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   canvas.addEventListener('pointermove', (event) => {
     if (ownerPointer !== null && event.pointerId !== ownerPointer) return;
     if (tool === 'plant') {
+      if (event.pointerType !== 'touch') touchAnchor = undefined;
       const rect = canvas.getBoundingClientRect();
       hover = { x: event.clientX - rect.left, y: event.clientY - rect.top };
       dirty = true;

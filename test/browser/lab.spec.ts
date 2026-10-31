@@ -6039,6 +6039,51 @@ test('D12-4 native touch drag keeps confirmation and ghost aligned through camer
   await session.detach();
 });
 
+test('D12-5 native mouse and pen take over a staged touch ghost before placing', async ({
+  page,
+}) => {
+  const reference = placementWorld();
+  await loadPlacementWorld(page, reference);
+  const session = await page.context().newCDPSession(page);
+  for (const [i, pointerType] of (['mouse', 'pen'] as const).entries()) {
+    await page.locator('#plant-design').click();
+    const a = await placementCoordinate(page, 100, 70);
+    const b = await placementCoordinate(page, 110 + i * 10, 80);
+    await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [a] });
+    await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await expect(page.locator('#placement-feedback')).toContainText('at 100, 70');
+    await session.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...b, pointerType });
+    await expect(page.locator('#placement-feedback')).toContainText(`at ${110 + i * 10}, 80`);
+    await expect(page.locator('#placement-feedback')).not.toContainText('Tap this anchor again');
+    expect(await terrainSave(page, `D12-5-${pointerType}-world-unchanged.json`)).toEqual(
+      reference.save(),
+    );
+    await session.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      ...b,
+      pointerType,
+      button: 'left',
+      buttons: 1,
+      clickCount: 1,
+    });
+    await session.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      ...b,
+      pointerType,
+      button: 'left',
+      buttons: 0,
+      clickCount: 1,
+    });
+    await expect(page.locator('#notice')).toContainText('Organism placed');
+    const outcome = reference.paint('plant', 110 + i * 10, 80, 0, founder(0));
+    reference.appendIntervention({ kind: 'placement', detail: outcome.placement! });
+    expect(await terrainSave(page, `D12-5-${pointerType}-confirmed-world-anchor.json`)).toEqual(
+      reference.save(),
+    );
+  }
+  await session.detach();
+});
+
 test('D12-3 stale valid preview cannot override worker occupancy and failure makes one legacy attempt', async ({
   page,
 }) => {
