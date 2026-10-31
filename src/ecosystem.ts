@@ -1,3 +1,14 @@
+import { DEFAULT_TERRAIN, generateTerrain, sameTerrain, validTerrain } from './terrain';
+import {
+  emptyRefuges,
+  activeRefugeUnits,
+  parseRefuges,
+  refugeFile,
+  refugeSummary,
+  refugeDab,
+  validRefugeBrush,
+  localTemperature,
+} from './refuges';
 import {
   DEFAULTS,
   WIDTH,
@@ -6,6 +17,7 @@ import {
   TELEMETRY_INTERVAL_TICKS,
   TELEMETRY_CAPACITY,
   WORLD_MAX_BYTES,
+  WORLD_VERSION,
   INTERVENTION_CAPACITY,
   STROKE_COMMAND_CAPACITY,
   knownSettings,
@@ -22,17 +34,25 @@ import {
   speciesName,
   observedGenome,
   temperature,
+  type RefugeBrush,
   type Genome,
   type Organism,
   type Settings,
   type WorldFile,
   type Frame,
+  type WorldPresentation,
   type Species,
   type Tool,
   type DeathRecord,
   type LegacyWorldFile,
   type WorldFileV3,
   type WorldFileV4,
+  type WorldFileV5,
+  type WorldFileV6,
+  type TerrainRecipe,
+  type TerrainDetail,
+  type WorldFileV7,
+  type LineageArchiveState,
   type InterventionState,
   type InterventionEffect,
   type InterventionEntry,
@@ -48,6 +68,9 @@ import {
   type TelemetrySample,
   type TelemetryState,
 } from './model';
+import { LineageArchive, sameInherited } from './lineage';
+type LineageTransition =
+  { kind: 'founder' | 'manual' | 'clone' } | { kind: 'mutation'; parentId: number };
 const DIRECTIONS = [
   [1, 0],
   [0, 1],
@@ -237,7 +260,7 @@ function validTelemetry(
 }
 function emptyInterventions(settings: Settings, tick = 0, legacy = false): InterventionState {
   return {
-    version: 1,
+    version: 3,
     originTick: tick,
     originKind: legacy ? 'legacy-import' : 'fresh',
     originSettings: knownSettings(settings),
@@ -254,7 +277,10 @@ function brushCells(radius: number): number {
       if (horizontal * horizontal + vertical * vertical <= radius * radius) count++;
   return count;
 }
-function validInterventions(value: unknown, file: WorldFile): value is InterventionState {
+function validInterventions(
+  value: unknown,
+  file: WorldFile | WorldFileV7 | WorldFileV6 | WorldFileV5,
+): boolean {
   const settingKeys = ['seed', 'mutation', 'nutrients', 'climate'];
   const settingsMatch = (left: Settings, right: Settings): boolean =>
     settingKeys.every((key) => left[key as keyof Settings] === right[key as keyof Settings]);
@@ -269,7 +295,8 @@ function validInterventions(value: unknown, file: WorldFile): value is Intervent
       'prefixSettings',
       'entries',
     ]) ||
-    value.version !== 1 ||
+    value.version !==
+      (file.version === 7 || file.version === WORLD_VERSION ? 3 : file.version === 6 ? 2 : 1) ||
     !integer(value.originTick, 0, file.tick) ||
     !['fresh', 'legacy-import'].includes(value.originKind as string) ||
     (value.originKind === 'fresh' && value.originTick !== 0) ||
@@ -293,7 +320,8 @@ function validInterventions(value: unknown, file: WorldFile): value is Intervent
   const replay = { ...value.prefixSettings };
   if (replay.seed !== file.settings.seed || value.originSettings.seed !== replay.seed) return false;
   let previousTick = (value.evictedThroughTick as number | null) ?? value.originTick,
-    previousShock: { offset: number; until: number } | undefined;
+    previousShock: { offset: number; until: number } | undefined,
+    previousTerrain: TerrainRecipe | undefined;
   const coordinate = (point: unknown): boolean =>
     exactKeys(point, ['x', 'y']) &&
     integer(point.x, 0, WIDTH - 1) &&
@@ -313,7 +341,30 @@ function validInterventions(value: unknown, file: WorldFile): value is Intervent
       return false;
     const detail = row.detail;
     previousTick = row.lastTick;
-    if (row.kind === 'paint') {
+    if (row.kind === 'refuge-paint' && (file.version === 7 || file.version === WORLD_VERSION)) {
+      if (
+        !exactKeys(detail, [
+          'rulesVersion',
+          'tool',
+          'units',
+          'radius',
+          'first',
+          'last',
+          'successfulCommands',
+          'changedBrushCells',
+        ]) ||
+        !validRefugeBrush(detail) ||
+        !coordinate(detail.first) ||
+        !coordinate(detail.last) ||
+        !integer(detail.successfulCommands, 1, STROKE_COMMAND_CAPACITY) ||
+        !integer(
+          detail.changedBrushCells,
+          detail.successfulCommands,
+          detail.successfulCommands * brushCells(detail.radius as number),
+        )
+      )
+        return false;
+    } else if (row.kind === 'paint') {
       if (
         !exactKeys(detail, [
           'tool',
@@ -342,7 +393,26 @@ function validInterventions(value: unknown, file: WorldFile): value is Intervent
         return false;
     } else {
       if (row.firstTick !== row.lastTick) return false;
-      if (row.kind === 'placement') {
+      if (row.kind === 'refuge-mode' && (file.version === 7 || file.version === WORLD_VERSION)) {
+        if (
+          !exactKeys(detail, ['rulesVersion', 'before', 'after']) ||
+          detail.rulesVersion !== 1 ||
+          typeof detail.before !== 'boolean' ||
+          typeof detail.after !== 'boolean' ||
+          detail.before === detail.after
+        )
+          return false;
+      } else if (
+        row.kind === 'refuge-clear' &&
+        (file.version === 7 || file.version === WORLD_VERSION)
+      ) {
+        if (
+          !exactKeys(detail, ['rulesVersion', 'removedCells']) ||
+          detail.rulesVersion !== 1 ||
+          !integer(detail.removedCells, 1, 4096)
+        )
+          return false;
+      } else if (row.kind === 'placement') {
         if (
           !exactKeys(detail, [
             'x',
@@ -389,6 +459,45 @@ function validInterventions(value: unknown, file: WorldFile): value is Intervent
             return false;
           replay[field] = change.after as number;
         }
+      } else if (
+        row.kind === 'terrain' &&
+        (file.version === 6 || file.version === 7 || file.version === WORLD_VERSION)
+      ) {
+        if (
+          !exactKeys(detail, [
+            'action',
+            'before',
+            'after',
+            'addedWalls',
+            'removedWalls',
+            'removedFood',
+            'protectedCells',
+          ]) ||
+          !['clear', 'regenerate'].includes(detail.action as string) ||
+          !validTerrain(detail.before) ||
+          !validTerrain(detail.after) ||
+          !integer(detail.addedWalls, 0, WIDTH * HEIGHT) ||
+          !integer(detail.removedWalls, 0, WIDTH * HEIGHT - detail.addedWalls) ||
+          !integer(detail.removedFood, 0, detail.addedWalls) ||
+          !integer(detail.protectedCells, 0, LIMIT * 16) ||
+          (previousTerrain && !sameTerrain(previousTerrain, detail.before))
+        )
+          return false;
+        const unchanged = sameTerrain(detail.before, detail.after);
+        if (
+          detail.action === 'clear'
+            ? !unchanged ||
+              detail.addedWalls !== 0 ||
+              detail.removedFood !== 0 ||
+              detail.protectedCells !== 0 ||
+              detail.removedWalls === 0
+            : unchanged &&
+              detail.addedWalls === 0 &&
+              detail.removedWalls === 0 &&
+              detail.removedFood === 0
+        )
+          return false;
+        previousTerrain = detail.after;
       } else if (row.kind === 'shock') {
         if (
           !exactKeys(detail, ['kind', 'before', 'after']) ||
@@ -408,8 +517,21 @@ function validInterventions(value: unknown, file: WorldFile): value is Intervent
       } else return false;
     }
   }
+  if (file.version === 7 || file.version === WORLD_VERSION) {
+    let enabled = file.thermalRefuges.enabled;
+    for (let position = value.entries.length - 1; position >= 0; position--) {
+      const row = value.entries[position];
+      if (row.kind === 'refuge-mode') {
+        if (row.detail.after !== enabled) return false;
+        enabled = row.detail.before;
+      } else if (row.kind === 'refuge-paint' && !enabled) return false;
+    }
+  }
   return (
     settingsMatch(replay, file.settings) &&
+    (!previousTerrain ||
+      ((file.version === 6 || file.version === 7 || file.version === WORLD_VERSION) &&
+        sameTerrain(previousTerrain, file.terrain))) &&
     (!previousShock ||
       (previousShock.offset === file.eventOffset && previousShock.until === file.eventUntil))
   );
@@ -417,6 +539,8 @@ function validInterventions(value: unknown, file: WorldFile): value is Intervent
 export class Ecosystem {
   random: Random;
   settings: Settings;
+  terrain: TerrainRecipe;
+  thermalRefuges = emptyRefuges();
   organisms = new Map<number, Organism>();
   food = new Uint8Array(WIDTH * HEIGHT);
   walls = new Uint8Array(WIDTH * HEIGHT);
@@ -432,9 +556,18 @@ export class Ecosystem {
   private telemetry = emptyTelemetry(0);
   private interventions: InterventionState;
   private readonly recording: boolean;
-  constructor(settings: Settings = DEFAULTS, seed = true, options: { telemetry?: boolean } = {}) {
+  private readonly lineageRecording: boolean;
+  private lineage = new LineageArchive();
+  constructor(
+    settings: Settings = DEFAULTS,
+    seed = true,
+    options: { telemetry?: boolean; lineage?: boolean; terrain?: TerrainRecipe } = {},
+  ) {
+    if (!validTerrain(options.terrain ?? DEFAULT_TERRAIN)) throw new Error('Invalid wall recipe.');
     this.recording = options.telemetry !== false;
-    this.settings = { ...settings };
+    this.lineageRecording = options.lineage !== false;
+    this.settings = structuredClone(settings);
+    this.terrain = { ...(options.terrain ?? DEFAULT_TERRAIN) };
     this.interventions = emptyInterventions(settings);
     this.random = new Random(settings.seed);
     if (seed) this.seed();
@@ -459,12 +592,13 @@ export class Ecosystem {
       let bin = 0;
       while (bin < 9 && genome.preference >= PREFERENCE_ENDPOINTS[bin]) bin++;
       preferenceBins[bin]++;
-      const local = temperature(
+      const local = localTemperature(
         organism.x,
         organism.y,
         this.tick,
         this.settings.climate,
         this.tick < this.eventUntil ? this.eventOffset : 0,
+        this.thermalRefuges,
       );
       if (Math.max(0, Math.abs(local - genome.preference) - genome.tolerance) > 0)
         stressedOrganisms++;
@@ -557,10 +691,81 @@ export class Ecosystem {
     this.settings = next;
     return this.appendIntervention({ kind: 'settings', detail: { changes } });
   }
+  changeRefugeMode(enabled: boolean): number | null {
+    if (typeof enabled !== 'boolean') throw new Error('Invalid painted temperature mode.');
+    const before = this.thermalRefuges.enabled;
+    if (before === enabled) return null;
+    this.requireInterventionCapacity();
+    const sequence = this.appendIntervention({
+      kind: 'refuge-mode',
+      detail: { rulesVersion: 1, before, after: enabled },
+    });
+    this.thermalRefuges.enabled = enabled;
+    return sequence;
+  }
+  paintRefuge(brush: RefugeBrush, x: number, y: number, sequence: number | null = null) {
+    const candidate = refugeDab(this.thermalRefuges, brush, x, y);
+    if (!candidate.changedBrushCells)
+      return {
+        rowSequence: null,
+        changedBrushCells: 0,
+        nonzeroCells: this.thermalRefuges.nonzeroCells,
+      };
+    const latest = this.interventions.entries.at(-1),
+      continuing =
+        sequence !== null &&
+        latest?.sequence === sequence &&
+        latest.kind === 'refuge-paint' &&
+        latest.detail.tool === brush.tool &&
+        latest.detail.units === brush.units &&
+        latest.detail.radius === brush.radius;
+    this.requireInterventionCapacity(continuing);
+    let rowSequence: number;
+    if (continuing) {
+      if (latest.detail.successfulCommands === STROKE_COMMAND_CAPACITY)
+        throw new Error('Painted temperature stroke exhausted.');
+      latest.lastTick = this.tick;
+      latest.detail.last = { x, y };
+      latest.detail.successfulCommands++;
+      latest.detail.changedBrushCells += candidate.changedBrushCells;
+      rowSequence = sequence;
+    } else
+      rowSequence = this.appendIntervention({
+        kind: 'refuge-paint',
+        detail: {
+          ...brush,
+          first: { x, y },
+          last: { x, y },
+          successfulCommands: 1,
+          changedBrushCells: candidate.changedBrushCells,
+        },
+      });
+    for (const [position, units] of candidate.changes) this.thermalRefuges.units[position] = units;
+    this.thermalRefuges.nonzeroCells = candidate.nonzeroCells;
+    return {
+      rowSequence,
+      changedBrushCells: candidate.changedBrushCells,
+      nonzeroCells: candidate.nonzeroCells,
+    };
+  }
+  clearRefuges() {
+    const removedCells = this.thermalRefuges.nonzeroCells;
+    if (!removedCells) return { rowSequence: null, removedCells: 0, nonzeroCells: 0 };
+    this.requireInterventionCapacity();
+    const rowSequence = this.appendIntervention({
+      kind: 'refuge-clear',
+      detail: { rulesVersion: 1, removedCells },
+    });
+    this.thermalRefuges.units.fill(0);
+    this.thermalRefuges.nonzeroCells = 0;
+    return { rowSequence, removedCells, nonzeroCells: 0 };
+  }
   measurements(openStrokeSequence: number | null = null): MeasurementSource {
     return {
       snapshot: {
-        worldVersion: 5,
+        worldVersion: WORLD_VERSION,
+        terrain: { ...this.terrain },
+        thermalRefuges: refugeSummary(this.thermalRefuges),
         completedTick: this.tick,
         seed: this.settings.seed,
         settings: knownSettings(this.settings),
@@ -571,23 +776,57 @@ export class Ecosystem {
       interventions: structuredClone(this.interventions),
     };
   }
-  seed(): void {
-    // Porous mineral ridges partition habitats without sealing them off.
-    for (let i = 0; i < 7; i++) {
-      const x = 20 + this.random.int(WIDTH - 40),
-        y = 15 + this.random.int(HEIGHT - 30);
-      for (let j = -9; j <= 9; j++)
-        if (Math.abs(j) > 2) {
-          const p = index(x + j, y + Math.round(Math.sin(j / 3) * 2));
-          this.walls[p] = 1;
-          this.food[p] = 0;
-        }
-    }
+  private seed(): void {
+    this.walls.set(generateTerrain(this.terrain, this.settings.seed));
+    this.random.state = (this.settings.seed + Math.imul(14, 0x6d2b79f5)) | 0;
     const genome = founder(0),
       x = WIDTH / 2,
       y = HEIGHT / 2;
     for (const position of positions({ genome, x, y, rotation: 0 })) this.walls[position] = 0;
-    this.spawn(genome, x, y, 1);
+    this.insert(genome, x, y, 1, undefined, 0, { kind: 'founder' });
+  }
+  changeTerrain(
+    action: 'clear' | 'regenerate',
+    recipe: TerrainRecipe = this.terrain,
+  ): { detail: TerrainDetail; rowSequence: number | null } {
+    if (!['clear', 'regenerate'].includes(action) || !validTerrain(recipe))
+      throw new Error('Invalid wall action or recipe.');
+    const walls =
+      action === 'clear'
+        ? new Uint8Array(WIDTH * HEIGHT)
+        : generateTerrain(recipe, this.settings.seed);
+    const detail: TerrainDetail = {
+      action,
+      before: { ...this.terrain },
+      after: { ...(action === 'clear' ? this.terrain : recipe) },
+      addedWalls: 0,
+      removedWalls: 0,
+      removedFood: 0,
+      protectedCells: 0,
+    };
+    for (let cell = 0; cell < walls.length; cell++) {
+      if (walls[cell] && this.occupied[cell]) {
+        walls[cell] = 0;
+        detail.protectedCells++;
+      }
+      if (walls[cell] && !this.walls[cell]) detail.addedWalls++;
+      if (!walls[cell] && this.walls[cell]) detail.removedWalls++;
+      if (walls[cell] && this.food[cell]) detail.removedFood++;
+    }
+    if (
+      !detail.addedWalls &&
+      !detail.removedWalls &&
+      !detail.removedFood &&
+      sameTerrain(detail.before, detail.after)
+    )
+      return { detail, rowSequence: null };
+    this.requireInterventionCapacity();
+    const rowSequence = this.appendIntervention({ kind: 'terrain', detail });
+    this.walls.set(walls);
+    if (action === 'regenerate')
+      for (let cell = 0; cell < walls.length; cell++) if (walls[cell]) this.food[cell] = 0;
+    this.terrain = { ...detail.after };
+    return { detail, rowSequence };
   }
   canPlace(o: Pick<Organism, 'x' | 'y' | 'rotation' | 'genome'>, ignore = 0): boolean {
     return positions(o).every(
@@ -598,9 +837,45 @@ export class Ecosystem {
     genome: Genome,
     x: number,
     y: number,
-    species = this.nextSpecies++,
+    species?: number,
     parent?: Organism,
     rotation = 0,
+  ): Organism | undefined {
+    const allocated = species === undefined;
+    if (allocated) species = this.nextSpecies++;
+    if (parent) {
+      if (this.organisms.get(parent.id) !== parent) return;
+      if (!allocated && (species !== parent.species || !sameInherited(genome, parent.genome)))
+        return;
+    } else if (
+      !allocated &&
+      ![...this.organisms.values()].some(
+        (organism) => organism.species === species && sameInherited(genome, organism.genome),
+      )
+    )
+      return;
+    return this.insert(
+      genome,
+      x,
+      y,
+      species!,
+      parent,
+      rotation,
+      allocated
+        ? parent
+          ? { kind: 'mutation', parentId: parent.species }
+          : { kind: 'manual' }
+        : { kind: 'clone' },
+    );
+  }
+  private insert(
+    genome: Genome,
+    x: number,
+    y: number,
+    species: number,
+    parent: Organism | undefined,
+    rotation: number,
+    transition: LineageTransition,
   ): Organism | undefined {
     if (this.organisms.size >= LIMIT) return;
     const o: Organism = {
@@ -628,6 +903,13 @@ export class Ecosystem {
       this.occupied[i] = o.id;
       this.food[i] = 0;
     }
+    if (this.lineageRecording)
+      this.lineage.birth(
+        o,
+        this.tick,
+        transition.kind,
+        transition.kind === 'mutation' ? transition.parentId : null,
+      );
     return o;
   }
   kill(o: Organism, cause: DeathCause): void {
@@ -635,10 +917,11 @@ export class Ecosystem {
       this.occupied[i] = 0;
       this.food[i] = 1;
     }
-    this.organisms.delete(o.id);
+    const removed = this.organisms.delete(o.id);
     this.deaths++;
     this.lastDeath = { tick: this.tick, cause };
     if (this.recording) this.telemetry.pending.deaths[cause]++;
+    if (removed && this.lineageRecording) this.lineage.death(o, this.tick);
   }
   move(o: Organism, dx: number, dy: number, rotation = o.rotation): boolean {
     const target = {
@@ -662,12 +945,13 @@ export class Ecosystem {
     for (const o of [...this.organisms.values()]) {
       if (!this.organisms.has(o.id)) continue;
       o.age++;
-      const temp = temperature(
+      const temp = localTemperature(
         o.x,
         o.y,
         this.tick,
         this.settings.climate,
         this.tick < this.eventUntil ? this.eventOffset : 0,
+        this.thermalRefuges,
       );
       const stress = Math.max(0, Math.abs(temp - o.genome.preference) - o.genome.tolerance);
       const upkeep = 0.012 + Math.max(0, o.genome.tolerance - 0.2) * 0.025;
@@ -763,13 +1047,14 @@ export class Ecosystem {
         for (let attempt = 0; attempt < 3; attempt++) {
           const [dx, dy] = DIRECTIONS[this.random.int(4)],
             distance = 3 + this.random.int(5);
-          const child = this.spawn(
+          const child = this.insert(
             genome,
             o.x + dx * distance,
             o.y + dy * distance,
             changed ? this.nextSpecies : o.species,
             o,
             this.random.int(4),
+            changed ? { kind: 'mutation', parentId: o.species } : { kind: 'clone' },
           );
           if (child) {
             if (changed) this.nextSpecies++;
@@ -850,7 +1135,7 @@ export class Ecosystem {
     this.eventOffset = kind === 'cold' ? -0.32 : 0.32;
     this.eventUntil = this.tick + 900;
   }
-  presentation(): Pick<Frame, 'stats' | 'climate' | 'offset'> {
+  presentation(selected = 0): WorldPresentation {
     const species = new Map<number, Species>();
     let generation = 0,
       food = 0;
@@ -872,8 +1157,25 @@ export class Ecosystem {
         });
       generation = Math.max(generation, o.generation);
     }
+    const organism = this.organisms.get(selected);
+    const offset = this.tick < this.eventUntil ? this.eventOffset : 0;
     return {
-      offset: this.tick < this.eventUntil ? this.eventOffset : 0,
+      terrain: { ...this.terrain },
+      thermalRefuges: refugeSummary(this.thermalRefuges),
+      anchorTemperature: organism
+        ? localTemperature(
+            organism.x,
+            organism.y,
+            this.tick,
+            this.settings.climate,
+            offset,
+            this.thermalRefuges,
+          )
+        : null,
+      anchorRefugeUnits: organism
+        ? activeRefugeUnits(this.thermalRefuges, organism.x, organism.y)
+        : 0,
+      offset,
       climate: this.settings.climate,
       stats: {
         tick: this.tick,
@@ -908,7 +1210,19 @@ export class Ecosystem {
       positions(organism).forEach((position, cell) => {
         cells[position] = organism.genome.cells[cell].type;
       });
-    return { cells, ids, ...presentation };
+    return {
+      cells,
+      ids,
+      stats: presentation.stats,
+      climate: presentation.climate,
+      offset: presentation.offset,
+      terrain: { ...this.terrain },
+      thermalRefuges: {
+        version: 1,
+        enabled: this.thermalRefuges.enabled,
+        units: this.thermalRefuges.units.slice(),
+      },
+    };
   }
   frame(): Frame {
     return {
@@ -916,6 +1230,13 @@ export class Ecosystem {
       telemetry: this.telemetrySnapshot(),
       interventions: this.interventionSnapshot(),
     };
+  }
+  lineageSnapshot(): LineageArchiveState {
+    return (
+      this.lineageRecording
+        ? this.lineage
+        : LineageArchive.legacy(this.organisms.values(), this.tick)
+    ).snapshot();
   }
   save(): WorldFile {
     const food: number[] = [],
@@ -925,10 +1246,13 @@ export class Ecosystem {
       if (this.walls[cell]) walls.push(cell);
     }
     return {
-      version: 5,
+      version: WORLD_VERSION,
+      terrain: { ...this.terrain },
+      thermalRefuges: refugeFile(this.thermalRefuges),
+      lineageArchive: this.lineageSnapshot(),
       telemetry: this.telemetrySnapshot(),
       interventions: structuredClone(this.interventions),
-      settings: { ...this.settings },
+      settings: structuredClone(this.settings),
       random: this.random.state,
       tick: this.tick,
       births: this.births,
@@ -949,11 +1273,24 @@ export class Ecosystem {
     )
       throw new Error('World file exceeds 2.5 MB.');
     const parsed: unknown = JSON.parse(text);
-    const f = parsed as WorldFile | WorldFileV4 | WorldFileV3 | LegacyWorldFile;
+    const f = parsed as
+      | WorldFile
+      | WorldFileV7
+      | WorldFileV6
+      | WorldFileV5
+      | WorldFileV4
+      | WorldFileV3
+      | LegacyWorldFile;
     if (
       !f ||
       typeof f !== 'object' ||
-      (f.version !== 2 && f.version !== 3 && f.version !== 4 && f.version !== 5) ||
+      (f.version !== 2 &&
+        f.version !== 3 &&
+        f.version !== 4 &&
+        f.version !== 5 &&
+        f.version !== 6 &&
+        f.version !== 7 &&
+        f.version !== WORLD_VERSION) ||
       !validSettings(f.settings) ||
       !integer(f.random, -2147483648, 4294967295) ||
       !integer(f.tick, 0, 1e9) ||
@@ -966,15 +1303,33 @@ export class Ecosystem {
       !Array.isArray(f.organisms) ||
       f.organisms.length > LIMIT
     )
-      throw new Error('Not a valid EvoLab ecosystem (version 2, 3, 4 or 5).');
+      throw new Error('Not a valid EvoLab ecosystem (version 2, 3, 4, 5, 6, 7 or 8).');
+    if (
+      (f.version === 6 || f.version === 7 || f.version === WORLD_VERSION) &&
+      !validTerrain(f.terrain)
+    )
+      throw new Error('Invalid ecosystem wall recipe.');
+    const thermalRefuges =
+      f.version === 7 || f.version === WORLD_VERSION
+        ? parseRefuges(f.thermalRefuges)
+        : emptyRefuges();
     if (
       f.version !== 2 &&
       !validTelemetry(f.telemetry, f.tick, f.births, f.deaths, f.version === 3 ? 1 : 2)
     )
       throw new Error('Invalid ecosystem telemetry.');
-    if (f.version === 5 && !validInterventions(f.interventions, f))
+    if (
+      (f.version === 5 || f.version === 6 || f.version === 7 || f.version === WORLD_VERSION) &&
+      !validInterventions(f.interventions, f)
+    )
       throw new Error('Invalid ecosystem manual intervention history.');
-    const world = new Ecosystem(f.settings, false);
+    const world = new Ecosystem(f.settings, false, {
+      terrain:
+        f.version === 6 || f.version === 7 || f.version === WORLD_VERSION
+          ? f.terrain
+          : DEFAULT_TERRAIN,
+    });
+    world.thermalRefuges = thermalRefuges;
     for (const [field, array] of [
       ['food', world.food],
       ['walls', world.walls],
@@ -983,7 +1338,9 @@ export class Ecosystem {
       if (
         !Array.isArray(values) ||
         values.length > WIDTH * HEIGHT ||
-        !values.every((i) => integer(i, 0, WIDTH * HEIGHT - 1))
+        !values.every((i) => integer(i, 0, WIDTH * HEIGHT - 1)) ||
+        ((f.version === 6 || f.version === 7 || f.version === WORLD_VERSION) &&
+          new Set(values).size !== values.length)
       )
         throw new Error('Invalid world terrain.');
       for (const i of values) array[i] = 1;
@@ -1027,8 +1384,8 @@ export class Ecosystem {
     });
     world.random.state = f.random;
     world.interventions =
-      f.version === 5
-        ? structuredClone(f.interventions)
+      f.version === 5 || f.version === 6 || f.version === 7 || f.version === WORLD_VERSION
+        ? { ...structuredClone(f.interventions), version: 3 }
         : emptyInterventions(f.settings, f.tick, true);
     world.telemetry =
       f.version === 2
@@ -1044,6 +1401,10 @@ export class Ecosystem {
               })),
             }
           : structuredClone(f.telemetry);
+    world.lineage =
+      f.version === WORLD_VERSION
+        ? LineageArchive.load(f.lineageArchive, f.organisms, f.tick, f.nextSpecies)
+        : LineageArchive.legacy(f.organisms, f.tick);
     return world;
   }
 }

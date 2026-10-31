@@ -138,7 +138,7 @@ const __timeout=globalThis.setTimeout.bind(globalThis),__post=globalThis.postMes
 const __owners={display:null,progress:null},__counts={display:0,progress:0};
 globalThis.addEventListener('message',({data})=>{const channel=data?.channel,owner=__owners[channel];if(data?.type==='flow-ack'&&owner&&owner.runId===data.runId&&owner.sequence===data.sequence){__counts[channel]--;__owners[channel]=null}});
 globalThis.setTimeout=(callback,delay,...args)=>{__scheduled++;__evidence.maxScheduled=Math.max(__evidence.maxScheduled,__scheduled);return __timeout(()=>{__scheduled--;const began=performance.now();try{callback(...args)}finally{__evidence.largestBatchMs=Math.max(__evidence.largestBatchMs,performance.now()-began)}},delay)};
-globalThis.postMessage=(data,transfer)=>{if(data.type==='frame'||data.type==='progress'){const channel=data.type==='frame'?'display':'progress';__counts[channel]++;__owners[channel]={runId:data.runId,sequence:data.sequence};const key=channel==='display'?'maxDisplay':'maxProgress';__evidence[key]=Math.max(__evidence[key],__counts[channel])}if(data.type==='frame'){__evidence.transfers++;__evidence.gridBytes+=data.frame.cells.byteLength+data.frame.ids.byteLength}return __post({...data,measurement:{...__evidence}},transfer)};
+globalThis.postMessage=(data,transfer)=>{if(data.type==='frame'||data.type==='progress'){const channel=data.type==='frame'?'display':'progress';__counts[channel]++;__owners[channel]={runId:data.runId,sequence:data.sequence};const key=channel==='display'?'maxDisplay':'maxProgress';__evidence[key]=Math.max(__evidence[key],__counts[channel])}if(data.type==='frame'){__evidence.transfers++;__evidence.gridBytes+=data.frame.cells.byteLength+data.frame.ids.byteLength+data.frame.thermalRefuges.units.byteLength}return __post({...data,measurement:{...__evidence}},transfer)};
 ${instrumented}`;
 }
 
@@ -304,8 +304,13 @@ async function observe(
   );
 }
 
+const fixtures = new Map<number, WorldFile>();
 function fixture(population: number): WorldFile {
-  const world = new Ecosystem({ ...DEFAULTS, seed: 14027, climate: 0, mutation: 0 }, false);
+  const cached = fixtures.get(population);
+  if (cached) return structuredClone(cached);
+  const world = new Ecosystem({ ...DEFAULTS, seed: 14027, climate: 0, mutation: 0 }, false, {
+    terrain: { version: 1, preset: 'open-field', seed: null },
+  });
   for (let tick = 0; tick < 5400; tick++) world.step();
   for (let organism = 0; organism < population; organism++) {
     const genome =
@@ -319,7 +324,9 @@ function fixture(population: number): WorldFile {
     )!;
     expect(spawned).toBeDefined();
   }
-  return world.save();
+  const saved = world.save();
+  fixtures.set(population, saved);
+  return structuredClone(saved);
 }
 
 async function downloadWorld(page: Page): Promise<{ world: WorldFile; raw: Buffer }> {
@@ -859,7 +866,7 @@ test('native exact targets, suspended cancellation and render-off editing preser
     mimeType: 'application/json',
     buffer: Buffer.from(JSON.stringify({ ...stepped, version: 99 })),
   });
-  await expect(page.locator('#notice')).toContainText('version 2, 3, 4 or 5');
+  await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5, 6, 7 or 8');
   expect(await settle(page)).toEqual(stepped);
   await capture('retained-world-failed-import');
   await attachEvidence(testInfo, 'native-target-evidence', {
@@ -922,7 +929,7 @@ for (const replacement of ['invalid', 'empty'])
         draws: window.longRun.draws,
       }));
       expect(after.counters.gridBuilds - before.counters.gridBuilds).toBe(1);
-      expect(after.counters.gridBytes - before.counters.gridBytes).toBe(187200);
+      expect(after.counters.gridBytes - before.counters.gridBytes).toBe(224640);
       expect(after.draws - before.draws).toBe(1);
       expect(after.counters.maxDisplay).toBe(1);
       const download = await downloadWorld(page);
@@ -1370,7 +1377,7 @@ for (const population of [64, 1600]) {
           expect(end.counters.maxProgress).toBeLessThanOrEqual(1);
           const grids = end.counters.gridBuilds - start.counters.gridBuilds;
           const transferred = end.counters.gridBytes - start.counters.gridBytes;
-          expect(transferred).toBe(grids * 187200);
+          expect(transferred).toBe(grids * 224640);
           if (!render) {
             expect(grids).toBe(0);
             expect(transferred).toBe(0);

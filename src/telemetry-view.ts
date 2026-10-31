@@ -208,6 +208,49 @@ export function createTelemetryView(root: HTMLElement) {
     } else if (entry.kind === 'settings') {
       for (const [field, change] of Object.entries(entry.detail.changes))
         rows.push([field, `${change!.before} → ${change!.after}`]);
+    } else if (entry.kind === 'terrain') {
+      rows.push(
+        ['Wall action', entry.detail.action],
+        ['Recipe before', JSON.stringify(entry.detail.before)],
+        ['Recipe after', JSON.stringify(entry.detail.after)],
+        ['Walls added', String(entry.detail.addedWalls)],
+        ['Walls removed', String(entry.detail.removedWalls)],
+        ['Food removed beneath new walls', String(entry.detail.removedFood)],
+        ['Candidate walls protected by living cells', String(entry.detail.protectedCells)],
+        [
+          'Interpretation',
+          'Net cell counts, not a replay. Terrain history before the first retained wall action is unknown. Saved/edited cells are authoritative.',
+        ],
+      );
+    } else if (entry.kind === 'refuge-mode') {
+      rows.push(
+        [
+          'Painted temperature mode',
+          `${entry.detail.before ? 'ON' : 'OFF'} → ${entry.detail.after ? 'ON' : 'OFF'}`,
+        ],
+        ['Rules version', String(entry.detail.rulesVersion)],
+      );
+    } else if (entry.kind === 'refuge-paint') {
+      rows.push(
+        ['Tool', entry.detail.tool],
+        ['Signed units per dab', String(entry.detail.units)],
+        ['Radius', String(entry.detail.radius)],
+        ['Rules version', String(entry.detail.rulesVersion)],
+        ['First effective anchor', `${entry.detail.first.x}, ${entry.detail.first.y}`],
+        ['Last effective anchor', `${entry.detail.last.x}, ${entry.detail.last.y}`],
+        ['Effective commands', String(entry.detail.successfulCommands)],
+        ['Changed cells summed, not unique area', String(entry.detail.changedBrushCells)],
+        [
+          'Interpretation',
+          'Manual applied portions; offset history before retained edits is unknown; not a replay.',
+        ],
+      );
+    } else if (entry.kind === 'refuge-clear') {
+      rows.push(
+        ['Painted temperature cells removed', String(entry.detail.removedCells)],
+        ['Rules version', String(entry.detail.rulesVersion)],
+        ['Meaning', 'Mode unchanged; life, food and walls preserved.'],
+      );
     } else
       rows.push(
         ['Climate shock', entry.detail.kind],
@@ -703,7 +746,7 @@ export function createTelemetryView(root: HTMLElement) {
         last = samples.at(-1),
         manual = source.interventions,
         latestManual = manual.entries.at(-1),
-        key = `${replacementId}/${telemetry.originTick}/${telemetry.adaptationOriginTick}/${samples.length}/${first?.tick}/${last?.tick}/${manual.originTick}/${manual.originKind}/${manual.totalEntries}/${latestManual?.sequence}/${latestManual?.kind === 'paint' ? latestManual.detail.successfulCommands : ''}`;
+        key = `${replacementId}/${telemetry.originTick}/${telemetry.adaptationOriginTick}/${samples.length}/${first?.tick}/${last?.tick}/${manual.originTick}/${manual.originKind}/${manual.totalEntries}/${latestManual?.sequence}/${latestManual?.kind === 'paint' || latestManual?.kind === 'refuge-paint' ? latestManual.detail.successfulCommands : ''}`;
       summary.textContent = `World tick ${currentTick} (revision ${currentRevision}); telemetry source observed at tick ${source.tick} (revision ${source.revision}); ${last ? `last received recorded sample tick ${last.tick}; received retained ticks ${first!.tick}–${last.tick}; ${samples.length} of at most ${TELEMETRY_CAPACITY} samples` : emptyText()}. ${source.tick < currentTick || source.revision < currentRevision ? 'Observation/transport lag: later observations may not yet be received. ' : ''}Pending accounting is as of source tick ${source.tick}, revision ${source.revision}. Samples every ${TELEMETRY_INTERVAL_TICKS} completed ticks. No synthetic initial, latest or extinction point.`;
       if (!last) {
         const paragraph = plots.querySelector('p');

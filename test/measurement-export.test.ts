@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { Ecosystem } from '../src/ecosystem';
-import { DEFAULTS, WORLD_MAX_BYTES, founder, type MeasurementSource } from '../src/model';
+import {
+  DEFAULTS,
+  WORLD_MAX_BYTES,
+  WORLD_VERSION,
+  founder,
+  type MeasurementSource,
+} from '../src/model';
 import {
   MEASUREMENT_COLUMNS,
   checkedMeasurementText,
@@ -158,6 +164,103 @@ function decode(text: string): any {
 }
 
 describe('bounded retained measurement codec', () => {
+  it('reports the current complete-world version without changing measurement format or adding lineage replay', () => {
+    const world = new Ecosystem();
+    const source = world.measurements();
+    const envelope = measurementEnvelope(source);
+    expect(source.snapshot.worldVersion).toBe(WORLD_VERSION);
+    expect(world.save().version).toBe(WORLD_VERSION);
+    expect(envelope.version).toBe(3);
+    expect(envelope.telemetry).toEqual(world.save().telemetry);
+    expect(envelope.interventions).toEqual(world.save().interventions);
+    expect(envelope).not.toHaveProperty('lineageArchive');
+    expect(JSON.parse(serializeMeasurements(source, 'json').text)).not.toHaveProperty(
+      'lineageArchive',
+    );
+  });
+  it.each([
+    [false, false],
+    [true, false],
+    [true, true],
+    [false, true],
+  ])(
+    'curates thermal mode=%s, paint=%s and all distinct manual details identically in JSON and CSV',
+    (enabled, painted) => {
+      const world = new Ecosystem();
+      (world.settings as any).thermalRefuges = { privateOpaqueValue: true };
+      world.changeRefugeMode(true);
+      world.paintRefuge({ rulesVersion: 1, tool: 'warm', radius: 0, units: 4 }, 0, 0);
+      world.paintRefuge({ rulesVersion: 1, tool: 'cool', radius: 0, units: -8 }, 1, 0);
+      if (!painted) world.clearRefuges();
+      world.changeRefugeMode(enabled);
+      const before = world.save(),
+        source = world.measurements(),
+        json = restore(JSON.parse(serializeMeasurements(source, 'json').text)),
+        decoded = decode(serializeMeasurements(source, 'csv').text);
+      expect(decoded).toEqual(json);
+      expect(json).toMatchObject({
+        version: 3,
+        rules: { version: 2 },
+        snapshot: {
+          worldVersion: 8,
+          thermalRefuges: {
+            version: 1,
+            enabled,
+            nonzeroCells: painted ? 2 : 0,
+            capacity: 4096,
+            unitsPerNormalized: 100,
+            minimumUnits: painted ? -8 : 0,
+            maximumUnits: painted ? 4 : 0,
+            sumUnits: painted ? -4 : 0,
+          },
+        },
+        interventions: { version: 3 },
+      });
+      expect(Object.keys(json.snapshot.thermalRefuges)).toEqual([
+        'version',
+        'enabled',
+        'nonzeroCells',
+        'capacity',
+        'unitsPerNormalized',
+        'minimumUnits',
+        'maximumUnits',
+        'sumUnits',
+      ]);
+      expect(json.snapshot.settings).toEqual(DEFAULTS);
+      expect(json.interventions.entries.map((entry: any) => entry.kind)).toContain('refuge-mode');
+      expect(json.interventions.entries.map((entry: any) => entry.kind)).toContain('refuge-paint');
+      if (!painted)
+        expect(json.interventions.entries.map((entry: any) => entry.kind)).toContain(
+          'refuge-clear',
+        );
+      expect(json.windows.interpretation).toContain('not historical modes or thermal dose');
+      source.snapshot.thermalRefuges.nonzeroCells = 4096;
+      source.interventions.entries.length = 0;
+      expect(world.save()).toEqual(before);
+    },
+  );
+  it('uses envelope3 and exact terrain metadata/detail without expanding numeric settings or changing CSV columns', () => {
+    const world = new Ecosystem();
+    (world.settings as any).retained = { literal: 'unmeasured opaque value' };
+    world.changeTerrain('clear');
+    world.changeTerrain('regenerate', { version: 1, preset: 'open-field', seed: -0 });
+    const source = world.measurements(),
+      envelope = measurementEnvelope(source);
+    expect(envelope.version).toBe(3);
+    expect(envelope.rules.version).toBe(2);
+    expect(envelope.snapshot.worldVersion).toBe(8);
+    expect(envelope.snapshot.terrain).toEqual(world.terrain);
+    expect(envelope.snapshot.settings).toEqual(DEFAULTS);
+    expect(envelope.negativeZeroPaths).toContain('/snapshot/terrain/seed');
+    const encoded = serializeMeasurements(source, 'csv');
+    expect(csv(encoded.text)[0]).toEqual([...MEASUREMENT_COLUMNS]);
+    expect(encoded.text).not.toContain('unmeasured opaque value');
+    const details = csv(encoded.text).filter((row) => row[0] === 's:intervention');
+    expect(details).toHaveLength(2);
+    expect(decode(encoded.text).interventions).toEqual(source.interventions);
+    envelope.snapshot.terrain.seed = 99;
+    expect(Object.is(world.terrain.seed, -0)).toBe(true);
+  });
   it.each([
     '',
     's:literal',
@@ -282,7 +385,7 @@ describe('bounded retained measurement codec', () => {
     });
     expect(csv(serializeMeasurements(world.measurements(), 'csv').text)).toHaveLength(311);
     expect(decode(serializeMeasurements(world.measurements(), 'csv').text)).toEqual(actual);
-    const { interventions: _log, ...saved } = world.save(),
+    const { interventions: _log, terrain: _terrain, ...saved } = world.save(),
       legacy = Ecosystem.load(JSON.stringify({ ...saved, version: 4 }));
     const imported = measurementEnvelope(legacy.measurements());
     expect(imported.windows.settings).toMatchObject({

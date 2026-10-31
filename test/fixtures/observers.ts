@@ -6,24 +6,25 @@ export function observerWorld(population = 6, maximal = false): WorldFile {
   const world = new Ecosystem(
     { ...DEFAULTS, seed: 4294967295, mutation: 0, nutrients: 0, climate: 0 },
     false,
+    { terrain: { version: 1, preset: 'open-field', seed: null } },
   );
   world.nextId = 999_998_000;
-  world.nextSpecies = 1_000_000_000;
+  world.nextSpecies = 999_999_990;
   for (let position = 0; position < population; position++) {
     const organism = world.spawn(
       {
         cells: Array.from({ length: 16 }, (_, cell) => ({
           x: cell % 4,
           y: Math.floor(cell / 4),
-          type: (3 + ((cell + (position % 6)) % 6)) as CellType,
+          type: (3 + ((cell + (position % (maximal ? 5 : 6))) % 6)) as CellType,
         })),
-        preference: 0.12345678901234568 + (position % 6) / 10,
+        preference: 0.12345678901234568 + (position % (maximal ? 5 : 6)) / 10,
         tolerance: 0.3456789012345679,
         tempo: 12,
       },
       maximal ? (position % 60) * 4 : position * 36,
       Math.floor(position / 60) * 4,
-      999_999_990 + (position % (maximal ? 5 : 6)),
+      position < (maximal ? 5 : 6) ? undefined : 999_999_990 + (position % (maximal ? 5 : 6)),
     );
     assert.ok(organism);
     organism.energy = maximal ? 80000.12345678901 : 40.123456789012344;
@@ -31,6 +32,7 @@ export function observerWorld(population = 6, maximal = false): WorldFile {
     organism.children = maximal ? 999_999_999 : 7;
     organism.ancestry = Array.from({ length: 8 }, (_, ancestor) => 999_999_980 + ancestor);
   }
+  world.nextSpecies = 1_000_000_000;
   world.births = world.deaths = 999_999_999;
   for (let tick = 0; tick < 30; tick++) world.step();
   assert.equal(world.organisms.size, population);

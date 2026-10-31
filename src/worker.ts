@@ -1,7 +1,10 @@
 import { Ecosystem } from './ecosystem';
+import { DEFAULT_TERRAIN, resolvedTerrainSeed, validTerrain } from './terrain';
 import { serializeMeasurements } from './measurement-export';
+import { refugeTool, validRefugeBrush, refugeSummary } from './refuges';
 import {
   WIDTH,
+  commandEcho,
   HEIGHT,
   WORLD_MAX_BYTES,
   STROKE_COMMAND_CAPACITY,
@@ -24,6 +27,8 @@ import {
   type PaintTool,
   type ManualOperation,
   type WorkerResponse,
+  type StrokeTool,
+  type RefugeBrush,
 } from './model';
 
 export interface Scope {
@@ -70,7 +75,8 @@ export function startWorker(
   let activeCommand: any;
   let stroke: {
     id: number;
-    tool: PaintTool;
+    tool: StrokeTool;
+    brush?: RefugeBrush;
     radius: number;
     sequence: number | null;
     count: number;
@@ -130,7 +136,7 @@ export function startWorker(
     return {
       replacementId,
       revision,
-      world: world!.presentation(),
+      world: world!.presentation(selected),
       selected: organism ? observedOrganism(organism) : null,
       settings: observedSettings(world!.settings),
       speed,
@@ -206,7 +212,7 @@ export function startWorker(
           frame,
           selectedId: observation.selected?.id ?? 0,
         },
-        [frame.cells.buffer, frame.ids.buffer],
+        [frame.cells.buffer, frame.ids.buffer, frame.thermalRefuges.units.buffer],
       );
     } catch (error) {
       displayOwner = null;
@@ -259,6 +265,7 @@ export function startWorker(
         ...(responseCommand !== undefined && activeCommand?.commandId === responseCommand
           ? {
               operation: activeCommand.type,
+              ...commandEcho(activeCommand),
               ...(activeCommand.format === undefined ? {} : { format: activeCommand.format }),
               ...(activeCommand.strokeId === undefined ? {} : { strokeId: activeCommand.strokeId }),
             }
@@ -371,13 +378,27 @@ export function startWorker(
       return;
     }
     let errorCode: Extract<WorkerResponse, { type: 'error' }>['code'] = 'invalid-command';
-    let completed = false;
+    let completed = false,
+      effectApplied = false;
     const complete = (response: WorkerResponse): void => {
-      scope.postMessage({ ...response, operation: data.type } as WorkerResponse);
+      scope.postMessage({
+        ...commandEcho(data),
+        ...response,
+        operation: data.type,
+      } as WorkerResponse);
       completed = true;
     };
     let manualResult:
-      { status: 'applied' | 'no-op' | 'rejected'; rowSequence: number | null } | undefined;
+      | {
+          status: 'applied' | 'no-op' | 'rejected';
+          rowSequence: number | null;
+          terrain?: typeof DEFAULT_TERRAIN;
+          nonzeroCells?: number;
+          changedCells?: number;
+          saturatedCells?: number;
+          detail?: import('./model').TerrainDetail;
+        }
+      | undefined;
     try {
       if (data.type === 'start') {
         if (
@@ -386,7 +407,9 @@ export function startWorker(
           data.display.epoch < view.epoch
         )
           throw new Error('Invalid ecosystem settings or display view.');
-        const candidate = new Ecosystem(observedSettings(data.settings));
+        const terrain = data.terrain === undefined ? DEFAULT_TERRAIN : data.terrain;
+        if (!validTerrain(terrain)) throw new Error('Invalid wall recipe.');
+        const candidate = new Ecosystem(observedSettings(data.settings), true, { terrain });
         world = candidate;
         runId = data.runId;
         replacementId = commandId;
@@ -404,6 +427,7 @@ export function startWorker(
         changed();
         resetRate();
         settle();
+        effectApplied = true;
         complete({
           type: 'control',
           runId,
@@ -441,6 +465,7 @@ export function startWorker(
         reconcile(world.organisms.size);
         resetRate();
         settle();
+        effectApplied = true;
         complete({
           type: 'loaded',
           runId,
@@ -548,7 +573,8 @@ export function startWorker(
             if (stroke) throw new Error('A brush stroke is already open.');
             if (
               !integer(data.strokeId, 1, Number.MAX_SAFE_INTEGER) ||
-              !['food', 'wall', 'erase'].includes(data.tool) ||
+              (!['food', 'wall', 'erase'].includes(data.tool) && !validRefugeBrush(data)) ||
+              (refugeTool(data.tool) && !world.thermalRefuges.enabled) ||
               !integer(data.radius, 0, 8)
             )
               throw new Error('Invalid brush stroke.');
@@ -558,6 +584,16 @@ export function startWorker(
               radius: data.radius,
               sequence: null,
               count: 0,
+              ...(refugeTool(data.tool)
+                ? {
+                    brush: {
+                      rulesVersion: 1 as const,
+                      tool: data.tool,
+                      radius: data.radius,
+                      units: data.units,
+                    },
+                  }
+                : {}),
             };
             manualResult = { status: 'no-op', rowSequence: null };
             mutation = false;
@@ -574,32 +610,98 @@ export function startWorker(
             break;
           case 'settings': {
             stroke = null;
-            const patch = data.settings;
-            if (
-              !patch ||
-              typeof patch !== 'object' ||
-              Array.isArray(patch) ||
-              Object.keys(patch).some(
-                (key) => !['mutation', 'nutrients', 'climate'].includes(key),
-              ) ||
-              !validSettings({ ...world.settings, ...patch })
-            )
-              throw new Error('Invalid live settings.');
-            const changes: Partial<
-              Record<'mutation' | 'nutrients' | 'climate', { before: number; after: number }>
-            > = {};
-            for (const key of ['mutation', 'nutrients', 'climate'] as const)
-              if (patch[key] !== undefined && patch[key] !== world.settings[key])
-                changes[key] = { before: world.settings[key], after: patch[key] };
-            let sequence: number | null = null;
-            if (Object.keys(changes).length) {
-              world.requireInterventionCapacity();
-              Object.assign(world.settings, patch);
-              sequence = world.appendIntervention({ kind: 'settings', detail: { changes } });
-            }
+            const sequence = world.changeSettings(data.settings);
             manualResult = {
               status: sequence === null ? 'no-op' : 'applied',
               rowSequence: sequence,
+              ...(data.type === 'refuge-mode'
+                ? { nonzeroCells: world.thermalRefuges.nonzeroCells }
+                : {}),
+            };
+            interactive ||= paused && view.visible;
+            exactTelemetry = paused;
+            break;
+          }
+          case 'clear-walls':
+          case 'regenerate-walls': {
+            stroke = null;
+            const action = data.type === 'clear-walls' ? 'clear' : 'regenerate';
+            if (
+              data.action !== action ||
+              (action === 'clear'
+                ? data.recipe !== undefined || data.resolvedSeed !== undefined
+                : !validTerrain(data.recipe) ||
+                  data.resolvedSeed !== resolvedTerrainSeed(data.recipe, world.settings.seed))
+            )
+              throw new Error('Invalid wall action payload or resolved terrain seed.');
+            const outcome = world.changeTerrain(
+              action,
+              action === 'regenerate' ? data.recipe : undefined,
+            );
+            manualResult = {
+              status: outcome.rowSequence === null ? 'no-op' : 'applied',
+              rowSequence: outcome.rowSequence,
+              ...(data.type === 'clear-walls' || data.type === 'regenerate-walls'
+                ? {
+                    terrain: { ...world.terrain },
+                    detail: (outcome as { detail: import('./model').TerrainDetail }).detail,
+                  }
+                : {}),
+            };
+            interactive ||= paused && view.visible;
+            exactTelemetry = paused;
+            break;
+          }
+          case 'refuge-mode': {
+            stroke = null;
+            if (data.rulesVersion !== 1 || typeof data.enabled !== 'boolean')
+              throw new Error('Invalid painted temperature mode payload.');
+            const sequence = world.changeRefugeMode(data.enabled);
+            manualResult = {
+              status: sequence === null ? 'no-op' : 'applied',
+              rowSequence: sequence,
+              ...(data.type === 'refuge-mode'
+                ? { nonzeroCells: world.thermalRefuges.nonzeroCells }
+                : {}),
+            };
+            interactive ||= paused && view.visible;
+            exactTelemetry = paused;
+            break;
+          }
+          case 'clear-refuges': {
+            stroke = null;
+            if (data.rulesVersion !== 1)
+              throw new Error('Invalid painted temperature clear payload.');
+            const outcome = world.clearRefuges();
+            manualResult = {
+              status: outcome.rowSequence === null ? 'no-op' : 'applied',
+              ...outcome,
+              rowSequence: outcome.rowSequence,
+            };
+            interactive ||= paused && view.visible;
+            exactTelemetry = paused;
+            break;
+          }
+          case 'paint-refuge': {
+            if (!validRefugeBrush(data) || !coordinates(data))
+              throw new Error('Invalid painted temperature payload.');
+            if (
+              !stroke ||
+              stroke.id !== data.strokeId ||
+              !stroke.brush ||
+              stroke.tool !== data.tool ||
+              stroke.radius !== data.radius ||
+              stroke.brush.units !== data.units ||
+              stroke.count >= STROKE_COMMAND_CAPACITY
+            )
+              throw new Error('Rejected closed or exhausted temperature stroke.');
+            const outcome = world.paintRefuge(stroke.brush, data.x, data.y, stroke.sequence);
+            stroke.count++;
+            if (outcome.rowSequence !== null) stroke.sequence = outcome.rowSequence;
+            manualResult = {
+              status: outcome.rowSequence === null ? 'no-op' : 'applied',
+              ...outcome,
+              rowSequence: outcome.rowSequence,
             };
             interactive ||= paused && view.visible;
             exactTelemetry = paused;
@@ -638,7 +740,7 @@ export function startWorker(
             else if (stroke) {
               sequence = world.recordPaint(
                 outcome,
-                stroke.tool,
+                stroke.tool as PaintTool,
                 stroke.radius,
                 data.x,
                 data.y,
@@ -651,6 +753,9 @@ export function startWorker(
             manualResult = {
               status: sequence === null ? 'no-op' : 'applied',
               rowSequence: sequence,
+              ...(data.type === 'refuge-mode'
+                ? { nonzeroCells: world.thermalRefuges.nonzeroCells }
+                : {}),
             };
             interactive ||= paused && view.visible;
             exactTelemetry = paused;
@@ -674,6 +779,9 @@ export function startWorker(
             manualResult = {
               status: sequence === null ? 'no-op' : 'applied',
               rowSequence: sequence,
+              ...(data.type === 'refuge-mode'
+                ? { nonzeroCells: world.thermalRefuges.nonzeroCells }
+                : {}),
             };
             interactive ||= paused && view.visible;
             exactTelemetry = paused;
@@ -722,6 +830,7 @@ export function startWorker(
           default:
             throw new Error('Unknown ecosystem command.');
         }
+        effectApplied = true;
         if (mutation) changed();
         if (interactive) displayDirty = true;
         const observation = state();
@@ -744,7 +853,7 @@ export function startWorker(
       publishProgress();
       queue();
     } catch (error) {
-      if (completed)
+      if (completed || effectApplied)
         report(
           new Error(
             'The action completed, but publishing or scheduling failed. World preserved; import a world or reseed to recover. ' +

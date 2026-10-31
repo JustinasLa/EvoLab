@@ -1,9 +1,18 @@
 import './style.css';
+import {
+  DEFAULT_TERRAIN,
+  TERRAIN_LABELS,
+  generateTerrain,
+  resolvedTerrainSeed,
+  sameTerrain,
+  validTerrain,
+} from './terrain';
 import '@fontsource/dm-mono/400.css';
 import {
   DEFAULTS,
   COLORS,
   WIDTH,
+  commandEcho,
   HEIGHT,
   WORLD_MAX_BYTES,
   MANUAL_CAPACITY,
@@ -32,10 +41,16 @@ import {
   type CellType,
   type PlaybackState,
   type PaintTool,
+  type StrokeTool,
+  type RefugeBrush,
+  type RefugeSummary,
+  type TrackedOperation,
   type MeasurementFormat,
+  type TerrainRecipe,
 } from './model';
 import { draw, genomeSvg, markup, organismHtml, point, viewport, type Camera } from './view';
 import { createTelemetryView } from './telemetry-view';
+import { emptyRefuges, refugeTool, refugeSummary, validRefugeBrush } from './refuges';
 import {
   BLUEPRINT_DEFAULT_NAME,
   BLUEPRINT_MAX_BYTES,
@@ -53,6 +68,7 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
     case 'start':
       if (
         !validSettings(data.settings) ||
+        (data.terrain !== undefined && !validTerrain(data.terrain)) ||
         !data.display ||
         !integer(data.display.epoch, 0, Number.MAX_SAFE_INTEGER) ||
         typeof data.display.enabled !== 'boolean' ||
@@ -62,6 +78,7 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
       return {
         type: 'start',
         settings: observedSettings(data.settings),
+        terrain: { ...(data.terrain === undefined ? DEFAULT_TERRAIN : data.terrain) },
         display: {
           epoch: data.display.epoch,
           enabled: data.display.enabled,
@@ -139,12 +156,13 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
     case 'begin-stroke':
       if (
         !integer(data.strokeId, 1, Number.MAX_SAFE_INTEGER) ||
-        !['food', 'wall', 'erase'].includes(data.tool) ||
+        (!['food', 'wall', 'erase'].includes(data.tool) && !validRefugeBrush(data)) ||
         !integer(data.radius, 0, 8)
       )
         throw new Error('Invalid brush stroke.');
       return {
         type: 'begin-stroke',
+        ...(refugeTool(data.tool) ? { rulesVersion: 1 as const, units: data.units } : {}),
         strokeId: data.strokeId,
         tool: data.tool,
         radius: data.radius,
@@ -153,6 +171,44 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
       if (!integer(data.strokeId, 1, Number.MAX_SAFE_INTEGER))
         throw new Error('Invalid stroke closure.');
       return { type: 'end-stroke', strokeId: data.strokeId };
+    case 'refuge-mode':
+      if (data.rulesVersion !== 1 || typeof data.enabled !== 'boolean')
+        throw new Error('Invalid painted temperature mode payload.');
+      return { type: 'refuge-mode', rulesVersion: 1, enabled: data.enabled };
+    case 'clear-refuges':
+      if (data.rulesVersion !== 1) throw new Error('Invalid painted temperature clear payload.');
+      return { type: 'clear-refuges', rulesVersion: 1 };
+    case 'paint-refuge':
+      coordinates();
+      if (!validRefugeBrush(data) || !integer(data.strokeId, 1, Number.MAX_SAFE_INTEGER))
+        throw new Error('Invalid painted temperature payload.');
+      return {
+        type: 'paint-refuge',
+        rulesVersion: 1,
+        tool: data.tool,
+        units: data.units,
+        radius: data.radius,
+        strokeId: data.strokeId,
+        x: data.x,
+        y: data.y,
+      };
+    case 'clear-walls':
+      if (data.action !== 'clear' || data.recipe !== undefined || data.resolvedSeed !== undefined)
+        throw new Error('Invalid clear walls action.');
+      return { type: 'clear-walls', action: 'clear' };
+    case 'regenerate-walls':
+      if (
+        data.action !== 'regenerate' ||
+        !validTerrain(data.recipe) ||
+        !integer(data.resolvedSeed, 0, 4294967295)
+      )
+        throw new Error('Invalid regenerate walls action.');
+      return {
+        type: 'regenerate-walls',
+        action: 'regenerate',
+        recipe: { ...data.recipe },
+        resolvedSeed: data.resolvedSeed,
+      };
     case 'shock':
       if (data.kind !== 'cold' && data.kind !== 'heat') throw new Error('Invalid climate event.');
       return { type: 'shock', kind: data.kind };
@@ -168,10 +224,23 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   );
   const get = <T extends HTMLElement>(id: string): T =>
     (controls.get(id) as T | undefined) ?? root.querySelector<T>(`#${id}`)!;
+  const refugeButtons = [...root.querySelectorAll<HTMLButtonElement>('[data-refuge-tool]')];
   const canvas = get<HTMLCanvasElement>('world'),
     buffer = document.createElement('canvas');
   const camera: Camera = { zoom: 1, x: 0, y: 0 };
   let settingsEdits: Partial<Settings> = {};
+  let confirmedSettings = { ...DEFAULTS };
+  let committedTerrain: TerrainRecipe = { ...DEFAULT_TERRAIN },
+    draftTerrain: TerrainRecipe = { ...DEFAULT_TERRAIN },
+    terrainRevision = 0,
+    settledTerrainId = 0;
+  let resetPayload: {
+    settings: Settings;
+    terrain: TerrainRecipe;
+    run: number;
+    revision: number;
+    refugeReset: 'off-empty';
+  } | null = null;
   let settings = { ...DEFAULTS },
     runId = 0,
     paused = false,
@@ -179,6 +248,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     thermal = false,
     tool: Tool = 'pan',
     brush = 2;
+  let refugeIntensity = 4,
+    confirmedRefuges = refugeSummary(emptyRefuges()),
+    settledRefugeId = 0;
   let frame: HabitatFrame | undefined,
     selected: Organism | null = null,
     blueprint = founder(0),
@@ -206,6 +278,8 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     payload: CommandPayload;
     generation: number;
     reserved: boolean;
+    terrainRevision?: number;
+    echo?: Record<string, unknown>;
     targetTicket?: TargetTicket;
     cancelTicket?: TargetTicket;
   };
@@ -257,8 +331,15 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   let strokeId = 0,
     terminated = false;
   let closeLease: { strokeId: number; beginPosted: boolean; posted: boolean } | null = null;
-  let localStroke: { id: number; tool: PaintTool; radius: number; count: number } | null = null;
+  let localStroke: {
+    id: number;
+    tool: StrokeTool;
+    radius: number;
+    count: number;
+    brush?: RefugeBrush;
+  } | null = null;
   let ownerPointer: number | null = null;
+  let availabilityState = -1;
   type Download = { url: string; timer?: ReturnType<typeof setTimeout> };
   const downloads: Partial<Record<'save' | 'export-measurements', Download>> = {};
   const lifecycleBusy = (): boolean =>
@@ -267,17 +348,60 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     pending.some((entry) => entry.payload.type === 'start' || entry.payload.type === 'load');
   const manualCount = (): number =>
     pending.filter((entry) =>
-      ['begin-stroke', 'paint', 'settings', 'shock'].includes(entry.payload.type),
+      [
+        'begin-stroke',
+        'paint',
+        'settings',
+        'shock',
+        'clear-walls',
+        'regenerate-walls',
+        'refuge-mode',
+        'paint-refuge',
+        'clear-refuges',
+      ].includes(entry.payload.type),
     ).length +
-    Number(!!posted && ['begin-stroke', 'paint', 'settings', 'shock'].includes(posted.type));
+    Number(
+      !!posted &&
+        [
+          'begin-stroke',
+          'paint',
+          'settings',
+          'shock',
+          'clear-walls',
+          'regenerate-walls',
+          'refuge-mode',
+          'paint-refuge',
+          'clear-refuges',
+        ].includes(posted.type),
+    );
   const hasOwner = (type: CommandPayload['type']): boolean =>
     posted?.type === type || pending.some((entry) => entry.payload.type === type);
   function availability(): void {
-    const unavailable = terminated || stopped || lifecycleBusy();
-    get<HTMLButtonElement>('save').disabled = unavailable || hasOwner('save') || !!downloads.save;
-    for (const format of ['csv', 'json'])
-      get<HTMLButtonElement>('measurements-' + format).disabled =
-        unavailable || hasOwner('export-measurements') || !!downloads['export-measurements'];
+    const unavailable = terminated || stopped || lifecycleBusy(),
+      exportBlocked =
+        unavailable || hasOwner('export-measurements') || !!downloads['export-measurements'],
+      saveBlocked = unavailable || hasOwner('save') || !!downloads.save,
+      state = Number(exportBlocked) + Number(saveBlocked) * 2;
+    const manualBlocked = unavailable || manualCount() >= MANUAL_CAPACITY;
+    for (const action of ['clear-walls', 'regenerate-walls', 'refuge-enabled', 'clear-refuges']) {
+      const control = get<HTMLButtonElement | HTMLInputElement>(action);
+      if (control.disabled !== manualBlocked) control.disabled = manualBlocked;
+    }
+    for (const button of refugeButtons) {
+      const disabled = manualBlocked || !confirmedRefuges.enabled;
+      if (button.disabled !== disabled) button.disabled = disabled;
+    }
+    text(
+      'refuge-pending',
+      hasOwner('refuge-mode') || hasOwner('clear-refuges') || hasOwner('paint-refuge')
+        ? 'Pending worker confirmation; earlier admitted dabs may still complete.'
+        : '',
+    );
+    if (state === availabilityState) return;
+    availabilityState = state;
+    for (const format of ['json', 'csv'])
+      get<HTMLButtonElement>(`measurements-${format}`).disabled = exportBlocked;
+    get<HTMLButtonElement>('save').disabled = saveBlocked;
   }
   function clearDownload(
     operation: 'save' | 'export-measurements',
@@ -410,6 +534,8 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       runId,
       targetTicket: entry.targetTicket,
       cancelTicket: entry.cancelTicket,
+      terrainRevision: entry.terrainRevision,
+      echo: commandEcho(payload),
     };
     availability();
     try {
@@ -458,6 +584,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         }
         if (latestState && establishedRun === runId) {
           accept(latestState);
+          renderObservation(latestState.world, latestState.selected, true);
           renderSettings(latestState.settings);
           renderPlayback(latestState.playback);
           get<HTMLSelectElement>('speed').value = String(pendingSpeed?.value ?? latestState.speed);
@@ -479,7 +606,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     }
     return false;
   }
-  function send(data: any): boolean {
+  function send(data: any, capturedTerrainRevision = terrainRevision): boolean {
     if (
       !alive ||
       terminated ||
@@ -529,7 +656,13 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       }
       for (const entry of superseded) pending.splice(pending.indexOf(entry), 1);
       ticket = increment(ticket);
-      const entry: Entry = { ticket, payload, generation, reserved };
+      const entry: Entry = {
+        ticket,
+        payload,
+        generation,
+        reserved,
+        terrainRevision: capturedTerrainRevision,
+      };
       if (payload.type === 'speed') pendingSpeed = { ticket, value: payload.value };
       if (payload.type === 'pause-on-extinction')
         pendingExtinction = { ticket, value: payload.value };
@@ -607,6 +740,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     );
   }
   function renderSettings(next: Settings): void {
+    confirmedSettings = { ...next };
     settingsEdits = {};
     for (const key of ['mutation', 'nutrients', 'climate'] as const)
       if (pendingSettings[key]) settingsEdits[key] = pendingSettings[key]!.value;
@@ -617,6 +751,78 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     text('climate-value', `${Math.round(settings.climate * 100)}%`);
     text('nutrients-value', `${settings.nutrients}%`);
     text('world-label', `WORLD ${String(settings.seed).padStart(4, '0')}`);
+    renderTerrain();
+  }
+  function readTerrain(): TerrainRecipe | null {
+    const follows = get<HTMLInputElement>('terrain-follow').checked,
+      input = get<HTMLInputElement>('terrain-seed'),
+      recipe = {
+        version: 1,
+        preset: get<HTMLSelectElement>('terrain-preset').value,
+        seed: follows ? null : Number(input.value),
+      };
+    return (follows || input.checkValidity()) && validTerrain(recipe) ? recipe : null;
+  }
+  let previewKey = '';
+  function renderTerrain(): void {
+    const recipe = readTerrain(),
+      worldSeed = Number(get<HTMLInputElement>('seed').value);
+    get('terrain-seed-label').hidden = get<HTMLInputElement>('terrain-follow').checked;
+    text(
+      'terrain-committed',
+      `Wall recipe · ${TERRAIN_LABELS[committedTerrain.preset]} · terrain seed ${resolvedTerrainSeed(committedTerrain, confirmedSettings.seed)} · world seed ${confirmedSettings.seed} · generator ${committedTerrain.version}; saved/edited cells are authoritative.`,
+    );
+    if (
+      !recipe ||
+      !get<HTMLInputElement>('seed').checkValidity() ||
+      !integer(worldSeed, 0, 4294967295)
+    ) {
+      text(
+        'terrain-preview-caption',
+        'Reset preview unavailable: choose whole-number seeds from 0 to 4294967295.',
+      );
+      text('terrain-draft-status', 'Invalid draft; no wall action submitted.');
+      return;
+    }
+    draftTerrain = { ...recipe };
+    text(
+      'terrain-preview-caption',
+      `Reset preview · ${TERRAIN_LABELS[recipe.preset]} · terrain seed ${resolvedTerrainSeed(recipe, worldSeed)} (${recipe.seed === null ? 'world seed' : 'independent seed'}) · generator ${recipe.version}`,
+    );
+    text(
+      'terrain-draft-status',
+      sameTerrain(recipe, committedTerrain)
+        ? 'Draft matches the committed recipe, not necessarily the live cells.'
+        : 'Unapplied draft; use Regenerate walls or confirm a reset to commit.',
+    );
+    const key = JSON.stringify([recipe, worldSeed]);
+    if (key === previewKey) return;
+    previewKey = key;
+    const preview = get<HTMLCanvasElement>('terrain-preview'),
+      context = preview.getContext('2d')!;
+    const walls = generateTerrain(recipe, worldSeed);
+    context.fillStyle = COLORS[0];
+    context.fillRect(0, 0, WIDTH, HEIGHT);
+    context.fillStyle = COLORS[2];
+    for (let cell = 0; cell < walls.length; cell++)
+      if (walls[cell]) context.fillRect(cell % WIDTH, Math.floor(cell / WIDTH), 1, 1);
+  }
+  function installTerrain(recipe: TerrainRecipe, revision: number): void {
+    committedTerrain = { ...recipe };
+    if (terrainRevision === revision) {
+      draftTerrain = { ...recipe };
+      get<HTMLSelectElement>('terrain-preset').value = recipe.preset;
+      get<HTMLInputElement>('terrain-follow').checked = recipe.seed === null;
+      get<HTMLInputElement>('terrain-seed').value = String(recipe.seed ?? confirmedSettings.seed);
+    }
+    renderTerrain();
+  }
+  function cancelReset(focus = true): void {
+    resetPayload = null;
+    const dialog = get<HTMLDialogElement>('reset-dialog');
+    if (!dialog.open) return;
+    dialog.close();
+    if (focus) get('reset').focus();
   }
   function stop(): void {
     stopped = true;
@@ -649,6 +855,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   };
   function choose(next: Tool): void {
     endStroke();
+    if (refugeTool(next) && !confirmedRefuges.enabled) {
+      notice('Enable painted temperature refuges before painting.');
+      return;
+    }
     if (next === 'plant' && !validGenome(blueprint)) {
       notice('Draw 1–16 connected cells before placing an organism.');
       tab('organism');
@@ -659,8 +869,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       .querySelectorAll<HTMLButtonElement>('button[data-tool]')
       .forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === tool)));
     canvas.dataset.tool = tool;
+    get<HTMLInputElement>('refuge-intensity').disabled = tool === 'erase-temperature';
     if (tool === 'plant') tab('organism');
-    const painting = ['food', 'wall', 'erase'].includes(tool);
+    const painting = ['food', 'wall', 'erase'].includes(tool) || refugeTool(tool);
     get('brush-control').hidden = !painting;
     get('tool-hint').hidden = painting;
     text(
@@ -672,6 +883,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         wall: 'Paint walls.',
         erase: 'Erase life and terrain.',
         plant: 'Click an empty patch to place your body.',
+        warm: 'Add warmth with each admitted dab.',
+        cool: 'Subtract warmth with each admitted dab.',
+        'erase-temperature': 'Erase painted temperature only.',
       }[tool],
     );
   }
@@ -735,8 +949,8 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       }
     }
   }
-  function reset(): void {
-    if (lifecycleBusy()) {
+  function reset(initial = false): void {
+    if (!alive || lifecycleBusy()) {
       notice('World replacement capacity busy; wait for acknowledgement.');
       return;
     }
@@ -746,10 +960,36 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       notice('Choose a whole-number seed from 0 to 4294967295.');
       return;
     }
-    const payload = captureCommand(
-      { type: 'start', settings: next, display: desiredView },
-      settings,
+    const terrain = readTerrain();
+    if (!terrain) {
+      notice('Choose a valid wall recipe and whole-number terrain seed.');
+      return;
+    }
+    if (initial) {
+      replaceWorld('start', { settings: next, terrain });
+      return;
+    }
+    resetPayload = {
+      settings: structuredClone(next),
+      terrain: { ...terrain },
+      run: runId,
+      revision: terrainRevision,
+      refugeReset: 'off-empty',
+    };
+    text(
+      'reset-payload',
+      `World seed ${seed} · ${TERRAIN_LABELS[terrain.preset]} · terrain seed ${resolvedTerrainSeed(terrain, seed)} · generator ${terrain.version}. This displayed payload is frozen; later draft edits require reopening.`,
     );
+    get<HTMLDialogElement>('reset-dialog').showModal();
+    get('cancel-reset').focus();
+  }
+  function replaceWorld(
+    operation: 'start',
+    data: { settings: Settings; terrain: TerrainRecipe },
+    revision = terrainRevision,
+  ): void {
+    cancelReset(false);
+    const payload = captureCommand({ type: operation, ...data, display: desiredView }, settings);
     try {
       generation = increment(generation);
     } catch {
@@ -781,7 +1021,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       'Reseeding cancels unposted old-world controls. An already posted Save still completes.',
     );
     text('run-state', 'LOADING');
-    send(payload);
+    send(payload, revision);
   }
   function setZoom(next: number, anchorX?: number, anchorY?: number): void {
     const old = viewport(canvas, camera),
@@ -803,6 +1043,22 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       send({ type: 'inspect', ...p });
       tab('organism');
     } else if (tool !== 'pan') {
+      if (refugeTool(tool)) {
+        const stroke = localStroke!;
+        if (
+          stroke.count >= STROKE_COMMAND_CAPACITY ||
+          !postTracked('paint-refuge', { ...stroke.brush, ...p, strokeId: stroke.id })
+        ) {
+          endStroke();
+          notice(
+            'Partial temperature stroke stopped. Earlier admitted dabs may still complete; start a fresh gesture.',
+          );
+        } else {
+          stroke.count++;
+          if (stroke.count === STROKE_COMMAND_CAPACITY) endStroke();
+        }
+        return;
+      }
       if (!validGenome(blueprint)) {
         notice('Draw 1–16 connected cells before painting.');
         return;
@@ -854,7 +1110,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       return;
     }
     if (
-      ['food', 'wall', 'erase'].includes(tool) &&
+      (['food', 'wall', 'erase'].includes(tool) || refugeTool(tool)) &&
       (closeLease ||
         manualCount() > MANUAL_CAPACITY - 2 ||
         pending.filter((entry) => !entry.reserved).length > 27 ||
@@ -864,11 +1120,23 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       notice('Brush capacity busy. A fresh pointer press is required after earlier work drains.');
       return;
     }
-    if (['food', 'wall', 'erase'].includes(tool)) {
+    if (refugeTool(tool) && !confirmedRefuges.enabled) {
+      notice('Painted temperature refuges are disabled.');
+      return;
+    }
+    if (['food', 'wall', 'erase'].includes(tool) || refugeTool(tool)) {
       const id = ++strokeId;
       closeLease = { strokeId: id, beginPosted: false, posted: false };
-      localStroke = { id, tool: tool as PaintTool, radius: brush, count: 0 };
-      if (!postTracked('begin-stroke', { strokeId: id, tool, radius: brush })) {
+      const frozenBrush = refugeTool(tool)
+        ? {
+            rulesVersion: 1 as const,
+            tool,
+            radius: brush,
+            units: tool === 'warm' ? refugeIntensity : tool === 'cool' ? -refugeIntensity : 0,
+          }
+        : undefined;
+      localStroke = { id, tool: tool as StrokeTool, radius: brush, count: 0, brush: frozenBrush };
+      if (!postTracked('begin-stroke', { strokeId: id, tool, radius: brush, ...frozenBrush })) {
         if (closeLease?.beginPosted) endStroke();
         else closeLease = null;
         localStroke = null;
@@ -983,6 +1251,26 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     text('thermal', thermal ? 'Hide temperature' : 'Show temperature');
     dirty = true;
   });
+  get('refuge-enabled').addEventListener('change', () => {
+    const enabled = get<HTMLInputElement>('refuge-enabled').checked;
+    get<HTMLInputElement>('refuge-enabled').checked = confirmedRefuges.enabled;
+    endStroke();
+    postTracked('refuge-mode', { rulesVersion: 1, enabled });
+  });
+  get('clear-refuges').addEventListener('click', () => {
+    endStroke();
+    postTracked('clear-refuges', { rulesVersion: 1 });
+  });
+  get('refuge-intensity').addEventListener('input', () => {
+    endStroke();
+    const value = Number(get<HTMLInputElement>('refuge-intensity').value);
+    if (!integer(value, 1, 32)) {
+      notice('Choose a whole-number temperature intensity from 1 to 32.');
+      return;
+    }
+    refugeIntensity = value;
+    text('refuge-intensity-value', `${value} units`);
+  });
   for (const id of ['mutation', 'nutrients', 'climate'] as const)
     get(id).addEventListener('input', () => {
       const value = Number(get<HTMLInputElement>(id).value);
@@ -1008,7 +1296,45 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     blueprint.preference = Number(get<HTMLInputElement>('preference').value);
     text('preference-value', `${Math.round(blueprint.preference * 40)}°`);
   });
-  get('reset').addEventListener('click', reset);
+  get('reset').addEventListener('click', () => reset());
+  get('cancel-reset').addEventListener('click', () => cancelReset());
+  get('reset-dialog').addEventListener('cancel', (event) => {
+    event.preventDefault();
+    cancelReset();
+  });
+  get('confirm-reset').addEventListener('click', () => {
+    const pending = resetPayload;
+    if (!pending || pending.run !== runId) return;
+    cancelReset();
+    replaceWorld(
+      'start',
+      { settings: pending.settings, terrain: pending.terrain },
+      pending.revision,
+    );
+  });
+  for (const id of ['terrain-preset', 'terrain-follow', 'terrain-seed', 'seed'])
+    get(id).addEventListener(
+      id === 'terrain-preset' || id === 'terrain-follow' ? 'change' : 'input',
+      () => {
+        if (!alive) return;
+        terrainRevision++;
+        renderTerrain();
+      },
+    );
+  get('clear-walls').addEventListener('click', () => {
+    endStroke();
+    postTracked('clear-walls', { action: 'clear' });
+  });
+  get('regenerate-walls').addEventListener('click', () => {
+    const recipe = readTerrain();
+    if (!recipe) {
+      notice('Choose a valid wall recipe and whole-number terrain seed.');
+      return;
+    }
+    const resolvedSeed = resolvedTerrainSeed(recipe, confirmedSettings.seed);
+    endStroke();
+    postTracked('regenerate-walls', { action: 'regenerate', recipe: { ...recipe }, resolvedSeed });
+  });
   root.querySelectorAll<HTMLButtonElement>('[data-shock]').forEach((b) =>
     b.addEventListener('click', () => {
       endStroke();
@@ -1161,6 +1487,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     }
   }
   get('load').addEventListener('click', () => {
+    cancelReset(false);
     invalidateCandidate();
     worldInput.value = '';
     worldInput.click();
@@ -1185,7 +1512,8 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       event.ctrlKey ||
       event.metaKey ||
       event.altKey ||
-      get<HTMLDialogElement>('help-dialog').open
+      get<HTMLDialogElement>('help-dialog').open ||
+      get<HTMLDialogElement>('reset-dialog').open
     )
       return;
     if (event.code === 'Space') {
@@ -1207,6 +1535,15 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     dirty = true;
   };
   window.addEventListener('resize', resize);
+  function installRefuges(summary: RefugeSummary): void {
+    confirmedRefuges = { ...summary };
+    get<HTMLInputElement>('refuge-enabled').checked = summary.enabled;
+    text(
+      'refuge-summary',
+      `${summary.enabled ? (summary.nonzeroCells ? 'Enabled · painted' : 'Enabled · empty') : summary.nonzeroCells ? 'Disabled · stored paint' : 'Disabled · empty'} · ${summary.nonzeroCells}/4096 nonzero cells · offsets ${summary.minimumUnits}..${summary.maximumUnits} units · rules 1`,
+    );
+    availability();
+  }
   function renderObservation(
     next: WorldPresentation,
     selection: Organism | null,
@@ -1309,6 +1646,12 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         differentRun || observation.playback.paused,
       );
       latestState = observation;
+      installRefuges(observation.world.thermalRefuges);
+      const recipeRevision =
+        posted && ['start', 'load', 'regenerate-walls'].includes(posted.type)
+          ? (posted.terrainRevision ?? -1)
+          : -1;
+      installTerrain(observation.world.terrain, recipeRevision);
       renderSettings(observation.settings);
       renderPlayback(observation.playback);
       get<HTMLSelectElement>('speed').value = String(pendingSpeed?.value ?? observation.speed);
@@ -1435,6 +1778,11 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       data.runId !== completion.runId ||
       ('requestId' in data && data.requestId !== undefined) ||
       data.operation !== completion.type ||
+      Object.entries(completion.echo ?? {}).some(
+        ([key, value]) =>
+          JSON.stringify((data as unknown as Record<string, unknown>)[key]) !==
+          JSON.stringify(value),
+      ) ||
       ('format' in data ? data.format : undefined) !== completion.format ||
       ('strokeId' in data ? data.strokeId : undefined) !== completion.strokeId ||
       !(
@@ -1444,9 +1792,18 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
             ? 'saved'
             : completion.type === 'export-measurements'
               ? 'measurement-exported'
-              : ['begin-stroke', 'end-stroke', 'paint', 'settings', 'shock'].includes(
-                    completion.type,
-                  )
+              : [
+                    'begin-stroke',
+                    'end-stroke',
+                    'paint',
+                    'settings',
+                    'shock',
+                    'clear-walls',
+                    'regenerate-walls',
+                    'refuge-mode',
+                    'paint-refuge',
+                    'clear-refuges',
+                  ].includes(completion.type)
                 ? 'manual-result'
                 : completion.type === 'load'
                   ? 'loaded'
@@ -1465,6 +1822,20 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         notice(data.message);
       }
       return;
+    }
+    if (completion.generation !== generation && data.runId === runId && !stopped) {
+      const retained = data.type === 'error' ? data.recovery?.state : data.state;
+      const source =
+        data.type === 'error'
+          ? data.recovery?.telemetry
+          : 'telemetry' in data
+            ? data.telemetry
+            : undefined;
+      if (retained && (!latestState || retained.revision > latestState.revision)) {
+        latestState = retained;
+        acceptedRun = runId;
+        if (source) latestTelemetry = { ...source, runId, replacementId: retained.replacementId };
+      }
     }
     const current = completion.generation === generation && data.runId === runId && !stopped;
     try {
@@ -1543,7 +1914,33 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
             if (!targetTicket) text('target-status', data.message);
           } else notice(data.message);
         } else if (data.type === 'loaded')
-          notice('World restored. Playback follows Pause on extinction.');
+          notice('World restored. Playback follows Pause on extinction. Imported painted field.');
+        else if (
+          data.type === 'manual-result' &&
+          ['clear-walls', 'regenerate-walls'].includes(completion.type) &&
+          data.status !== 'rejected'
+        ) {
+          if (!validTerrain(data.terrain)) throw new Error('Invalid completed wall recipe.');
+          if (
+            completion.echo?.recipe &&
+            !sameTerrain(data.terrain, completion.echo.recipe as TerrainRecipe)
+          )
+            throw new Error('Completed wall recipe differs from the submitted recipe.');
+          notice(
+            data.status === 'no-op'
+              ? 'Walls unchanged; no manual entry recorded.'
+              : 'Wall action applied. Living cells protected; food handling recorded in manual history.',
+          );
+        } else if (
+          data.type === 'manual-result' &&
+          ['refuge-mode', 'paint-refuge', 'clear-refuges'].includes(completion.type) &&
+          data.status !== 'rejected'
+        )
+          notice(
+            data.status === 'no-op'
+              ? 'Painted temperature unchanged; no manual entry recorded.'
+              : 'Painted temperature action applied; consequences begin on the next ecological tick.',
+          );
         else if (data.type === 'manual-result' && data.status === 'rejected')
           notice('Worker rejected this manual action; no successful effect recorded.');
       }
@@ -1648,7 +2045,8 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   document.addEventListener('visibilitychange', visibility);
   choose(tool);
   tab('organism');
-  reset();
+  renderTerrain();
+  reset(true);
   animation = requestAnimationFrame(render);
   return () => {
     alive = false;
@@ -1666,6 +2064,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     targetTicket = undefined;
     intersection?.disconnect();
     document.removeEventListener('visibilitychange', visibility);
+    cancelReset(false);
     telemetry.dispose();
     cancelAnimationFrame(animation);
     terminate();
