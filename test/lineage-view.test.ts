@@ -201,14 +201,17 @@ describe('bounded retained lineage evidence', () => {
 
 it('projects detached known fields while complete accepted opaque genomes survive inspection', () => {
   const world = fresh();
-  const organism = world.spawn(admissionGenome(), 10, 10)!;
-  organism.genome.legacyExtensions = [
-    ['opaque', encodeLegacyValue({ nested: ['retained', { count: 3 }] })],
-  ];
+  const body = admissionGenome();
+  body.legacyExtensions = [['opaque', encodeLegacyValue({ nested: ['retained', { count: 3 }] })]];
+  const organism = world.spawn(body, 10, 10)!;
   const before = world.save();
   expect(world.presentation().lineage).toBeUndefined();
   const projection = world.presentation(0, true).lineage!;
   expect(projection.current[0].genome.legacyExtensions).toBeUndefined();
+  expect(projection.archive.summaries[0].foundingGenome!.legacyExtensions).toBeUndefined();
+  expect(before.lineageArchive.summaries[0].foundingGenome!.legacyExtensions).toEqual(
+    body.legacyExtensions,
+  );
   view.update(projection, world.tick, 1);
   select(organism.species);
   projection.current[0].organismIds.length = 0;
