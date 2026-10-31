@@ -6,7 +6,6 @@ import {
   validGenome,
   validHistoricalGenome,
   migrateHistoricalGenome,
-  cloneGenome,
   type HistoricalGenome,
   type Genome,
   type Organism,
@@ -66,7 +65,8 @@ function metadata(row: LivingLineage): LivingLineage {
   };
 }
 function inherited(genome: Genome): Genome {
-  return cloneGenome(genome);
+  // Insertion or archive validation already established the complete contract.
+  return structuredClone(genome);
 }
 export function sameInherited(first: Genome, second: Genome): boolean {
   return (
