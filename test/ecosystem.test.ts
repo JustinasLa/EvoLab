@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { DEFAULT_TERRAIN, generateTerrain } from '../src/terrain';
 import { Ecosystem } from '../src/ecosystem';
-import { advance, colony, ecology, legacyV3 } from './fixtures/telemetry';
+import { advance, colony, ecology, legacyV3, legacyV5 } from './fixtures/telemetry';
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
 import {
   DEFAULTS,
@@ -115,7 +115,12 @@ describe('approved seeded terrain, opaque extension and exact continuation contr
       const world = new Ecosystem({ ...DEFAULTS, seed });
       for (const tick of [0, 30, 90, 330, 1600]) {
         while (world.tick < tick) world.step();
-        const { terrain, thermalRefuges, ...snapshot } = world.save();
+        const {
+          terrain,
+          thermalRefuges,
+          lineageArchive: _lineageArchive,
+          ...snapshot
+        } = world.save();
         expect(terrain).toEqual(DEFAULT_TERRAIN);
         expect(thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
         if (seed === 42 && tick === 1600) {
@@ -436,7 +441,7 @@ describe('real bounded manual evidence and complete current-save validation', ()
       },
       20,
       20,
-      1,
+      undefined,
       undefined,
       1,
     )!;
@@ -741,6 +746,7 @@ describe('standalone blueprint engine boundaries', () => {
     expect(placed.genome).toEqual(genome());
     placed.genome.preference = 0.9;
     expect(source.genome).toEqual(genome());
+    placed.genome.preference = genome().preference;
     expect(() => Ecosystem.load(JSON.stringify(world.save()))).not.toThrow();
   });
 
@@ -800,7 +806,7 @@ describe('final removal observations', () => {
 
   it('records manual erasure at the same tick with wrapped rotated body food intact outside the brush', () => {
     const world = empty();
-    const organism = world.spawn(founder(0), 0, 0, 1, undefined, 1)!;
+    const organism = world.spawn(founder(0), 0, 0, undefined, undefined, 1)!;
     const body = positions(organism);
     world.tick = 53;
     world.food[index(8, 8)] = 1;
@@ -963,7 +969,7 @@ describe('a shared, living world', () => {
               { x: 2, y: 1, type: 8 },
             ],
           },
-          organism = world.spawn(genome, WIDTH - 1, HEIGHT - 1, 1, undefined, rotation)!,
+          organism = world.spawn(genome, WIDTH - 1, HEIGHT - 1, undefined, undefined, rotation)!,
           footprint = positions(organism).sort((left, right) => left - right);
         if (cause === 'starvation') organism.energy = -100;
         else organism.age = 900 + genome.cells.length * 75;
@@ -1030,8 +1036,12 @@ describe('a shared, living world', () => {
     expect(o.x).toBe(WIDTH - 1);
     w.walls[index(WIDTH - 2, 0)] = 1;
     expect(w.move(o, -1, 0)).toBe(false);
-    w.organisms.clear();
-    w.occupied.fill(0);
+    w.kill(o, 'manual');
+    expect(w.lineageSnapshot().events.at(-1)).toEqual({
+      kind: 'extinct',
+      id: o.species,
+      tick: w.tick,
+    });
     for (let i = 0; i < LIMIT; i++) w.spawn(g, i % WIDTH, Math.floor(i / WIDTH) + 20);
     expect(w.spawn(g, 100, 100)).toBeUndefined();
     expect(w.organisms.size).toBe(LIMIT);
@@ -1697,9 +1707,12 @@ describe('actual-operation energy and terminal causes', () => {
 
 describe('measured thermal adaptation', () => {
   it('measures populated 1600-organism/16-cell/eight-ancestor full-history UTF-8 payloads', () => {
-    const world = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0, mutation: 0 }, false);
-    world.nextId = 999_998_000;
-    world.nextSpecies = 1_000_000_000;
+    const candidate = legacyV5(
+      new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0, mutation: 0 }, false).save(),
+    );
+    candidate.nextId = 999_998_000;
+    candidate.nextSpecies = 1_000_000_000;
+    const random = new Random(candidate.random);
     for (let position = 0; position < LIMIT; position++) {
       const genome: Genome = {
         cells: Array.from({ length: 16 }, (_, cell) => ({
@@ -1711,17 +1724,27 @@ describe('measured thermal adaptation', () => {
         tolerance: 0.3456789012345679,
         tempo: 12,
       };
-      const organism = world.spawn(
+      candidate.organisms.push({
+        id: candidate.nextId++,
+        species: 999_999_999,
+        x: (position % 60) * 4,
+        y: Math.floor(position / 60) * 4,
+        rotation: 0,
+        direction: random.int(4),
+        age: 0,
+        energy: 80000.12345678901,
+        generation: 999_999_999,
+        children: 999_999_999,
+        ancestry: Array(8).fill(999_999_999),
         genome,
-        (position % 60) * 4,
-        Math.floor(position / 60) * 4,
-        999_999_999,
-      )!;
-      organism.energy = 80000.12345678901;
-      organism.generation = 999_999_999;
-      organism.children = 999_999_999;
-      organism.ancestry = Array(8).fill(999_999_999);
+      });
     }
+    candidate.random = random.state;
+    expect(candidate.version).toBe(5);
+    expect(candidate).not.toHaveProperty('lineageArchive');
+    const world = Ecosystem.load(JSON.stringify(candidate));
+    expect(world.save().organisms).toEqual(candidate.organisms);
+    expect(world.random.state).toBe(candidate.random);
     world.births = 999_999_999;
     world.deaths = 999_999_999;
     const size = (file: unknown) => new TextEncoder().encode(JSON.stringify(file)).byteLength;
@@ -1843,7 +1866,7 @@ describe('measured thermal adaptation', () => {
     mover.age = 1;
     mover.energy = 100;
     mover.direction = 0;
-    const saved = source.save();
+    const saved = legacyV5(source.save());
     source.step();
     const moved = [...source.organisms.values()][0],
       before = temperature(40, 40, 30, 1),
@@ -1953,6 +1976,7 @@ describe('measured thermal adaptation', () => {
       ).toEqual(legacy.telemetry.samples);
       expect(ecology(saved)).toEqual({
         ...ecology(world.save()),
+        lineageArchive: saved.lineageArchive,
         interventions: {
           version: 3,
           originTick: tick,
@@ -2085,13 +2109,19 @@ describe('telemetry persistence, migration and complete candidate validation', (
           {
             version: current,
             interventions,
+            lineageArchive,
             terrain,
             thermalRefuges,
             ...actualEcology
           } = ecology(world.save());
-        expect(current).toBe(7);
+        expect(current).toBe(8);
         expect(thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
         expect(terrain).toEqual(DEFAULT_TERRAIN);
+        expect(lineageArchive).toMatchObject({
+          originKind: 'legacy-import',
+          originTick: tick,
+          events: [],
+        });
         expect(interventions).toEqual({
           version: 3,
           originTick: tick,
