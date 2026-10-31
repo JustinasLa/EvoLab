@@ -14,14 +14,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build and test (${{ matrix.project }})
+  unit:
+    name: Formatting, coverage and build
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        project: [desktop, mobile]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -37,23 +33,58 @@ jobs:
         run: npm run test:coverage
       - name: Typecheck and build
         run: npm run build
-      - name: Install browser
-        run: npx playwright install --with-deps chromium
-      - name: Desktop and mobile browser tests
-        run: npm run test:browser -- --project=${{ matrix.project }}
-      - name: Upload coverage and browser reports
+      - name: Upload coverage reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: test-reports-${{ matrix.project }}
-          path: |
-            coverage/
-            playwright-report/
-            test-results/
+          name: coverage-reports
+          path: coverage/
           if-no-files-found: error
       - name: Upload static application
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: evolab-web-${{ matrix.project }}
+          name: evolab-web
           path: dist/
           if-no-files-found: error
+  browser:
+    name: Desktop and mobile browser tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Typecheck and build
+        run: npm run build
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+      - name: Desktop and mobile browser tests
+        env:
+          PLAYWRIGHT_LIST_PRINT_FAILURES_INLINE: '1'
+        run: npm run test:browser
+      - name: Upload browser reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: browser-reports
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: error
+  build:
+    name: Build and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: [unit, browser]
+    if: ${{ always() }}
+    steps:
+      - name: Require all validation jobs
+        env:
+          UNIT_RESULT: ${{ needs.unit.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
+        run: test "$UNIT_RESULT" = success && test "$BROWSER_RESULT" = success

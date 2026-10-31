@@ -114,6 +114,7 @@ type BrowserFixture = {
   documentId: string;
   workerIds: string[];
   commands: Command[];
+  commandRevision: number;
   phase: string | null;
   expected: { runId: number; replacementId: number } | null;
   runId: number | null;
@@ -190,6 +191,7 @@ function installBrowserFixture(epoch: string): void {
     documentId: crypto.randomUUID(),
     workerIds: [],
     commands: [],
+    commandRevision: 0,
     phase: null,
     expected: null,
     runId: null,
@@ -269,6 +271,7 @@ function installBrowserFixture(epoch: string): void {
             runId: data.runId,
             postedAt: performance.now(),
           });
+          state.commandRevision++;
         }
         return Reflect.apply(nativePost, worker, messages);
       };
@@ -310,6 +313,7 @@ function installBrowserFixture(epoch: string): void {
           state: data.state ?? data.recovery?.state,
           ...(data.type === 'saved' ? { text: data.text } : {}),
         };
+        state.commandRevision++;
         if (data.type === 'error')
           state.violation = `Command ${command.type}/${command.commandId} failed: ${data.message}`;
       });
@@ -484,6 +488,8 @@ type Operation = {
   expectedType: string;
   status: string;
   runnerStartedMs: number;
+  // Runner-clock phase observations; never substitute for browser latency endpoints.
+  runnerStagesMs: Record<string, number>;
   runnerCompletedMs?: number;
   offeredAt?: number;
   readyObservedAt?: number;
@@ -532,7 +538,14 @@ export async function runFortyControls(options: {
     mainFrame = page.mainFrame();
   const operations: Operation[] = [],
     windows: WindowEvidence[] = [],
-    records: object[] = [];
+    records: {
+      kind: string;
+      interaction: number;
+      operationId: string;
+      saveOperationId: string;
+      savedSettleMs: number;
+      [key: string]: unknown;
+    }[] = [];
   const inputLatencies: number[] = [],
     settlingLatencies: number[] = [],
     revealLatencies: number[] = [];
@@ -543,6 +556,9 @@ export async function runFortyControls(options: {
   let documentId: string | undefined, workerId: string | undefined;
   let loadedIdentity: Identity | undefined,
     commands: Omit<Command, 'terminal'>[] = [];
+  let commandRevision: number | null = null;
+  let commandSnapshotChecks = 0,
+    commandSnapshotTransfers = 0;
   let activeOperation: Operation | undefined;
   let status = 'incomplete',
     originalError: string | undefined,
@@ -559,6 +575,15 @@ export async function runFortyControls(options: {
         .digest('hex'),
     ]),
   );
+  const runtimeCpus = cpus();
+  const runtimeMetadata = {
+    browser: browser.version(),
+    node: process.version,
+    cpu: runtimeCpus[0]?.model,
+    logicalCpus: runtimeCpus.length,
+    platform: platform(),
+    kernel: release(),
+  };
   const evidencePath = testInfo.outputPath('forty-control-evidence.json');
   const onNavigation = (frame: ReturnType<Page['mainFrame']>) => {
     if (frame === mainFrame) {
@@ -585,12 +610,7 @@ export async function runFortyControls(options: {
     sourceHashes,
     population,
     project: testInfo.project.name,
-    browser: browser.version(),
-    node: process.version,
-    cpu: cpus()[0]?.model,
-    logicalCpus: cpus().length,
-    platform: platform(),
-    kernel: release(),
+    ...runtimeMetadata,
     budget: {
       acceptanceMs: TOTAL_MS,
       windowMs: WINDOW_MS,
@@ -626,6 +646,8 @@ export async function runFortyControls(options: {
       checkedSaves: operations.filter((op) => op.expectedType === 'save' && op.status === 'checked')
         .length,
       retainedRecords: records.length,
+      commandSnapshotChecks,
+      commandSnapshotTransfers,
       inputAck: inputLatencies.length,
       savedSettle: settlingLatencies.length,
       reveal: revealLatencies.length,
@@ -638,22 +660,16 @@ export async function runFortyControls(options: {
     limitations:
       'Owner-amended offered cadence: four <=30s windows inside <=120s, not original 30s acceptance. Programmatic DOM activation on desktop/Chromium mobile emulation, not human pointer or physical-device evidence. Readiness is polling observation (RAF polling); timestamps share browser performance.now. savedAt is sampled in the browser AFTER completed native stream bytes and includes post-completion sampling/transport overhead; never uses the earlier saved terminal. Runner/evidence/framework times use a separate monotonic clock. Saturated latency has no foreground guarantee. Pause-cleanup full/literal equality is a new strengthening. Historical cancelled CI40454560729/original 30s failures and 188 selected diagnostics remain separate.',
   });
-  const checkpoint = async () => {
+  const checkpoint = async (beforeWrite?: (current: Identity) => void) => {
     fence.check();
-    await snapshotCommands();
-    const text = JSON.stringify(evidence(), null, 2);
+    const current = await snapshotCommands();
+    beforeWrite?.(current);
+    const text = JSON.stringify(evidence());
     await fence.wait(() => writeFile(`${evidencePath}.tmp`, text, { signal: fence.abort.signal }));
     await fence.wait(() => rename(`${evidencePath}.tmp`, evidencePath));
     return createHash('sha256').update(text).digest('hex');
   };
-  const identity = async () => {
-    const result = await fence.wait(() =>
-      page.evaluate((epoch) => {
-        const f = window.fortyFixture;
-        f.check(epoch);
-        return f.identity();
-      }, fence.epoch),
-    );
+  const assertIdentity = (result: Identity) => {
     fence.check();
     expect(page.context()).toBe(context);
     expect(page.mainFrame()).toBe(mainFrame);
@@ -666,6 +682,16 @@ export async function runFortyControls(options: {
     if (loadedIdentity) expect(result).toEqual(loadedIdentity);
     return result;
   };
+  const identity = async () =>
+    assertIdentity(
+      await fence.wait(() =>
+        page.evaluate((epoch) => {
+          const f = window.fortyFixture;
+          f.check(epoch);
+          return f.identity();
+        }, fence.epoch),
+      ),
+    );
   const installDeadline = async () => {
     // Browser sample precedes the remaining-duration sample. Installation and
     // transport delays therefore consume allowance rather than extend it.
@@ -704,6 +730,9 @@ export async function runFortyControls(options: {
     );
     await fence.wait(() => handle.dispose());
   };
+  const stage = (op: Operation, name: string) => {
+    op.runnerStagesMs[name] = performance.now() - fence.startedAt;
+  };
   const begin = async (role: string, interaction: number | null, expectedType: string) => {
     fence.check();
     if (operations.length >= 180) throw new Error('Bounded operation ledger exhausted.');
@@ -716,11 +745,13 @@ export async function runFortyControls(options: {
       expectedType,
       status: 'pending',
       runnerStartedMs: performance.now() - fence.startedAt,
+      runnerStagesMs: {},
       equalities: [],
     };
     operations.push(op);
     activeOperation = op;
     await checkpoint();
+    stage(op, 'pendingCheckpointComplete');
     op.offeredAt = await fence.wait(() =>
       page.evaluate(
         ({ epoch, id }) => {
@@ -734,26 +765,35 @@ export async function runFortyControls(options: {
         { epoch: fence.epoch, id: op.id },
       ),
     );
+    stage(op, 'offered');
     return op;
   };
   const ready = async (op: Operation, selector = '#save') => {
-    const handle = await fence.wait(() =>
-      page.waitForFunction(
-        ({ epoch, id, selector }) => {
+    stage(op, 'readinessStarted');
+    // Keep the immediate check and RAF polling in the browser. Returning a
+    // value directly avoids a separate protocol call to dispose a boolean handle.
+    await fence.wait(() =>
+      page.evaluate(
+        async ({ epoch, id, selector }) => {
           const f = window.fortyFixture;
-          f.check(epoch);
-          const enabled = !document.querySelector<HTMLButtonElement>(selector)!.disabled;
-          if (enabled && f.samples[id].readyObservedAt === undefined)
-            f.samples[id].readyObservedAt = performance.now();
-          return enabled;
+          for (;;) {
+            f.check(epoch);
+            const enabled = !document.querySelector<HTMLButtonElement>(selector)!.disabled;
+            if (enabled) {
+              if (f.samples[id].readyObservedAt === undefined)
+                f.samples[id].readyObservedAt = performance.now();
+              return;
+            }
+            await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+          }
         },
         { epoch: fence.epoch, id: op.id, selector },
-        { timeout: fence.remaining() },
       ),
     );
-    await fence.wait(() => handle.dispose());
+    stage(op, 'readinessObserved');
   };
   const dispatch = async (op: Operation, kind: string) => {
+    stage(op, 'dispatchStarted');
     await fence.wait(() =>
       page.evaluate(
         ({ epoch, id, kind }) => {
@@ -797,39 +837,38 @@ export async function runFortyControls(options: {
         { epoch: fence.epoch, id: op.id, kind },
       ),
     );
+    stage(op, 'dispatchReturned');
   };
   const terminal = async (op: Operation, includeText = false) => {
-    const handle = await fence.wait(() =>
-      page.waitForFunction(
-        ({ epoch, id, type }) => {
-          const f = window.fortyFixture;
-          f.check(epoch);
-          const candidates = f.commands.filter((c) => c.operationId === id && c.type === type);
-          if (candidates.length > 1) throw new Error('Ambiguous operation command linkage.');
-          return candidates.length === 1 && !!candidates[0].terminal;
-        },
-        { epoch: fence.epoch, id: op.id, type: op.expectedType },
-        { timeout: fence.remaining(), polling: 1 },
-      ),
-    );
-    await fence.wait(() => handle.dispose());
+    stage(op, 'terminalObservationStarted');
+    // Observe and capture the exact receipt in one browser call. The same 1 ms
+    // poll, ambiguity check and epoch/deadline fence remain on every iteration.
     const result = await fence.wait(() =>
       page.evaluate(
-        ({ epoch, id, type, includeText }) => {
+        async ({ epoch, id, type, includeText }) => {
           const f = window.fortyFixture;
-          f.check(epoch);
-          const c = f.commands.filter((c) => c.operationId === id && c.type === type);
-          if (c.length !== 1 || !c[0].terminal) throw new Error('Missing exact terminal.');
-          const { text, ...receipt } = c[0].terminal;
-          return {
-            command: { ...c[0], terminal: { ...receipt, ...(includeText ? { text } : {}) } },
-            ...f.samples[id],
-            identity: f.identity(),
-          };
+          for (;;) {
+            f.check(epoch);
+            const candidates = f.commands.filter((c) => c.operationId === id && c.type === type);
+            if (candidates.length > 1) throw new Error('Ambiguous operation command linkage.');
+            if (candidates.length === 1 && candidates[0].terminal) {
+              const { text, ...receipt } = candidates[0].terminal;
+              return {
+                command: {
+                  ...candidates[0],
+                  terminal: { ...receipt, ...(includeText ? { text } : {}) },
+                },
+                ...f.samples[id],
+                identity: f.identity(),
+              };
+            }
+            await new Promise<void>((resolve) => setTimeout(resolve, 1));
+          }
         },
         { epoch: fence.epoch, id: op.id, type: op.expectedType, includeText },
       ),
     );
+    stage(op, 'terminalCaptured');
     const c = result.command;
     expect(c.workerId).toBe(workerId);
     expect(c.terminal!.commandId).toBe(c.commandId);
@@ -849,16 +888,26 @@ export async function runFortyControls(options: {
     op.dispatchAt = result.dispatchAt;
     return result;
   };
-  const checked = async (op: Operation) => {
-    fence.check();
-    op.status = 'checked';
-    op.runnerCompletedMs = performance.now() - fence.startedAt;
-    if (op.window !== null && op.expectedType === 'save')
-      windows[op.window].saves = operations.filter(
-        (entry) =>
-          entry.window === op.window && entry.expectedType === 'save' && entry.status === 'checked',
-      ).length;
-    await checkpoint();
+  const checked = async (op: Operation, verifyIdentity = false) => {
+    await checkpoint((current) => {
+      // Observe identity and the ledger together at the existing checkpoint.
+      // Validate before marking the operation checked or persisting evidence.
+      if (verifyIdentity) {
+        assertIdentity(current);
+        stage(op, 'identityChecked');
+      }
+      fence.check();
+      op.status = 'checked';
+      op.runnerCompletedMs = performance.now() - fence.startedAt;
+      if (op.window !== null && op.expectedType === 'save')
+        windows[op.window].saves = operations.filter(
+          (entry) =>
+            entry.window === op.window &&
+            entry.expectedType === 'save' &&
+            entry.status === 'checked',
+        ).length;
+    });
+    stage(op, 'checkedCheckpointComplete');
   };
   const action = async (
     role: string,
@@ -880,8 +929,7 @@ export async function runFortyControls(options: {
       op.status = 'checked';
       op.runnerCompletedMs = performance.now() - fence.startedAt;
     } else {
-      await identity();
-      await checked(op);
+      await checked(op, true);
     }
     return { op, receipt };
   };
@@ -912,7 +960,9 @@ export async function runFortyControls(options: {
     try {
       await dispatch(op, 'save');
       const download = await fence.wait(() => native);
+      stage(op, 'nativeDownloadObserved');
       stream = await fence.wait(() => download.createReadStream());
+      stage(op, 'nativeStreamOpened');
       if (!stream) throw new Error('Native Save has no stream.');
       fence.streams.add(stream);
       let bytes = 0;
@@ -928,6 +978,7 @@ export async function runFortyControls(options: {
       await fence.wait(read);
       fence.streams.delete(stream);
       op.nativeBytesComplete = true;
+      stage(op, 'nativeBytesComplete');
       const raw = Buffer.concat(chunks);
       // This endpoint follows completion of native bytes. Sampling transport is
       // deliberately included in saved-settle; no earlier saved receipt replaces it.
@@ -937,6 +988,7 @@ export async function runFortyControls(options: {
           return performance.now();
         }, fence.epoch),
       );
+      stage(op, 'browserSavedAtSampled');
       op.rawPath = testInfo.outputPath(`save-${op.id}.json`);
       op.rawBytes = raw.byteLength;
       op.rawSHA256 = createHash('sha256').update(raw).digest('hex');
@@ -965,8 +1017,7 @@ export async function runFortyControls(options: {
           { epoch: fence.epoch, id: op.id },
         ),
       );
-      await identity();
-      await checkpoint();
+      await checkpoint(assertIdentity);
       return { op, world, raw, command: result.command };
     } catch (error) {
       // Retained chunks may be serialized only by the outer failure path, after
@@ -986,27 +1037,45 @@ export async function runFortyControls(options: {
   };
   const partialBuffers = new Map<string, Buffer>();
   const snapshotCommands = async () => {
-    commands = await fence.wait(() =>
-      page.evaluate((epoch) => {
-        const f = window.fortyFixture;
-        f.check(epoch);
-        return f.commands.map(({ terminal, ...c }) => ({
-          ...c,
-          terminal: terminal
-            ? {
-                type: terminal.type,
-                operation: terminal.operation,
-                runId: terminal.runId,
-                commandId: terminal.commandId,
-                receivedAt: terminal.receivedAt,
-                replacementId: terminal.state.replacementId,
-                tick: terminal.state.world.stats.tick,
-              }
-            : undefined,
-        }));
-      }, fence.epoch),
+    const snapshot = await fence.wait(() =>
+      page.evaluate(
+        ({ epoch, revision }) => {
+          const f = window.fortyFixture;
+          // Every checkpoint still crosses the browser fence, even on a cache hit.
+          f.check(epoch);
+          return {
+            identity: f.identity(),
+            revision: f.commandRevision,
+            commands:
+              f.commandRevision === revision
+                ? null
+                : f.commands.map(({ terminal, ...c }) => ({
+                    ...c,
+                    terminal: terminal
+                      ? {
+                          type: terminal.type,
+                          operation: terminal.operation,
+                          runId: terminal.runId,
+                          commandId: terminal.commandId,
+                          receivedAt: terminal.receivedAt,
+                          replacementId: terminal.state.replacementId,
+                          tick: terminal.state.world.stats.tick,
+                        }
+                      : undefined,
+                  })),
+          };
+        },
+        { epoch: fence.epoch, revision: commandRevision },
+      ),
     );
+    commandSnapshotChecks++;
+    if (snapshot.commands !== null) {
+      commands = snapshot.commands;
+      commandRevision = snapshot.revision;
+      commandSnapshotTransfers++;
+    }
     expect(commands.length).toBeLessThanOrEqual(MAX_COMMANDS);
+    return snapshot.identity;
   };
   const canvas = async () => {
     await fence.wait(() =>
@@ -1195,6 +1264,7 @@ export async function runFortyControls(options: {
                         { epoch: fence.epoch, inputAt },
                       ),
                     );
+                    stage(control, 'renderedProgressObserved');
                     const primary = await save('primary', interaction);
                     const savedAt = primary.op.savedAt!;
                     if (kind !== 'speed') {
@@ -1386,6 +1456,50 @@ export async function runFortyControls(options: {
     fence.invalidate(error); // Synchronous before any cleanup await.
     status = 'incomplete';
     originalError = describeFailure(error);
+    try {
+      console.error(
+        'forty-control-failure',
+        JSON.stringify({
+          error: originalError,
+          project: testInfo.project.name,
+          population,
+          elapsedMs: performance.now() - fence.startedAt,
+          remainingMs: Math.min(fence.deadline, fence.windowDeadline) - performance.now(),
+          activeOperation: activeOperation && {
+            id: activeOperation.id,
+            role: activeOperation.role,
+            expectedType: activeOperation.expectedType,
+            status: activeOperation.status,
+            identity: activeOperation.identity,
+            interaction: activeOperation.interaction,
+            window: activeOperation.window,
+            runnerStagesMs: activeOperation.runnerStagesMs,
+          },
+          windows,
+          records: records.length,
+          saves: operations.filter((op) => op.expectedType === 'save').length,
+          measured: measured ?? {
+            inputAckMs: distribution(inputLatencies),
+            savedSettleMs: distribution(settlingLatencies),
+            freshRevealMs: distribution(revealLatencies),
+          },
+          settlingPhases: records
+            .filter((record) => record.kind === 'pause' || record.kind === 'cancel-target')
+            .map((record) => ({
+              interaction: record.interaction,
+              savedSettleMs: record.savedSettleMs,
+              controlRunnerStagesMs: operations.find((op) => op.id === record.operationId)
+                ?.runnerStagesMs,
+              saveRunnerStagesMs: operations.find((op) => op.id === record.saveOperationId)
+                ?.runnerStagesMs,
+            })),
+          commandSnapshotChecks,
+          commandSnapshotTransfers,
+        }),
+      );
+    } catch {
+      // Failure diagnostics must not replace the original acceptance error.
+    }
     if (activeOperation && activeOperation.status !== 'checked') {
       activeOperation.status = 'failed/interrupted';
       activeOperation.error = originalError;
@@ -1414,7 +1528,7 @@ export async function runFortyControls(options: {
           run: () =>
             writeFile(
               testInfo.outputPath('forty-control-failure.json'),
-              JSON.stringify(evidence(), null, 2),
+              JSON.stringify(evidence()),
             ),
         },
       ],
