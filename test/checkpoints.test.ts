@@ -216,6 +216,29 @@ describe('native checkpoint ownership and failure delivery', () => {
     expect(upgrade.request.transaction.abort).toHaveBeenCalled();
     broken.dispose();
   });
+  it('closes a late successful existing-schema open and permits an explicit retry', async () => {
+    vi.useFakeTimers();
+    const native = harness(),
+      status = vi.fn();
+    native.faults.openStall = true;
+    const store = createCheckpoints({ factory: () => native.factory, status });
+    const opening = store.open(),
+      rejected = expect(opening).rejects.toMatchObject({ code: 'pending' });
+    await vi.advanceTimersByTimeAsync(5000);
+    await rejected;
+    expect(store.busy).toBe(true);
+    native.deliverOpen();
+    expect(native.request.transaction.abort).not.toHaveBeenCalled();
+    expect(native.connection.close).toHaveBeenCalledTimes(1);
+    expect(status).toHaveBeenLastCalledWith(
+      'Late checkpoint open closed. Refresh explicitly to read current entries.',
+    );
+    expect(store.busy).toBe(false);
+    delete native.faults.openStall;
+    await store.open();
+    expect((await store.list()).rows).toEqual([1, 2, 3, 4, 5].map((slot) => ({ slot })));
+    store.dispose();
+  });
   it('preserves present undefined values and rejects insertion into an observed empty slot', async () => {
     const native = harness(),
       store = createCheckpoints({ factory: () => native.factory });
