@@ -31,6 +31,7 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
   const clear = get<HTMLButtonElement>('lineage-clear');
   const retention = get('lineage-retention');
   const results = get('lineage-results');
+  const observed = get('lineage-observed');
   const navigation = document.createElement('div');
   navigation.className = 'lineage-pages';
   const previous = document.createElement('button');
@@ -107,11 +108,13 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
     previous.disabled = page === 0;
     next.disabled = (page + 1) * PAGE_SIZE >= matching.length;
     const visible = matching.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-    results.textContent = matching.length
-      ? `${matching.length} matching of ${facts.size} retained identities · showing ${page * PAGE_SIZE + 1}–${page * PAGE_SIZE + visible.length} · observed tick ${tick}`
+    const resultText = matching.length
+      ? `${matching.length} matching of ${facts.size} retained identities · showing ${page * PAGE_SIZE + 1}–${page * PAGE_SIZE + visible.length}`
       : facts.size
         ? 'No matching lineages.'
         : 'No retained lineages. Earlier ancestry is unknown.';
+    if (results.textContent !== resultText) results.textContent = resultText;
+    observed.textContent = `Observed at tick ${tick}.`;
     // Restore keyboard focus to the same identity across observations.
     const detailFocusedId = detail.contains(active) ? active?.dataset.lineageId : undefined;
     rows.replaceChildren();
@@ -281,7 +284,7 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
         const id = parent(entry);
         if (id != null) fact(id);
       }
-      retention.textContent = `Bounded evidence: ${data.archive.summaries.length}/${LINEAGE_SUMMARY_CAPACITY} summaries; ${data.archive.events.length}/${LINEAGE_EVENT_CAPACITY} events. Archive origin: ${data.archive.originKind} at tick ${data.archive.originTick}. ${data.archive.summariesPruned ? 'Older summaries pruned.' : 'No summary eviction recorded.'} ${data.archive.eventsPruned ? `Events pruned through tick ${data.archive.eventsEvictedThroughTick}; that tick may be partial.` : 'No event eviction recorded.'} Missing ancestry stays unknown; retained transitions are incomplete.`;
+      retention.textContent = `Bounded evidence: ${data.archive.summaries.length}/${LINEAGE_SUMMARY_CAPACITY} summaries; ${data.archive.events.length}/${LINEAGE_EVENT_CAPACITY} events. Archive origin: ${data.archive.originKind} at tick ${data.archive.originTick}. ${data.archive.summariesPruned ? 'Older summaries pruned.' : 'No summary eviction recorded.'} ${data.archive.eventsPruned ? `Events pruned through tick ${data.archive.eventsEvictedThroughTick}; that tick may be partial.` : 'No event eviction recorded.'} Missing ancestry stays unknown; retained transitions may be incomplete.`;
       render();
       changed();
     },

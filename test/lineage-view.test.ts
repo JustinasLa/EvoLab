@@ -241,3 +241,19 @@ it('keeps keyboard identity on its page when births arrive and returns focus to 
   update(world);
   expect(document.activeElement).toBe(get('lineage-search'));
 });
+
+it('keeps advancing observation ticks outside live search announcements', () => {
+  const world = fresh();
+  world.spawn(admissionGenome(), 10, 10);
+  update(world);
+  const status = get('lineage-results');
+  const observer = new MutationObserver(() => {});
+  observer.observe(status, { childList: true, characterData: true, subtree: true });
+  advance(world, 1);
+  update(world);
+  expect(observer.takeRecords()).toEqual([]);
+  expect(status.getAttribute('role')).toBe('status');
+  expect(get('lineage-observed').hasAttribute('role')).toBe(false);
+  expect(get('lineage-observed').textContent).toBe('Observed at tick 1.');
+  observer.disconnect();
+});

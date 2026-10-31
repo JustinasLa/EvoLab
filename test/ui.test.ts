@@ -6067,7 +6067,7 @@ describe('lineage exploration with real worker state', () => {
     bridge.deliver();
     expect(bridge.save().tick).toBe(before.tick + 1);
     click('ecosystem-tab');
-    expect(get('lineage-results').textContent).toContain(`observed tick ${before.tick + 1}`);
+    expect(get('lineage-observed').textContent).toContain(`Observed at tick ${before.tick + 1}`);
     explorer.open = false;
     explorer.dispatchEvent(new Event('toggle'));
     click('reset');
