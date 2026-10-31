@@ -1,3 +1,11 @@
+import {
+  emptyShade,
+  parseShade,
+  shadeFile,
+  shadeDab,
+  validShadeBrush,
+  shadeSummary,
+} from './shade';
 import { DEFAULT_TERRAIN, generateTerrain, sameTerrain, validTerrain } from './terrain';
 import {
   emptyRefuges,
@@ -37,6 +45,9 @@ import {
   speciesName,
   observedGenome,
   type RefugeBrush,
+  type ShadeBrush,
+  type WorldFileV9,
+  type Cell,
   type Genome,
   type Organism,
   type Settings,
@@ -81,6 +92,18 @@ const DIRECTIONS = [
   [-1, 0],
   [0, -1],
 ];
+function metabolicPosition(organism: Organism, cell: Cell): number {
+  switch (organism.rotation) {
+    case 0:
+      return index(organism.x + cell.x, organism.y + cell.y);
+    case 1:
+      return index(organism.x - cell.y, organism.y + cell.x);
+    case 2:
+      return index(organism.x - cell.x, organism.y - cell.y);
+    default:
+      return index(organism.x + cell.y, organism.y - cell.x);
+  }
+}
 function emptyFlow(): TelemetryFlow {
   return {
     births: 0,
@@ -264,7 +287,7 @@ function validTelemetry(
 }
 function emptyInterventions(settings: Settings, tick = 0, legacy = false): InterventionState {
   return {
-    version: 3,
+    version: 4,
     originTick: tick,
     originKind: legacy ? 'legacy-import' : 'fresh',
     originSettings: knownSettings(settings),
@@ -283,7 +306,7 @@ function brushCells(radius: number): number {
 }
 function validInterventions(
   value: unknown,
-  file: WorldFile | WorldFileV8 | WorldFileV7 | WorldFileV6 | WorldFileV5,
+  file: WorldFile | WorldFileV9 | WorldFileV8 | WorldFileV7 | WorldFileV6 | WorldFileV5,
 ): boolean {
   const settingKeys = ['seed', 'mutation', 'nutrients', 'climate'];
   const settingsMatch = (left: Settings, right: Settings): boolean =>
@@ -300,11 +323,13 @@ function validInterventions(
       'entries',
     ]) ||
     value.version !==
-      (file.version === 7 || file.version === 8 || file.version === WORLD_VERSION
-        ? 3
-        : file.version === 6
-          ? 2
-          : 1) ||
+      (file.version === WORLD_VERSION
+        ? 4
+        : file.version === 7 || file.version === 8 || file.version === 9
+          ? 3
+          : file.version === 6
+            ? 2
+            : 1) ||
     !integer(value.originTick, 0, file.tick) ||
     !['fresh', 'legacy-import'].includes(value.originKind as string) ||
     (value.originKind === 'fresh' && value.originTick !== 0) ||
@@ -350,8 +375,12 @@ function validInterventions(
     const detail = row.detail;
     previousTick = row.lastTick;
     if (
-      row.kind === 'refuge-paint' &&
-      (file.version === 7 || file.version === 8 || file.version === WORLD_VERSION)
+      (row.kind === 'refuge-paint' &&
+        (file.version === 7 ||
+          file.version === 8 ||
+          file.version === 9 ||
+          file.version === WORLD_VERSION)) ||
+      (row.kind === 'shade-paint' && file.version === WORLD_VERSION)
     ) {
       if (
         !exactKeys(detail, [
@@ -364,7 +393,7 @@ function validInterventions(
           'successfulCommands',
           'changedBrushCells',
         ]) ||
-        !validRefugeBrush(detail) ||
+        !(row.kind === 'shade-paint' ? validShadeBrush(detail) : validRefugeBrush(detail)) ||
         !coordinate(detail.first) ||
         !coordinate(detail.last) ||
         !integer(detail.successfulCommands, 1, STROKE_COMMAND_CAPACITY) ||
@@ -405,8 +434,12 @@ function validInterventions(
     } else {
       if (row.firstTick !== row.lastTick) return false;
       if (
-        row.kind === 'refuge-mode' &&
-        (file.version === 7 || file.version === 8 || file.version === WORLD_VERSION)
+        (row.kind === 'refuge-mode' &&
+          (file.version === 7 ||
+            file.version === 8 ||
+            file.version === 9 ||
+            file.version === WORLD_VERSION)) ||
+        (row.kind === 'shade-mode' && file.version === WORLD_VERSION)
       ) {
         if (
           !exactKeys(detail, ['rulesVersion', 'before', 'after']) ||
@@ -417,8 +450,12 @@ function validInterventions(
         )
           return false;
       } else if (
-        row.kind === 'refuge-clear' &&
-        (file.version === 7 || file.version === 8 || file.version === WORLD_VERSION)
+        (row.kind === 'refuge-clear' &&
+          (file.version === 7 ||
+            file.version === 8 ||
+            file.version === 9 ||
+            file.version === WORLD_VERSION)) ||
+        (row.kind === 'shade-clear' && file.version === WORLD_VERSION)
       ) {
         if (
           !exactKeys(detail, ['rulesVersion', 'removedCells']) ||
@@ -478,6 +515,7 @@ function validInterventions(
         (file.version === 6 ||
           file.version === 7 ||
           file.version === 8 ||
+          file.version === 9 ||
           file.version === WORLD_VERSION)
       ) {
         if (
@@ -534,7 +572,12 @@ function validInterventions(
       } else return false;
     }
   }
-  if (file.version === 7 || file.version === 8 || file.version === WORLD_VERSION) {
+  if (
+    file.version === 7 ||
+    file.version === 8 ||
+    file.version === 9 ||
+    file.version === WORLD_VERSION
+  ) {
     let enabled = file.thermalRefuges.enabled;
     for (let position = value.entries.length - 1; position >= 0; position--) {
       const row = value.entries[position];
@@ -544,12 +587,23 @@ function validInterventions(
       } else if (row.kind === 'refuge-paint' && !enabled) return false;
     }
   }
+  if (file.version === WORLD_VERSION) {
+    let enabled = file.shadeHabitats.enabled;
+    for (let position = value.entries.length - 1; position >= 0; position--) {
+      const row = value.entries[position];
+      if (row.kind === 'shade-mode') {
+        if (row.detail.after !== enabled) return false;
+        enabled = row.detail.before;
+      } else if (row.kind === 'shade-paint' && !enabled) return false;
+    }
+  }
   return (
     settingsMatch(replay, file.settings) &&
     (!previousTerrain ||
       ((file.version === 6 ||
         file.version === 7 ||
         file.version === 8 ||
+        file.version === 9 ||
         file.version === WORLD_VERSION) &&
         sameTerrain(previousTerrain, file.terrain))) &&
     (!previousShock ||
@@ -561,6 +615,7 @@ export class Ecosystem {
   settings: Settings;
   terrain: TerrainRecipe;
   thermalRefuges = emptyRefuges();
+  shadeHabitats = emptyShade();
   organisms = new Map<number, Organism>();
   food = new Uint8Array(WIDTH * HEIGHT);
   walls = new Uint8Array(WIDTH * HEIGHT);
@@ -780,12 +835,89 @@ export class Ecosystem {
     this.thermalRefuges.nonzeroCells = 0;
     return { rowSequence, removedCells, nonzeroCells: 0 };
   }
+  changeShadeMode(enabled: boolean): number | null {
+    if (typeof enabled !== 'boolean') throw new Error('Invalid painted shade mode.');
+    const before = this.shadeHabitats.enabled;
+    if (before === enabled) return null;
+    this.requireInterventionCapacity();
+    const sequence = this.appendIntervention({
+      kind: 'shade-mode',
+      detail: { rulesVersion: 1, before, after: enabled },
+    });
+    this.shadeHabitats.enabled = enabled;
+    return sequence;
+  }
+  paintShade(brush: ShadeBrush, x: number, y: number, sequence: number | null = null) {
+    const latest = this.interventions.entries.at(-1);
+    if (
+      sequence !== null &&
+      (latest?.sequence !== sequence ||
+        latest.kind !== 'shade-paint' ||
+        latest.detail.rulesVersion !== brush.rulesVersion ||
+        latest.detail.tool !== brush.tool ||
+        latest.detail.units !== brush.units ||
+        latest.detail.radius !== brush.radius)
+    )
+      throw new Error('Invalid painted shade stroke continuation.');
+    const candidate = shadeDab(this.shadeHabitats, brush, x, y);
+    if (!candidate.changedBrushCells)
+      return {
+        rowSequence: null,
+        changedBrushCells: 0,
+        nonzeroCells: this.shadeHabitats.nonzeroCells,
+      };
+    const continuing = sequence !== null && latest?.kind === 'shade-paint';
+    this.requireInterventionCapacity(continuing);
+    let rowSequence: number;
+    if (continuing) {
+      if (latest.detail.successfulCommands === STROKE_COMMAND_CAPACITY)
+        throw new Error('Painted shade stroke exhausted.');
+      latest.lastTick = this.tick;
+      latest.detail.last = { x, y };
+      latest.detail.successfulCommands++;
+      latest.detail.changedBrushCells += candidate.changedBrushCells;
+      rowSequence = sequence;
+    } else
+      rowSequence = this.appendIntervention({
+        kind: 'shade-paint',
+        detail: {
+          rulesVersion: 1,
+          tool: brush.tool,
+          units: brush.units,
+          radius: brush.radius,
+          first: { x, y },
+          last: { x, y },
+          successfulCommands: 1,
+          changedBrushCells: candidate.changedBrushCells,
+        },
+      });
+    for (const [position, units] of candidate.changes) this.shadeHabitats.units[position] = units;
+    this.shadeHabitats.nonzeroCells = candidate.nonzeroCells;
+    return {
+      rowSequence,
+      changedBrushCells: candidate.changedBrushCells,
+      nonzeroCells: candidate.nonzeroCells,
+    };
+  }
+  clearShade() {
+    const removedCells = this.shadeHabitats.nonzeroCells;
+    if (!removedCells) return { rowSequence: null, removedCells: 0, nonzeroCells: 0 };
+    this.requireInterventionCapacity();
+    const rowSequence = this.appendIntervention({
+      kind: 'shade-clear',
+      detail: { rulesVersion: 1, removedCells },
+    });
+    this.shadeHabitats.units.fill(0);
+    this.shadeHabitats.nonzeroCells = 0;
+    return { rowSequence, removedCells, nonzeroCells: 0 };
+  }
   measurements(openStrokeSequence: number | null = null): MeasurementSource {
     return {
       snapshot: {
         worldVersion: WORLD_VERSION,
         terrain: { ...this.terrain },
         thermalRefuges: refugeSummary(this.thermalRefuges),
+        shadeHabitats: shadeSummary(this.shadeHabitats),
         completedTick: this.tick,
         seed: this.settings.seed,
         settings: knownSettings(this.settings),
@@ -965,7 +1097,8 @@ export class Ecosystem {
   }
   step(): void {
     this.tick++;
-    const daylight = 0.65 + 0.35 * Math.sin(this.tick / 180);
+    const daylight = 0.65 + 0.35 * Math.sin(this.tick / 180),
+      shadeUnits = this.shadeHabitats.enabled ? this.shadeHabitats.units : null;
     for (const o of [...this.organisms.values()]) {
       if (!this.organisms.has(o.id)) continue;
       o.age++;
@@ -986,23 +1119,32 @@ export class Ecosystem {
         'climateUpkeepSpent',
         (Math.max(0, o.genome.tolerance - 0.2) * 0.025 + stress * 0.2) * o.genome.cells.length,
       );
-      const places = positions(o);
-      for (let c = 0; c < o.genome.cells.length; c++) {
-        const type = o.genome.cells[c].type,
-          p = places[c],
-          x = p % WIDTH,
-          y = Math.floor(p / WIDTH);
+      for (const cell of o.genome.cells) {
+        const type = cell.type;
         if (type === 4) {
           before = o.energy;
-          o.energy += 0.04 * daylight * (1 - stress);
+          const activeUnits = shadeUnits ? shadeUnits[metabolicPosition(o, cell)] : 0;
+          if (activeUnits === 0) o.energy += 0.04 * daylight * (1 - stress);
+          else o.energy += 0.04 * daylight * (1 - stress) * ((16 - activeUnits) / 16);
           this.recordEnergy('leavesGained', o.energy - before);
-          if (this.random.next() < (this.settings.nutrients / 100) * daylight * (1 - stress)) {
-            const [dx, dy] = DIRECTIONS[this.random.int(4)],
-              n = index(x + dx, y + dy);
+          const foodChance =
+            activeUnits === 0
+              ? (this.settings.nutrients / 100) * daylight * (1 - stress)
+              : (this.settings.nutrients / 100) *
+                daylight *
+                (1 - stress) *
+                ((16 - activeUnits) / 16);
+          if (this.random.next() < foodChance) {
+            const p = metabolicPosition(o, cell),
+              [dx, dy] = DIRECTIONS[this.random.int(4)],
+              n = index((p % WIDTH) + dx, Math.floor(p / WIDTH) + dy);
             if (!this.occupied[n] && !this.walls[n]) this.food[n] = 1;
           }
         }
-        if (type === 3 || type === 6)
+        if (type === 3 || type === 6) {
+          const p = metabolicPosition(o, cell),
+            x = p % WIDTH,
+            y = Math.floor(p / WIDTH);
           for (const [dx, dy] of DIRECTIONS) {
             const n = index(x + dx, y + dy);
             if (type === 3 && this.food[n]) {
@@ -1024,6 +1166,7 @@ export class Ecosystem {
               }
             }
           }
+        }
       }
       if (o.genome.cells.some((c) => c.type === 5) && o.age % o.genome.tempo === 0) {
         if (o.genome.cells.some((c) => c.type === 8)) {
@@ -1277,6 +1420,7 @@ export class Ecosystem {
       version: WORLD_VERSION,
       terrain: { ...this.terrain },
       thermalRefuges: refugeFile(this.thermalRefuges),
+      shadeHabitats: shadeFile(this.shadeHabitats),
       lineageArchive: this.lineageSnapshot(),
       telemetry: this.telemetrySnapshot(),
       interventions: structuredClone(this.interventions),
@@ -1303,6 +1447,7 @@ export class Ecosystem {
     const parsed: unknown = JSON.parse(text);
     const f = parsed as
       | WorldFile
+      | WorldFileV9
       | WorldFileV8
       | WorldFileV7
       | WorldFileV6
@@ -1320,6 +1465,7 @@ export class Ecosystem {
         f.version !== 6 &&
         f.version !== 7 &&
         f.version !== 8 &&
+        f.version !== 9 &&
         f.version !== WORLD_VERSION) ||
       !validSettings(f.settings) ||
       !integer(f.random, -2147483648, 4294967295) ||
@@ -1333,16 +1479,21 @@ export class Ecosystem {
       !Array.isArray(f.organisms) ||
       f.organisms.length > LIMIT
     )
-      throw new Error('Not a valid EvoLab ecosystem (version 2, 3, 4, 5, 6, 7, 8 or 9).');
+      throw new Error('Not a valid EvoLab ecosystem (version 2, 3, 4, 5, 6, 7, 8, 9 or 10).');
     if (
-      (f.version === 6 || f.version === 7 || f.version === 8 || f.version === WORLD_VERSION) &&
+      (f.version === 6 ||
+        f.version === 7 ||
+        f.version === 8 ||
+        f.version === 9 ||
+        f.version === WORLD_VERSION) &&
       !validTerrain(f.terrain)
     )
       throw new Error('Invalid ecosystem wall recipe.');
     const thermalRefuges =
-      f.version === 7 || f.version === 8 || f.version === WORLD_VERSION
+      f.version === 7 || f.version === 8 || f.version === 9 || f.version === WORLD_VERSION
         ? parseRefuges(f.thermalRefuges)
         : emptyRefuges();
+    const shadeHabitats = f.version === WORLD_VERSION ? parseShade(f.shadeHabitats) : emptyShade();
     if (
       f.version !== 2 &&
       !validTelemetry(f.telemetry, f.tick, f.births, f.deaths, f.version === 3 ? 1 : 2)
@@ -1353,17 +1504,23 @@ export class Ecosystem {
         f.version === 6 ||
         f.version === 7 ||
         f.version === 8 ||
+        f.version === 9 ||
         f.version === WORLD_VERSION) &&
       !validInterventions(f.interventions, f)
     )
       throw new Error('Invalid ecosystem manual intervention history.');
     const world = new Ecosystem(f.settings, false, {
       terrain:
-        f.version === 6 || f.version === 7 || f.version === 8 || f.version === WORLD_VERSION
+        f.version === 6 ||
+        f.version === 7 ||
+        f.version === 8 ||
+        f.version === 9 ||
+        f.version === WORLD_VERSION
           ? f.terrain
           : DEFAULT_TERRAIN,
     });
     world.thermalRefuges = thermalRefuges;
+    world.shadeHabitats = shadeHabitats;
     for (const [field, array] of [
       ['food', world.food],
       ['walls', world.walls],
@@ -1373,7 +1530,11 @@ export class Ecosystem {
         !Array.isArray(values) ||
         values.length > WIDTH * HEIGHT ||
         !values.every((i) => integer(i, 0, WIDTH * HEIGHT - 1)) ||
-        ((f.version === 6 || f.version === 7 || f.version === 8 || f.version === WORLD_VERSION) &&
+        ((f.version === 6 ||
+          f.version === 7 ||
+          f.version === 8 ||
+          f.version === 9 ||
+          f.version === WORLD_VERSION) &&
           new Set(values).size !== values.length)
       )
         throw new Error('Invalid world terrain.');
@@ -1396,13 +1557,15 @@ export class Ecosystem {
         !Array.isArray(o.ancestry) ||
         o.ancestry.length > 8 ||
         !o.ancestry.every((s) => integer(s, 1, f.nextSpecies - 1)) ||
-        !(f.version === WORLD_VERSION ? validGenome(o.genome) : validHistoricalGenome(o.genome))
+        !(f.version === 9 || f.version === WORLD_VERSION
+          ? validGenome(o.genome)
+          : validHistoricalGenome(o.genome))
       )
         throw new Error('Invalid or overlapping organism.');
       const organism: Organism = structuredClone({
         ...o,
         genome:
-          f.version === WORLD_VERSION
+          f.version === 9 || f.version === WORLD_VERSION
             ? cloneGenome(o.genome as Genome)
             : migrateHistoricalGenome(o.genome as HistoricalGenome),
       });
@@ -1429,8 +1592,9 @@ export class Ecosystem {
       f.version === 6 ||
       f.version === 7 ||
       f.version === 8 ||
+      f.version === 9 ||
       f.version === WORLD_VERSION
-        ? { ...structuredClone(f.interventions), version: 3 }
+        ? { ...structuredClone(f.interventions), version: 4 }
         : emptyInterventions(f.settings, f.tick, true);
     world.telemetry =
       f.version === 2
@@ -1447,7 +1611,7 @@ export class Ecosystem {
             }
           : structuredClone(f.telemetry);
     world.lineage =
-      f.version === WORLD_VERSION || f.version === 8
+      f.version === 9 || f.version === WORLD_VERSION || f.version === 8
         ? LineageArchive.load(
             f.lineageArchive,
             world.organisms.values(),

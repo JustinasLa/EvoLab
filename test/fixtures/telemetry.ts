@@ -11,6 +11,7 @@ import {
   type WorldFileV6,
   type WorldFileV7,
   type WorldFileV8,
+  type WorldFileV9,
 } from '../../src/model';
 
 export function advance(world: Ecosystem, ticks: number): void {
@@ -123,7 +124,13 @@ export function legacyV7(saved: WorldFile): WorldFileV7 {
     ...historical,
     terrain: structuredClone(saved.terrain),
     thermalRefuges: structuredClone(saved.thermalRefuges),
-    interventions: structuredClone(saved.interventions),
+    interventions: {
+      ...structuredClone(saved.interventions),
+      version: 3,
+      entries: structuredClone(
+        saved.interventions.entries,
+      ) as WorldFileV7['interventions']['entries'],
+    },
     version: 7,
   };
 }
@@ -140,4 +147,18 @@ export function legacyV8(saved: WorldFile): WorldFileV8 {
     }
   }
   return { ...legacyV7(saved), version: 8, lineageArchive: archive };
+}
+
+export function legacyV9(saved: WorldFile): WorldFileV9 {
+  const { shadeHabitats: _shadeHabitats, ...retained } = structuredClone(saved);
+  assert.ok(retained.interventions.entries.every((row) => !row.kind.startsWith('shade-')));
+  return {
+    ...retained,
+    version: 9,
+    interventions: {
+      ...retained.interventions,
+      version: 3,
+      entries: retained.interventions.entries as WorldFileV9['interventions']['entries'],
+    },
+  };
 }

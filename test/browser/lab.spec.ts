@@ -39,6 +39,7 @@ import {
   legacyV6,
   legacyV7,
   legacyV8,
+  legacyV9,
 } from '../fixtures/telemetry';
 import { fixtureText, acceptedReference, predecessor } from '../fixtures/refuges';
 import { localTemperature, refugeSummary } from '../../src/refuges';
@@ -725,7 +726,7 @@ test('terrain whole-world actions preserve wrapped life, food, selection, pins a
   );
   const csv = decodeDownloadedCsv(await downloadMeasurements(page, 'csv'));
   expect(csv).toEqual(json);
-  expect(json.version).toBe(3);
+  expect(json.version).toBe(4);
   expect(json.snapshot.terrain).toEqual(reference.terrain);
   expect(json.interventions).toEqual(reference.save().interventions);
 });
@@ -1489,7 +1490,7 @@ test('literal v3 telemetry migrates through the file input and real worker befor
   const migratedBytes = await downloadPausedWorld(page),
     migrated = JSON.parse(migratedBytes.toString()) as WorldFile;
   expect(migrated).toEqual(expected());
-  expect(migrated.version).toBe(9);
+  expect(migrated.version).toBe(10);
   expect(migrated.telemetry.version).toBe(2);
   expect(migrated.telemetry.originTick).toBe(fixture.telemetry.originTick);
   expect(migrated.telemetry.adaptationOriginTick).toBe(65);
@@ -2812,7 +2813,7 @@ test('D9-A10 native file reads stay single-owner through cancellation, reset and
     contentType: 'application/json',
   });
 });
-for (const version of [2, 3, 4, 5, 6, 7, 8, 9] as const) {
+for (const version of [2, 3, 4, 5, 6, 7, 8, 9, 10] as const) {
   test(`measurement bytes preserve synthetic historical/current world${version} migration,180 samples and truthful manual windows`, async ({
     page,
   }) => {
@@ -2850,7 +2851,9 @@ for (const version of [2, 3, 4, 5, 6, 7, 8, 9] as const) {
                   ? legacyV7(current)
                   : version === 8
                     ? legacyV8(current)
-                    : current;
+                    : version === 9
+                      ? legacyV9(current)
+                      : current;
     expect(candidate.version).toBe(version);
     expect('interventions' in candidate).toBe(version >= 5);
     expect('terrain' in candidate).toBe(version >= 6);
@@ -2887,8 +2890,8 @@ for (const version of [2, 3, 4, 5, 6, 7, 8, 9] as const) {
       coverage: 'applied-portions-only',
     });
     expect(json.windows.settings.unknownEvictedPrefix).toBe(version >= 5);
-    expect(json.version).toBe(3);
-    expect(json.rules.version).toBe(2);
+    expect(json.version).toBe(4);
+    expect(json.rules.version).toBe(3);
     expect(json.snapshot.thermalRefuges).toEqual(refugeSummary(reference.thermalRefuges));
     expect(json.snapshot.terrain).toEqual(DEFAULT_TERRAIN);
     for (const view of ['population', 'food', 'adaptation'])
@@ -4547,7 +4550,7 @@ test.describe('pause on total extinction', () => {
     const recoveryNotice = await page.evaluate(
       '(() => { window.recoveryDelivery.release(); return document.getElementById("notice").textContent; })()',
     );
-    expect(recoveryNotice).toContain('version 2, 3, 4, 5, 6, 7, 8 or 9');
+    expect(recoveryNotice).toContain('version 2, 3, 4, 5, 6, 7, 8, 9 or 10');
     expect(await pendingSave).toEqual(expected);
     await expect(page.locator('#notice')).toContainText('World saved');
     await expect(page.locator('#nutrients')).toHaveValue('7');
@@ -4666,7 +4669,7 @@ for (const terminalTick of [90, 91]) {
       expect(populations).toHaveLength(3);
       await expectPopulationChart(page, populations);
       await importWorld(page, { ...terminal, version: 99 } as unknown as WorldFile);
-      await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5, 6, 7, 8 or 9');
+      await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5, 6, 7, 8, 9 or 10');
       expect(await readWorld(page)).toEqual(terminal);
       await expectPopulationChart(page, populations);
       await page.waitForTimeout(160);
@@ -4780,7 +4783,7 @@ test('restores real worker telemetry, renders its population projection and down
   expect(frame.telemetry).toEqual(before);
   const downloaded = JSON.parse((await downloadWorld(page)).toString());
   expect(downloaded.telemetry).toEqual(before);
-  expect(downloaded.version).toBe(9);
+  expect(downloaded.version).toBe(10);
   expect(downloaded.telemetry.version).toBe(2);
   expect(downloaded.telemetry.intervalTicks).toBe(30);
   const restored = Ecosystem.load(JSON.stringify(downloaded));
@@ -5012,7 +5015,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   await expect(page.locator('[data-shock="bloom"]')).toHaveCount(0);
   const saved = await downloadWorld(page),
     world = JSON.parse(saved.toString());
-  expect(world.version).toBe(9);
+  expect(world.version).toBe(10);
   expect(world.organisms.length).toBeGreaterThan(1);
   const o = world.organisms[0],
     c = o.genome.cells[0];
@@ -5234,6 +5237,61 @@ async function refugeProtocol(page: import('@playwright/test').Page, receiptDriv
   });
 }
 
+for (const units of [0, 8, 16])
+  test(`S24 native shade ${units}/16 preserves actual funded birth, complete Save/reload and rejected-import recovery`, async ({
+    page,
+  }) => {
+    await observeTerrainNative(page);
+    await page.goto('/');
+    await terrainNativeFrame(page);
+    const reference = new Ecosystem({ ...DEFAULTS, climate: 0, mutation: 0, nutrients: 0 }, false);
+    const parent = reference.spawn(
+      {
+        cells: [{ x: 0, y: 0, type: 4 }],
+        preference: 0.5,
+        tolerance: 0.2,
+        tempo: 2,
+        behavior: { version: 1, mode: 'legacy' },
+      },
+      120,
+      78,
+    )!;
+    parent.age = 32;
+    parent.energy = 11.99;
+    reference.random.state = 23;
+    reference.changeShadeMode(true);
+    if (units) reference.paintShade({ rulesVersion: 1, tool: 'shade', units, radius: 0 }, 120, 78);
+    expect(await refugeLoad(page, JSON.stringify(reference.save()))).toBe(0);
+    expect(await terrainSave(page, 'shade-before-step.json')).toEqual(reference.save());
+    await page.locator('#step').click();
+    reference.step();
+    const first = await terrainSave(page, 'shade-funded-birth.json');
+    expect(first).toEqual(reference.save());
+    const afterUpkeep = 11.99 - 0.012;
+    const gain = 0.04 * (0.65 + 0.35 * Math.sin(1 / 180)) * ((16 - units) / 16);
+    expect(first.tick).toBe(1);
+    expect(first.births).toBe(units === 0 ? 1 : 0);
+    expect(first.organisms[0].energy).toBe(afterUpkeep + gain - (units === 0 ? 6.5 : 0));
+    expect(first.telemetry.pending.energy.leavesGained).toBe(afterUpkeep + gain - afterUpkeep);
+    expect(first.telemetry.pending.energy.offspringGranted).toBe(units === 0 ? 4.5 : 0);
+    expect(first.food).toEqual([]);
+    expect(first.telemetry.samples).toEqual([]);
+    const resumedTick = await refugeLoad(page, JSON.stringify(first));
+    advance(reference, resumedTick - reference.tick);
+    const resumed = await terrainSave(page, 'shade-reloaded.json');
+    expect(resumed).toEqual(reference.save());
+    const invalid = structuredClone(resumed);
+    invalid.shadeHabitats.cells.push([37439, 17]);
+    await importWorld(page, invalid);
+    await expect(page.locator('#notice')).toContainText('Invalid painted shade cell');
+    const recoveryRun = await page.evaluate(() => window.terrainNative.errors.at(-1).runId);
+    await terrainNativeFrame(page, recoveryRun);
+    expect(await terrainSave(page, 'shade-rejected-import-retained.json')).toEqual(resumed);
+    await page.locator('#step').click();
+    reference.step();
+    expect(await terrainSave(page, 'shade-recovered-step.json')).toEqual(reference.save());
+  });
+
 test('B23-1 opt-in empty field retains the complete original climate trajectory through native Save/reload/Step', async ({
   page,
 }) => {
@@ -5260,7 +5318,17 @@ test('B23-1 opt-in empty field retains the complete original climate trajectory 
   ]);
   const compare = (saved: WorldFile) => {
     while (reference.tick < saved.tick) reference.step();
-    const { thermalRefuges: _field, lineageArchive: _archive, ...retained } = saved;
+    expect(saved.shadeHabitats).toEqual({
+      version: 1,
+      enabled: false,
+      cells: [],
+    });
+    const {
+      thermalRefuges: _field,
+      lineageArchive: _archive,
+      shadeHabitats: _shade,
+      ...retained
+    } = saved;
     expect({
       ...retained,
       organisms: restoreHistoricalWorld(saved).organisms,

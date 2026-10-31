@@ -11,7 +11,7 @@ import { DEFAULTS, founder, type Frame, type PlaybackState, type WorldFile } fro
 import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../src/blueprint';
 import { startWorker, type Scope } from '../src/worker';
 import { emptyRefuges, refugeSummary, activeRefugeUnits, localTemperature } from '../src/refuges';
-import { legacyV3 } from './fixtures/telemetry';
+import { legacyV3, legacyV7 } from './fixtures/telemetry';
 import { storedSensoryGenome } from './fixtures/sensory-legacy';
 import { libraryHarness } from './fixtures/library';
 import { classifyRecord, encodeRecord, libraryCandidate } from '../src/library';
@@ -3188,10 +3188,10 @@ describe('explicit bounded local library', () => {
     root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
     harness.deliver();
     const before = harness.save();
-    expect(before.version).toBe(9);
+    expect(before.version).toBe(10);
     expect(before.lineageArchive.summaries.length).toBeGreaterThan(0);
     expect(before.telemetry.version).toBe(2);
-    expect(before.interventions.version).toBe(3);
+    expect(before.interventions.version).toBe(4);
     expect(before.thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
     expect(before.interventions.entries).toHaveLength(1);
     storage.values.set(first, encodeRecord(draft('composed design'), 1));
@@ -5568,9 +5568,9 @@ describe('authoritative playback presentation', () => {
       click('reset');
       harness.deliver();
       expect(get<HTMLInputElement>('pause-on-extinction').checked).toBe(preference);
-      const { lineageArchive: _lineageArchive, ...historical } = nearDeath();
-      const empty = { ...historical, version: 7 };
+      const empty = legacyV7(nearDeath());
       empty.organisms = [];
+      expect(Ecosystem.load(JSON.stringify(empty)).save().organisms).toEqual([]);
       await loadText(JSON.stringify(empty));
       harness.deliver();
       expect(get<HTMLInputElement>('pause-on-extinction').checked).toBe(preference);

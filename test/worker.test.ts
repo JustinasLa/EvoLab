@@ -9,9 +9,18 @@ import {
   restoreHistoricalOrganism,
   storedSensoryGenome,
 } from './fixtures/sensory-legacy';
-import { legacyV3, legacyV4, legacyV5, legacyV6, legacyV7, legacyV8 } from './fixtures/telemetry';
+import {
+  legacyV3,
+  legacyV4,
+  legacyV5,
+  legacyV6,
+  legacyV7,
+  legacyV8,
+  legacyV9,
+} from './fixtures/telemetry';
 import { DEFAULT_TERRAIN } from '../src/terrain';
 import { readFileSync } from 'node:fs';
+import { world9Text, projectWorld9 } from './fixtures/shade';
 import { acceptedReference, fixtureText, predecessor, identicalRecords } from './fixtures/refuges';
 import {
   observerWorld,
@@ -1961,6 +1970,87 @@ describe('correlated manual/export worker protocol', () => {
   });
 });
 describe('worker control and persistence', () => {
+  it('retains an exact cap-sized native9 import even when successor Save exceeds the unchanged cap', () => {
+    let retained!: Ecosystem;
+    const display = Ecosystem.prototype.display;
+    vi.spyOn(Ecosystem.prototype, 'display').mockImplementation(function (this: Ecosystem) {
+      retained = this;
+      return display.call(this, this.presentation());
+    });
+    const original = JSON.parse(world9Text('native9-opaque-extinct'));
+    original.settings.capExtension = '';
+    original.settings.capExtension = 'x'.repeat(
+      WORLD_MAX_BYTES - new TextEncoder().encode(JSON.stringify(original)).length,
+    );
+    const text = JSON.stringify(original);
+    expect(new TextEncoder().encode(text).length).toBe(WORLD_MAX_BYTES);
+    const harness = workerHarness();
+    harness.send({ type: 'load', runId: 1, text });
+    expect(harness.last('loaded')).toBeDefined();
+    harness.send({ type: 'pause' });
+    const before = retained.save(),
+      queued = harness.tasks.length;
+    expect(projectWorld9(before)).toEqual(original);
+    expect(new TextEncoder().encode(JSON.stringify(before)).length).toBeGreaterThan(
+      WORLD_MAX_BYTES,
+    );
+    const error = harness.send({ type: 'save' });
+    expect(error).toMatchObject({
+      type: 'error',
+      operation: 'save',
+      message: 'World file exceeds 2.5 MB. Nothing was downloaded.',
+    });
+    expect(error).not.toHaveProperty('fatal');
+    expect(harness.last('saved')).toBeUndefined();
+    expect(retained.save()).toEqual(before);
+    expect(harness.tasks.length).toBe(queued);
+    const control = Ecosystem.load(text);
+    harness.send({ type: 'step' });
+    control.step();
+    expect(retained.save()).toEqual(control.save());
+    expect((retained.settings as any).capExtension).toBe(original.settings.capExtension);
+    expect(harness.last().state.playback.paused).toBe(true);
+  });
+
+  it('rejects the last shade tuple, native9 genome and extinct archive without partial installation or selection loss', () => {
+    const harness = workerHarness();
+    const initial = Ecosystem.load(world9Text('native9-opaque-extinct'));
+    initial.changeShadeMode(true);
+    initial.paintShade({ rulesVersion: 1, tool: 'shade', units: 16, radius: 1 }, 40, 40);
+    harness.load(initial.save());
+    harness.send({ type: 'pause' });
+    harness.send({ type: 'inspect', x: 40, y: 40 });
+    const text = harness.saveText(),
+      before = JSON.parse(text),
+      queued = harness.tasks.length;
+    const finalTuple = structuredClone(before);
+    finalTuple.shadeHabitats.cells.push([37439, 17]);
+    const genome = JSON.parse(world9Text('native9-opaque-extinct'));
+    genome.organisms.at(-1)!.genome.behavior.version = 2 as any;
+    const archive = JSON.parse(world9Text('native9-opaque-extinct'));
+    archive.lineageArchive.summaries.find(
+      (row) => row.extinctTick !== null,
+    )!.foundingGenome!.behavior.version = 2 as any;
+    for (const [offset, candidate] of [finalTuple, genome, archive].entries()) {
+      harness.send({ type: 'load', runId: offset + 2, text: JSON.stringify(candidate) });
+      expect(harness.last('error')).toMatchObject({
+        operation: 'load',
+        recovery: {
+          state: {
+            selected: { id: before.organisms[0].id },
+            settings: observedSettings(before.settings),
+            playback: { paused: true },
+          },
+        },
+      });
+      expect(harness.saveText()).toBe(text);
+      expect(harness.tasks.length).toBe(queued);
+    }
+    const control = Ecosystem.load(text);
+    harness.send({ type: 'step', runId: 4 });
+    control.step();
+    expect(harness.save()).toEqual(control.save());
+  });
   it('rejects oversized outbound UTF-8 saves nonfatally without download, truncation or scheduling changes', () => {
     const original = JSON.parse(baselineFixtures['telemetry-populated-tick25-world2.json']);
     const file = {
@@ -2886,7 +2976,7 @@ describe('integrated extinction and telemetry', () => {
     expect(harness.tasks).toHaveLength(0);
   });
 
-  it.each([2, 3, 4, 5, 6, 7, 8, 9])(
+  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10])(
     'migrates/restores v%i then preserves terminal and pending history through an empty save continuation',
     (version) => {
       const harness = workerHarness();
@@ -2914,7 +3004,9 @@ describe('integrated extinction and telemetry', () => {
                     ? legacyV7(current)
                     : version === 8
                       ? legacyV8(current)
-                      : current;
+                      : version === 9
+                        ? legacyV9(current)
+                        : current;
       expect(file.version).toBe(version);
       if (file.version === 2) expect(file).not.toHaveProperty('telemetry');
       else {
@@ -2942,12 +3034,13 @@ describe('integrated extinction and telemetry', () => {
         });
       if (file.version >= 4) {
         expect(imported).toEqual(
-          file.version === 9
+          file.version === 10
             ? file
             : file.version >= 5
               ? {
                   ...file,
-                  version: 9,
+                  version: 10,
+                  shadeHabitats: { version: 1, enabled: false, cells: [] },
                   organisms: imported.organisms,
                   lineageArchive: imported.lineageArchive,
                   terrain: file.version >= 6 ? file.terrain : { ...DEFAULT_TERRAIN },
@@ -2955,17 +3048,18 @@ describe('integrated extinction and telemetry', () => {
                     file.version >= 7
                       ? file.thermalRefuges
                       : { version: 1, enabled: false, cells: [] },
-                  interventions: { ...file.interventions, version: 3 },
+                  interventions: { ...file.interventions, version: 4 },
                 }
               : {
                   ...file,
-                  version: 9,
+                  version: 10,
+                  shadeHabitats: { version: 1, enabled: false, cells: [] },
                   organisms: imported.organisms,
                   lineageArchive: imported.lineageArchive,
                   terrain: { ...DEFAULT_TERRAIN },
                   thermalRefuges: { version: 1, enabled: false, cells: [] },
                   interventions: {
-                    version: 3,
+                    version: 4,
                     originTick: file.tick,
                     originKind: 'legacy-import',
                     originSettings: { ...file.settings },
@@ -2982,7 +3076,7 @@ describe('integrated extinction and telemetry', () => {
       harness.advance();
       reference.step();
       const terminal = harness.save();
-      expect(terminal.version).toBe(9);
+      expect(terminal.version).toBe(10);
       expect(terminal.telemetry.version).toBe(2);
       expect(terminal.telemetry.samples.at(-1)).toMatchObject({
         fromTick: version === 2 ? 89 : 60,

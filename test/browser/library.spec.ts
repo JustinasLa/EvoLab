@@ -1951,10 +1951,10 @@ test('composed library operations preserve complete world9 archive and measureme
   await page.locator('[data-shock="heat"]').click();
   const before = await pausedSave(page);
   const world = JSON.parse(before.toString()) as WorldFile;
-  expect(world.version).toBe(9);
+  expect(world.version).toBe(10);
   expect(world.lineageArchive.summaries.length).toBeGreaterThan(0);
   expect(world.telemetry.version).toBe(2);
-  expect(world.interventions.version).toBe(3);
+  expect(world.interventions.version).toBe(4);
   expect(world.thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
   expect(world.interventions.entries).toHaveLength(1);
   await page.locator('#ecosystem-tab').click();
