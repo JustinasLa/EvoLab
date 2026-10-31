@@ -646,6 +646,86 @@ describe('passive inherited sensory data and reversible compatibility', () => {
       }
     },
   );
+  it.each([
+    { name: 'neither eye nor motor', eye: false, motor: false },
+    { name: 'eye only', eye: true, motor: false },
+    { name: 'motor only', eye: false, motor: true },
+    { name: 'eye and motor', eye: true, motor: true },
+  ])(
+    'keeps behavior1 permanently passive with $name through feeding, funded births and reload',
+    ({ eye, motor }) => {
+      const legacy = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
+      let stored = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
+      const genome: Genome = {
+        ...single(),
+        cells: [
+          { x: 0, y: 0, type: 3 },
+          { x: -1, y: 0, type: eye ? 8 : 7 },
+          { x: 0, y: 1, type: motor ? 5 : 7 },
+        ],
+        legacyExtensions: [['sentinel', [['string', 'passive anatomy']]]],
+      };
+      const inherited = cloneGenome(genome);
+      // A stored food-flee table must preserve ordinary feeding and legacy steering.
+      inherited.behavior = evolved(tables[80]);
+      for (const [world, source] of [
+        [legacy, genome],
+        [stored, inherited],
+      ] as const) {
+        const parent = world.spawn(source, 60, 60)!;
+        parent.age = 32;
+        parent.energy = 100;
+        parent.direction = 1;
+        world.food[index(61, 60)] = 1;
+      }
+      const equalEcology = () => {
+        const normalized = stored.save();
+        for (const organism of normalized.organisms)
+          organism.genome.behavior = { version: 1, mode: 'legacy' };
+        for (const summary of normalized.lineageArchive.summaries)
+          if (summary.foundingGenome)
+            summary.foundingGenome.behavior = { version: 1, mode: 'legacy' };
+        expect(normalized).toEqual(legacy.save());
+      };
+      legacy.step();
+      stored.step();
+      equalEcology();
+      const ledger = stored.save().telemetry.pending.energy;
+      expect(stored.food[index(61, 60)]).toBe(0);
+      expect(ledger.mouthsGained).toBeCloseTo(2.2, 12);
+      expect(ledger.movementSpent).toBe(0);
+      expect(stored.births).toBe(1);
+      expect(stored.organisms.get(1)!.children).toBe(1);
+      expect(stored.organisms.get(2)!.energy).toBe(7.5);
+      expect(ledger.offspringGranted).toBe(7.5);
+      expect(ledger.reproductionSpent).toBe(9.5);
+      expect(stored.organisms.get(1)!.energy).toBe(
+        100 - ledger.upkeepSpent + ledger.mouthsGained - ledger.reproductionSpent,
+      );
+      legacy.step();
+      stored.step();
+      equalEcology();
+      const parent = stored.organisms.get(1)!;
+      expect(Math.abs(parent.x - 60) + Math.abs(parent.y - 60)).toBe(motor ? 1 : 0);
+      expect(stored.save().telemetry.pending.energy.movementSpent).toBeCloseTo(
+        motor ? 0.03 : 0,
+        12,
+      );
+      for (const tick of [30, 90]) {
+        advance(legacy, tick - legacy.tick);
+        advance(stored, tick - stored.tick);
+        equalEcology();
+        expect(stored.random.state).toBe(legacy.random.state);
+        for (const organism of stored.organisms.values()) {
+          expect(organism.genome.behavior).toEqual(inherited.behavior);
+          expect(organism.genome.legacyExtensions).toEqual(genome.legacyExtensions);
+        }
+        const saved = stored.save();
+        stored = Ecosystem.load(JSON.stringify(saved));
+        expect(stored.save()).toEqual(saved);
+      }
+    },
+  );
   it('preserves retained and type-changed cell metadata, removes only deleted cells and gives new cells no inherited extras', () => {
     const source = founder(1),
       observed = new Set<string>();
