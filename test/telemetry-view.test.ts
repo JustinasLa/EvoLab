@@ -20,9 +20,28 @@ function choose(id: string, value: string) {
   get(id).dispatchEvent(new Event('change'));
   controller.render();
 }
-function show(frame: Frame, run = 1) {
-  controller.update(frame, run);
+function show(frame: Frame, run = 1, replacement = run) {
+  update(frame, run, replacement);
   controller.render();
+}
+let revision = 0;
+function update(frame: Frame, run = 1, replacement = run): void {
+  revision++;
+  controller.update({
+    status: 'accepted',
+    runId: run,
+    replacementId: replacement,
+    currentTick: frame.stats.tick,
+    currentRevision: revision,
+    source: {
+      runId: run,
+      replacementId: replacement,
+      revision,
+      tick: frame.stats.tick,
+      telemetry: frame.telemetry,
+      interventions: frame.interventions,
+    },
+  });
 }
 function legacy(world: Ecosystem): WorldFileV3 {
   return legacyV3(world.save());
@@ -53,6 +72,107 @@ afterEach(() => {
 });
 
 describe('bounded model-dependent telemetry presentation', () => {
+  it('distinguishes unknown sources, received empty sources and progress beyond the source boundary', () => {
+    controller.update({
+      status: 'accepted',
+      runId: 1,
+      replacementId: 2,
+      currentTick: 25,
+      currentRevision: 3,
+      source: null,
+    });
+    controller.render();
+    expect(get('telemetry-summary').textContent).toContain('history not yet known');
+    expect(get<HTMLSelectElement>('telemetry-sample').disabled).toBe(true);
+    const source = {
+      runId: 1,
+      replacementId: 2,
+      tick: 25,
+      revision: 3,
+      telemetry: new Ecosystem(DEFAULTS, false).telemetrySnapshot(),
+      interventions: new Ecosystem(DEFAULTS, false).interventionSnapshot(),
+    };
+    controller.update({
+      status: 'accepted',
+      runId: 1,
+      replacementId: 2,
+      currentTick: 26,
+      currentRevision: 4,
+      source,
+    });
+    controller.render();
+    expect(get('telemetry-plots').textContent).toContain('boundary after this observation is 30');
+    const replaced = vi.spyOn(get('telemetry-plots'), 'replaceChildren');
+    controller.update({
+      status: 'accepted',
+      runId: 1,
+      replacementId: 2,
+      currentTick: 61,
+      currentRevision: 5,
+      source,
+    });
+    controller.render();
+    expect(get('telemetry-plots').textContent).toContain('reached/passed boundary 30');
+    expect(get('telemetry-summary').textContent).toContain(
+      'source observed at tick 25 (revision 3)',
+    );
+    expect(get('telemetry-summary').textContent).toContain('World tick 61 (revision 5)');
+    expect(replaced).not.toHaveBeenCalled();
+  });
+  it('retains focused pin through failed adoption and same-tick progress, resetting once only on successful replacement', () => {
+    const world = new Ecosystem(DEFAULTS, false);
+    advance(world, 60);
+    const source = {
+      runId: 1,
+      replacementId: 2,
+      tick: 60,
+      revision: 3,
+      telemetry: world.telemetrySnapshot(),
+      interventions: world.interventionSnapshot(),
+    };
+    controller.update({
+      status: 'accepted',
+      runId: 1,
+      replacementId: 2,
+      currentTick: 60,
+      currentRevision: 3,
+      source,
+    });
+    controller.render();
+    choose('telemetry-sample', '30');
+    const select = get<HTMLSelectElement>('telemetry-sample');
+    select.focus();
+    const options = vi.spyOn(select, 'replaceChildren'),
+      plots = vi.spyOn(get('telemetry-plots'), 'replaceChildren');
+    controller.update({ status: 'pending', commandId: 9 });
+    controller.update({
+      status: 'accepted',
+      runId: 2,
+      replacementId: 2,
+      currentTick: 61,
+      currentRevision: 5,
+      source: { ...source, runId: 2 },
+    });
+    controller.render();
+    expect(select.value).toBe('30');
+    expect(document.activeElement).toBe(select);
+    expect(options).not.toHaveBeenCalled();
+    expect(plots).not.toHaveBeenCalled();
+    expect(get('telemetry-details').textContent).toContain('Selected sample at tick 30');
+    controller.update({
+      status: 'accepted',
+      runId: 3,
+      replacementId: 9,
+      currentTick: 60,
+      currentRevision: 6,
+      source: { ...source, runId: 3, replacementId: 9, revision: 6 },
+    });
+    controller.render();
+    expect(select.value).toBe('latest');
+    expect(document.activeElement).toBe(select);
+    expect(options).toHaveBeenCalledTimes(1);
+    expect(get('telemetry-details').textContent).toContain('Selected sample at tick 60');
+  });
   it.each([2, 3, 4, 5])(
     'presents genuine historical world%i without changing complete retained genomes',
     (version) => {
@@ -194,9 +314,9 @@ describe('bounded model-dependent telemetry presentation', () => {
           plot.getAttribute('data-end-tick') === '60',
       ),
     ).toBe(true);
-    show(world.frame(), 2);
+    show(world.frame(), 2, 1);
     expect(get<HTMLSelectElement>('telemetry-intervention').value).toBe('1');
-    controller.reset();
+    controller.update({ status: 'unavailable' });
     show(world.frame(), 2);
     expect(get<HTMLSelectElement>('telemetry-intervention').value).toBe('latest');
   });
@@ -294,8 +414,10 @@ describe('bounded model-dependent telemetry presentation', () => {
     expect(get('telemetry-plots').children).toHaveLength(0);
     width = 220;
     controller.render();
-    expect(get('telemetry-plots').textContent).toContain('No recorded samples yet');
-    expect(get('telemetry-plots').textContent).toContain('completed tick 30');
+    expect(get('telemetry-plots').textContent).toContain(
+      'Received history was empty at source tick',
+    );
+    expect(get('telemetry-plots').textContent).toContain('observation is 30');
     expect(get('telemetry-plots').querySelector('svg')).toBeNull();
     expect(get<HTMLSelectElement>('telemetry-sample').disabled).toBe(true);
     expect(world.save()).toEqual(before);
@@ -415,13 +537,13 @@ describe('bounded model-dependent telemetry presentation', () => {
     expect(document.activeElement).toBe(select);
     replace.mockClear();
     for (let repeat = 0; repeat < 40; repeat++) {
-      controller.update(world.frame(), 1);
+      update(world.frame(), 1);
       controller.render();
     }
     expect(replace).not.toHaveBeenCalled();
     advance(world, 30);
-    controller.update(world.frame(), 1);
-    controller.update(world.frame(), 1);
+    update(world.frame(), 1);
+    update(world.frame(), 1);
     controller.render();
     expect(replace).toHaveBeenCalledTimes(1);
     expect(select.value).toBe('60');
@@ -440,10 +562,10 @@ describe('bounded model-dependent telemetry presentation', () => {
     );
     choose('telemetry-sample', 'latest');
     expect(get('telemetry-details').textContent).toContain('Selected sample at tick 5430');
-    controller.update(world.frame(), 2);
+    update(world.frame(), 2);
     controller.render();
     expect(get('telemetry-details').textContent).toContain('Selected sample at tick 5430');
-    controller.reset();
+    controller.update({ status: 'unavailable' });
     expect(select.value).toBe('latest');
     expect(get<HTMLSelectElement>('telemetry-view').value).toBe('food');
   });
@@ -487,8 +609,8 @@ describe('bounded model-dependent telemetry presentation', () => {
     const before = root.innerHTML;
     width = 200;
     resize();
-    controller.update(world.frame(), 3);
-    controller.reset();
+    update(world.frame(), 3);
+    controller.update({ status: 'unavailable' });
     controller.render();
     expect(root.innerHTML).toBe(before);
     expect(disconnect).toHaveBeenCalled();

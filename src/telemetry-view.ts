@@ -4,12 +4,23 @@ import {
   PREFERENCE_ENDPOINTS,
   TELEMETRY_CAPACITY,
   TELEMETRY_INTERVAL_TICKS,
-  type Frame,
+  type AcceptedTelemetrySource,
   type TelemetrySample,
   type InterventionEntry,
 } from './model';
 
 type View = 'population' | 'food' | 'adaptation';
+export type TelemetryViewInput =
+  | { status: 'unavailable' }
+  | { status: 'pending'; commandId: number }
+  | {
+      status: 'accepted';
+      runId: number;
+      replacementId: number;
+      currentTick: number;
+      currentRevision: number;
+      source: AcceptedTelemetrySource | null;
+    };
 interface Series {
   name: string;
   color: string;
@@ -77,15 +88,28 @@ export function createTelemetryView(root: HTMLElement) {
     manualDetails = get('telemetry-intervention-details'),
     plots = get('telemetry-plots'),
     details = get('telemetry-details'),
-    summary = get('telemetry-summary'),
-    status = get('telemetry-status');
-  let source: Frame | undefined,
+    status = get('telemetry-status'),
+    summary = get('telemetry-summary');
+  let source: AcceptedTelemetrySource | undefined,
     sourceKey = '',
     selectedTick: number | null = null,
     selectedSequence: number | null = null,
     dirty = true,
     disposed = false,
     renderedWidth = 0;
+  let replacementId: number | undefined,
+    currentTick = 0,
+    currentRevision = 0;
+  function emptyText(): string {
+    if (!source) return 'No telemetry source received for this world; history not yet known.';
+    const boundary =
+      (Math.floor(source.tick / TELEMETRY_INTERVAL_TICKS) + 1) * TELEMETRY_INTERVAL_TICKS;
+    return `Received history was empty at source tick ${source.tick}. ${
+      currentTick < boundary
+        ? `Next recording boundary after this observation is ${boundary}, if those ticks complete; Step or an allowed Resume is deliberate.`
+        : `Current tick ${currentTick} has reached/passed boundary ${boundary}; awaiting newer telemetry observations. Later recorded samples may not yet be received.`
+    }`;
+  }
   const invalidate = (): void => {
     if (!disposed) dirty = true;
   };
@@ -460,12 +484,7 @@ export function createTelemetryView(root: HTMLElement) {
     const samples = source.telemetry.samples,
       latest = samples.at(-1);
     if (!latest) {
-      plots.append(
-        element(
-          'p',
-          `No recorded samples yet. Next sample after completed tick ${(Math.floor(source.stats.tick / TELEMETRY_INTERVAL_TICKS) + 1) * TELEMETRY_INTERVAL_TICKS}. Automatic progress may be paused; Step or an allowed Resume is deliberate.`,
-        ),
-      );
+      plots.append(element('p', emptyText()));
       return;
     }
     const selected = samples.find((sample) => sample.tick === selectedTick) ?? latest,
@@ -672,17 +691,67 @@ export function createTelemetryView(root: HTMLElement) {
   }
 
   return {
-    update(frame: Frame, run: number): void {
+    update(input: TelemetryViewInput): void {
       if (disposed) return;
-      source = frame;
-      const telemetry = frame.telemetry,
+      if (input.status === 'pending') {
+        summary.textContent = `Previous accepted world; awaiting validation of command ${input.commandId}.`;
+        return;
+      }
+      if (input.status === 'unavailable') {
+        source = undefined;
+        replacementId = undefined;
+        selectedTick = null;
+        selectedSequence = null;
+        sourceKey = '';
+        plots.replaceChildren();
+        details.replaceChildren();
+        manualDetails.replaceChildren();
+        manualSelect.replaceChildren(new Option('No retained manual actions', 'latest'));
+        manualSelect.disabled = true;
+        manualSummary.textContent = 'No active world; manual history unknown.';
+        summary.textContent = 'No active world; history unknown.';
+        sampleSelect.replaceChildren(new Option('No source received', 'latest'));
+        sampleSelect.disabled = true;
+        status.textContent = '';
+        invalidate();
+        return;
+      }
+      const replaced = replacementId !== input.replacementId;
+      if (replaced) {
+        selectedTick = null;
+        selectedSequence = null;
+        sourceKey = '';
+        source = undefined;
+        status.textContent = '';
+        plots.replaceChildren();
+        details.replaceChildren();
+        manualDetails.replaceChildren();
+        manualSelect.replaceChildren(new Option('No retained manual actions', 'latest'));
+        manualSelect.disabled = true;
+        manualSummary.textContent = 'Waiting for authoritative manual history.';
+      }
+      replacementId = input.replacementId;
+      currentTick = input.currentTick;
+      currentRevision = input.currentRevision;
+      source = input.source ?? undefined;
+      if (!source) {
+        summary.textContent = `World tick ${currentTick} (revision ${currentRevision}). ${emptyText()}`;
+        sampleSelect.replaceChildren(new Option('No source received', 'latest'));
+        sampleSelect.disabled = true;
+        return;
+      }
+      const telemetry = source.telemetry,
         samples = telemetry.samples,
         first = samples[0],
         last = samples.at(-1),
-        manual = frame.interventions,
+        manual = source.interventions,
         latestManual = manual.entries.at(-1),
-        key = `${run}/${telemetry.originTick}/${telemetry.adaptationOriginTick}/${samples.length}/${first?.tick}/${last?.tick}/${manual.originTick}/${manual.originKind}/${manual.totalEntries}/${latestManual?.sequence}/${latestManual?.kind === 'paint' || latestManual?.kind === 'refuge-paint' ? latestManual.detail.successfulCommands : ''}`;
-      summary.textContent = `World tick ${frame.stats.tick}; ${last ? `latest sample tick ${last.tick}; retained ticks ${first!.tick}–${last.tick}; ${samples.length} of at most ${TELEMETRY_CAPACITY} samples` : 'no recorded samples'}. Samples every ${TELEMETRY_INTERVAL_TICKS} completed ticks. Current live values can differ after paused editing. No synthetic initial, latest or extinction point.`;
+        key = `${replacementId}/${telemetry.originTick}/${telemetry.adaptationOriginTick}/${samples.length}/${first?.tick}/${last?.tick}/${manual.originTick}/${manual.originKind}/${manual.totalEntries}/${latestManual?.sequence}/${latestManual?.kind === 'paint' || latestManual?.kind === 'refuge-paint' ? latestManual.detail.successfulCommands : ''}`;
+      summary.textContent = `World tick ${currentTick} (revision ${currentRevision}); telemetry source observed at tick ${source.tick} (revision ${source.revision}); ${last ? `last received recorded sample tick ${last.tick}; received retained ticks ${first!.tick}–${last.tick}; ${samples.length} of at most ${TELEMETRY_CAPACITY} samples` : emptyText()}. ${source.tick < currentTick || source.revision < currentRevision ? 'Observation/transport lag: later observations may not yet be received. ' : ''}Pending accounting is as of source tick ${source.tick}, revision ${source.revision}. Samples every ${TELEMETRY_INTERVAL_TICKS} completed ticks. No synthetic initial, latest or extinction point.`;
+      if (!last) {
+        const paragraph = plots.querySelector('p');
+        if (paragraph) paragraph.textContent = emptyText();
+      }
       if (key === sourceKey) return;
       sourceKey = key;
       if (selectedTick !== null && !samples.some((sample) => sample.tick === selectedTick)) {
@@ -721,28 +790,13 @@ export function createTelemetryView(root: HTMLElement) {
       manualSelect.value = selectedSequence === null ? 'latest' : String(selectedSequence);
       invalidate();
     },
-    reset(): void {
-      if (disposed) return;
-      selectedTick = null;
-      selectedSequence = null;
-      source = undefined;
-      sourceKey = '';
-      plots.replaceChildren();
-      details.replaceChildren();
-      manualDetails.replaceChildren();
-      manualSummary.textContent = 'Waiting for authoritative manual history.';
-      manualSelect.replaceChildren(new Option('No retained manual actions', 'latest'));
-      manualSelect.disabled = true;
-      summary.textContent = 'Waiting for the new world’s authoritative observations.';
-      sampleSelect.replaceChildren(new Option('No recorded samples', 'latest'));
-      sampleSelect.disabled = true;
-      status.textContent = '';
-      invalidate();
-    },
     render,
     dispose(): void {
       disposed = true;
       source = undefined;
+      selectedTick = null;
+      sourceKey = '';
+      replacementId = undefined;
       observer?.disconnect();
       viewSelect.removeEventListener('change', changeView);
       sampleSelect.removeEventListener('change', change);

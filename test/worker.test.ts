@@ -1,4 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { startWorker, type Scope } from '../src/worker';
 import { Ecosystem } from '../src/ecosystem';
 import {
@@ -12,6 +13,11 @@ import { legacyV3, legacyV4, legacyV5, legacyV6, legacyV7, legacyV8 } from './fi
 import { DEFAULT_TERRAIN } from '../src/terrain';
 import { readFileSync } from 'node:fs';
 import { acceptedReference, fixtureText, predecessor, identicalRecords } from './fixtures/refuges';
+import {
+  observerWorld,
+  extendedObserverWorld,
+  withoutObserverExtensions,
+} from './fixtures/observers';
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
 import {
   contradictoryPruning,
@@ -27,6 +33,10 @@ import {
 } from './fixtures/lineage';
 import {
   DEFAULTS,
+  observedOrganism,
+  observedGenome,
+  observedSettings,
+  nextSessionId,
   WIDTH,
   WORLD_MAX_BYTES,
   STROKE_COMMAND_CAPACITY,
@@ -50,25 +60,17 @@ function sender(scope: Scope) {
     runId = 0,
     stroke = 0,
     active = 0;
-  const manual = [
-    'begin-stroke',
-    'end-stroke',
-    'paint',
-    'settings',
-    'shock',
-    'clear-walls',
-    'regenerate-walls',
-    'refuge-mode',
-    'paint-refuge',
-    'clear-refuges',
-  ];
   function raw(data: any): void {
-    const tracked = [...manual, 'start', 'load', 'save', 'export-measurements'].includes(data.type);
     if (data.type === 'start' || data.type === 'load') runId = data.runId;
-    const message = tracked
-      ? { runId, ...data, [manual.includes(data.type) ? 'commandId' : 'requestId']: ++posting }
-      : data;
-    scope.onmessage!({ data: message } as MessageEvent);
+    scope.onmessage!({
+      data: {
+        ...(data.type === 'start' ? { display: { epoch: 0, enabled: true, visible: true } } : {}),
+        ...(data.type === 'snapshot' ? { display: true } : {}),
+        runId,
+        ...data,
+        commandId: ++posting,
+      },
+    } as MessageEvent);
   }
   return (data: any): void => {
     if (data.type === 'paint' && ['food', 'wall', 'erase'].includes(data.tool)) {
@@ -110,12 +112,18 @@ function terminalWorld(offset = 1, energy = 5, atTick = 71): WorldFile {
   world.walls[index(6, 6)] = 1;
   return world.save();
 }
-function workerHarness(startFunction = startWorker) {
+function workerHarness(autoAckOrStart: boolean | typeof startWorker = true) {
+  const autoAck = typeof autoAckOrStart === 'boolean' ? autoAckOrStart : true;
+  const startFunction = typeof autoAckOrStart === 'function' ? autoAckOrStart : startWorker;
   const tasks: (() => void)[] = [],
     messages: any[] = [],
     seenTransfers = new WeakSet<object>(),
     transferStats = { batches: 0, buffers: 0, duplicates: 0, detached: 0 };
-  let responseCount = 0;
+  let responseCount = 0,
+    commandId = 0,
+    runId = 0,
+    time = 0;
+  let observation: any, source: any, terminal: any;
   const scope: Scope = {
     onmessage: null,
     postMessage(data, transfer = []) {
@@ -132,21 +140,68 @@ function workerHarness(startFunction = startWorker) {
       const previous = messages.findIndex((message) => message.type === data.type);
       if (previous >= 0) messages.splice(previous, 1);
       messages.push(response);
+      if ('state' in response) observation = response.state;
+      if ('telemetry' in response) source = response.telemetry;
+      if (response.type === 'error' && response.recovery) {
+        observation = response.recovery.state;
+        source = response.recovery.telemetry;
+      }
+      if ('commandId' in response) terminal = response;
+      if (autoAck && (response.type === 'frame' || response.type === 'progress'))
+        scope.onmessage!({
+          data: {
+            type: 'flow-ack',
+            runId: response.runId,
+            sequence: response.sequence,
+            channel: response.type === 'frame' ? 'display' : 'progress',
+          },
+        } as MessageEvent);
     },
   };
-  startFunction(scope, (callback) => tasks.push(callback));
-  const post = sender(scope);
-  const send = (data: any) => {
-    post(data);
-    return messages.at(-1);
+  const dispose = startFunction(
+    scope,
+    (callback) => tasks.push(callback),
+    () => time,
+  );
+  let automaticStroke = 0;
+  const send = (data: any): any => {
+    if (data.type === 'paint' && data.tool !== 'plant' && data.strokeId === undefined) {
+      const strokeId = ++automaticStroke;
+      send({ type: 'begin-stroke', strokeId, tool: data.tool, radius: data.radius });
+      const response = send({ ...data, strokeId });
+      send({ type: 'end-stroke', strokeId });
+      return response;
+    }
+    if (data.runId !== undefined && (data.type === 'load' || data.type === 'start'))
+      runId = data.runId;
+    const payload = {
+      ...(data.type === 'start' ? { display: { epoch: 0, enabled: true, visible: true } } : {}),
+      ...(data.type === 'snapshot' ? { display: true } : {}),
+      ...data,
+      runId: data.runId ?? runId,
+      commandId: ++commandId,
+    };
+    terminal = undefined;
+    scope.onmessage!({ data: structuredClone(payload) } as MessageEvent);
+    return terminal;
   };
   const last = (type = 'frame') => messages.filter((message) => message.type === type).at(-1);
   const saveText = (): string => send({ type: 'save' }).text;
   const save = (): WorldFile => JSON.parse(saveText());
-  const advance = () => tasks.shift()!();
-  const load = (file: WorldFile | WorldFileV5, runId = 1) =>
+  const advance = (elapsed = 40) => {
+    time += elapsed;
+    tasks.shift()!();
+  };
+  const load = (file: WorldFile, runId = 1) =>
     send({ type: 'load', runId, text: JSON.stringify(file) });
-  const frame = (): Frame => send({ type: 'snapshot' }).frame;
+  const frame = (): Frame => {
+    send({ type: 'snapshot', display: true });
+    return {
+      ...last('frame').frame,
+      telemetry: source.telemetry,
+      interventions: source.interventions,
+    };
+  };
   return {
     scope,
     tasks,
@@ -159,6 +214,15 @@ function workerHarness(startFunction = startWorker) {
     advance,
     load,
     frame,
+    state: () => observation,
+    source: () => source,
+    dispose,
+    setTime: (value: number) => {
+      time = value;
+    },
+    elapse: (elapsed: number) => {
+      time += elapsed;
+    },
     get responseCount() {
       return responseCount;
     },
@@ -181,32 +245,32 @@ describe('frozen raw boundary admission and recovery', () => {
         queued = harness.tasks.length,
         count = harness.responseCount;
       identicalRecords(
-        restoreHistoricalOrganism(harness.last().selected),
-        reference.save().organisms[0],
+        harness.last().state.selected,
+        observedOrganism(Ecosystem.load(JSON.stringify(reference.save())).save().organisms[0]),
       );
       harness.send({ type: 'load', runId: 2, text });
-      expect(harness.responseCount).toBe(count + 1);
+      expect(harness.responseCount).toBe(count + 3);
       const error = harness.last('error');
       expect(error).toMatchObject({
         runId: 2,
         operation: 'load',
-        recovery: { playback: { paused: true } },
+        recovery: { state: { playback: { paused: true } } },
       });
       expect(error).not.toHaveProperty('fatal');
       expect(harness.tasks).toHaveLength(queued);
       identicalRecords(
-        restoreHistoricalOrganism(error.recovery.selected),
-        reference.save().organisms[0],
+        error.recovery.state.selected,
+        observedOrganism(Ecosystem.load(JSON.stringify(reference.save())).save().organisms[0]),
       );
-      identicalRecords(error.recovery.settings, reference.save().settings);
+      identicalRecords(error.recovery.state.settings, observedSettings(reference.save().settings));
       expect(harness.saveText()).toBe(before);
       expect(predecessor(harness.save())).toEqual(JSON.parse(JSON.stringify(reference.save())));
       harness.send({ type: 'step' });
       reference.step();
       expect(predecessor(harness.save())).toEqual(JSON.parse(JSON.stringify(reference.save())));
       identicalRecords(
-        restoreHistoricalOrganism(harness.last().selected),
-        reference.save().organisms[0],
+        harness.last().state.selected,
+        observedOrganism(Ecosystem.load(JSON.stringify(reference.save())).save().organisms[0]),
       );
     },
   );
@@ -219,12 +283,15 @@ describe('frozen raw boundary admission and recovery', () => {
         harness.send({ type: 'load', runId: 1, text });
         harness.send({ type: 'pause' });
         harness.send({ type: 'inspect', x: 120, y: 78 });
-        const settings = harness.last('loaded').settings,
-          selected = harness.last().selected;
+        const settings = harness.last('loaded').state.settings,
+          selected = harness.last().state.selected;
         // Lifecycle settings intentionally expose only the four known UI fields.
         const { seed, mutation, nutrients, climate } = reference.save().settings;
         identicalRecords(settings, { seed, mutation, nutrients, climate });
-        identicalRecords(restoreHistoricalOrganism(selected), reference.save().organisms[0]);
+        identicalRecords(
+          selected,
+          observedOrganism(Ecosystem.load(JSON.stringify(reference.save())).save().organisms[0]),
+        );
         for (const record of [settings, selected, selected.genome, selected.genome.cells[0]])
           Object.defineProperty(record, '__proto__', {
             value: { changed: true },
@@ -232,8 +299,8 @@ describe('frozen raw boundary admission and recovery', () => {
           });
         harness.send({ type: 'snapshot' });
         identicalRecords(
-          restoreHistoricalOrganism(harness.last().selected),
-          reference.save().organisms[0],
+          harness.last().state.selected,
+          observedOrganism(Ecosystem.load(JSON.stringify(reference.save())).save().organisms[0]),
         );
         expect(predecessor(harness.save())).toEqual({
           ...JSON.parse(JSON.stringify(reference.save())),
@@ -245,8 +312,8 @@ describe('frozen raw boundary admission and recovery', () => {
         harness.send({ type: 'step' });
         reference.step();
         identicalRecords(
-          restoreHistoricalOrganism(harness.last().selected),
-          reference.save().organisms[0],
+          harness.last().state.selected,
+          observedOrganism(Ecosystem.load(JSON.stringify(reference.save())).save().organisms[0]),
         );
         expect(predecessor(harness.save())).toEqual({
           ...JSON.parse(JSON.stringify(reference.save())),
@@ -288,8 +355,8 @@ describe('terrain worker ownership, literal migration and nonfatal size preserva
         });
         expect(harness.save()).toEqual(reference.save());
         expect(harness.tasks).toHaveLength(queued);
-        expect(harness.last().selected.id).toBe(1);
-        expect(harness.last().playback.paused).toBe(true);
+        expect(harness.last().state.selected.id).toBe(1);
+        expect(harness.last().state.playback.paused).toBe(true);
       }
       harness.send({
         type: 'regenerate-walls',
@@ -370,14 +437,15 @@ describe('terrain worker ownership, literal migration and nonfatal size preserva
     expect(harness.last('error').message).toContain('closed');
     raw({
       type: 'start',
-      requestId: 1004,
+      commandId: 1004,
+      display: { epoch: 0, enabled: true, visible: true },
       runId: 2,
       settings: DEFAULTS,
       terrain: { ...DEFAULT_TERRAIN, version: 99 },
     });
-    expect(harness.last('error').recovery.frame.terrain).toEqual(DEFAULT_TERRAIN);
-    expect(harness.last('error').recovery.playback.paused).toBe(true);
-    raw({ type: 'save', requestId: 1005, runId: 2 });
+    expect(harness.last('error').recovery.state.world.terrain).toEqual(DEFAULT_TERRAIN);
+    expect(harness.last('error').recovery.state.playback.paused).toBe(true);
+    raw({ type: 'save', commandId: 1005, runId: 2 });
     const reference = new Ecosystem();
     reference.changeTerrain('clear');
     expect(JSON.parse(harness.last('saved').text)).toEqual(reference.save());
@@ -387,9 +455,7 @@ describe('terrain worker ownership, literal migration and nonfatal size preserva
     const harness = workerHarness();
     harness.send({ type: 'load', text: JSON.stringify(original), runId: 1 });
     expect(harness.last('loaded')).toMatchObject({
-      terrainMigration: true,
-      terrain: DEFAULT_TERRAIN,
-      playback: { paused: false },
+      state: { world: { terrain: DEFAULT_TERRAIN }, playback: { paused: false } },
     });
     harness.send({ type: 'pause' });
     const reference = Ecosystem.load(JSON.stringify(original));
@@ -406,10 +472,10 @@ describe('terrain worker ownership, literal migration and nonfatal size preserva
       WORLD_MAX_BYTES - Buffer.byteLength(JSON.stringify(capped)),
     );
     let active: Ecosystem;
-    const originalFrame = Ecosystem.prototype.frame;
-    vi.spyOn(Ecosystem.prototype, 'frame').mockImplementation(function (this: Ecosystem) {
+    const originalFrame = Ecosystem.prototype.display;
+    vi.spyOn(Ecosystem.prototype, 'display').mockImplementation(function (this: Ecosystem) {
       active = this;
-      return originalFrame.call(this);
+      return originalFrame.call(this, this.presentation());
     });
     harness.send({ type: 'load', runId: 3, text: JSON.stringify(capped) });
     harness.send({ type: 'pause' });
@@ -427,7 +493,7 @@ describe('terrain worker ownership, literal migration and nonfatal size preserva
     migrated.step();
     harness.send({ type: 'step' });
     expect(active!.save()).toEqual(migrated.save());
-    expect(harness.last().selected).toEqual(migrated.save().organisms[0]);
+    expect(harness.last().state.selected).toEqual(observedOrganism(migrated.save().organisms[0]));
   });
 });
 describe('painted temperature native protocol', () => {
@@ -446,11 +512,8 @@ describe('painted temperature native protocol', () => {
         type,
         runId,
         ...payload,
-        ...(manual
-          ? { commandId: ++commandId }
-          : ['start', 'load', 'save'].includes(type)
-            ? { requestId: ++commandId }
-            : {}),
+        commandId: ++commandId,
+        ...(type === 'start' ? { display: { epoch: 0, enabled: true, visible: true } } : {}),
       };
       harness.scope.onmessage!({ data: message } as MessageEvent);
       return message;
@@ -607,13 +670,840 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
+describe('explicit full design capture over the bounded native protocol', () => {
+  it.each(['organism', 'lineage'] as const)(
+    'captures the complete detached %s genotype at the response tick without changing the whole world',
+    (source) => {
+      const original: any = legacyV7(new Ecosystem().save());
+      original.organisms[0].genome.sensorMemo = {
+        payload: 'native opaque capture',
+        negativeZero: -0,
+      };
+      original.organisms[0].genome.cells[0].cellMemo = ['retained cell payload'];
+      const reference = Ecosystem.load(JSON.stringify(original));
+      const harness = workerHarness();
+      harness.load(original);
+      harness.send({ type: 'pause' });
+      harness.send({ type: 'inspect', x: 120, y: 78 });
+      const before = harness.saveText(),
+        callbacks = [...harness.tasks];
+      const selected = reference.save().organisms[0];
+      const response = harness.send({
+        type: 'capture-design',
+        source,
+        sourceId: source === 'organism' ? selected.id : selected.species,
+        captureId: 17,
+      });
+      expect(response).toMatchObject({
+        type: 'design-captured',
+        operation: 'capture-design',
+        source,
+        captureId: 17,
+        completedTick: reference.tick,
+        seed: reference.settings.seed,
+      });
+      expect(response.genome).toEqual(selected.genome);
+      expect(JSON.stringify(response.state)).not.toContain('native opaque capture');
+      response.genome.cells[0].type = 8;
+      const next = harness.send({
+        type: 'capture-design',
+        source,
+        sourceId: source === 'organism' ? selected.id : selected.species,
+        captureId: 18,
+      });
+      expect(next.genome).toEqual(selected.genome);
+      expect(harness.saveText()).toBe(before);
+      expect(harness.tasks).toEqual(callbacks);
+      harness.send({ type: 'step' });
+      reference.step();
+      const stepped = harness.send({
+        type: 'capture-design',
+        source,
+        sourceId: source === 'organism' ? selected.id : selected.species,
+        captureId: 19,
+      });
+      expect(stepped.completedTick).toBe(reference.tick);
+      expect(stepped.genome).toEqual(reference.save().organisms[0].genome);
+      expect(harness.save()).toEqual(reference.save());
+    },
+  );
+  it.each([
+    { source: 'unknown', sourceId: 1, captureId: 1 },
+    { source: 'organism', sourceId: 0, captureId: 1 },
+    { source: 'organism', sourceId: 1, captureId: 0 },
+    { source: 'organism', sourceId: 99999, captureId: 1 },
+    { source: 'lineage', sourceId: 99999, captureId: 1 },
+  ])('rejects invalid or vanished full-capture source %j without any world edit', (payload) => {
+    const harness = workerHarness();
+    harness.load(new Ecosystem().save());
+    harness.send({ type: 'pause' });
+    const before = harness.saveText(),
+      tasks = [...harness.tasks];
+    const response = harness.send({ type: 'capture-design', ...payload });
+    expect(response).toMatchObject({
+      type: 'error',
+      operation: 'capture-design',
+      code: 'invalid-command',
+    });
+    expect(response).not.toHaveProperty('fatal');
+    expect(harness.saveText()).toBe(before);
+    expect(harness.tasks).toEqual(tasks);
+  });
+});
+
+describe('bounded long-run transport', () => {
+  it('retains independent grid-free source credit while real history advances across multiple recording boundaries', () => {
+    const display = vi.spyOn(Ecosystem.prototype, 'display');
+    const harness = workerHarness(false);
+    harness.send({
+      type: 'start',
+      settings: DEFAULTS,
+      runId: 1,
+      display: { epoch: 0, enabled: false, visible: true },
+    });
+    const owner = harness.last('progress'),
+      source = harness.source();
+    for (let batch = 0; batch < 20; batch++) harness.advance();
+    expect(harness.save().tick).toBe(80);
+    expect(harness.save().telemetry.samples.map((sample) => sample.tick)).toEqual([30, 60]);
+    expect(harness.source()).toEqual(source);
+    expect(source.tick).toBe(0);
+    expect(display).not.toHaveBeenCalled();
+    harness.scope.onmessage!({
+      data: { type: 'flow-ack', channel: 'progress', runId: owner.runId, sequence: owner.sequence },
+    } as MessageEvent);
+    expect(harness.last('progress').state.world.stats.tick).toBe(80);
+    expect(harness.source().tick).toBe(80);
+    expect(harness.source().telemetry.samples.map((sample: any) => sample.tick)).toEqual([30, 60]);
+    expect(harness.transferStats.batches).toBe(0);
+    harness.send({ type: 'snapshot', display: false });
+    expect(display).not.toHaveBeenCalled();
+  });
+  it('rejects malformed and duplicate envelopes, obsolete view epochs and obsolete world commands', () => {
+    const harness = workerHarness();
+    harness.send({ type: 'start', settings: DEFAULTS, runId: 1 });
+    const before = harness.responseCount;
+    harness.scope.onmessage!({ data: { type: 'pause', runId: 1 } } as MessageEvent);
+    harness.scope.onmessage!({ data: { type: 'pause', runId: 1, commandId: 1 } } as MessageEvent);
+    expect(harness.responseCount).toBe(before);
+    expect(harness.send({ type: 'settings', runId: 0, settings: {} }).code).toBe('stale-run');
+    expect(
+      harness.send({ type: 'display-view', view: { epoch: 0, enabled: false, visible: true } })
+        .code,
+    ).toBe('invalid-command');
+    expect(
+      harness.send({ type: 'display-view', view: { epoch: 1, enabled: false, visible: 'yes' } })
+        .code,
+    ).toBe('invalid-command');
+  });
+  it('fails closed when a credited publication or active target tick throws', () => {
+    const harness = workerHarness(false);
+    harness.send({ type: 'start', settings: DEFAULTS, runId: 1 });
+    const owner = harness.last('frame');
+    harness.send({ type: 'pause' });
+    const display = vi.spyOn(Ecosystem.prototype, 'display').mockImplementationOnce(() => {
+      throw new Error('display failed');
+    });
+    harness.scope.onmessage!({
+      data: { type: 'flow-ack', channel: 'display', runId: owner.runId, sequence: owner.sequence },
+    } as MessageEvent);
+    expect(harness.last('error')).toMatchObject({ fatal: true, message: 'display failed' });
+    display.mockRestore();
+    harness.send({ type: 'start', settings: DEFAULTS, runId: 2 });
+    harness.send({ type: 'run-to', targetTick: 120 });
+    const step = vi.spyOn(Ecosystem.prototype, 'step').mockImplementationOnce(() => {
+      throw new Error('tick failed');
+    });
+    harness.advance();
+    expect(harness.last('error')).toMatchObject({ fatal: true, message: 'tick failed' });
+    step.mockRestore();
+  });
+  it('defensively settles before a scheduled batch when the real retained world is already empty', () => {
+    let retained!: Ecosystem;
+    const save = Ecosystem.prototype.save;
+    vi.spyOn(Ecosystem.prototype, 'save').mockImplementation(function (this: Ecosystem) {
+      retained = this;
+      return save.call(this);
+    });
+    const harness = workerHarness();
+    harness.send({ type: 'start', settings: DEFAULTS, runId: 1 });
+    harness.save();
+    retained.paint('erase', 120, 78, 2, founder(0));
+    harness.advance();
+    expect(harness.state().playback.paused).toBe(true);
+    expect(harness.save().tick).toBe(0);
+    expect(harness.tasks).toHaveLength(0);
+  });
+  it.each([1, 4, 12])(
+    'reaches exactly 120 at speed %s with identical complete on/off saves at every batch',
+    (speed) => {
+      const enabled = workerHarness(),
+        disabled = workerHarness();
+      enabled.send({ type: 'start', settings: DEFAULTS, runId: 1 });
+      disabled.send({
+        type: 'start',
+        settings: DEFAULTS,
+        runId: 1,
+        display: { epoch: 0, enabled: false, visible: true },
+      });
+      for (const harness of [enabled, disabled]) {
+        harness.send({ type: 'speed', value: speed });
+        harness.send({ type: 'run-to', targetTick: 120 });
+      }
+      expect(disabled.transferStats.batches).toBe(0);
+      while (enabled.state().target.status === 'running') {
+        expect(enabled.tasks).toHaveLength(1);
+        enabled.advance();
+        disabled.advance();
+        expect(enabled.save()).toEqual(disabled.save());
+      }
+      expect(enabled.state().world.stats.tick).toBe(120);
+      expect(enabled.state().target).toMatchObject({ status: 'reached', stoppedTick: 120 });
+      expect(disabled.transferStats.batches).toBe(0);
+      expect(enabled.tasks).toHaveLength(0);
+      expect(disabled.tasks).toHaveLength(0);
+    },
+  );
+  it('suspends, steps, resumes, cancels exact target identities and preserves a failed-load target', () => {
+    const harness = workerHarness();
+    harness.send({ type: 'start', settings: DEFAULTS, runId: 1 });
+    harness.send({ type: 'run-to', targetTick: 20 });
+    const first = harness.state().target.id;
+    harness.advance();
+    harness.send({ type: 'pause' });
+    expect(harness.state().target.status).toBe('suspended');
+    const before = harness.save();
+    expect(harness.send({ type: 'run-to', targetTick: 50 }).code).toBe('target-busy');
+    expect(harness.send({ type: 'cancel-target', targetId: first + 1 }).code).toBe(
+      'invalid-target',
+    );
+    expect(harness.save()).toEqual(before);
+    harness.send({ type: 'step' });
+    expect(harness.state().world.stats.tick).toBe(before.tick + 1);
+    harness.send({ type: 'load', runId: 2, text: '{}' });
+    expect(harness.state().target).toMatchObject({ id: first, status: 'suspended' });
+    harness.send({ type: 'resume' });
+    expect(harness.state().target.status).toBe('running');
+    harness.send({ type: 'cancel-target', targetId: first });
+    expect(harness.state().target).toMatchObject({
+      status: 'cancelled',
+      stoppedTick: before.tick + 1,
+    });
+    expect(harness.state().playback.paused).toBe(true);
+    harness.advance();
+    expect(harness.tasks).toHaveLength(0);
+    expect(harness.send({ type: 'cancel-target', targetId: first }).code).toBe('invalid-target');
+    expect(harness.send({ type: 'run-to', targetTick: 0 }).code).toBe('invalid-target');
+    expect(harness.send({ type: 'run-to', targetTick: NaN }).code).toBe('invalid-target');
+    expect(harness.send({ type: 'cancel-target', targetId: 0 }).code).toBe('invalid-target');
+    harness.send({ type: 'run-to', targetTick: before.tick + 1 });
+    expect(harness.state().target.status).toBe('reached');
+    harness.send({ type: 'start', settings: DEFAULTS, runId: 3 });
+    expect(harness.state().target).toBeNull();
+  });
+  it.each([71, 72, 73])(
+    'gives exact-target precedence at the genuine extinction boundary %s',
+    (targetTick) => {
+      const harness = workerHarness();
+      harness.load(terminalWorld());
+      harness.send({ type: 'run-to', targetTick });
+      if (targetTick > 71) harness.advance();
+      expect(harness.state().target.status).toBe(targetTick === 73 ? 'extinct' : 'reached');
+      expect(harness.save().tick).toBe(Math.min(targetTick, 72));
+      if (targetTick >= 72) expect(harness.save().organisms).toHaveLength(0);
+    },
+  );
+  it.each(['pause', 'cancel-target', 'run-to'])(
+    'publishes settled %s immediately with free credit at unchanged clock',
+    (action) => {
+      const harness = workerHarness();
+      harness.send({ type: 'start', settings: DEFAULTS, runId: 1 });
+      harness.send({ type: 'run-to', targetTick: 30 });
+      const before = harness.transferStats.batches,
+        sequence = harness.last('progress').sequence;
+      harness.send({ type: action, targetId: harness.state().target.id, targetTick: 0 });
+      if (action === 'run-to') {
+        expect(harness.last('error').code).toBe('target-busy');
+        return;
+      }
+      expect(harness.transferStats.batches).toBe(before + 1);
+      expect(harness.last('progress').sequence).toBe(sequence + 1);
+      expect(harness.last('frame').state.playback.paused).toBe(true);
+    },
+  );
+  it.each(['valid', 'invalid', 'empty'])(
+    'retains global owners across %s replacement until exact token release with no new tick/time/input',
+    (candidate) => {
+      const harness = workerHarness(false);
+      harness.send({ type: 'start', settings: DEFAULTS, runId: 1 });
+      const oldDisplay = harness.last('frame'),
+        oldProgress = harness.last('progress');
+      const empty = new Ecosystem(DEFAULTS, false).save();
+      const text =
+        candidate === 'invalid'
+          ? '{}'
+          : JSON.stringify(candidate === 'empty' ? empty : new Ecosystem().save());
+      harness.send({ type: 'load', text, runId: 2 });
+      harness.send({ type: 'pause' });
+      expect(harness.transferStats.batches).toBe(1);
+      const acknowledge = (channel: string, owner: any, sequence = owner.sequence) =>
+        harness.scope.onmessage!({
+          data: { type: 'flow-ack', channel, runId: owner.runId, sequence },
+        } as MessageEvent);
+      acknowledge('display', oldDisplay, oldDisplay.sequence + 1);
+      acknowledge('unrecognized', oldProgress);
+      expect(harness.transferStats.batches).toBe(1);
+      acknowledge('display', oldDisplay);
+      expect(harness.transferStats.batches).toBe(2);
+      expect(harness.last('frame')).toMatchObject({
+        runId: 2,
+        state: { playback: { paused: true } },
+      });
+      acknowledge('progress', oldProgress);
+      expect(harness.last('progress')).toMatchObject({
+        runId: 2,
+        state: { playback: { paused: true } },
+        telemetry: { tick: 0 },
+      });
+      const newest = harness.last('frame').sequence;
+      acknowledge('display', oldDisplay);
+      expect(harness.last('frame').sequence).toBe(newest);
+      expect(harness.save().tick).toBe(0);
+    },
+  );
+  it('never constructs hidden/off grids automatically but explicitly refreshes visible paused edits and defers dirty demand behind credit', () => {
+    const display = vi.spyOn(Ecosystem.prototype, 'display');
+    const harness = workerHarness(false);
+    harness.send({
+      type: 'start',
+      settings: DEFAULTS,
+      runId: 1,
+      display: { epoch: 0, enabled: false, visible: false },
+    });
+    for (let batch = 0; batch < 20; batch++) harness.advance();
+    expect(display).not.toHaveBeenCalled();
+    harness.send({ type: 'snapshot', display: true });
+    expect(display).not.toHaveBeenCalled();
+    harness.send({ type: 'pause' });
+    harness.send({ type: 'display-view', view: { epoch: 1, enabled: false, visible: true } });
+    expect(display).not.toHaveBeenCalled();
+    harness.send({ type: 'step' });
+    expect(display).toHaveBeenCalledTimes(1);
+    const owner = harness.last('frame');
+    harness.send({ type: 'inspect', x: 120, y: 78 });
+    harness.send({ type: 'snapshot', display: true });
+    expect(display).toHaveBeenCalledTimes(1);
+    harness.scope.onmessage!({
+      data: { type: 'flow-ack', channel: 'display', runId: owner.runId, sequence: owner.sequence },
+    } as MessageEvent);
+    expect(display).toHaveBeenCalledTimes(2);
+    harness.send({ type: 'display-view', view: { epoch: 2, enabled: true, visible: false } });
+    const nextOwner = harness.last('frame');
+    harness.scope.onmessage!({
+      data: {
+        type: 'flow-ack',
+        channel: 'display',
+        runId: nextOwner.runId,
+        sequence: nextOwner.sequence,
+      },
+    } as MessageEvent);
+    expect(display).toHaveBeenCalledTimes(2);
+    harness.send({ type: 'display-view', view: { epoch: 3, enabled: true, visible: true } });
+    expect(display).toHaveBeenCalledTimes(3);
+  });
+  it.each(['settings', 'inspect', 'paint', 'shock'] as const)(
+    'services a running off-mode Refresh synchronously after %s without losing held demand',
+    (type) => {
+      const display = vi.spyOn(Ecosystem.prototype, 'display'),
+        harness = workerHarness(false);
+      harness.send({
+        type: 'start',
+        settings: DEFAULTS,
+        display: { epoch: 0, enabled: false, visible: true },
+      });
+      harness.advance();
+      expect(display).not.toHaveBeenCalled();
+      expect(harness.transferStats.buffers).toBe(0);
+      harness.send({ type: 'snapshot', display: true });
+      const owner = harness.last('frame');
+      harness.send({ type: 'snapshot', display: true });
+      const payloads = {
+        settings: { settings: { mutation: 0.2 } },
+        inspect: { x: 120, y: 78 },
+        paint: { x: 10, y: 10, radius: 0, tool: 'food', genome: mouth },
+        shock: { kind: 'heat' },
+      };
+      harness.send({ type, ...payloads[type] });
+      const expected = Ecosystem.load(harness.saveText()),
+        queued = harness.tasks[0],
+        observation = structuredClone(harness.state());
+      expect(observation.playback.paused).toBe(false);
+      expect(harness.tasks).toHaveLength(1);
+      expect(display).toHaveBeenCalledTimes(1);
+      const acknowledge = (sequence: number, runId = owner.runId) =>
+        harness.scope.onmessage!({
+          data: { type: 'flow-ack', channel: 'display', runId, sequence },
+        } as MessageEvent);
+      acknowledge(owner.sequence + 1);
+      acknowledge(owner.sequence, owner.runId + 1);
+      expect(display).toHaveBeenCalledTimes(1);
+      acknowledge(owner.sequence);
+      expect(display).toHaveBeenCalledTimes(2);
+      expect(harness.last('frame').state).toEqual(observation);
+      const frame = harness.last('frame').frame,
+        reference = expected.frame();
+      expect({ ...frame, cells: [...frame.cells], ids: [...frame.ids] }).toEqual({
+        cells: [...reference.cells],
+        ids: [...reference.ids],
+        stats: reference.stats,
+        climate: reference.climate,
+        offset: reference.offset,
+        terrain: reference.terrain,
+        thermalRefuges: {
+          ...reference.thermalRefuges,
+          units: frame.thermalRefuges.units.constructor.from(reference.thermalRefuges.units),
+        },
+      });
+      expect(harness.tasks).toEqual([queued]);
+      expect(harness.saveText()).toBe(JSON.stringify(expected.save()));
+      expect(harness.transferStats).toEqual({ batches: 2, buffers: 6, duplicates: 0, detached: 6 });
+      acknowledge(owner.sequence);
+      acknowledge(harness.last('frame').sequence);
+      harness.advance();
+      expect(harness.transferStats.buffers).toBe(6);
+      expect(harness.tasks).toHaveLength(1);
+    },
+  );
+  it('measures actual completions across a full monotonic gap, labels hidden context and resets after pause/visibility changes', () => {
+    const harness = workerHarness();
+    harness.send({
+      type: 'start',
+      settings: DEFAULTS,
+      runId: 1,
+      display: { epoch: 0, enabled: false, visible: true },
+    });
+    harness.send({ type: 'speed', value: 1 });
+    for (let batch = 0; batch < 10; batch++) harness.advance(100);
+    expect(harness.state().rate).toMatchObject({
+      status: 'measured',
+      value: 10,
+      completedTicks: 10,
+      elapsedMs: 1000,
+    });
+    harness.advance(3000);
+    expect(harness.state().rate).toMatchObject({
+      status: 'timing-gap',
+      value: 1 / 3,
+      completedTicks: 1,
+      elapsedMs: 3000,
+    });
+    harness.send({ type: 'display-view', view: { epoch: 1, enabled: false, visible: false } });
+    expect(harness.state().rate).toMatchObject({
+      status: 'warming',
+      context: 'hidden',
+      value: null,
+    });
+    for (let batch = 0; batch < 60; batch++) harness.advance(100);
+    expect(harness.state().rate).toMatchObject({
+      status: 'measured',
+      context: 'hidden',
+      value: 10,
+    });
+    harness.send({ type: 'pause' });
+    expect(harness.state().rate.status).toBe('paused');
+    harness.send({ type: 'resume' });
+    harness.advance(0);
+    expect(harness.state().rate.value).toBeNull();
+    harness.setTime(NaN);
+    harness.advance(0);
+    harness.setTime(0);
+    harness.advance(0);
+    harness.send({ type: 'snapshot', display: false });
+    expect(harness.state().rate.status).toBe('warming');
+    harness.dispose();
+    const count = harness.responseCount;
+    harness.advance();
+    expect(harness.responseCount).toBe(count);
+    expect(harness.tasks).toHaveLength(0);
+  });
+  it('bounds accelerated whole-tick batches by speed and the eight millisecond budget with only one callback', () => {
+    const harness = workerHarness();
+    const step = Ecosystem.prototype.step;
+    vi.spyOn(Ecosystem.prototype, 'step').mockImplementation(function (this: Ecosystem) {
+      step.call(this);
+      harness.elapse(5);
+    });
+    harness.send({ type: 'start', settings: DEFAULTS, runId: 1 });
+    harness.send({ type: 'speed', value: 12 });
+    harness.send({ type: 'run-to', targetTick: 100 });
+    for (let batch = 0; batch < 5; batch++) {
+      expect(harness.tasks).toHaveLength(1);
+      harness.advance(0);
+      expect(harness.save().tick).toBe((batch + 1) * 2);
+    }
+    harness.send({ type: 'pause' });
+    harness.advance();
+    expect(harness.tasks).toHaveLength(0);
+  });
+  it('bounds maximal real-engine known-field controls and 180-sample telemetry without restricting full saves', () => {
+    const file = observerWorld(1600, true),
+      harness = workerHarness(),
+      selected = file.organisms.at(-1)!;
+    harness.send({
+      type: 'start',
+      settings: DEFAULTS,
+      display: { epoch: 0, enabled: false, visible: true },
+    });
+    harness.load(file, 2);
+    harness.send({ type: 'inspect', x: selected.x, y: selected.y });
+    harness.send({ type: 'run-to', targetTick: 1_000_000_000 });
+    harness.send({ type: 'pause' });
+    const state = harness.state(),
+      source = harness.source(),
+      size = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength,
+      controlBytes = size(state),
+      telemetryBytes = size(source);
+    expect(state.world.stats.population).toBe(1600);
+    expect(state.world.stats.top).toHaveLength(5);
+    expect(state.world.stats.top.every((species: any) => species.genome.cells.length === 16)).toBe(
+      true,
+    );
+    expect(state.selected.genome.cells).toHaveLength(16);
+    expect(state.selected.ancestry).toHaveLength(8);
+    expect(state.selected.age).toBe(100000);
+    expect(state.target).toMatchObject({ status: 'suspended', targetTick: 1_000_000_000 });
+    expect(source.telemetry.samples).toHaveLength(180);
+    expect(source.interventions.entries).toHaveLength(128);
+    for (const sample of source.telemetry.samples) {
+      expect(sample.cellCounts).toHaveLength(6);
+      expect(sample.adaptation.preferenceBins).toHaveLength(10);
+      expect(Object.keys(sample.energy)).toHaveLength(9);
+      expect(Object.keys(sample.deaths)).toHaveLength(3);
+    }
+    expect(controlBytes).toBeLessThanOrEqual(32 * 1024);
+    expect(telemetryBytes).toBeLessThanOrEqual(256 * 1024);
+    expect(harness.saveText()).toBe(JSON.stringify(file));
+    process.stdout.write(
+      'MAXIMAL_OBSERVER_BYTES ' +
+        JSON.stringify({
+          fixture:
+            'Real 1600-organism/16-cell boundary expanded to 180 schema-valid sizing intervals, with upper-range counters/traits; not an uninterrupted ecological trajectory',
+          population: 1600,
+          top: 5,
+          topCells: 16,
+          selectedCells: 16,
+          ancestry: 8,
+          samples: 180,
+          manualEntries: source.interventions.entries.length,
+          controlBytes,
+          telemetryBytes,
+          completeSaveBytes: size(file),
+          stateKeys: Object.keys(state),
+          sampleKeys: Object.keys(source.telemetry.samples[0]),
+        }) +
+        '\n',
+    );
+  });
+  it.each(
+    ['settings', 'organism', 'genome', 'cell', 'all'].flatMap((surface) =>
+      ([1, 4, 12] as const).flatMap((speed) =>
+        Array.from({ length: 5 }, (_, window) => ({
+          surface,
+          speed,
+          from: window * 24,
+          through: (window + 1) * 24,
+        })),
+      ),
+    ),
+  )(
+    'preserves literal observer twins and full extension saves at $surface / speed $speed on every batch in $from–$through of 120 ticks',
+    async ({ surface, speed, from, through }) => {
+      const file = observerWorld(),
+        extended = extendedObserverWorld(file, surface),
+        reference = Ecosystem.load(JSON.stringify(file)),
+        extendedReference = Ecosystem.load(JSON.stringify(extended)),
+        plain = workerHarness(),
+        extra = workerHarness(),
+        selected = file.organisms.at(-1)!,
+        surfaces = new Map<string, { bytes: number; sha256: string }>();
+      let expectedSaves: [string, string] | undefined;
+      const size = (text: string) => new TextEncoder().encode(text).byteLength,
+        identical = (label: string, left: unknown, right: unknown) => {
+          const text = JSON.stringify(right);
+          expect(text).toBe(JSON.stringify(left));
+          expect(text).not.toContain('observerExtension');
+          surfaces.set(label, {
+            bytes: size(text),
+            sha256: createHash('sha256').update(text).digest('hex'),
+          });
+        },
+        pair = (command: any) => {
+          const first = plain.send(command),
+            second = extra.send(command);
+          if (command.type === 'save') {
+            expect(first.byteLength).toBe(size(first.text));
+            expect(second.byteLength).toBe(size(second.text));
+            identical(
+              'saved-state',
+              { ...first, text: undefined, byteLength: undefined },
+              { ...second, text: undefined, byteLength: undefined },
+            );
+            expect(first.text).toBe(expectedSaves?.[0] ?? JSON.stringify(reference.save()));
+            expect(second.text).toBe(
+              expectedSaves?.[1] ?? JSON.stringify(extendedReference.save()),
+            );
+          } else identical(first.type, first, second);
+          return [first, second];
+        },
+        poison = (value: any): void => {
+          if (!value || typeof value !== 'object') return;
+          if (ArrayBuffer.isView(value)) {
+            value.fill(9);
+            return;
+          }
+          for (const [key, child] of Object.entries(value)) {
+            if (child && typeof child === 'object') poison(child);
+            else value[key] = typeof child === 'number' ? -777 : 'caller mutation';
+          }
+          if (Array.isArray(value)) value.push({ callerMutation: true });
+        };
+      const extendedBytes = size(JSON.stringify(extended));
+      expect(extendedBytes).toBeLessThan(WORLD_MAX_BYTES);
+      expect(extendedBytes - size(JSON.stringify(file))).toBeGreaterThanOrEqual(96 * 1024);
+      pair({
+        type: 'start',
+        settings: DEFAULTS,
+        display: { epoch: 0, enabled: false, visible: true },
+      });
+      const callerOwned = structuredClone(extended),
+        initial = [plain.load(file, 2), extra.load(callerOwned, 2)];
+      poison(callerOwned);
+      identical('loaded', initial[0], initial[1]);
+      pair({ type: 'pause' });
+      pair({ type: 'inspect', x: selected.x, y: selected.y });
+      const first = pair({ type: 'snapshot', display: true }),
+        earlierFrame = extra.last('frame'),
+        second = pair({ type: 'snapshot', display: true }),
+        frame = extra.last('frame'),
+        secondBytes = JSON.stringify(second[1]),
+        frameBytes = JSON.stringify(frame);
+      identical('frame', plain.last('frame'), frame);
+      expect(first[1].state.selected.ancestry).not.toBe(second[1].state.selected.ancestry);
+      expect(first[1].state.selected.genome.cells).not.toBe(second[1].state.selected.genome.cells);
+      expect(first[1].state.world.stats.top[0].genome.cells).not.toBe(
+        second[1].state.world.stats.top[0].genome.cells,
+      );
+      expect(first[1].telemetry.telemetry.samples[0].energy).not.toBe(
+        second[1].telemetry.telemetry.samples[0].energy,
+      );
+      expect(first[1].telemetry.interventions.entries).not.toBe(
+        second[1].telemetry.interventions.entries,
+      );
+      expect(first[1].telemetry.interventions.entries[0].detail).not.toBe(
+        second[1].telemetry.interventions.entries[0].detail,
+      );
+      for (const format of ['json', 'csv']) {
+        const exported = pair({ type: 'export-measurements', format });
+        expect(exported[1].byteLength).toBe(size(exported[1].text));
+        identical('measurement-' + format, exported[0], exported[1]);
+      }
+      poison(initial[1]);
+      poison(first[1]);
+      poison(earlierFrame);
+      expect(JSON.stringify(second[1])).toBe(secondBytes);
+      expect(JSON.stringify(frame)).toBe(frameBytes);
+      pair({ type: 'save' });
+      const direct = extendedReference.frame(),
+        saved = JSON.stringify(extendedReference.save());
+      poison(direct);
+      expect(JSON.stringify(extendedReference.save())).toBe(saved);
+      pair({ type: 'snapshot', display: true });
+      identical('frame-after-mutation', plain.last('frame'), extra.last('frame'));
+      pair({ type: 'settings', settings: { forbidden: 1 } });
+      const recovery = extra.last('error');
+      expect(recovery.code).toBe('invalid-command');
+      identical('recovery', plain.last('error'), recovery);
+      poison(recovery);
+      pair({ type: 'save' });
+      pair({ type: 'load', runId: 3, text: '{}' });
+      expect(extra.last('error').code).toBe('load-failed');
+      identical('load-recovery', plain.last('error'), extra.last('error'));
+      poison(extra.last('error'));
+      pair({ type: 'save' });
+      pair({ type: 'speed', value: speed });
+      pair({ type: 'resume' });
+      for (let tick = 0; tick < through; tick += speed) {
+        plain.advance();
+        extra.advance();
+        for (let step = 0; step < speed; step++) {
+          reference.step();
+          extendedReference.step();
+        }
+        if (tick + speed < from) continue;
+        const plainExpected = reference.save(),
+          extraExpected = extendedReference.save();
+        expectedSaves = [JSON.stringify(plainExpected), JSON.stringify(extraExpected)];
+        if (tick < from) {
+          pair({ type: 'save' });
+          continue;
+        }
+        const before = pair({ type: 'save' });
+        pair({ type: 'inspect', x: selected.x, y: selected.y });
+        pair({ type: 'snapshot', display: false });
+        for (const format of ['json', 'csv']) {
+          const exported = pair({ type: 'export-measurements', format });
+          expect(exported[1].byteLength).toBe(size(exported[1].text));
+          identical('measurement-' + format, exported[0], exported[1]);
+        }
+        identical('progress', plain.last('progress'), extra.last('progress'));
+        const after = pair({ type: 'save' });
+        expect(after[0].text).toBe(before[0].text);
+        expect(after[1].text).toBe(before[1].text);
+        expect(JSON.stringify(withoutObserverExtensions(extraExpected))).toBe(expectedSaves[0]);
+        expect(plain.tasks).toHaveLength(1);
+        expect(extra.tasks).toHaveLength(1);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      pair({ type: 'pause' });
+      identical('terminal', plain.last('control'), extra.last('control'));
+      const final = pair({ type: 'save' });
+      expect(extra.transferStats).toEqual(plain.transferStats);
+      expect(extra.transferStats.duplicates).toBe(0);
+      expect(extra.transferStats.detached).toBe(extra.transferStats.buffers);
+      process.stdout.write(
+        'EXTENSION_OBSERVER_TWINS ' +
+          JSON.stringify({
+            surface,
+            speed,
+            trajectoryTicks: 120,
+            prefixTicks: from,
+            coveredThroughTick: through,
+            observedBatches: (through - from) / speed,
+            extendedBytes,
+            plainSaveBytes: size(final[0].text),
+            extendedSaveBytes: size(final[1].text),
+            plainSaveSHA256: createHash('sha256').update(final[0].text).digest('hex'),
+            extendedSaveSHA256: createHash('sha256').update(final[1].text).digest('hex'),
+            surfaces: Object.fromEntries(surfaces),
+            transferStats: extra.transferStats,
+            mutation:
+              'loaded/control/frame, selected ancestry/genome/cells, top genomes/cells, settings, every telemetry sample/pending ledger/count/bin, direct real-engine frame and recovery; later responses/saves/evolution unchanged',
+          }) +
+          '\n',
+      );
+      plain.dispose();
+      extra.dispose();
+    },
+  );
+  it('keeps the five ranked lineage projections detached even when every living organism has a distinct lineage', () => {
+    const world = new Ecosystem({ ...DEFAULTS, climate: 0, nutrients: 0 }, false, {
+      terrain: { version: 1, preset: 'open-field', seed: null },
+    });
+    for (let position = 0; position < 1600; position++)
+      world.spawn(
+        {
+          cells: [{ x: 0, y: 0, type: 4 }],
+          preference: 0.5,
+          tolerance: 0.3,
+          tempo: 2,
+          behavior: { version: 1, mode: 'legacy' },
+        },
+        position % WIDTH,
+        Math.floor(position / WIDTH),
+      );
+    const before = JSON.stringify(world.save());
+    const frame = world.frame();
+    expect(frame.stats.species).toBe(1600);
+    expect(frame.stats.top.map((value) => [value.id, value.count])).toEqual([
+      [5, 1],
+      [6, 1],
+      [7, 1],
+      [8, 1],
+      [9, 1],
+    ]);
+    for (const value of frame.stats.top) value.genome.cells[0].type = 8;
+    expect(world.frame().stats.top.every((value) => value.genome.cells[0].type === 4)).toBe(true);
+    expect(JSON.stringify(world.save())).toBe(before);
+  });
+  it('projects only recursively known detached observations while complete saves retain arbitrary validated extensions', () => {
+    const file: any = new Ecosystem().save();
+    file.settings.extension = 'settings-extension';
+    file.organisms[0].extension = 'organism-extension';
+    file.organisms[0].genome.legacyExtensions = [['extension', [['string', 'genome-extension']]]];
+    file.organisms[0].genome.cells[0].legacyExtensions = [
+      ['extension', [['string', 'cell-extension']]],
+    ];
+    const harness = workerHarness();
+    harness.load(file);
+    harness.send({ type: 'pause' });
+    harness.send({ type: 'inspect', x: 120, y: 78 });
+    const observation = harness.state(),
+      source = harness.source();
+    expect(JSON.stringify(observation)).not.toContain('-extension');
+    expect(JSON.stringify(source)).not.toContain('-extension');
+    expect(harness.save()).toEqual(file);
+    observation.selected.genome.cells[0].type = 8;
+    observation.world.stats.top[0].genome.cells[0].type = 8;
+    observation.settings.seed = 987;
+    source.telemetry.pending.energy.upkeepSpent = 123;
+    expect(harness.save()).toEqual(file);
+    harness.send({ type: 'settings', settings: { mutation: 0.2 } });
+    expect((harness.save().settings as any).extension).toBe('settings-extension');
+    expect(nextSessionId(4)).toBe(5);
+    expect(() => nextSessionId(Number.MAX_SAFE_INTEGER)).toThrow();
+  });
+});
 describe('correlated manual/export worker protocol', () => {
+  it('rejects malformed open and close envelopes without ecological or log effects', () => {
+    const harness = workerHarness();
+    harness.send({ type: 'start', settings: DEFAULTS });
+    harness.send({ type: 'pause' });
+    const before = harness.saveText();
+    for (const command of [
+      { type: 'begin-stroke', strokeId: 0, tool: 'food', radius: 0 },
+      { type: 'begin-stroke', strokeId: 1, tool: 'plant', radius: 0 },
+      { type: 'begin-stroke', strokeId: 1, tool: 'food', radius: 9 },
+      { type: 'end-stroke', strokeId: 0 },
+    ]) {
+      expect(harness.send(command)).toMatchObject({ type: 'error', operation: command.type });
+      expect(harness.saveText()).toBe(before);
+    }
+  });
+  it('does not leak a nonposted progress credit after a post-terminal publication failure and explicit recovery', () => {
+    const harness = workerHarness(false),
+      publish = harness.scope.postMessage;
+    let fail = true;
+    harness.scope.postMessage = (data, transfer) => {
+      if (fail && data.type === 'progress') {
+        fail = false;
+        throw new Error('injected nonposted progress');
+      }
+      publish(data, transfer);
+    };
+    harness.send({
+      type: 'start',
+      settings: DEFAULTS,
+      display: { epoch: 0, enabled: false, visible: true },
+    });
+    expect(harness.last('control')).toMatchObject({ commandId: 1, operation: 'start' });
+    expect(harness.last('error')).toMatchObject({ fatal: true });
+    expect(harness.last('error')).not.toHaveProperty('commandId');
+    expect(harness.saveText()).toBe(JSON.stringify(new Ecosystem().save()));
+    harness.send({ type: 'load', runId: 2, text: '{}' });
+    expect(harness.last('progress')).toMatchObject({
+      runId: 2,
+      state: { playback: { paused: true } },
+    });
+    expect(harness.transferStats.buffers).toBe(0);
+    expect(harness.tasks).toHaveLength(0);
+    expect(harness.saveText()).toBe(JSON.stringify(new Ecosystem().save()));
+  });
   it('retains an admitted historical opaque expansion when complete outbound Save exceeds 2.5 MB nonfatally', () => {
     let retained!: Ecosystem;
-    const frame = Ecosystem.prototype.frame;
-    vi.spyOn(Ecosystem.prototype, 'frame').mockImplementation(function (this: Ecosystem) {
+    const frame = Ecosystem.prototype.display;
+    vi.spyOn(Ecosystem.prototype, 'display').mockImplementation(function (this: Ecosystem) {
       retained = this;
-      return frame.call(this);
+      return frame.call(this, this.presentation());
     });
     const original = JSON.parse(baselineFixtures['world5-extras.json']);
     original.organisms[0].genome.expanding = Array(300000).fill(null);
@@ -637,10 +1527,10 @@ describe('correlated manual/export worker protocol', () => {
     harness.send({ type: 'step' });
     expect(retained.tick).toBe(original.tick + 1);
     expect(JSON.stringify(retained.save().organisms[0].genome)).toBe(genome);
-    expect(harness.last().playback.paused).toBe(true);
+    expect(harness.last().state.playback.paused).toBe(true);
   });
   it.each(['selected', 'recovery'])(
-    'detaches full passive inherited payload in %s native responses',
+    'detaches bounded known behavior in %s observations and complete passive payload only through explicit native capture',
     (boundary) => {
       const world = new Ecosystem(DEFAULTS, false),
         source = storedSensoryGenome();
@@ -651,14 +1541,23 @@ describe('correlated manual/export worker protocol', () => {
       harness.send({ type: 'pause' });
       harness.send({ type: 'inspect', x: 30, y: 30 });
       if (boundary === 'recovery') harness.send({ type: 'load', runId: 2, text: '{' });
-      const response = boundary === 'selected' ? harness.last() : harness.last('error').recovery;
-      expect(response.selected.genome).toEqual(original);
+      const response =
+        boundary === 'selected' ? harness.last().state : harness.last('error').recovery.state;
+      expect(response.selected.genome).toEqual(observedGenome(original));
+      expect(response.selected.genome).not.toHaveProperty('legacyExtensions');
       response.selected.genome.behavior.reactions.food = 'ignore';
-      response.selected.genome.legacyExtensions[0][1].at(-1)[1] = 'response-only';
+      const captured = harness.send({
+        type: 'capture-design',
+        source: 'organism',
+        sourceId: 1,
+        captureId: 1,
+      });
+      expect(captured.genome).toEqual(original);
+      captured.genome.legacyExtensions[0][1].at(-1)[1] = 'response-only';
       expect(harness.save().organisms[0].genome).toEqual(original);
       source.cells[0].legacyExtensions = [['source', [['null']]]];
       source.legacyExtensions = [['changed', [['boolean', false]]]];
-      expect(harness.frame().stats.top[0].genome).toEqual(original);
+      expect(harness.frame().stats.top[0].genome).toEqual(observedGenome(original));
       expect(harness.save().organisms[0].genome).toEqual(original);
     },
   );
@@ -671,20 +1570,8 @@ describe('correlated manual/export worker protocol', () => {
         type,
         runId,
         ...payload,
-        [[
-          'begin-stroke',
-          'paint',
-          'end-stroke',
-          'settings',
-          'shock',
-          'clear-walls',
-          'regenerate-walls',
-          'refuge-mode',
-          'paint-refuge',
-          'clear-refuges',
-        ].includes(type)
-          ? 'commandId'
-          : 'requestId']: ++posting,
+        commandId: ++posting,
+        ...(type === 'start' ? { display: { epoch: 0, enabled: true, visible: true } } : {}),
       };
       raw(data);
       return data;
@@ -732,7 +1619,7 @@ describe('correlated manual/export worker protocol', () => {
       );
       if (operation !== 'initial-start') {
         harness.post('start', { settings: DEFAULTS });
-        harness.raw({ type: 'pause' });
+        harness.post('pause');
         if (!pending) harness.advance();
         expect(harness.tasks).toHaveLength(pending ? 1 : 0);
       }
@@ -740,7 +1627,7 @@ describe('correlated manual/export worker protocol', () => {
         actualOperation = operation === 'initial-start' ? 'start' : operation,
         targetRun = ['start', 'load'].includes(operation) ? 2 : 1,
         publish = harness.scope.postMessage,
-        originalFrame = Ecosystem.prototype.frame;
+        originalFrame = Ecosystem.prototype.display;
       if (operation === 'paint-refuge' || operation === 'clear-refuges') {
         harness.post('refuge-mode', { rulesVersion: 1, enabled: true });
         reference.changeRefugeMode(true);
@@ -764,12 +1651,12 @@ describe('correlated manual/export worker protocol', () => {
           reference.paintRefuge({ rulesVersion: 1, tool: 'warm', radius: 0, units: 4 }, 1, 1);
         }
       }
-      vi.spyOn(Ecosystem.prototype, 'frame').mockImplementation(function (this: Ecosystem) {
+      vi.spyOn(Ecosystem.prototype, 'display').mockImplementation(function (this: Ecosystem) {
         if (armed && fault === 'frame-build') {
           armed = false;
           throw new Error('injected post-success frame construction failure');
         }
-        return originalFrame.call(this);
+        return originalFrame.call(this, this.presentation());
       });
       harness.scope.postMessage = (data, transfer) => {
         if (data.operation === actualOperation) {
@@ -851,10 +1738,10 @@ describe('correlated manual/export worker protocol', () => {
       harness.post('load', { text: '{}' }, targetRun + 1);
       expect(harness.last('error')).toMatchObject({
         operation: 'load',
-        recovery: { playback: { paused: true } },
+        recovery: { state: { playback: { paused: true } } },
       });
       expect(harness.tasks).toHaveLength(0);
-      harness.raw({ type: 'resume' });
+      harness.post('resume', {}, targetRun + 1);
       expect(harness.tasks).toHaveLength(1);
       harness.advance();
       for (let tick = 0; tick < 4; tick++) reference.step();
@@ -880,16 +1767,16 @@ describe('correlated manual/export worker protocol', () => {
     harness.raw({ type: 'start', runId: 1, requestId: 1, commandId: 1, settings: DEFAULTS });
     expect(harness.messages).toHaveLength(0);
     harness.post('save');
-    expect(harness.last('error')).toMatchObject({ operation: 'save', requestId: 1, runId: 1 });
+    expect(harness.last('error')).toMatchObject({ operation: 'save', commandId: 1, runId: 1 });
     const started = harness.post('start', { settings: DEFAULTS });
     const responseCount = harness.responseCount;
     harness.raw(started);
     harness.raw({ ...started, runId: 2 });
     expect(harness.responseCount).toBe(responseCount);
     harness.post('save', {}, 0);
-    expect(harness.last('error')).toMatchObject({ operation: 'save', requestId: 3, runId: 0 });
+    expect(harness.last('error')).toMatchObject({ operation: 'save', commandId: 3, runId: 0 });
     harness.post('export-measurements', { format: 'json' });
-    expect(harness.last('measurement-exported')).toMatchObject({ requestId: 4, runId: 1 });
+    expect(harness.last('measurement-exported')).toMatchObject({ commandId: 4, runId: 1 });
     harness.post('start', { settings: DEFAULTS }, 2);
     const capture = vi.spyOn(Ecosystem.prototype, 'measurements');
     harness.raw({ type: 'export-measurements', runId: 2, requestId: 4, format: 'csv' });
@@ -903,32 +1790,35 @@ describe('correlated manual/export worker protocol', () => {
     expect(harness.last('error')).toMatchObject({
       operation: 'export-measurements',
       format: 'json',
-      requestId: 7,
+      commandId: 7,
       runId: 2,
     });
     expect(harness.last('error').message.length).toBe(512);
     harness.post('export-measurements', { format: 'json' }, 2);
-    expect(harness.last('measurement-exported').requestId).toBe(8);
-    vi.spyOn(Ecosystem.prototype, 'frame').mockImplementationOnce(() => {
+    expect(harness.last('measurement-exported').commandId).toBe(8);
+    vi.spyOn(Ecosystem.prototype, 'display').mockImplementationOnce(() => {
       throw new Error('injected snapshot failure');
     });
-    harness.raw({ type: 'snapshot' });
-    expect(harness.last('error')).toEqual({
+    harness.post('snapshot', { display: true }, 2);
+    expect(harness.last('control')).toMatchObject({ commandId: 9, operation: 'snapshot' });
+    expect(harness.last('error')).toMatchObject({
       type: 'error',
       runId: 2,
-      message: 'injected snapshot failure',
+      fatal: true,
     });
+    expect(harness.last('error').message).toContain('injected snapshot failure');
+    expect(harness.last('error')).not.toHaveProperty('commandId');
     harness.post('save', {}, 2);
     const beforeFailure = harness.last('saved').text;
     harness.post('start', { settings: { ...DEFAULTS, nutrients: -1 } }, 3);
     expect(harness.last('error')).toMatchObject({
       operation: 'start',
       runId: 3,
-      recovery: { settings: DEFAULTS },
+      recovery: { state: { settings: DEFAULTS } },
     });
     harness.post('save', {}, 3);
     expect(harness.last('saved').text).toBe(beforeFailure);
-    vi.mocked(Ecosystem.prototype.frame).mockImplementationOnce(() => {
+    vi.spyOn(Ecosystem.prototype, 'presentation').mockImplementationOnce(() => {
       throw new Error('injected recovery failure');
     });
     harness.post('start', { settings: { ...DEFAULTS, nutrients: -1 } }, 4);
@@ -942,7 +1832,7 @@ describe('correlated manual/export worker protocol', () => {
   it('coalesces only real applied portions, preserves mid-stroke reads and rejects mismatched/closed commands', () => {
     const harness = protocol();
     harness.post('start', { settings: DEFAULTS });
-    harness.raw({ type: 'pause' });
+    harness.post('pause');
     harness.post('begin-stroke', { strokeId: 1, tool: 'food', radius: 0 });
     harness.post('begin-stroke', { strokeId: 2, tool: 'food', radius: 0 });
     expect(harness.last('error').operation).toBe('begin-stroke');
@@ -958,13 +1848,13 @@ describe('correlated manual/export worker protocol', () => {
     expect(JSON.parse(harness.last('measurement-exported').text).snapshot.openStrokeSequence).toBe(
       1,
     );
-    harness.raw({ type: 'inspect', x: 1, y: 1 });
-    harness.raw({ type: 'snapshot' });
+    harness.post('inspect', { x: 1, y: 1 });
+    harness.post('snapshot', { display: true });
     harness.post('save');
     expect(harness.last('saved').text).toBe(before);
     paint(1);
     expect(harness.last('manual-result')).toMatchObject({ status: 'no-op', rowSequence: null });
-    harness.raw({ type: 'step' });
+    harness.post('step');
     paint(2);
     harness.post('end-stroke', { strokeId: 2 });
     expect(harness.last('manual-result')).toMatchObject({ status: 'no-op', strokeId: 2 });
@@ -1013,7 +1903,7 @@ describe('correlated manual/export worker protocol', () => {
       if (data.type !== 'frame') receive(data, transfer);
     };
     harness.post('start', { settings: DEFAULTS });
-    harness.raw({ type: 'pause' });
+    harness.post('pause');
     harness.post('begin-stroke', { strokeId: 1, tool: 'food', radius: 0 });
     for (let command = 0; command < 4; command++)
       harness.post('paint', {
@@ -1045,7 +1935,7 @@ describe('correlated manual/export worker protocol', () => {
   it('returns explicit invalid-payload errors and logs only actual placement/settings/shock success', () => {
     const harness = protocol();
     harness.post('start', { settings: DEFAULTS });
-    harness.raw({ type: 'pause' });
+    harness.post('pause');
     for (const tool of ['unknown', 'food']) {
       harness.post('paint', { tool, x: -1, y: 1, radius: 0, genome: founder(0), strokeId: 1 });
       expect(harness.last('error').operation).toBe('paint');
@@ -1089,10 +1979,10 @@ describe('worker control and persistence', () => {
     expect(result).toMatchObject({
       type: 'error',
       runId: 1,
-      message: 'World file exceeds 2.5 MB. World preserved; no download created.',
+      message: 'World file exceeds 2.5 MB. Nothing was downloaded.',
     });
     expect(result).not.toHaveProperty('fatal');
-    expect(result).not.toHaveProperty('recovery');
+    expect(result.recovery.state.world.stats).toEqual(before.stats);
     expect(harness.messages.filter((message) => message.type === 'saved')).toHaveLength(savedCount);
     expect(harness.frame()).toEqual(before);
     expect(harness.tasks).toHaveLength(queued);
@@ -1112,12 +2002,12 @@ describe('worker control and persistence', () => {
     manualPaint(reference, 'erase', 40, 40, 0, genome);
     const extinct = harness.saveText();
     expect(extinct).toBe(JSON.stringify(reference.save()));
-    expect(harness.last().playback).toEqual({
+    expect(harness.state().playback).toEqual({
       paused: true,
       pauseOnExtinction: true,
       extinction: { tick: 90, cause: 'manual' },
     });
-    expect(harness.last().frame.telemetry.samples.at(-1)).toMatchObject({
+    expect(harness.source().telemetry.samples.at(-1)).toMatchObject({
       tick: 90,
       population: 1,
     });
@@ -1139,7 +2029,7 @@ describe('worker control and persistence', () => {
       genome: blueprint.genome,
     });
     manualPaint(reference, 'plant', 80, 80, 0, blueprint.genome);
-    expect(harness.last().playback).toEqual({
+    expect(harness.state().playback).toEqual({
       paused: true,
       pauseOnExtinction: true,
       extinction: null,
@@ -1151,13 +2041,13 @@ describe('worker control and persistence', () => {
       expect(harness.saveText()).toBe(JSON.stringify(reference.save()));
       expect(harness.tasks).toHaveLength(0);
     }
-    expect(harness.last().frame.telemetry.samples.at(-1)).toMatchObject({
+    expect(harness.source().telemetry.samples.at(-1)).toMatchObject({
       tick: 120,
       population: 1,
       deaths: { manual: 1 },
       births: 0,
     });
-    expect(harness.last().playback.paused).toBe(true);
+    expect(harness.state().playback.paused).toBe(true);
   });
 
   it('retains recorded telemetry through blueprint placement and exact save/load continuation', () => {
@@ -1170,7 +2060,7 @@ describe('worker control and persistence', () => {
     const harness = workerHarness();
     harness.send({ type: 'load', runId: 10, text: JSON.stringify(reference.save()) });
     harness.send({ type: 'pause' });
-    harness.tasks.shift()!();
+    harness.advance();
     const before = harness.save(),
       blueprint = parseBlueprint(
         serializeBlueprint({ name: 'Retained history', description: '', genome }),
@@ -1197,7 +2087,7 @@ describe('worker control and persistence', () => {
     expect(harness.tasks).toHaveLength(0);
     harness.send({ type: 'load', runId: 11, text: JSON.stringify(placed) });
     harness.send({ type: 'pause' });
-    harness.tasks.shift()!();
+    harness.advance();
     expect(harness.save()).toEqual(placed);
     for (let tick = 66; tick <= 95; tick++) {
       harness.send({ type: 'step' });
@@ -1211,16 +2101,13 @@ describe('worker control and persistence', () => {
     expect(harness.frame().telemetry.samples.at(-1)!.deaths.manual).toBe(1);
   });
   it('plants a decoded blueprint only on explicit command while paused and steps exactly once', () => {
-    const tasks: (() => void)[] = [],
-      scope: Scope = { postMessage: vi.fn(), onmessage: null };
-    startWorker(scope, (callback) => tasks.push(callback));
-    const send = sender(scope);
-    const last = () => vi.mocked(scope.postMessage).mock.calls.at(-1)![0];
+    const harness = workerHarness(),
+      { tasks, send, last } = harness;
     send({ type: 'start', settings: DEFAULTS, runId: 10 });
     send({ type: 'pause' });
-    tasks.shift()!();
+    harness.advance();
     send({ type: 'save' });
-    const before = last().text;
+    const before = last('saved').text;
     const genome = {
       behavior: { version: 1 as const, mode: 'legacy' as const },
       ...founder(2),
@@ -1240,12 +2127,12 @@ describe('worker control and persistence', () => {
       serializeBlueprint({ name: 'Shared genome', description: '', genome }),
     );
     send({ type: 'save' });
-    expect(last().text).toBe(before);
+    expect(last('saved').text).toBe(before);
     send({ type: 'paint', tool: 'plant', x: 20, y: 20, radius: 0, genome: blueprint.genome });
     expect(last().runId).toBe(10);
-    expect(last().frame.stats.tick).toBe(0);
+    expect(harness.state().world.stats.tick).toBe(0);
     send({ type: 'inspect', x: 20, y: 20 });
-    expect(last().selected).toMatchObject({
+    expect(harness.state().selected).toMatchObject({
       id: 2,
       species: JSON.parse(before).nextSpecies,
       age: 0,
@@ -1256,7 +2143,7 @@ describe('worker control and persistence', () => {
       genome,
     });
     blueprint.genome.cells[0].type = 8;
-    expect(last().selected.genome).toEqual(genome);
+    expect(harness.state().selected.genome).toEqual(genome);
     send({
       type: 'paint',
       tool: 'plant',
@@ -1266,12 +2153,12 @@ describe('worker control and persistence', () => {
       genome: { ...genome, tempo: 0 },
     });
     send({ type: 'save' });
-    expect(JSON.parse(last().text).organisms).toHaveLength(2);
+    expect(JSON.parse(last('saved').text).organisms).toHaveLength(2);
     send({ type: 'step' });
-    expect(last().frame.stats.tick).toBe(1);
+    expect(harness.state().world.stats.tick).toBe(1);
     expect(tasks).toHaveLength(0);
     send({ type: 'snapshot' });
-    expect(last().frame.stats.tick).toBe(1);
+    expect(harness.state().world.stats.tick).toBe(1);
     expect(tasks).toHaveLength(0);
   });
   it.each([1, 4, 12])(
@@ -1286,8 +2173,9 @@ describe('worker control and persistence', () => {
       expect(harness.tasks).toHaveLength(1);
       expect(harness.frame().telemetry.samples).toEqual([]);
       for (let batch = 1; batch <= 120 / speed; batch++) {
-        harness.tasks.shift()!();
-        const emitted = harness.messages.at(-1);
+        harness.advance();
+        const emitted = harness.last('frame');
+        harness.send({ type: 'snapshot', display: false });
         expect(emitted).toMatchObject({ type: 'frame', runId: 1 });
         expect(emitted.frame.stats.tick).toBe(batch * speed);
         for (let tick = 0; tick < speed; tick++) reference.step();
@@ -1295,12 +2183,14 @@ describe('worker control and persistence', () => {
         const before = harness.saveText(),
           expected = reference.save();
         expect(before).toBe(JSON.stringify(expected));
-        const samples = emitted.frame.telemetry.samples;
+        const samples = harness.source().telemetry.samples;
         expect(samples.map((sample) => sample.tick)).toEqual(
           Array.from({ length: Math.floor((batch * speed) / 30) }, (_, index) => (index + 1) * 30),
         );
         harness.send({ type: 'inspect', x: WIDTH / 2, y: 78 });
-        harness.frame();
+        harness.send({ type: 'snapshot', display: false });
+        expect(harness.saveText()).toBe(before);
+
         for (const format of ['json', 'csv']) {
           harness.send({ type: 'export-measurements', format });
           const exported = harness.last('measurement-exported');
@@ -1321,11 +2211,17 @@ describe('worker control and persistence', () => {
           }
         }
         expect(harness.saveText()).toBe(before);
-        expect(harness.messages).toHaveLength(5);
+        expect(harness.messages.map((message) => message.type).sort()).toEqual([
+          'control',
+          'frame',
+          'measurement-exported',
+          'progress',
+          'saved',
+        ]);
         expect(harness.messages.filter((message) => message.type === 'frame')).toHaveLength(1);
       }
       harness.send({ type: 'pause' });
-      harness.tasks.shift()!();
+      harness.advance();
       expect(harness.tasks).toHaveLength(0);
     },
   );
@@ -1334,13 +2230,14 @@ describe('worker control and persistence', () => {
     const world = new Ecosystem();
     for (let tick = 0; tick < 29; tick++) world.step();
     const harness = workerHarness();
+    harness.send({ type: 'start', settings: DEFAULTS, runId: 0 });
     harness.send({ type: 'pause-on-extinction', runId: 0, value: false });
     harness.send({ type: 'load', runId: 5, text: JSON.stringify(world.save()) });
     harness.send({ type: 'pause' });
-    harness.tasks.shift()!();
+    harness.advance();
     expect(harness.frame().telemetry.samples).toEqual([]);
     harness.send({ type: 'inspect', x: 120, y: 78 });
-    expect(harness.messages.at(-1).selected.id).toBe(1);
+    expect(harness.state().selected.id).toBe(1);
     harness.send({ type: 'step' });
     expect(harness.frame().stats.tick).toBe(30);
     const history = harness.frame().telemetry.samples;
@@ -1358,7 +2255,8 @@ describe('worker control and persistence', () => {
     harness.send({ type: 'paint', tool: 'plant', x: 40, y: 40, radius: 0, genome: founder(0) });
     harness.send({ type: 'inspect', x: 40, y: 40 });
     const before = harness.save(),
-      selected = harness.messages.filter((message) => message.type === 'frame').at(-1).selected;
+      selected = harness.messages.filter((message) => message.type === 'frame').at(-1)
+        .state.selected;
     for (const corrupt of [
       (file: any) => {
         file.telemetry.intervalTicks = 12;
@@ -1376,7 +2274,7 @@ describe('worker control and persistence', () => {
       expect(error).toMatchObject({ type: 'error', runId: 6 });
       const recovered = harness.send({ type: 'snapshot' });
       expect(recovered.runId).toBe(6);
-      expect(recovered.selected).toEqual(selected);
+      expect(recovered.state.selected).toEqual(selected);
       expect(harness.save()).toEqual(before);
       expect(harness.tasks).toHaveLength(0);
     }
@@ -1389,7 +2287,7 @@ describe('worker control and persistence', () => {
     const reference = Ecosystem.load(JSON.stringify(pending));
     harness.send({ type: 'speed', value: 12 });
     for (let batch = 0; batch < 10; batch++) {
-      harness.tasks.shift()!();
+      harness.advance();
       for (let tick = 0; tick < 12; tick++) reference.step();
     }
     expect(harness.save()).toEqual(reference.save());
@@ -1420,7 +2318,7 @@ describe('worker control and persistence', () => {
         harness.send({ type: 'load', runId: 1, text: JSON.stringify(reference.save()) });
         harness.send({ type: 'speed', value: 12 });
         expect(harness.frame().telemetry.samples).toEqual([]);
-        harness.tasks.shift()!();
+        harness.advance();
         for (let tick = 0; tick < 6; tick++) reference.step();
         const first = reference.save().telemetry.samples[0];
         expect(first).toMatchObject({
@@ -1437,7 +2335,7 @@ describe('worker control and persistence', () => {
         harness.send({ type: 'load', runId: 2, text: JSON.stringify(midpoint) });
         expect(harness.save()).toEqual(midpoint);
         for (let batch = 0; batch < 5; batch++) {
-          harness.tasks.shift()!();
+          harness.advance();
           for (let tick = 0; tick < 12; tick++) reference.step();
           expect(harness.save()).toEqual(reference.save());
         }
@@ -1448,7 +2346,7 @@ describe('worker control and persistence', () => {
           meanTolerance: tolerance,
         });
         for (let batch = 0; batch < 9; batch++) {
-          harness.tasks.shift()!();
+          harness.advance();
           harness.send({ type: 'inspect', x: 0, y: 0 });
           harness.frame();
           for (let tick = 0; tick < 12; tick++) reference.step();
@@ -1472,10 +2370,11 @@ describe('worker control and persistence', () => {
     const world = new Ecosystem(DEFAULTS, false);
     for (let tick = 0; tick < 5430; tick++) world.step();
     const harness = workerHarness();
+    harness.send({ type: 'start', settings: DEFAULTS, runId: 0 });
     harness.send({ type: 'pause-on-extinction', runId: 0, value: false });
     harness.send({ type: 'load', runId: 1, text: JSON.stringify(world.save()) });
     harness.send({ type: 'pause' });
-    harness.tasks.shift()!();
+    harness.advance();
     expect(harness.frame().telemetry.samples).toHaveLength(180);
     expect(harness.frame().telemetry.samples[0].tick).toBe(60);
     harness.send({ type: 'paint', tool: 'food', x: 30, y: 30, radius: 0, genome: founder(0) });
@@ -1485,7 +2384,7 @@ describe('worker control and persistence', () => {
     expect(harness.save().telemetry).toEqual(before);
     harness.send({ type: 'resume' });
     harness.send({ type: 'speed', value: 12 });
-    for (let batch = 0; batch < 3; batch++) harness.tasks.shift()!();
+    for (let batch = 0; batch < 3; batch++) harness.advance();
     expect(harness.frame().telemetry.samples).toHaveLength(180);
     expect(harness.frame().telemetry.samples[0].tick).toBe(90);
     expect(harness.frame().telemetry.samples.at(-1)!.tick).toBe(5460);
@@ -1493,19 +2392,15 @@ describe('worker control and persistence', () => {
   });
 
   it('uses one yielding loop, obeys pause and speed, and processes edits while paused', () => {
-    const tasks: (() => void)[] = [],
-      scope: Scope = { postMessage: vi.fn(), onmessage: null };
-    startWorker(scope, (cb) => tasks.push(cb));
-    const send = sender(scope),
-      last = () => vi.mocked(scope.postMessage).mock.calls.at(-1)![0];
+    const harness = workerHarness(),
+      { tasks, send, last } = harness;
     send({ type: 'snapshot' });
     send({ type: 'resume' });
-    tasks.shift()!();
-    expect(last()).toMatchObject({ type: 'playback', playback: { pauseOnExtinction: true } });
+    expect(tasks).toHaveLength(0);
     send({ type: 'start', settings: {}, runId: 1 });
-    expect(last().type).toBe('error');
+    expect(last('error').type).toBe('error');
     send({ type: 'start', settings: DEFAULTS, runId: 1 });
-    expect(last().frame.stats).toMatchObject({
+    expect(harness.state().world.stats).toMatchObject({
       tick: 0,
       population: 1,
       births: 0,
@@ -1515,53 +2410,67 @@ describe('worker control and persistence', () => {
     send({ type: 'resume' });
     expect(tasks).toHaveLength(1);
     send({ type: 'pause' });
-    tasks.shift()!();
+    harness.advance();
     expect(tasks).toHaveLength(0);
     send({ type: 'speed', value: 12 });
     send({ type: 'speed', value: 999 });
     send({ type: 'resume' });
-    tasks.shift()!();
-    expect(last().frame.stats.tick).toBe(12);
+    harness.advance();
+    expect(harness.state().world.stats.tick).toBe(12);
     send({ type: 'pause' });
     send({ type: 'step' });
-    expect(last().frame.stats.tick).toBe(13);
+    expect(harness.state().world.stats.tick).toBe(13);
     send({ type: 'settings', settings: { nutrients: 10 } });
     send({ type: 'settings', settings: { nutrients: -1 } });
-    const beforeBloom = vi.mocked(scope.postMessage).mock.calls.length;
+    const beforeBloom = harness.responseCount;
     send({ type: 'shock', kind: 'bloom' });
-    expect(scope.postMessage).toHaveBeenCalledTimes(beforeBloom + 1);
-    expect(last()).toMatchObject({ type: 'error', operation: 'shock' });
+    expect(harness.last('error')).toMatchObject({ code: 'invalid-command' });
     send({ type: 'paint', tool: 'food', x: 20, y: 20, radius: 2, genome: founder(0) });
     send({ type: 'paint', tool: 'plant', x: 40, y: 40, radius: 0, genome: founder(0) });
     send({ type: 'inspect', x: 40, y: 40 });
-    expect(last().selected).not.toBeNull();
+    expect(harness.state().selected).not.toBeNull();
     send({ type: 'shock', kind: 'cold' });
-    expect(last().frame.stats.event).toContain('Cold snap');
+    expect(harness.state().world.stats.event).toContain('Cold snap');
     send({ type: 'save' });
-    const save = last().text;
+    const save = last('saved').text;
     expect(JSON.parse(save).settings.nutrients).toBe(10);
     send({ type: 'load', text: save, runId: 2 });
     expect(last().runId).toBe(2);
-    expect(last().frame.stats.tick).toBe(13);
+    expect(harness.state().world.stats.tick).toBe(13);
     send({ type: 'load', text: '{}', runId: 3 });
-    expect(last().type).toBe('error');
+    expect(last('error').type).toBe('error');
     expect(last().runId).toBe(3);
     send({ type: 'snapshot' });
-    expect(last().frame.stats.tick).toBe(13);
+    expect(harness.state().world.stats.tick).toBe(13);
     const savedPopulation = JSON.parse(save).organisms.length;
     expect(savedPopulation).toBeGreaterThan(1);
-    expect(last().frame.stats.population).toBe(savedPopulation);
+    expect(harness.state().world.stats.population).toBe(savedPopulation);
     send({ type: 'start', settings: { ...DEFAULTS, seed: 123 }, runId: 4 });
     expect(last().runId).toBe(4);
-    expect(last().frame.stats).toMatchObject({ tick: 0, population: 1, births: 0, species: 1 });
+    expect(harness.state().world.stats).toMatchObject({
+      tick: 0,
+      population: 1,
+      births: 0,
+      species: 1,
+    });
     send({ type: 'unknown' });
   });
   it('reports failed ticks and reads without duplicating evaluation', () => {
     vi.useFakeTimers();
     const scope: Scope = { postMessage: vi.fn(), onmessage: null };
     startWorker(scope);
-    const send = sender(scope);
-    send({ type: 'start', settings: DEFAULTS, runId: 4 });
+    let commandId = 0,
+      runId = 4;
+    const send = (data: any) =>
+      scope.onmessage!({
+        data: {
+          ...data,
+          runId: data.runId ?? runId,
+          commandId: ++commandId,
+          ...(data.type === 'start' ? { display: { epoch: 0, enabled: true, visible: true } } : {}),
+        },
+      } as MessageEvent);
+    send({ type: 'start', settings: DEFAULTS });
     const step = vi.spyOn(Ecosystem.prototype, 'step').mockImplementation(() => {
       throw new Error('Failed tick');
     });
@@ -1569,21 +2478,27 @@ describe('worker control and persistence', () => {
     expect(scope.postMessage).toHaveBeenLastCalledWith(
       expect.objectContaining({ type: 'error', message: 'Failed tick', fatal: true }),
     );
+    send({ type: 'resume' });
+    expect(scope.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ code: 'invalid-command' }),
+    );
     step.mockImplementation(() => {
       throw 'failed';
     });
-    send({ type: 'resume' });
+    send({ type: 'start', settings: DEFAULTS, runId: ++runId });
     vi.runAllTimers();
     expect(scope.postMessage).toHaveBeenLastCalledWith(
-      expect.objectContaining({ message: 'failed' }),
+      expect.objectContaining({ message: 'failed', fatal: true }),
     );
     vi.spyOn(Ecosystem, 'load').mockImplementation(() => {
       throw 'unreadable';
     });
-    send({ type: 'load', text: 'x', runId: 5 });
+    send({ type: 'load', text: 'x', runId: ++runId });
     expect(vi.mocked(scope.postMessage).mock.calls.at(-1)![0]).toMatchObject({
       message: 'unreadable',
-      recovery: { playback: { paused: true } },
+    });
+    expect(vi.mocked(scope.postMessage).mock.calls.at(-1)![0]).toMatchObject({
+      recovery: { state: { playback: { paused: true } } },
     });
   });
   it('boots automatically in a worker context', async () => {
@@ -1601,10 +2516,11 @@ describe('authoritative extinction playback', () => {
     for (let offset = 1; offset <= speed; offset++) {
       it(`stops at extinct tick ${offset} of a ${speed}-tick batch by default`, () => {
         const harness = workerHarness();
+        harness.send({ type: 'start', settings: DEFAULTS, runId: 0 });
         const file = terminalWorld(offset);
         harness.send({ type: 'speed', value: speed });
         harness.load(file);
-        expect(harness.last().playback).toEqual({
+        expect(harness.state().playback).toEqual({
           paused: false,
           pauseOnExtinction: true,
           extinction: null,
@@ -1612,7 +2528,7 @@ describe('authoritative extinction playback', () => {
         harness.advance();
         const expected = Ecosystem.load(JSON.stringify(file));
         for (let step = 0; step < offset; step++) expected.step();
-        expect(harness.last()).toMatchObject({
+        expect({ ...harness.last(), ...harness.last().state }).toMatchObject({
           frame: { stats: { tick: file.tick + offset, population: 0 } },
           playback: {
             paused: true,
@@ -1625,12 +2541,13 @@ describe('authoritative extinction playback', () => {
         expect(harness.save()).toEqual(expected.save());
 
         const unguarded = workerHarness();
+        unguarded.send({ type: 'start', settings: DEFAULTS, runId: 0 });
         unguarded.send({ type: 'pause-on-extinction', runId: 0, value: false });
         unguarded.send({ type: 'speed', value: speed });
         unguarded.load(file);
         unguarded.advance();
         expect(unguarded.last().frame.stats.tick).toBe(file.tick + speed);
-        expect(unguarded.last().playback).toEqual({
+        expect(unguarded.state().playback).toEqual({
           paused: false,
           pauseOnExtinction: false,
           extinction: { tick: file.tick + offset, cause: 'age' },
@@ -1639,16 +2556,17 @@ describe('authoritative extinction playback', () => {
         for (let step = offset; step < speed; step++) harness.send({ type: 'step' });
         expect(harness.save()).toEqual(unguarded.save());
         unguarded.advance();
-        expect(unguarded.last().playback.extinction.tick).toBe(file.tick + offset);
+        expect(unguarded.state().playback.extinction.tick).toBe(file.tick + offset);
         expect(unguarded.last().frame.stats.population).toBe(0);
       });
     }
     it(`stops at real energy exhaustion in a ${speed}-tick batch`, () => {
       const harness = workerHarness();
+      harness.send({ type: 'start', settings: DEFAULTS, runId: 0 });
       harness.send({ type: 'speed', value: speed });
       harness.load(terminalWorld(30, 0.001));
       harness.advance();
-      expect(harness.last()).toMatchObject({
+      expect({ ...harness.last(), ...harness.last().state }).toMatchObject({
         frame: { stats: { tick: 72, population: 0 } },
         playback: { paused: true, extinction: { tick: 72, cause: 'energy' } },
       });
@@ -1663,7 +2581,7 @@ describe('authoritative extinction playback', () => {
       harness.send({ type: 'start', runId: 1, settings: DEFAULTS });
       harness.send({ type: 'pause-on-extinction', runId: 1, value: preference });
       harness.send({ type: 'start', runId: 2, settings: { ...DEFAULTS, seed: 123 } });
-      expect(harness.last().playback).toEqual({
+      expect(harness.state().playback).toEqual({
         paused: false,
         pauseOnExtinction: preference,
         extinction: null,
@@ -1673,7 +2591,7 @@ describe('authoritative extinction playback', () => {
       const empty = legacyV5(terminalWorld());
       empty.organisms = [];
       harness.load(empty, 4);
-      expect(harness.last('loaded').playback).toEqual({
+      expect(harness.last('loaded').state.playback).toEqual({
         paused: preference,
         pauseOnExtinction: preference,
         extinction: { tick: 71, cause: 'empty-import' },
@@ -1682,27 +2600,27 @@ describe('authoritative extinction playback', () => {
       const saved = harness.save();
       expect(saved).toEqual(Ecosystem.load(JSON.stringify(empty)).save());
       harness.send({ type: 'load', runId: 5, text: '{}' });
-      expect(harness.last('error').recovery.playback).toEqual(harness.last().playback);
+      expect(harness.last('error').recovery.state.playback).toEqual(harness.state().playback);
       expect(harness.save()).toEqual(saved);
       harness.advance();
       expect(harness.save().tick).toBe(preference ? 71 : 75);
       expect(harness.tasks).toHaveLength(preference ? 0 : 1);
       harness.load(terminalWorld(12), 6);
-      expect(harness.last().playback).toEqual({
+      expect(harness.state().playback).toEqual({
         paused: false,
         pauseOnExtinction: preference,
         extinction: null,
       });
       harness.send({ type: 'start', runId: 7, settings: DEFAULTS });
       harness.advance();
-      expect(harness.last()).toMatchObject({
+      expect({ ...harness.last(), ...harness.last().state }).toMatchObject({
         runId: 7,
         frame: { stats: { tick: 4, population: 1 } },
         playback: { extinction: null, pauseOnExtinction: preference },
       });
       const fresh = workerHarness();
       fresh.send({ type: 'start', runId: 1, settings: DEFAULTS });
-      expect(fresh.last().playback.pauseOnExtinction).toBe(true);
+      expect(fresh.state().playback.pauseOnExtinction).toBe(true);
     },
   );
 
@@ -1710,12 +2628,13 @@ describe('authoritative extinction playback', () => {
     'loads an empty world before advancement with preference %s and no pending loop',
     (preference) => {
       const harness = workerHarness();
+      if (!preference) harness.send({ type: 'start', settings: DEFAULTS, runId: 0 });
       if (!preference) harness.send({ type: 'pause-on-extinction', runId: 0, value: false });
       const empty = legacyV5(terminalWorld());
       empty.organisms = [];
       harness.load(empty);
       expect(harness.save()).toEqual(Ecosystem.load(JSON.stringify(empty)).save());
-      expect(harness.last().playback.extinction).toEqual({ tick: 71, cause: 'empty-import' });
+      expect(harness.state().playback.extinction).toEqual({ tick: 71, cause: 'empty-import' });
       expect(harness.tasks).toHaveLength(preference ? 0 : 1);
     },
   );
@@ -1729,7 +2648,8 @@ describe('authoritative extinction playback', () => {
         if (!preference) harness.send({ type: 'pause-on-extinction', runId: 1, value: false });
         if (alreadyPaused) harness.send({ type: 'pause' });
         harness.send({ type: 'paint', tool: 'erase', x: 40, y: 40, radius: 0, genome: mouth });
-        expect(harness.last()).toMatchObject({
+        harness.frame();
+        expect({ ...harness.last(), ...harness.last().state }).toMatchObject({
           frame: { stats: { tick: 71, population: 0, deaths: 5 } },
           playback: {
             paused: preference || alreadyPaused,
@@ -1750,17 +2670,17 @@ describe('authoritative extinction playback', () => {
     harness.load(terminalWorld());
     harness.send({ type: 'pause' });
     harness.send({ type: 'inspect', x: 40, y: 40 });
-    expect(harness.last().selected.id).toBe(1);
+    expect(harness.state().selected.id).toBe(1);
     harness.send({ type: 'step' });
-    expect(harness.last().playback.extinction).toEqual({ tick: 72, cause: 'age' });
-    expect(harness.last().selected).toBeNull();
+    expect(harness.state().playback.extinction).toEqual({ tick: 72, cause: 'age' });
+    expect(harness.state().selected).toBeNull();
     harness.send({ type: 'step' });
     expect(harness.last().frame.stats.tick).toBe(73);
-    expect(harness.last().playback).toMatchObject({ paused: true, extinction: { tick: 72 } });
+    expect(harness.state().playback).toMatchObject({ paused: true, extinction: { tick: 72 } });
     for (let attempt = 0; attempt < 3; attempt++) {
       harness.send({ type: 'resume' });
       harness.send({ type: 'speed', value: 12 });
-      expect(harness.last('playback').playback.paused).toBe(true);
+      expect(harness.last('control').state.playback.paused).toBe(true);
       expect(harness.tasks).toHaveLength(1);
     }
     harness.advance();
@@ -1768,7 +2688,7 @@ describe('authoritative extinction playback', () => {
     const before = harness.save();
     harness.send({ type: 'inspect', x: 40, y: 40 });
     harness.send({ type: 'paint', tool: 'plant', x: 6, y: 6, radius: 0, genome: mouth });
-    expect(harness.last().playback.extinction).toEqual({ tick: 72, cause: 'age' });
+    expect(harness.state().playback.extinction).toEqual({ tick: 72, cause: 'age' });
     const afterBlocked = harness.save();
     harness.send({ type: 'paint', tool: 'wall', x: 9, y: 9, radius: 0, genome: mouth });
     harness.send({ type: 'paint', tool: 'food', x: 8, y: 8, radius: 0, genome: mouth });
@@ -1786,7 +2706,7 @@ describe('authoritative extinction playback', () => {
     expect(harness.save()).not.toHaveProperty('extinction');
     expect(harness.save()).not.toHaveProperty('lastDeath');
     harness.send({ type: 'paint', tool: 'plant', x: 60, y: 60, radius: 0, genome: mouth });
-    expect(harness.last().playback).toEqual({
+    expect(harness.state().playback).toEqual({
       paused: true,
       pauseOnExtinction: true,
       extinction: null,
@@ -1804,19 +2724,19 @@ describe('authoritative extinction playback', () => {
     const harness = workerHarness();
     harness.load(terminalWorld());
     for (const value of ['true', 1, null, undefined, {}, []]) {
-      const count = harness.responseCount;
+      const count = harness.messages.filter((message) => message.type === 'error').length;
       harness.send({ type: 'pause-on-extinction', runId: 1, value });
-      expect(harness.responseCount).toBe(count);
+      expect(harness.last('error')).toMatchObject({ code: 'invalid-command' });
     }
     harness.send({ type: 'pause-on-extinction', runId: 0, value: false });
-    expect(harness.last().playback.pauseOnExtinction).toBe(true);
+    expect(harness.state().playback.pauseOnExtinction).toBe(true);
     harness.send({ type: 'pause-on-extinction', runId: 1, value: true });
-    expect(harness.last('playback').playback.paused).toBe(false);
+    expect(harness.last('control').state.playback.paused).toBe(false);
     harness.advance();
     const before = harness.save();
     for (let repeat = 0; repeat < 2; repeat++)
       harness.send({ type: 'pause-on-extinction', runId: 1, value: false });
-    expect(harness.last('playback').playback).toMatchObject({
+    expect(harness.last('control').state.playback).toMatchObject({
       paused: true,
       pauseOnExtinction: false,
     });
@@ -1826,7 +2746,7 @@ describe('authoritative extinction playback', () => {
     harness.advance();
     expect(harness.last().frame.stats.tick).toBe(76);
     harness.send({ type: 'pause-on-extinction', runId: 1, value: true });
-    expect(harness.last('playback').playback).toEqual({
+    expect(harness.last('control').state.playback).toEqual({
       paused: true,
       pauseOnExtinction: true,
       extinction: { tick: 72, cause: 'age' },
@@ -1850,7 +2770,7 @@ describe('authoritative extinction playback', () => {
       const expected = Ecosystem.load(JSON.stringify(before));
       expected.step();
       expect(harness.save()).toEqual(expected.save());
-      expect(harness.last().playback).toEqual({
+      expect(harness.state().playback).toEqual({
         paused: true,
         pauseOnExtinction: preference,
         extinction: { tick: before.tick, cause: 'empty-import' },
@@ -1874,7 +2794,7 @@ describe('integrated extinction and telemetry', () => {
           reference.step();
           const terminal = harness.save();
           expect(terminal).toEqual(reference.save());
-          expect(harness.last('frame').playback).toEqual({
+          expect(harness.last('frame').state.playback).toEqual({
             paused: true,
             pauseOnExtinction: true,
             extinction: { tick: atTick + 1, cause },
@@ -1901,17 +2821,21 @@ describe('integrated extinction and telemetry', () => {
           }
           expect(terminal.telemetry.pending.fromTick).toBe(90);
           harness.send({ type: 'load', runId: 2, text: '{}' });
-          expect(harness.last('error').recovery.frame.telemetry).toEqual(terminal.telemetry);
+          expect(harness.last('error').recovery.telemetry.telemetry).toEqual(terminal.telemetry);
           expect(harness.save()).toEqual(terminal);
           expect(harness.tasks).toHaveLength(0);
           const unguarded = workerHarness();
+          unguarded.send({ type: 'start', settings: DEFAULTS, runId: 0 });
           unguarded.send({ type: 'pause-on-extinction', runId: 0, value: false });
           unguarded.send({ type: 'speed', value: speed });
           unguarded.load(file);
           unguarded.advance();
           for (let tick = 1; tick < speed; tick++) harness.send({ type: 'step' });
           expect(harness.save()).toEqual(unguarded.save());
-          expect(unguarded.last('frame').playback.extinction).toEqual({ tick: atTick + 1, cause });
+          expect(unguarded.last('frame').state.playback.extinction).toEqual({
+            tick: atTick + 1,
+            cause,
+          });
           expect(unguarded.tasks).toHaveLength(1);
         });
       }
@@ -1928,16 +2852,16 @@ describe('integrated extinction and telemetry', () => {
     expect(erased.telemetry.samples).toEqual(file.telemetry.samples);
     expect(erased.telemetry.samples.at(-1)).toMatchObject({ tick: 90, population: 1 });
     expect(erased.telemetry.pending).toMatchObject({ fromTick: 90, deaths: { manual: 1 } });
-    expect(harness.last('frame').playback.extinction).toEqual({ tick: 90, cause: 'manual' });
+    expect(harness.last('frame').state.playback.extinction).toEqual({ tick: 90, cause: 'manual' });
     harness.advance();
     expect(harness.tasks).toHaveLength(0);
     harness.send({ type: 'load', runId: 2, text: '{}' });
-    expect(harness.last('error').recovery.frame.telemetry).toEqual(erased.telemetry);
+    expect(harness.last('error').recovery.telemetry.telemetry).toEqual(erased.telemetry);
     expect(harness.save()).toEqual(erased);
     harness.send({ type: 'pause-on-extinction', runId: 2, value: false });
     expect(harness.tasks).toHaveLength(0);
     harness.send({ type: 'paint', tool: 'plant', x: 40, y: 40, radius: 0, genome: mouth });
-    expect(harness.last('frame').playback).toEqual({
+    expect(harness.last('frame').state.playback).toEqual({
       paused: true,
       pauseOnExtinction: false,
       extinction: null,
@@ -2069,7 +2993,7 @@ describe('integrated extinction and telemetry', () => {
       const terminalText = harness.saveText();
       harness.load(terminal, 2);
       expect(harness.saveText()).toBe(terminalText);
-      expect(harness.last('frame').playback.extinction).toEqual({
+      expect(harness.last('frame').state.playback.extinction).toEqual({
         tick: 90,
         cause: 'empty-import',
       });
@@ -2083,7 +3007,7 @@ describe('integrated extinction and telemetry', () => {
         version === 2 ? [90, 120, 150, 180] : [30, 60, 90, 120, 150, 180],
       );
       expect(harness.save().telemetry.adaptationOriginTick).toBe(version >= 4 ? 0 : 89);
-      expect(harness.last('frame').playback.paused).toBe(true);
+      expect(harness.last('frame').state.playback.paused).toBe(true);
     },
   );
 });
@@ -2122,7 +3046,9 @@ describe('failed-load retained-world recovery', () => {
         runId,
         operation: 'load',
         message: 'Invalid ecosystem lineage archive.',
-        recovery: { selected: { id: control.save().organisms[0].id }, playback: { paused: true } },
+        recovery: {
+          state: { selected: { id: control.save().organisms[0].id }, playback: { paused: true } },
+        },
       });
       expect(harness.saveText()).toBe(before);
       expect(harness.tasks).toHaveLength(0);
@@ -2146,9 +3072,11 @@ describe('failed-load retained-world recovery', () => {
       operation: 'load',
       message: 'Invalid ecosystem lineage archive.',
       recovery: {
-        selected: { id: before.organisms[0].id },
-        settings: before.settings,
-        playback: { paused: true },
+        state: {
+          selected: { id: before.organisms[0].id },
+          settings: before.settings,
+          playback: { paused: true },
+        },
       },
     });
     expect(harness.saveText()).toBe(text);
@@ -2162,7 +3090,7 @@ describe('failed-load retained-world recovery', () => {
       radius: 0,
       genome: mouth,
     });
-    expect(harness.last('error').message).toContain('obsolete');
+    expect(harness.last('error').code).toBe('stale-run');
     expect(harness.saveText()).toBe(text);
     harness.send({ type: 'step', runId: 2 });
     control.step();
@@ -2173,7 +3101,7 @@ describe('failed-load retained-world recovery', () => {
     expect(harness.save()).toEqual(control.save());
   });
   it('recovers a held terminal frame immediately under the adopted ID without mutation or scheduling', () => {
-    const frameSpy = vi.spyOn(Ecosystem.prototype, 'frame');
+    const frameSpy = vi.spyOn(Ecosystem.prototype, 'presentation');
     const harness = workerHarness();
     harness.load(terminalWorld());
     harness.send({ type: 'inspect', x: 40, y: 40 });
@@ -2182,22 +3110,30 @@ describe('failed-load retained-world recovery', () => {
     const record = structuredClone(retained.lastDeath);
     const before = harness.save();
     const held = harness.last();
-    const count = harness.responseCount;
+    const count = harness.messages.filter((message) => message.type === 'error').length;
     harness.send({ type: 'load', runId: 2, text: '{}' });
-    expect(harness.responseCount).toBe(count + 1);
+    expect(harness.messages.filter((message) => message.type === 'error')).toHaveLength(1);
     const recovery = harness.last('error');
     expect(recovery).toMatchObject({
       type: 'error',
       runId: 2,
       recovery: {
-        frame: { stats: { tick: 72, population: 0 } },
-        selected: null,
-        settings: before.settings,
-        playback: { paused: true, pauseOnExtinction: true, extinction: { tick: 72, cause: 'age' } },
+        state: {
+          world: { stats: { tick: 72, population: 0 } },
+          selected: null,
+          settings: before.settings,
+          playback: {
+            paused: true,
+            pauseOnExtinction: true,
+            extinction: { tick: 72, cause: 'age' },
+          },
+        },
       },
     });
     expect(recovery).not.toHaveProperty('fatal');
-    expect(recovery.recovery.frame).toEqual(held.frame);
+    expect(recovery.recovery.state.world).toEqual({ ...held.state.world });
+    expect(recovery.recovery).not.toHaveProperty('frame');
+    expect(harness.last('frame').frame).toEqual(held.frame);
     expect(frameSpy.mock.contexts.at(-1)).toBe(retained);
     expect(retained.lastDeath).toEqual(record);
     expect(retained.save()).toEqual(before);
@@ -2210,7 +3146,7 @@ describe('failed-load retained-world recovery', () => {
     expect(harness.transferStats.detached).toBe(harness.transferStats.buffers);
     expect(harness.save()).toEqual(before);
     harness.load(terminalWorld(12), 5);
-    expect(harness.last().playback.extinction).toBeNull();
+    expect(harness.state().playback.extinction).toBeNull();
     expect(harness.tasks).toHaveLength(1);
   });
 
@@ -2231,15 +3167,15 @@ describe('failed-load retained-world recovery', () => {
         harness.advance();
         harness.send({ type: 'pause-on-extinction', runId: 1, value: true });
       } else harness.send({ type: 'pause-on-extinction', runId: 1, value: false });
-      const actual = harness.last('playback').playback;
+      const actual = harness.last('control').state.playback;
       const before = harness.save();
       const pending = harness.tasks.length;
       harness.send({ type: 'load', runId: 2, text: '{}' });
       const error = harness.last('error');
-      expect(error.recovery.playback).toEqual(actual);
-      expect(error.recovery.selected?.id ?? null).toBe(before.organisms[0]?.id ?? null);
-      expect(error.recovery.settings).toEqual(before.settings);
-      expect(error.recovery.frame.stats).toMatchObject({
+      expect(error.recovery.state.playback).toEqual(actual);
+      expect(error.recovery.state.selected?.id ?? null).toBe(before.organisms[0]?.id ?? null);
+      expect(error.recovery.state.settings).toEqual(before.settings);
+      expect(error.recovery.state.world.stats).toMatchObject({
         tick: before.tick,
         population: before.organisms.length,
       });
@@ -2279,14 +3215,16 @@ describe('failed-load retained-world recovery', () => {
       JSON.stringify(invalidLast),
       JSON.stringify(invalidTerrain),
     ]) {
-      const count = harness.responseCount;
+      const count = harness.messages.filter((message) => message.type === 'error').length;
       harness.send({ type: 'load', runId: ++runId, text });
-      expect(harness.responseCount).toBe(count + 1);
+      expect(harness.messages.filter((message) => message.type === 'error')).toHaveLength(1);
       expect(harness.last('error')).toMatchObject({
         runId,
         recovery: {
-          selected: before.organisms[0],
-          playback: { paused: true, pauseOnExtinction: true, extinction: null },
+          state: {
+            selected: before.organisms[0],
+            playback: { paused: true, pauseOnExtinction: true, extinction: null },
+          },
         },
       });
       expect(harness.save()).toEqual(before);
@@ -2301,22 +3239,23 @@ describe('failed-load retained-world recovery', () => {
     expect(harness.last('error')).not.toHaveProperty('recovery');
     expect(harness.tasks).toHaveLength(0);
     harness.load(terminalWorld(), 2);
-    const frameSpy = vi.spyOn(Ecosystem.prototype, 'frame').mockImplementation(() => {
+    const frameSpy = vi.spyOn(Ecosystem.prototype, 'presentation').mockImplementation(() => {
       throw new Error('Frame failed');
     });
     harness.send({ type: 'load', runId: 3, text: '{}' });
     expect(harness.last('error')).toMatchObject({ fatal: true, message: 'Frame failed', runId: 3 });
     frameSpy.mockRestore();
+    harness.load(terminalWorld(), 4);
     const post = harness.scope.postMessage;
     harness.scope.postMessage = (data, transfer) => {
-      if (data.recovery) throw new Error('Transfer failed');
+      if (data.type === 'error' && data.recovery) throw new Error('Transfer failed');
       post(data, transfer);
     };
-    harness.send({ type: 'load', runId: 4, text: '{}' });
+    harness.send({ type: 'load', runId: 5, text: '{}' });
     expect(harness.last('error')).toMatchObject({
       fatal: true,
       message: 'Transfer failed',
-      runId: 4,
+      runId: 5,
     });
   });
 });

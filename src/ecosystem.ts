@@ -1,6 +1,7 @@
 import { DEFAULT_TERRAIN, generateTerrain, sameTerrain, validTerrain } from './terrain';
 import {
   emptyRefuges,
+  activeRefugeUnits,
   parseRefuges,
   refugeFile,
   refugeSummary,
@@ -34,12 +35,14 @@ import {
   finite,
   integer,
   speciesName,
+  observedGenome,
   type RefugeBrush,
   type Genome,
   type Organism,
   type Settings,
   type WorldFile,
   type Frame,
+  type WorldPresentation,
   type Species,
   type Tool,
   type DeathRecord,
@@ -635,7 +638,7 @@ export class Ecosystem {
     this.telemetry.samples.push(sample);
     this.telemetry.pending = { ...emptyFlow(), fromTick: this.tick };
   }
-  private telemetrySnapshot(): TelemetryState {
+  telemetrySnapshot(): TelemetryState {
     return this.recording ? structuredClone(this.telemetry) : emptyTelemetry(this.tick);
   }
   requireInterventionCapacity(continuing = false): void {
@@ -1157,20 +1160,14 @@ export class Ecosystem {
     this.eventOffset = kind === 'cold' ? -0.32 : 0.32;
     this.eventUntil = this.tick + 900;
   }
-  frame(): Frame {
-    const cells = new Uint8Array(this.food.length),
-      ids = this.occupied.slice();
+  presentation(selected = 0): WorldPresentation {
     const species = new Map<number, Species>();
     let generation = 0,
       food = 0;
-    for (let i = 0; i < cells.length; i++) {
-      cells[i] = this.walls[i] ? 2 : this.food[i] ? 1 : 0;
+    for (let i = 0; i < this.food.length; i++) {
       if (this.food[i]) food++;
     }
     for (const o of this.organisms.values()) {
-      positions(o).forEach((p, c) => {
-        cells[p] = o.genome.cells[c].type;
-      });
       const s = species.get(o.species);
       if (s) {
         s.count++;
@@ -1185,19 +1182,26 @@ export class Ecosystem {
         });
       generation = Math.max(generation, o.generation);
     }
+    const organism = this.organisms.get(selected);
+    const offset = this.tick < this.eventUntil ? this.eventOffset : 0;
     return {
-      cells,
-      ids,
       terrain: { ...this.terrain },
-      thermalRefuges: {
-        version: 1,
-        enabled: this.thermalRefuges.enabled,
-        units: this.thermalRefuges.units.slice(),
-      },
-      offset: this.tick < this.eventUntil ? this.eventOffset : 0,
+      thermalRefuges: refugeSummary(this.thermalRefuges),
+      anchorTemperature: organism
+        ? localTemperature(
+            organism.x,
+            organism.y,
+            this.tick,
+            this.settings.climate,
+            offset,
+            this.thermalRefuges,
+          )
+        : null,
+      anchorRefugeUnits: organism
+        ? activeRefugeUnits(this.thermalRefuges, organism.x, organism.y)
+        : 0,
+      offset,
       climate: this.settings.climate,
-      telemetry: this.telemetrySnapshot(),
-      interventions: structuredClone(this.interventions),
       stats: {
         tick: this.tick,
         population: this.organisms.size,
@@ -1216,11 +1220,43 @@ export class Ecosystem {
         top: [...species.values()]
           .sort((a, b) => b.count - a.count)
           .slice(0, 5)
-          .map((representative) => ({
-            ...representative,
-            genome: cloneGenome(representative.genome),
-          })),
+          .map((species) => ({ ...species, genome: observedGenome(species.genome) })),
       },
+    };
+  }
+  interventionSnapshot(): InterventionState {
+    return structuredClone(this.interventions);
+  }
+  display(
+    presentation: Pick<Frame, 'stats' | 'climate' | 'offset'>,
+  ): Omit<Frame, 'telemetry' | 'interventions'> {
+    const cells = new Uint8Array(this.food.length),
+      ids = this.occupied.slice();
+    for (let position = 0; position < cells.length; position++)
+      cells[position] = this.walls[position] ? 2 : this.food[position] ? 1 : 0;
+    for (const organism of this.organisms.values())
+      positions(organism).forEach((position, cell) => {
+        cells[position] = organism.genome.cells[cell].type;
+      });
+    return {
+      cells,
+      ids,
+      stats: presentation.stats,
+      climate: presentation.climate,
+      offset: presentation.offset,
+      terrain: { ...this.terrain },
+      thermalRefuges: {
+        version: 1,
+        enabled: this.thermalRefuges.enabled,
+        units: this.thermalRefuges.units.slice(),
+      },
+    };
+  }
+  frame(): Frame {
+    return {
+      ...this.display(this.presentation()),
+      telemetry: this.telemetrySnapshot(),
+      interventions: this.interventionSnapshot(),
     };
   }
   lineageSnapshot(): LineageArchiveState {

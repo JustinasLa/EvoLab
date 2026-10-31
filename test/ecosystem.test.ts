@@ -24,6 +24,7 @@ import {
   connected,
   validGenome,
   cloneGenome,
+  observedGenome,
   validBehavior,
   encodeLegacyValue,
   decodeLegacyValue,
@@ -560,7 +561,7 @@ describe('passive inherited sensory data and reversible compatibility', () => {
     },
   );
   it.each(['spawn', 'mutate', 'frame', 'save', 'reload', 'inverse'] as const)(
-    'detaches full nested payload at the real %s boundary',
+    'detaches full payload or bounded observations at the real %s boundary',
     (boundary) => {
       const source = storedSensoryGenome(),
         original = cloneGenome(source),
@@ -579,6 +580,17 @@ describe('passive inherited sensory data and reversible compatibility', () => {
                   ? Ecosystem.load(JSON.stringify(world.save())).organisms.values().next().value!
                       .genome
                   : migrateHistoricalGenome(restoreHistoricalGenome(source));
+      if (boundary === 'frame') {
+        // Routine observations are known-field projections; full capture is worker-owned.
+        expect(copied).toEqual(observedGenome(original));
+        expect(copied.legacyExtensions).toBeUndefined();
+        expect(copied.cells.every((cell) => cell.legacyExtensions === undefined)).toBe(true);
+        if (copied.behavior.mode === 'evolved') copied.behavior.reactions.food = 'ignore';
+        copied.cells[0].type = 7;
+        expect(world.organisms.get(organism.id)!.genome).toEqual(original);
+        expect(world.save().organisms[0].genome).toEqual(original);
+        return;
+      }
       expect(copied.legacyExtensions).toEqual(original.legacyExtensions);
       if (boundary !== 'mutate' && boundary !== 'inverse') expect(copied).toEqual(original);
       (copied.legacyExtensions![0][1].at(-1)! as any)[1] = 'copy-only';
@@ -587,7 +599,6 @@ describe('passive inherited sensory data and reversible compatibility', () => {
       (source.legacyExtensions![0][1].at(-1)! as any)[1] = 'source-only';
       if (source.behavior.mode === 'evolved') source.behavior.reactions.food = 'ignore';
       expect(copied).toEqual(copiedSnapshot);
-      if (boundary === 'frame') expect(world.organisms.get(organism.id)!.genome).toEqual(original);
     },
   );
   it.each([42, 7, 1].flatMap((seed) => [0, 1, 2, 3].map((body) => [seed, body] as const)))(

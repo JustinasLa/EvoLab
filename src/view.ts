@@ -1,4 +1,14 @@
-import { WIDTH, HEIGHT, COLORS, CELL_NAMES, type Frame, type Genome, type Organism } from './model';
+import {
+  WIDTH,
+  HEIGHT,
+  COLORS,
+  CELL_NAMES,
+  type HabitatFrame,
+  type Frame,
+  type WorldPresentation,
+  type Genome,
+  type Organism,
+} from './model';
 import { activeRefugeUnits, localTemperature } from './refuges';
 export interface Camera {
   zoom: number;
@@ -38,7 +48,7 @@ export function point(
 export function draw(
   canvas: HTMLCanvasElement,
   buffer: HTMLCanvasElement,
-  frame: Frame,
+  frame: HabitatFrame,
   camera: Camera,
   thermal: boolean,
   selected: number,
@@ -117,7 +127,10 @@ export function behaviorStatus(genome: Genome): string {
     ? 'Stored reactions — inactive; steering uses legacy rules.'
     : 'Legacy behavior — steering uses legacy rules.';
 }
-export function organismHtml(o: Organism | null, frame: Frame): string {
+export function organismHtml(
+  o: Organism | null,
+  frame: WorldPresentation | Pick<Frame, 'stats' | 'climate' | 'offset' | 'thermalRefuges'>,
+): string {
   if (!o)
     return `<div class="empty-inspector">${genomeSvg(
       {
@@ -133,15 +146,21 @@ export function organismHtml(o: Organism | null, frame: Frame): string {
       },
       72,
     )}<p>Click any organism to inspect it.</p></div>`;
-  const temp = localTemperature(
-      o.x,
-      o.y,
-      frame.stats.tick,
-      frame.climate,
-      frame.offset,
-      frame.thermalRefuges,
-    ),
-    activeUnits = activeRefugeUnits(frame.thermalRefuges, o.x, o.y);
+  const temp =
+      'anchorTemperature' in frame
+        ? frame.anchorTemperature!
+        : localTemperature(
+            o.x,
+            o.y,
+            frame.stats.tick,
+            frame.climate,
+            frame.offset,
+            frame.thermalRefuges,
+          ),
+    activeUnits =
+      'anchorRefugeUnits' in frame
+        ? frame.anchorRefugeUnits
+        : activeRefugeUnits(frame.thermalRefuges, o.x, o.y);
   return `<div class="specimen-preview"><div class="anatomy">${genomeSvg(o.genome, 104)}</div><div><strong>Organism ${o.id}</strong><span>Lineage #${o.species}</span><span>Generation ${o.generation}</span></div></div><dl class="specimen-facts"><div><dt>Energy</dt><dd>${o.energy.toFixed(1)}</dd></div><div><dt>Age</dt><dd>${o.age} ticks</dd></div><div><dt>Offspring</dt><dd>${o.children}</dd></div><div><dt>Cells</dt><dd>${o.genome.cells.length}</dd></div><div><dt>Local temperature</dt><dd>${Math.round(temp * 40)}°</dd></div><div><dt>Normalized anchor temperature</dt><dd>${temp}</dd></div><div><dt>Active local offset</dt><dd>${activeUnits > 0 ? '+' : ''}${activeUnits / 100} (${activeUnits} units)</dd></div><div><dt>Preferred</dt><dd>${Math.round(o.genome.preference * 40)}° ±${Math.round(o.genome.tolerance * 40)}°</dd></div></dl><p class="muted">${behaviorStatus(o.genome)}</p><p class="ancestry" title="Lineage ancestry">${[...o.ancestry, o.species].map((s) => `#${s}`).join(' → ')}</p><button id="copy-organism" class="secondary wide">Edit this organism</button><button id="export-organism-blueprint" class="secondary wide">Export organism blueprint</button>`;
 }
 const icon = (path: string): string =>
@@ -187,6 +206,12 @@ export const markup = `
   <div class="simulation-controls"><button id="pause" class="primary" title="Pause or resume (Space)">Ⅱ Pause</button><button id="step" disabled title="Advance one tick while paused" aria-label="Advance one tick while paused">${icon('M2 2h2v12H2zm4 0h2v2h2v2h2v4h-2v2H8v2H6z')}</button><label><span>Speed</span><select id="speed" aria-label="Simulation speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="12">12×</option></select></label></div>
   <label class="extinction-preference" for="pause-on-extinction"><input id="pause-on-extinction" type="checkbox" checked aria-describedby="extinction-help"><span>Pause on extinction<small id="extinction-help">On by default; applies to this tab.</small></span></label>
   <p id="extinction-summary" role="status" aria-live="polite" hidden></p>
+  <div class="render-controls"><label for="render-habitat"><input id="render-habitat" type="checkbox" checked>Render habitat</label><button id="refresh-habitat" class="secondary">Refresh habitat</button></div>
+  <p id="render-pending" class="muted"></p>
+  <div class="target-controls"><label for="target-tick">Absolute target tick<input id="target-tick" type="number" min="0" max="1000000000" step="1" required aria-describedby="target-help"></label><button id="run-to-tick" class="secondary">Run to tick</button><button id="cancel-target" class="secondary" disabled>Cancel target</button></div>
+  <p id="target-help" class="muted">Accelerated complete ticks, yielding in bounded batches. Pause suspends; Cancel pauses and discards the target.</p>
+  <progress id="target-progress" aria-label="Actual target progress" hidden></progress><p id="target-details"></p><p id="target-status" role="status" aria-live="polite"></p>
+  <p id="tick-rate" class="muted">Measured ticks/s: measuring…</p><p id="habitat-freshness">No habitat received.</p>
   </header>
   <div class="panel-scroll">
   <section class="world-controls" aria-label="World tools and status">
@@ -218,4 +243,4 @@ export const markup = `
 </main>
 <dialog id="reset-dialog" aria-labelledby="reset-heading" aria-describedby="reset-description reset-payload"><h2 id="reset-heading">Replace this world?</h2><p id="reset-description">Living organisms, food, walls and recorded history will be discarded. Painted temperature will be cleared and disabled. The new world starts with one centered producer and no food. The live world may advance while this confirmation is open.</p><p id="reset-payload"></p><div class="reset-actions"><button id="cancel-reset" type="button" autofocus>Cancel</button><button id="confirm-reset" type="button">Reset world</button></div></dialog>
 <dialog id="library-dialog" aria-labelledby="library-dialog-title"><h2 id="library-dialog-title"></h2><p id="library-dialog-description"></p><div id="library-dialog-preview"></div><label id="library-rename-label" for="library-rename-name" hidden>Exact new name</label><input id="library-rename-name" maxlength="80" hidden><p id="library-dialog-status" role="status"></p><div class="library-actions"><button id="library-cancel" autofocus>Cancel</button><button id="library-confirm">Confirm</button></div></dialog>
-<dialog id="help-dialog"><button id="close-help" class="dialog-close" aria-label="Close help">×</button><h1>EvoLab / Drift</h1><p>Organisms eat, move, reproduce, mutate, and die. Successful descendants spread through survival and reproduction.</p><p>Climate zones drift across the habitat. Each organism inherits a preferred temperature and tolerance. Wider tolerance costs energy.</p><ul><li>Inspect a body, or click a common body to edit it.</li><li>Choose Food, Wall or Erase and drag to paint.</li><li>Choose a cell type, draw a connected body, then place it in the world.</li><li>Scroll to zoom; use Pan to drag. Space pauses; I / H / F / W / E / P select tools.</li><li>Save your world before leaving. Reloading starts fresh.</li></ul><p>Pause on extinction is on by default for this tab. Your choice survives reseed and world loads; reloading restores ON. It stops at the first extinct logical tick, or immediately after manual last-organism erasure, without resetting or replenishing life.</p><p>The summary records the final removal tick and cause: energy exhaustion, age limit or manual erasure. An imported empty world's original cause is unavailable. Food, walls and charts remain. Inspect, edit, save and Step stay usable while paused; Step advances exactly one tick, even when empty. Placing an organism does not resume playback.</p><p>To run an empty world, turn off Pause on extinction and then press Resume. Turning it off alone never resumes. Rejected world files retain the current world and playback; their display refresh adds no chart samples.</p><p class="muted">An original cellular simulation; temperature uses an abstract 0–40° scale, not a biological model.</p></dialog>`;
+<dialog id="help-dialog"><button id="close-help" class="dialog-close" aria-label="Close help">×</button><h1>EvoLab / Drift</h1><p>Organisms eat, move, reproduce, mutate, and die. Successful descendants spread through survival and reproduction.</p><p>Climate zones drift across the habitat. Each organism inherits a preferred temperature and tolerance. Wider tolerance costs energy.</p><ul><li>Inspect a body, or click a common body to edit it.</li><li>Choose Food, Wall or Erase and drag to paint.</li><li>Choose a cell type, draw a connected body, then place it in the world.</li><li>Scroll to zoom; use Pan to drag. Space pauses; I / H / F / W / E / P select tools.</li><li>Save your world before leaving. Reloading starts fresh.</li></ul><p>Pause on extinction is on by default for this tab. Your choice survives reseed and world loads; reloading restores ON. It stops at the first extinct logical tick, or immediately after manual last-organism erasure, without resetting or replenishing life.</p><p>The summary records the final removal tick and cause: energy exhaustion, age limit or manual erasure. An imported empty world's original cause is unavailable. Food, walls and charts remain. Inspect, edit, save and Step stay usable while paused; Step advances exactly one tick, even when empty. Placing an organism does not resume playback.</p><p>To run an empty world, turn off Pause on extinction and then press Resume. Turning it off alone never resumes. Rejected world files retain the current world and playback; their display refresh adds no chart samples.</p><p>Render habitat controls automatic snapshots, not evolution or telemetry. Off/hidden images can be stale; explicit visible Refresh and paused editing/Step/inspection can request one current image. Run to tick accelerates yielding batches, not logical ticks. Pause suspends a target; Cancel pauses and discards it. Measured ticks/s counts actual completed ticks over monotonic elapsed time, including scheduling. Speed is ticks per batch, not ticks/s. Hidden tabs may be throttled, suspended or discarded. A costly complete tick cannot be interrupted; timing gaps are unknown and never subtracted. Throughput depends on this machine and browser.</p><p class="muted">An original cellular simulation; temperature uses an abstract 0–40° scale, not a biological model.</p></dialog>`;

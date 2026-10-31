@@ -8,11 +8,14 @@ import {
   index,
   positions,
   Random,
+  observedOrganism,
   type WorldFile,
   type Genome,
   type CellType,
   type Frame,
   type LegacyWorldFile,
+  type ControlState,
+  type AcceptedTelemetrySource,
 } from '../../src/model';
 import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../../src/blueprint';
 import { writeFile } from 'node:fs/promises';
@@ -60,9 +63,28 @@ import {
 
 declare global {
   interface Window {
+    nativeLease: {
+      posts: {
+        stream: string;
+        requestId: number;
+        runId: number;
+        at: number;
+        monotonicMs: number;
+      }[];
+      dispatches: {
+        stream: string;
+        requestId: number;
+        filename: string;
+        at: number;
+        monotonicMs: number;
+      }[];
+    };
+    refugePixels: { tick: number; climate: number; offset: number; colors: number[][] } | null;
     terrainNative: {
       frame: Frame | null;
       frameRunId: number | null;
+      frameRevision: number | null;
+      stateRevision: number | null;
       selected: any;
       playback: any;
       lifecycle: {
@@ -80,6 +102,7 @@ declare global {
       errors: any[];
       saved: number;
       manual: any | null;
+      fullDesign: any | null;
       pauseOnLifecycle: boolean;
       fifoPauses: number;
     };
@@ -87,6 +110,8 @@ declare global {
       arm: () => Promise<void>;
       terminals: number;
       failures: number;
+      visible: boolean | null;
+      failureMessage: string | null;
       latest: object | null;
       pendingAtArm: number | null;
     };
@@ -105,6 +130,9 @@ declare global {
         E: number;
         S: number;
         M: number;
+        viewCommands: number;
+        paintCommands: number;
+        beginCommands: number;
         C: number;
         L: number;
         completedL: number;
@@ -122,24 +150,12 @@ declare global {
       releaseFrame: () => void;
       failEndpoint: () => void;
     };
-    nativeLease: {
-      posts: {
-        stream: string;
-        requestId: number;
-        runId: number;
-        at: number;
-        monotonicMs: number;
-      }[];
-      dispatches: {
-        stream: string;
-        requestId: number;
-        filename: string;
-        at: number;
-        monotonicMs: number;
-      }[];
+    telemetryEvidence: {
+      current: ControlState | null;
+      source: AcceptedTelemetrySource | null;
+      points: number[][];
+      loadText: string | null;
     };
-    refugePixels: { tick: number; climate: number; offset: number; colors: number[][] } | null;
-    telemetryEvidence: { frame: Frame | null; points: number[][]; loadText: string | null };
     telemetryPerformance: {
       enabled: boolean;
       action: string;
@@ -211,7 +227,7 @@ test.beforeEach(async ({ page }, info) => {
           if (evidence.posts.length === 32) throw new Error('Native post evidence exceeded32');
           evidence.posts.push({
             stream: command.type === 'save' ? 'save' : 'measurement',
-            requestId: command.requestId,
+            requestId: command.commandId,
             runId: command.runId,
             at: Date.now(),
             monotonicMs: performance.now(),
@@ -292,12 +308,15 @@ async function observeTerrainNative(
     window.terrainNative = {
       frame: null,
       frameRunId: null,
+      frameRevision: null,
+      stateRevision: null,
       selected: null,
       playback: null,
       lifecycle: [],
       errors: [],
       saved: 0,
       manual: null,
+      fullDesign: null,
       pauseOnLifecycle: true,
       fifoPauses: 0,
     };
@@ -321,39 +340,77 @@ async function observeTerrainNative(
               pendingLifecycle = {
                 operation: messages[0].type,
                 runId: messages[0].runId,
-                requestId: messages[0].requestId,
+                requestId: messages[0].commandId,
                 postedSequence: ++sequence,
                 received: false,
                 pausePostedSequence: null,
               };
               awaitingPause = null;
-              // B1–B3 retain their required tick-0 reset Save. B7/B8 instead
-              // opt into the separate receipt-driven protocol below.
-              if (pauseAt === 'lifecycle-post' && window.terrainNative.pauseOnLifecycle) {
-                pendingLifecycle.pausePostedSequence = ++sequence;
-                Reflect.apply(post, receiver, [{ type: 'pause' }]);
-                window.terrainNative.fifoPauses++;
-              }
             }
             return result;
           },
         });
+        const descriptor = Object.getOwnPropertyDescriptor(Worker.prototype, 'onmessage')!;
+        let handler: ((event: MessageEvent) => void) | null = null;
+        Object.defineProperty(worker, 'onmessage', {
+          get: () => handler,
+          set(next: ((event: MessageEvent) => void) | null) {
+            handler = next;
+            descriptor.set!.call(worker, (event: MessageEvent) => {
+              next?.(event);
+              const data = event.data;
+              const receipt = window.terrainNative.lifecycle.at(-1);
+              if (
+                pauseAt === 'lifecycle-post' &&
+                window.terrainNative.pauseOnLifecycle &&
+                data.operation === pendingLifecycle?.operation &&
+                data.commandId === pendingLifecycle?.requestId &&
+                receipt &&
+                data.state &&
+                !data.state.playback.paused
+              ) {
+                receipt.pausePostedSequence = ++sequence;
+                awaitingPause = receipt;
+                document.getElementById('pause')!.click();
+                window.terrainNative.fifoPauses++;
+              }
+            });
+          },
+        });
+        let source: any = null;
         worker.addEventListener('message', ({ data }) => {
+          if (data.telemetry) source = data.telemetry;
+          if (data.recovery?.telemetry) source = data.recovery.telemetry;
           const evidence = window.terrainNative;
-          if (data.type === 'frame') {
-            evidence.frame = data.frame;
-            evidence.frameRunId = data.runId;
-            evidence.selected = data.selected;
-            evidence.playback = data.playback;
+          if (data.state) {
+            evidence.stateRevision = data.state.revision;
+            evidence.selected = data.state.selected;
+            evidence.playback = data.state.playback;
           }
-          if (data.type === 'playback') {
-            evidence.playback = data.playback;
-            if (awaitingPause?.runId === data.runId && data.playback.paused) {
+          if (evidence.frame && source) {
+            evidence.frame.telemetry = source.telemetry;
+            evidence.frame.interventions = source.interventions;
+          }
+          if (data.type === 'frame') {
+            evidence.frame = {
+              ...data.frame,
+              telemetry: source?.telemetry,
+              interventions: source?.interventions,
+            };
+            evidence.frameRunId = data.runId;
+            evidence.frameRevision = data.state.revision;
+            evidence.selected = data.state.selected;
+            evidence.playback = data.state.playback;
+          }
+          if (data.type === 'control' && data.operation === 'pause') {
+            evidence.playback = data.state.playback;
+            if (awaitingPause?.runId === data.runId && data.state.playback.paused) {
               awaitingPause.pauseAcknowledgedSequence = ++sequence;
               awaitingPause = null;
             }
           }
           if (data.type === 'manual-result') evidence.manual = data;
+          if (data.type === 'design-captured') evidence.fullDesign = data;
           if (data.type === 'saved') evidence.saved++;
           if (data.type === 'error') {
             evidence.errors.push(data);
@@ -361,21 +418,21 @@ async function observeTerrainNative(
           }
           const posted = pendingLifecycle;
           if (
-            (data.type === 'started' || data.type === 'loaded') &&
+            ((data.type === 'control' && data.operation === 'start') || data.type === 'loaded') &&
             posted &&
             !posted.received &&
             data.operation === posted.operation &&
-            data.type === (posted.operation === 'start' ? 'started' : 'loaded') &&
+            data.type === (posted.operation === 'start' ? 'control' : 'loaded') &&
             data.runId === posted.runId &&
-            data.requestId === posted.requestId
+            data.commandId === posted.requestId
           ) {
             posted.received = true;
             const receipt: Window['terrainNative']['lifecycle'][number] = {
               type: data.type,
-              paused: data.playback.paused,
+              paused: data.state.playback.paused,
               runId: data.runId,
-              requestId: data.requestId,
-              completedTick: data.completedTick,
+              requestId: data.commandId,
+              completedTick: data.state.world.stats.tick,
               postedSequence: posted.postedSequence,
               receivedSequence: ++sequence,
               pausePostedSequence: posted.pausePostedSequence,
@@ -395,10 +452,12 @@ async function observeTerrainNative(
               )
                 return;
               receipt.pageStateBeforePause = document.getElementById('run-state')!.textContent;
-              receipt.pausePostedSequence = ++sequence;
-              awaitingPause = receipt;
-              worker.postMessage({ type: 'pause' });
-              evidence.fifoPauses++;
+              if (!evidence.playback?.paused) {
+                receipt.pausePostedSequence = ++sequence;
+                awaitingPause = receipt;
+                document.getElementById('pause')!.click();
+                evidence.fifoPauses++;
+              }
             }, 0);
           }
         });
@@ -409,6 +468,7 @@ async function observeTerrainNative(
 }
 
 async function terrainNativeFrame(page: import('@playwright/test').Page, recoveryRun?: number) {
+  await page.locator('#world').scrollIntoViewIfNeeded();
   await expect
     .poll(() =>
       page.evaluate((recoveryRun) => {
@@ -416,16 +476,17 @@ async function terrainNativeFrame(page: import('@playwright/test').Page, recover
           lifecycle = evidence.lifecycle.at(-1),
           acknowledged =
             recoveryRun === undefined
-              ? typeof lifecycle?.pauseAcknowledgedSequence === 'number'
+              ? lifecycle?.paused || typeof lifecycle?.pauseAcknowledgedSequence === 'number'
               : evidence.errors.some(
                   (error) =>
                     error.operation === 'load' &&
                     error.runId === recoveryRun &&
-                    error.recovery?.playback.paused,
+                    error.recovery?.state.playback.paused,
                 );
         return (
           !!evidence.frame &&
           evidence.frameRunId === (recoveryRun ?? lifecycle?.runId) &&
+          evidence.frameRevision === evidence.stateRevision &&
           acknowledged &&
           evidence.playback?.paused &&
           document.getElementById('run-state')?.textContent === 'PAUSED'
@@ -454,6 +515,10 @@ function expectReceiptDrivenTerrainPauses(lifecycle: Window['terrainNative']['li
   for (const receipt of lifecycle) {
     expect(receipt.requestId).toBeGreaterThan(0);
     expect(receipt.postedSequence).toBeLessThan(receipt.receivedSequence);
+    if (receipt.paused) {
+      expect(receipt.pausePostedSequence).toBeNull();
+      continue;
+    }
     expect(receipt.pausePostedSequence).not.toBeNull();
     expect(receipt.receivedSequence).toBeLessThan(receipt.pausePostedSequence!);
     expect(receipt.pauseAcknowledgedSequence).not.toBeNull();
@@ -643,7 +708,7 @@ test('terrain imports preserve explicit cells and newer drafts while stale nativ
   await page.goto('/');
   const legacy = JSON.parse(readFileSync('test/fixtures/terrain/legacy5-opaque.json', 'utf8'));
   await importTelemetryWorld(page, legacy);
-  await expect(page.locator('#notice')).toContainText('Saved terrain kept');
+  await expect(page.locator('#notice')).toContainText('World restored');
   const explicit = new Ecosystem().save();
   explicit.terrain = { version: 1, preset: 'open-field', seed: 99 };
   explicit.walls = [index(5, 5)];
@@ -809,7 +874,10 @@ test('D22-R1-001 native accepted-cap legacy migration fails outbound nonfatally 
   const before = await terrainNativeFrame(page),
     ownersBefore = await page.evaluate(() => [...window.measurementGate.pending]);
   expect(before.frame).toEqual(terrainExpectedFrame(reference));
-  expect(before.selected).toEqual(reference.save().organisms[0]);
+  expect(before.selected).toEqual(observedOrganism(reference.save().organisms[0]));
+  expect((await refugeFullGenome(page)).genome).toEqual(
+    refugeGraph(reference.save().organisms[0].genome),
+  );
   expect(ownersBefore).toEqual([]);
   let downloads = 0;
   page.on('download', () => downloads++);
@@ -828,7 +896,7 @@ test('D22-R1-001 native accepted-cap legacy migration fails outbound nonfatally 
   await expect(page.locator('#tick')).toHaveText(`TICK ${reference.tick}`);
   const after = await terrainNativeFrame(page);
   expect(after.frame).toEqual(terrainExpectedFrame(reference));
-  expect(after.selected).toEqual(reference.save().organisms[0]);
+  expect(after.selected).toEqual(observedOrganism(reference.save().organisms[0]));
   expect(after.playback.paused).toBe(true);
   expectReceiptDrivenTerrainPauses(await page.evaluate(() => window.terrainNative.lifecycle));
   await testInfo.attach('accepted-cap-native-state.json', {
@@ -965,14 +1033,16 @@ for (const operation of [
     const actualOperation = operation === 'initial-start' ? 'start' : operation,
       injection = `(() => {
         const nativePost = self.postMessage.bind(self), nativeTimeout = self.setTimeout.bind(self);
-        let armed = ${operation === 'initial-start'}, failFrame = false, pending = 0, waiting = false;
-        const acknowledge = () => { if (waiting && pending === 0) { waiting = false; armed = true; nativePost({ type: '__publication_fault_armed', pending }); } };
+        let armed = ${operation === 'initial-start'}, failObservation = false, pending = 0, waiting = false, display = null, progress = null;
+        const acknowledge = () => { if (waiting && pending === 0 && display === null && progress === null) { waiting = false; armed = true; nativePost({ type: '__publication_fault_armed', pending }); } };
         self.setTimeout = (callback, delay, ...args) => { pending++; return nativeTimeout((...values) => { pending--; try { callback(...values); } finally { acknowledge(); } }, delay, ...args); };
-        self.addEventListener('message', event => { if (event.data?.type === '__arm_publication_fault') { event.stopImmediatePropagation(); waiting = true; acknowledge(); } });
+        self.addEventListener('message', event => { const data = event.data; if (data?.type === 'flow-ack') { if (data.channel === 'display' && display && data.runId === display.runId && data.sequence === display.sequence) display = null; if (data.channel === 'progress' && progress && data.runId === progress.runId && data.sequence === progress.sequence) progress = null; queueMicrotask(acknowledge); } if (data?.type === '__arm_publication_fault') { event.stopImmediatePropagation(); waiting = true; acknowledge(); } });
         self.postMessage = (data, ...args) => {
-          if (failFrame && data.type === 'frame') { failFrame = false; throw new Error('Injected native-worker frame publication fault after successful terminal'); }
+          if (failObservation && (data.type === 'frame' || data.type === 'progress')) { failObservation = false; throw new Error('Injected native-worker '+data.type+' publication fault after successful terminal'); }
+          if (data.type === 'frame') display = { runId: data.runId, sequence: data.sequence };
+          if (data.type === 'progress') progress = { runId: data.runId, sequence: data.sequence };
           nativePost(data, ...args);
-          if (armed && data.operation === ${JSON.stringify(actualOperation)} && ['started', 'loaded', 'manual-result'].includes(data.type)) { armed = false; failFrame = true; }
+          if (armed && data.operation === ${JSON.stringify(actualOperation)} && ['control', 'loaded', 'manual-result'].includes(data.type)) { armed = false; failObservation = true; }
         };
       })();\n`;
     await page.route('**/assets/worker-*.js', async (route) => {
@@ -985,11 +1055,17 @@ for (const operation of [
         window.Worker = new Proxy(window.Worker, {
           construct(target, args, newTarget) {
             const worker: Worker = Reflect.construct(target, args, newTarget);
+            if (initial) {
+              window.measurementGate.deliveryBlocked = true;
+              window.measurementGate.holdLifecycle = true;
+            }
             let active = initial,
               waiter: (() => void) | null = null;
             const evidence = (window.publicationFault = {
               terminals: 0,
               failures: 0,
+              visible: null as boolean | null,
+              failureMessage: null as string | null,
               latest: null as object | null,
               pendingAtArm: null as number | null,
               arm: () =>
@@ -999,6 +1075,7 @@ for (const operation of [
                 }),
             });
             worker.addEventListener('message', ({ data }) => {
+              if (data.state) evidence.visible = data.state.display.visible;
               if (data.type === '__publication_fault_armed') {
                 active = true;
                 evidence.pendingAtArm = data.pending;
@@ -1012,11 +1089,14 @@ for (const operation of [
                   type: data.type,
                   operation: data.operation,
                   runId: data.runId,
-                  requestId: data.requestId,
+                  requestId: data.commandId,
                   commandId: data.commandId,
                 };
               }
-              if (data.type === 'error' && data.fatal && !data.operation) evidence.failures++;
+              if (data.type === 'error' && data.fatal && !data.operation) {
+                evidence.failures++;
+                evidence.failureMessage = data.message;
+              }
             });
             return worker;
           },
@@ -1042,41 +1122,42 @@ for (const operation of [
         Buffer.from(JSON.stringify(reference.save())),
       );
       await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
-      await page.evaluate(() => {
-        window.measurementGate.deliveryBlocked = true;
-      });
-      await page.locator('#measurements-json').click();
-      await page.locator('#save').click();
       await page.locator('#mutation').evaluate((input: HTMLInputElement) => {
         input.value = '0.2';
         input.dispatchEvent(new Event('input'));
       });
       reference.changeSettings({ mutation: 0.2 });
-      await page
-        .getByRole('button', { name: operation === 'paint-refuge' ? 'Warm' : 'Food', exact: true })
-        .click();
-      await page.locator('#brush').evaluate((input: HTMLInputElement) => {
-        input.value = '0';
-        input.dispatchEvent(new Event('input'));
-      });
-      const first = await coordinate(page, 1, 1);
-      await page.mouse.move(first.x, first.y);
-      await page.mouse.down();
-      if (operation === 'paint-refuge')
-        reference.paintRefuge({ rulesVersion: 1, tool: 'warm', radius: 0, units: 4 }, 1, 1);
-      else referenceManualPaint(reference, 'food', 1, 1, 0, founder(0));
-      if (operation !== 'paint' && operation !== 'paint-refuge') await page.mouse.up();
-      await expect(page.locator('#notice')).not.toContainText('Worker capacity busy');
+      if (operation === 'paint' || operation === 'paint-refuge') {
+        await page
+          .getByRole('button', {
+            name: operation === 'paint-refuge' ? 'Warm' : 'Food',
+            exact: true,
+          })
+          .click();
+        await page.locator('#brush').evaluate((input: HTMLInputElement) => {
+          input.value = '0';
+          input.dispatchEvent(new Event('input'));
+        });
+        const first = await coordinate(page, 1, 1);
+        await page.mouse.move(first.x, first.y);
+        await page.mouse.down();
+        if (operation === 'paint-refuge')
+          reference.paintRefuge({ rulesVersion: 1, tool: 'warm', radius: 0, units: 4 }, 1, 1);
+        else referenceManualPaint(reference, 'food', 1, 1, 0, founder(0));
+      }
+      await page.locator('#world').scrollIntoViewIfNeeded();
+      await expect.poll(() => page.evaluate(() => window.publicationFault.visible)).toBe(true);
+      await page.evaluate(() => window.measurementGate.waitForDrain());
       await page.evaluate(() => window.publicationFault.arm());
-      held = await page.evaluate(() => {
-        window.measurementGate.deliveryBlocked = false;
-        return [...window.measurementGate.pending];
+      await page.evaluate(() => {
+        window.measurementGate.deliveryBlocked = true;
+        window.measurementGate.holdLifecycle = true;
       });
-      expect(held.length).toBe(operation === 'paint' || operation === 'paint-refuge' ? 5 : 6);
       if (operation === 'start') {
-        await page.getByText('World settings', { exact: true }).click();
-        await page.locator('#reset').click();
-        await page.locator('#confirm-reset').click();
+        await page.evaluate(() => {
+          document.getElementById('reset')!.click();
+          document.getElementById('confirm-reset')!.click();
+        });
         reference = new Ecosystem(reference.settings);
       } else if (operation === 'load') {
         reference = new Ecosystem({ ...DEFAULTS, seed: 74, nutrients: 0 }, false);
@@ -1093,7 +1174,9 @@ for (const operation of [
         });
         reference.changeSettings({ nutrients: 7 });
       } else if (operation === 'shock') {
-        await page.locator('[data-shock="heat"]').click();
+        await page.evaluate(() =>
+          document.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click(),
+        );
         const before = { offset: reference.eventOffset, until: reference.eventUntil };
         reference.shock('heat');
         reference.appendIntervention({
@@ -1121,8 +1204,7 @@ for (const operation of [
         );
         await page.mouse.up();
       } else if (operation === 'clear-walls' || operation === 'regenerate-walls') {
-        await page.getByText('World settings', { exact: true }).click();
-        await page.locator(`#${operation}`).click();
+        await page.locator(`#${operation}`).evaluate((button: HTMLButtonElement) => button.click());
         reference.changeTerrain(operation === 'clear-walls' ? 'clear' : 'regenerate');
       } else {
         const next = await coordinate(page, 2, 1);
@@ -1133,7 +1215,7 @@ for (const operation of [
           0,
           2,
           1,
-          reference.interventions.entries.at(-1)!.sequence,
+          reference.interventionSnapshot().entries.at(-1)!.sequence,
         );
         await page.mouse.up();
       }
@@ -1150,13 +1232,19 @@ for (const operation of [
     }));
     expect(stopped.terminals).toBe(1);
     expect(stopped.failures).toBe(1);
+    expect(stopped.failureMessage).toMatch(
+      /Injected native-worker (frame|progress) publication fault/,
+    );
     expect(stopped.counts.terminated).toBe(0);
     if (operation !== 'initial-start') expect(stopped.pendingAtArm).toBe(0);
-    for (const [id, owner] of held)
-      expect(stopped.pending.find(([key]) => key === id)?.[1]).toEqual(owner);
+    held = stopped.pending;
+    expect(held).toHaveLength(1);
     await page
       .locator('#notice')
       .screenshot({ path: testInfo.outputPath('post-success-stopped-notice.png') });
+    await page.evaluate(() => window.measurementGate.releaseResults());
+    await page.evaluate(() => window.measurementGate.waitForDrain());
+    await expect(page.locator('#run-state')).toHaveText('STOPPED');
     await page.locator('#file').setInputFiles({
       name: 'explicit-retained-recovery.json',
       mimeType: 'application/json',
@@ -1164,13 +1252,6 @@ for (const operation of [
     });
     await expect(page.locator('#run-state')).toHaveText('PAUSED');
     await expect(page.locator('#notice')).toContainText('Not a valid');
-    if (held.length) {
-      await expect(page.locator('#save')).toBeDisabled();
-      await expect(page.locator('#measurements-json')).toBeDisabled();
-    }
-    await page.evaluate(() => {
-      window.measurementGate.releaseResults();
-    });
     await expect(page.locator('#save')).toBeEnabled();
     const recovered = await downloadPausedWorld(page);
     expect(recovered).toEqual(Buffer.from(JSON.stringify(reference.save())));
@@ -1460,7 +1541,9 @@ for (const state of ['empty', 'single', 'full-ring', 'legacy', 'extinct-paused']
             await expect(page.locator('[data-bin]')).toHaveCount(0);
           }
         } else
-          await expect(page.locator('#telemetry-plots')).toContainText('No recorded samples yet');
+          await expect(page.locator('#telemetry-plots')).toContainText(
+            'Received history was empty at source tick',
+          );
         const layout = await page.evaluate(() => {
           const section = document.querySelector('#telemetry')!,
             selects = [...section.querySelectorAll('select')],
@@ -1804,7 +1887,25 @@ test('full-ring telemetry retains raw render, selection and resize timings with 
 
 async function observeTelemetry(page: import('@playwright/test').Page): Promise<void> {
   await page.addInitScript(() => {
-    window.telemetryEvidence = { frame: null, points: [], loadText: null };
+    window.telemetryEvidence = { current: null, source: null, points: [], loadText: null };
+    let runId = 0,
+      established = false;
+    let posted: { commandId: number; runId: number; type: string } | null = null;
+    const accept = (
+      state: ControlState,
+      source?: { revision: number; tick: number; telemetry: Frame['telemetry'] },
+    ) => {
+      const evidence = window.telemetryEvidence;
+      if (!evidence.current || state.revision > evidence.current.revision) evidence.current = state;
+      const current = evidence.current;
+      if (
+        source &&
+        source.revision <= current.revision &&
+        source.tick <= current.world.stats.tick &&
+        (!evidence.source || source.revision > evidence.source.revision)
+      )
+        evidence.source = { ...source, runId, replacementId: current.replacementId };
+    };
     Object.defineProperty(window.telemetryEvidence, 'points', {
       get: () =>
         [...document.querySelectorAll('[data-series="Population"] circle[data-tick]')].map(
@@ -1816,12 +1917,37 @@ async function observeTelemetry(page: import('@playwright/test').Page): Promise<
         const worker: Worker = Reflect.construct(target, args, newTarget);
         worker.postMessage = new Proxy(worker.postMessage, {
           apply(postMessage, receiver, messages) {
-            if (messages[0].type === 'load') window.telemetryEvidence.loadText = messages[0].text;
+            const command = messages[0];
+            if (command.type !== 'flow-ack')
+              posted = { commandId: command.commandId, runId: command.runId, type: command.type };
+            if (command.type === 'load') window.telemetryEvidence.loadText = command.text;
+            if (command.type === 'start' || command.type === 'load') {
+              runId = command.runId;
+              established = false;
+            }
             return Reflect.apply(postMessage, receiver, messages);
           },
         });
         worker.addEventListener('message', ({ data }) => {
-          if (data.type === 'frame') window.telemetryEvidence.frame = data.frame;
+          if (data.runId !== runId) return;
+          if (data.type === 'frame' || data.type === 'progress') {
+            if (established) accept(data.state, data.telemetry);
+            return;
+          }
+          if (!posted || data.commandId !== posted.commandId || data.runId !== posted.runId) return;
+          const command = posted;
+          posted = null;
+          const state = data.type === 'error' ? data.recovery?.state : data.state;
+          const source = data.type === 'error' ? data.recovery?.telemetry : data.telemetry;
+          if (!state) return;
+          if (command.type === 'start' || command.type === 'load') {
+            established = true;
+            const previous = window.telemetryEvidence.current;
+            window.telemetryEvidence.current = null;
+            if (previous?.replacementId !== state.replacementId)
+              window.telemetryEvidence.source = null;
+          }
+          if (established) accept(state, source);
         });
         return worker;
       },
@@ -1833,8 +1959,8 @@ async function telemetryFrame(
   page: import('@playwright/test').Page,
 ): Promise<Pick<Frame, 'stats' | 'telemetry'>> {
   return page.evaluate(() => {
-    const { stats, telemetry } = window.telemetryEvidence.frame!;
-    return { stats, telemetry };
+    const { current, source } = window.telemetryEvidence;
+    return { stats: current!.world.stats, telemetry: source!.telemetry };
   });
 }
 
@@ -1849,7 +1975,7 @@ async function expectPopulationChart(
         const svg = document.querySelector('#telemetry-plots svg') as SVGSVGElement | null;
         if (!svg) return values.length === 0;
         const width = svg.viewBox.baseVal.width,
-          samples = window.telemetryEvidence.frame!.telemetry.samples,
+          samples = window.telemetryEvidence.source!.telemetry.samples,
           start = samples.length === 1 ? samples[0].fromTick : samples[0].tick,
           end = samples.at(-1)!.tick;
         const expected = values.map((population, position) => [
@@ -2180,6 +2306,9 @@ async function observeMeasurementOwnership(page: import('@playwright/test').Page
           E: 0,
           S: 0,
           M: 0,
+          viewCommands: 0,
+          paintCommands: 0,
+          beginCommands: 0,
           C: 0,
           L: 0,
           completedL: 0,
@@ -2278,6 +2407,9 @@ async function observeMeasurementOwnership(page: import('@playwright/test').Page
             const command = messages[0],
               id = command.requestId ?? command.commandId;
             if (id) {
+              if (command.type === 'display-view') counts.viewCommands++;
+              if (command.type === 'paint') counts.paintCommands++;
+              if (command.type === 'begin-stroke') counts.beginCommands++;
               const category =
                 command.type === 'export-measurements'
                   ? 'E'
@@ -2321,7 +2453,8 @@ test('D9-A5 actual native4096-command stroke closes once without a4097th paint o
   await page.goto('/');
   await requestPause(page);
   const before = await downloadPausedWorld(page),
-    reference = Ecosystem.load(before.toString());
+    reference = Ecosystem.load(before.toString()),
+    beforeCounts = await page.evaluate(() => ({ ...window.measurementGate.counts }));
   await page.getByRole('button', { name: 'Food', exact: true }).click();
   await page.locator('#brush').evaluate((input: HTMLInputElement) => {
     input.value = '0';
@@ -2362,7 +2495,11 @@ test('D9-A5 actual native4096-command stroke closes once without a4097th paint o
   }, position);
   await page.mouse.up();
   const counts = await page.evaluate(() => window.measurementGate.counts);
-  expect(counts).toMatchObject({ M: 4097, C: 1, terminated: 0 });
+  expect(counts.M - beforeCounts.M - (counts.viewCommands - beforeCounts.viewCommands)).toBe(4097);
+  expect(counts.paintCommands - beforeCounts.paintCommands).toBe(4096);
+  expect(counts.beginCommands - beforeCounts.beginCommands).toBe(1);
+  expect(counts.C - beforeCounts.C).toBe(1);
+  expect(counts.terminated).toBe(0);
   const outcome = reference.paint('food', 10, 10, 0, founder(0));
   reference.recordPaint(outcome, 'food', 0, 10, 10, null);
   const after = await downloadPausedWorld(page);
@@ -2374,6 +2511,7 @@ test('D9-A5 actual native4096-command stroke closes once without a4097th paint o
     contentType: 'application/json',
     body: JSON.stringify({
       counts,
+      beforeCounts,
       beforeSHA256: createHash('sha256').update(before).digest('hex'),
       afterSHA256: createHash('sha256').update(after).digest('hex'),
       frameGate:
@@ -2381,7 +2519,7 @@ test('D9-A5 actual native4096-command stroke closes once without a4097th paint o
     }),
   });
 });
-test('D9-A7 actual native termination precedes abandonment of36 held receipts and a clean new Worker incarnation', async ({
+test('D9-A7 actual native termination precedes abandonment of the sole held receipt under36 and a clean new Worker incarnation', async ({
   page,
 }) => {
   await observeMeasurementOwnership(page);
@@ -2413,11 +2551,13 @@ test('D9-A7 actual native termination precedes abandonment of36 held receipts an
     pointer('pointerup');
     document.getElementById('reset')!.click();
     document.getElementById('confirm-reset')!.click();
+    document.getElementById('confirm-reset')!.click();
   });
-  await expect.poll(() => page.evaluate(() => window.measurementGate.counts.completedL)).toBe(2);
-  expect(await page.evaluate(() => window.measurementGate.pending.size)).toBe(36);
+  await expect.poll(() => page.evaluate(() => window.measurementGate.counts.serializedE)).toBe(1);
+  expect(await page.evaluate(() => window.measurementGate.counts.completedL)).toBe(1);
+  expect(await page.evaluate(() => window.measurementGate.pending.size)).toBe(1);
   const held = await page.evaluate(() => ({ ...window.measurementGate.counts }));
-  expect(held).toMatchObject({ serializedE: 1, serializedS: 1, terminated: 0, maximum: 36 });
+  expect(held).toMatchObject({ serializedE: 1, serializedS: 0, terminated: 0, maximum: 1 });
   await page.evaluate(() => window.measurementGate.failEndpoint());
   expect(await page.evaluate(() => window.measurementGate.counts.terminated)).toBe(1);
   expect(await page.evaluate(() => window.measurementGate.pending.size)).toBe(0);
@@ -2517,11 +2657,12 @@ test('D9-A10 native file reads stay single-owner through cancellation, reset and
   await pick(new Ecosystem({ ...DEFAULTS, seed: 123 }).save());
   await expect.poll(() => page.evaluate(() => window.measurementReadGate.ready)).toBe(true);
   await pick(new Ecosystem({ ...DEFAULTS, seed: 456 }).save());
-  await expect(page.locator('#notice')).toContainText('No second read was started');
+  await expect(page.locator('#notice')).toContainText('World read still outstanding');
   expect(await page.evaluate(() => window.measurementReadGate.counts.calls)).toBe(readsBefore + 1);
   await page.locator('#file').dispatchEvent('cancel');
   await page.evaluate(() => {
     document.getElementById('reset')!.click();
+    document.getElementById('confirm-reset')!.click();
     document.getElementById('confirm-reset')!.click();
   });
   await requestPause(page);
@@ -2537,6 +2678,7 @@ test('D9-A10 native file reads stay single-owner through cancellation, reset and
     window.measurementGate.deliveryBlocked = true;
     window.measurementGate.holdLifecycle = true;
     document.getElementById('reset')!.click();
+    document.getElementById('confirm-reset')!.click();
     document.getElementById('confirm-reset')!.click();
   });
   await expect
@@ -2738,27 +2880,25 @@ for (const speed of [1, 4, 12]) {
   });
 }
 for (const mode of ['processing', 'delivery'] as const) {
-  test(`D9-A9 native ${mode} gate keeps all36 owners across repeated replacements and drains without stale downloads`, async ({
+  test(`D9-A9 native ${mode} gate preserves36 ceiling through256 replacement workloads and exact FIFO drains`, async ({
     page,
-  }) => {
+  }, testInfo) => {
     await observeMeasurementOwnership(page);
     let downloads = 0;
     page.on('download', () => downloads++);
     await page.goto('/');
     await requestPause(page);
+    const before = await downloadPausedWorld(page),
+      baseline = await page.evaluate(() => ({ ...window.measurementGate.counts }));
+    await expect(page.locator('#save')).toBeEnabled();
     await page.evaluate((mode) => {
       const gate = window.measurementGate;
       gate.processingBlocked = mode === 'processing';
       gate.deliveryBlocked = mode === 'delivery';
-      const click = (id: string) => {
-          document.getElementById(id)!.click();
-          if (id === 'reset' && (document.getElementById('reset-dialog') as HTMLDialogElement).open)
-            document.getElementById('confirm-reset')!.click();
-        },
-        canvas = document.getElementById('world')!,
+      document.getElementById(mode === 'processing' ? 'measurements-json' : 'save')!.click();
+      document.getElementById(mode === 'processing' ? 'save' : 'measurements-json')!.click();
+      const canvas = document.getElementById('world')!,
         rect = canvas.getBoundingClientRect();
-      click('measurements-json');
-      click('save');
       document.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
       const pointer = (type: string) =>
         canvas.dispatchEvent(
@@ -2773,23 +2913,42 @@ for (const mode of ['processing', 'delivery'] as const) {
       pointer('pointerdown');
       for (let point = 0; point < 31; point++) pointer('pointermove');
       pointer('pointerup');
-      click('reset');
+      document.getElementById('reset')!.click();
+      document.getElementById('confirm-reset')!.click();
       if (mode === 'processing')
         for (let attempt = 0; attempt < 256; attempt++) {
-          click('reset');
-          click('measurements-csv');
-          click('save');
+          document.getElementById('reset')!.click();
+          document.getElementById('confirm-reset')!.click();
+          for (const id of ['measurements-json', 'measurements-csv', 'save'])
+            document.getElementById(id)!.click();
           pointer('pointerdown');
           pointer('pointerup');
         }
     }, mode);
-    if (mode === 'processing') {
-      expect(await page.evaluate(() => window.measurementGate.pending.size)).toBe(36);
-      await page.evaluate(() => window.measurementGate.releasePosts());
-    } else {
+    await expect.poll(() => page.evaluate(() => window.measurementGate.pending.size)).toBe(1);
+    expect(await page.evaluate(() => window.measurementGate.counts.completedL)).toBe(
+      baseline.completedL,
+    );
+    const held = await page.evaluate(() => ({ ...window.measurementGate.counts }));
+    let predecessor: Buffer | null = null;
+    if (mode === 'processing') await page.evaluate(() => window.measurementGate.releasePosts());
+    else {
       await expect
-        .poll(() => page.evaluate(() => window.measurementGate.counts.completedL))
-        .toBe(2);
+        .poll(() => page.evaluate(() => window.measurementGate.counts.serializedS))
+        .toBe(baseline.serializedS + 1);
+      const download = page.waitForEvent('download');
+      await page.evaluate(() => window.measurementGate.releaseResults());
+      const stream = await (await download).createReadStream(),
+        chunks: Buffer[] = [];
+      for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+      predecessor = Buffer.concat(chunks);
+      expect(predecessor).toEqual(before);
+    }
+    await page.evaluate(() => window.measurementGate.waitForDrain());
+    await expect
+      .poll(() => page.evaluate(() => window.measurementGate.counts.completedL))
+      .toBe(baseline.completedL + 1);
+    if (mode === 'delivery')
       await page.evaluate(async () => {
         const gate = window.measurementGate,
           input = document.getElementById('file') as HTMLInputElement;
@@ -2803,51 +2962,50 @@ for (const mode of ['processing', 'delivery'] as const) {
           } else {
             document.getElementById('reset')!.click();
             document.getElementById('confirm-reset')!.click();
+            document.getElementById('confirm-reset')!.click();
           }
           await completion;
-          for (const id of ['measurements-json', 'measurements-csv', 'save'])
-            document.getElementById(id)!.click();
+          await gate.waitForDrain();
+          if (document.getElementById('run-state')!.textContent === 'LIVE')
+            document.getElementById('pause')!.click();
+          await gate.waitForDrain();
         }
       });
-      expect(await page.evaluate(() => window.measurementGate.pending.size)).toBe(35);
-      await page.evaluate(() => window.measurementGate.releaseResults());
-    }
     await expect.poll(() => page.evaluate(() => window.measurementGate.pending.size)).toBe(0);
-    const counts = await page.evaluate(() => window.measurementGate.counts);
-    expect(counts).toMatchObject({
-      E: 1,
-      S: 1,
-      M: 32,
-      C: 1,
-      L: mode === 'processing' ? 2 : 258,
-      maximum: 36,
-      serializedE: 1,
-      serializedS: 1,
-      terminated: 0,
-    });
-    expect(downloads).toBe(0);
-    await expect(page.locator('#save')).toBeEnabled();
+    const counts = await page.evaluate(() => ({ ...window.measurementGate.counts }));
+    expect(counts.L - baseline.L).toBe(mode === 'processing' ? 1 : 257);
+    expect(counts.serializedE - baseline.serializedE).toBe(mode === 'processing' ? 1 : 0);
+    expect(counts.serializedS - baseline.serializedS).toBe(mode === 'processing' ? 0 : 1);
+    expect(counts.maximum).toBe(1);
+    expect(counts.maximum).toBeLessThanOrEqual(36);
+    expect(counts.terminated).toBe(0);
+    expect(downloads).toBe(mode === 'processing' ? 1 : 2);
+    if ((await page.locator('#run-state').textContent()) === 'LIVE') await requestPause(page);
     await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
-    const current = JSON.parse((await downloadMeasurements(page, 'json')).toString());
-    const reference = new Ecosystem();
+    const current = JSON.parse((await downloadMeasurements(page, 'json')).toString()),
+      reference = new Ecosystem();
     advance(reference, current.snapshot.completedTick);
     expect(current.snapshot.settings).toEqual(reference.settings);
     expect(current.telemetry).toEqual(reference.save().telemetry);
     expect(current.interventions).toEqual(reference.save().interventions);
-    expect(downloads).toBe(1);
-    await requestPause(page);
-    const saved = JSON.parse((await downloadPausedWorld(page)).toString());
+    const raw = await downloadPausedWorld(page),
+      saved = JSON.parse(raw.toString());
     advance(reference, saved.tick - reference.tick);
     expect(saved).toEqual(reference.save());
-    expect(downloads).toBe(2);
-    await test.info().attach('native-ownership-counts.json', {
+    expect(raw).toEqual(Buffer.from(JSON.stringify(reference.save())));
+    await testInfo.attach('native-ownership-counts.json', {
       contentType: 'application/json',
       body: JSON.stringify({
         mode,
+        baseline,
+        held,
         counts,
         downloads,
+        beforeSHA256: createHash('sha256').update(before).digest('hex'),
+        predecessorSHA256: predecessor && createHash('sha256').update(predecessor).digest('hex'),
+        finalSHA256: createHash('sha256').update(raw).digest('hex'),
         limits:
-          'Actual native Worker and real result forwarding. DOM-dispatched pointer/file actions; not OS picker, physical touch, heap or disk-duration evidence. No finite drain guarantee for a suspended endpoint.',
+          'Actual native Worker;36 ceiling preserved, one posted composed pipeline. Processing:256 blocked destructive intents. Delivery:256 actual alternating success/failure lifecycle completions after literal-byte posted Save drain. No OS picker, physical touch, heap/disk-duration or suspension drain guarantee.',
       }),
     });
   });
@@ -4252,7 +4410,7 @@ test.describe('pause on total extinction', () => {
         set onmessage(handler: ((this: Worker, event: MessageEvent) => void) | null) {
           super.onmessage = (event) => {
             if (event.data.type === 'error' && event.data.recovery) {
-              delivery.nutrients = event.data.recovery.settings.nutrients;
+              delivery.nutrients = event.data.recovery.state.settings.nutrients;
               delivery.release = () => handler?.call(this, event);
             } else handler?.call(this, event);
           };
@@ -4278,14 +4436,15 @@ test.describe('pause on total extinction', () => {
     await page.locator('#climate').fill('0.25');
     await page.locator('#nutrients').fill('7');
     const reference = Ecosystem.load(JSON.stringify(before));
-    reference.changeSettings({ nutrients: 3 });
-    reference.changeSettings({ mutation: 0.37 });
-    reference.changeSettings({ climate: 0.25 });
-    reference.changeSettings({ nutrients: 7 });
+    reference.changeSettings({ nutrients: 7, mutation: 0.37, climate: 0.25 });
     const expected = reference.save();
-    await expect(page.getByRole('button', { name: 'Save world' })).toBeDisabled();
-    await page.evaluate('window.recoveryDelivery.release()');
-    await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5, 6, 7, 8 or 9');
+    const pendingSave = readWorld(page);
+    const recoveryNotice = await page.evaluate(
+      '(() => { window.recoveryDelivery.release(); return document.getElementById("notice").textContent; })()',
+    );
+    expect(recoveryNotice).toContain('version 2, 3, 4, 5, 6, 7, 8 or 9');
+    expect(await pendingSave).toEqual(expected);
+    await expect(page.locator('#notice')).toContainText('World saved');
     await expect(page.locator('#nutrients')).toHaveValue('7');
     await expect(page.locator('#nutrients-value')).toHaveText('7%');
     await expect(page.locator('#mutation-value')).toHaveText('37%');
@@ -4306,6 +4465,7 @@ test.describe('pause on total extinction', () => {
     await testInfo.attach('settings-recovery-evidence', {
       body: JSON.stringify({
         snapshotNutrients: 0,
+        recoveryNotice,
         displayedNutrients: await page.locator('#nutrients').inputValue(),
         retainedTick: before.tick,
         savedSettings: expected.settings,
@@ -4481,7 +4641,7 @@ test('restores real worker telemetry, renders its population projection and down
       before.samples.map((sample) => sample.population),
     );
     const rendered = await page.evaluate(() => ({
-      telemetry: window.telemetryEvidence.frame!.telemetry,
+      telemetry: window.telemetryEvidence.source!.telemetry,
       points: window.telemetryEvidence.points,
       width: (document.querySelector('#telemetry-plots svg') as SVGSVGElement).viewBox.baseVal
         .width,
@@ -4853,16 +5013,17 @@ test('designer, world tools, camera, shortcuts and invalid saves behave in Chrom
 });
 
 async function refugeLoad(page: import('@playwright/test').Page, text: string): Promise<number> {
-  const before = await page.evaluate(() => window.terrainNative.lifecycle.at(-1)?.runId ?? -1);
+  const before = await page.evaluate(() => window.terrainNative.lifecycle.at(-1)?.requestId ?? 0);
   await page.locator('#file').setInputFiles({
     name: 'original-refuge-fixture.json',
     mimeType: 'application/json',
     buffer: Buffer.from(text),
   });
   await expect
-    .poll(() => page.evaluate(() => window.terrainNative.lifecycle.at(-1)?.runId ?? -1))
+    .poll(() => page.evaluate(() => window.terrainNative.lifecycle.at(-1)?.requestId ?? 0))
     .toBeGreaterThan(before);
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  await page.locator('#world').scrollIntoViewIfNeeded();
   await expect
     .poll(() =>
       page.evaluate(() => {
@@ -4870,7 +5031,7 @@ async function refugeLoad(page: import('@playwright/test').Page, text: string): 
           latest = native.lifecycle.at(-1);
         return (
           native.frameRunId === latest?.runId &&
-          !!latest?.pauseAcknowledgedSequence &&
+          (latest?.paused || !!latest?.pauseAcknowledgedSequence) &&
           native.playback?.paused
         );
       }),
@@ -4899,6 +5060,8 @@ async function refugeMode(page: import('@playwright/test').Page, enabled: boolea
   if ((await page.locator('#refuge-enabled').isChecked()) !== enabled)
     await page.locator('#refuge-enabled').click();
   await expect(page.locator('#refuge-enabled')).toBeChecked({ checked: enabled });
+  // A mobile sidebar action can hide the habitat; reveal it before requiring a new grid.
+  await page.locator('#world').scrollIntoViewIfNeeded();
   await expect
     .poll(() => page.evaluate(() => window.terrainNative.frame?.thermalRefuges.enabled))
     .toBe(enabled);
@@ -4950,9 +5113,14 @@ async function refugeProtocol(page: import('@playwright/test').Page, receiptDriv
   else {
     expect(evidence.fifoPauses).toBeGreaterThan(0);
     for (const receipt of evidence.lifecycle) {
-      expect(receipt.pausePostedSequence!).toBeLessThan(receipt.receivedSequence);
-      expect(receipt.pauseAcknowledgedSequence).not.toBeNull();
       expect(receipt.completedTick).toBe(0);
+      if (receipt.paused) {
+        expect(receipt.pausePostedSequence).toBeNull();
+        continue;
+      }
+      expect(receipt.pausePostedSequence!).toBeGreaterThan(receipt.receivedSequence);
+      expect(receipt.pauseAcknowledgedSequence).not.toBeNull();
+      expect(receipt.pauseAcknowledgedSequence!).toBeGreaterThan(receipt.pausePostedSequence!);
     }
   }
   await test.info().attach('native-refuge-protocol.json', {
@@ -5157,10 +5325,12 @@ test('B23-4 capacity and late-load rejection preserve full state while stale man
         ),
       )
       .toBe(1);
-    const replacement = Ecosystem.load(text),
-      tick = await refugeLoad(page, text);
-    advance(replacement, tick);
+    const replacement = Ecosystem.load(text);
+    const loading = refugeLoad(page, text);
+    await expect(page.locator('#save')).toBeDisabled();
     await page.evaluate(() => window.measurementGate.releaseResults());
+    const tick = await loading;
+    advance(replacement, tick);
     await expect(page.locator('#refuge-enabled')).toBeChecked();
     await page.locator('#step').click();
     replacement.step();
@@ -5243,6 +5413,7 @@ test('B23-5 authoritative anchor temperature determines real survival, body food
       await terrainSettings(page);
       await page.locator('#climate').fill('1');
       await page.getByRole('button', { name: 'Heatwave', exact: true }).click();
+      await page.locator('#world').scrollIntoViewIfNeeded();
       await expect
         .poll(() =>
           page.evaluate(() => [
@@ -5365,70 +5536,68 @@ function refugeGraph(value: any): object {
 
 // Invert the complete current genome/cell carriers before comparing the genuine
 // predecessor graph. Raw organism properties stay on their original native path.
-async function refugeSelected(page: import('@playwright/test').Page, checks = false) {
-  if (!checks) {
-    await page.getByRole('button', { name: 'Inspect', exact: true }).click();
-    const anchor = await coordinate(page, 120, 78);
-    await page.mouse.click(anchor.x, anchor.y);
-    await expect.poll(() => page.evaluate(() => window.terrainNative.selected?.id)).toBe(1);
-  }
-  return page.evaluate(
-    ({ encoder, decoder, restorer, checks }) => {
-      const encode = Function(`return (${encoder})`)();
-      const inverseOpaque = Function(`return (${decoder})`)();
-      const restore = Function('inverseOpaque', `return (${restorer})`)(inverseOpaque);
-      const native = window.terrainNative.selected;
-      const selected = { ...native, genome: restore(native.genome) };
-      if (checks)
-        return [selected, selected.genome, selected.genome.cells[0]].map((value) => ({
-          positive: Object.is(value.positive, Infinity),
-          negative: Object.is(value.negative, -Infinity),
-          signedZero: Object.is(value.negativeZero, -0),
-          ownProto: Object.hasOwn(value, '__proto__'),
-          ordinary: Object.getPrototypeOf(value) === Object.prototype,
-        }));
-      return encode(selected);
-    },
-    {
-      encoder: refugeGraph.toString(),
-      decoder: inverseOpaque.toString(),
-      restorer: restoreHistoricalGenome.toString(),
-      checks,
-    },
-  );
+async function refugeSelected(page: import('@playwright/test').Page) {
+  await page.getByRole('button', { name: 'Inspect', exact: true }).click();
+  const anchor = await coordinate(page, 120, 78);
+  await page.mouse.click(anchor.x, anchor.y);
+  await expect.poll(() => page.evaluate(() => window.terrainNative.selected?.id)).toBe(1);
+  return page.evaluate((encoder) => {
+    const encode = Function(`return (${encoder})`)();
+    return encode(window.terrainNative.selected);
+  }, refugeGraph.toString());
 }
 
-test('B23-6 complete direct raw families, deepest common native path, current reload and cap failure retain original boundaries', async ({
+async function refugeFullGenome(page: import('@playwright/test').Page) {
+  const previous = await page.evaluate(() => window.terrainNative.fullDesign?.commandId ?? 0);
+  if ((await page.locator('#specimen-details').getAttribute('open')) === null)
+    await page.locator('#specimen-details > summary').click();
+  await page.locator('#copy-organism').click();
+  await expect
+    .poll(() => page.evaluate(() => window.terrainNative.fullDesign?.commandId ?? 0))
+    .toBeGreaterThan(previous);
+  return page.evaluate((encoder) => {
+    const encode = Function(`return (${encoder})`)();
+    const response = window.terrainNative.fullDesign;
+    return {
+      source: response.source,
+      sourceId: response.sourceId,
+      completedTick: response.completedTick,
+      genome: encode(response.genome),
+    };
+  }, refugeGraph.toString());
+}
+
+test('B23-6 raw families retain full Saves and explicit full genomes while routine inspection stays a bounded observation', async ({
   page,
 }) => {
   await observeTerrainNative(page, 'lifecycle-receipt');
   await page.goto('/');
   await terrainNativeFrame(page);
-  const raw = fixtureText('native-depth-direct/inputs/desktop-combined-1087.json'),
-    original = acceptedReference(raw);
+  const raw = fixtureText('native-depth-direct/inputs/desktop-combined-1087.json');
+  const original = acceptedReference(raw);
   let expected = Ecosystem.load(raw);
-  advance(original, await refugeLoad(page, raw));
-  advance(expected, original.tick - expected.tick);
-  expect(await refugeSelected(page)).toEqual(refugeGraph(original.save().organisms[0]));
-  const rawChecks = await refugeSelected(page, true);
-  expect(rawChecks).toEqual(
-    Array.from({ length: 3 }, () => ({
-      positive: true,
-      negative: true,
-      signedZero: true,
-      ownProto: true,
-      ordinary: true,
-    })),
+  const tick = await refugeLoad(page, raw);
+  advance(original, tick - original.tick);
+  advance(expected, tick - expected.tick);
+  expect(await refugeSelected(page)).toEqual(
+    refugeGraph(observedOrganism(expected.save().organisms[0])),
   );
+  const full = await refugeFullGenome(page);
+  expect(full).toEqual({
+    source: 'organism',
+    sourceId: 1,
+    completedTick: tick,
+    genome: refugeGraph(expected.save().organisms[0].genome),
+  });
   const first = await terrainSave(page, 'direct-deep-first.json');
   expect(first).toEqual(JSON.parse(JSON.stringify(expected.save())));
-  const originalOutput = JSON.parse(JSON.stringify(original.save()));
-  originalOutput.organisms.forEach((organism: any, position: number) => {
+  const historicalOutput = JSON.parse(JSON.stringify(original.save()));
+  historicalOutput.organisms.forEach((organism: any, position: number) => {
     organism.genome = original.save().organisms[position].genome;
   });
-  expect(predecessor(first)).toEqual(originalOutput);
+  expect(predecessor(first)).toEqual(historicalOutput);
   const normalized = acceptedReference(JSON.stringify(original.save()));
-  expected = Ecosystem.load(JSON.stringify(expected.save()));
+  expected = Ecosystem.load(JSON.stringify(first));
   const reloadedTick = await refugeLoad(page, JSON.stringify(first));
   advance(normalized, reloadedTick - normalized.tick);
   advance(original, reloadedTick - original.tick);
@@ -5436,16 +5605,17 @@ test('B23-6 complete direct raw families, deepest common native path, current re
   await refugeMode(page, true);
   expected.changeRefugeMode(true);
   expect(await refugeSelected(page)).toEqual(
-    refugeGraph({
-      ...normalized.save().organisms[0],
-      genome: original.save().organisms[0].genome,
-    }),
+    refugeGraph(observedOrganism(expected.save().organisms[0])),
+  );
+  expect((await refugeFullGenome(page)).genome).toEqual(
+    refugeGraph(expected.save().organisms[0].genome),
   );
   const second = await terrainSave(page, 'direct-deep-reloaded.json');
   expect(second).toEqual(expected.save());
   await page.locator('#step').click();
   expected.step();
   normalized.step();
+  original.step();
   original.step();
   const third = await terrainSave(page, 'direct-deep-step.json');
   expect(third).toEqual(expected.save());
@@ -5455,11 +5625,14 @@ test('B23-6 complete direct raw families, deepest common native path, current re
       genome: original.save().organisms[position].genome,
     })),
   );
-  const cap = fixtureText('capture-direct/inputs/native-cap-v5.json'),
-    capReference = acceptedReference(cap);
-  advance(capReference, await refugeLoad(page, cap));
+  const cap = fixtureText('capture-direct/inputs/native-cap-v5.json');
+  const capReference = acceptedReference(cap),
+    capCurrent = Ecosystem.load(cap);
+  const capTick = await refugeLoad(page, cap);
+  advance(capReference, capTick - capReference.tick);
+  advance(capCurrent, capTick - capCurrent.tick);
   const selected = await refugeSelected(page);
-  expect(selected).toEqual(refugeGraph(capReference.save().organisms[0]));
+  expect(selected).toEqual(refugeGraph(observedOrganism(capCurrent.save().organisms[0])));
   let downloads = 0;
   const record = () => downloads++;
   page.on('download', record);
@@ -5477,56 +5650,48 @@ test('B23-6 complete direct raw families, deepest common native path, current re
   expect(await page.evaluate(() => window.terrainNative.errors.at(-1)?.fatal)).toBeUndefined();
   await page.locator('#step').click();
   capReference.step();
-  await expect(page.locator('#tick')).toHaveText(`TICK ${capReference.tick.toLocaleString()}`);
-  expect(await refugeSelected(page)).toEqual(refugeGraph(capReference.save().organisms[0]));
+  capCurrent.step();
+  await expect(page.locator('#tick')).toHaveText(`TICK ${capCurrent.tick.toLocaleString()}`);
+  expect(await refugeSelected(page)).toEqual(
+    refugeGraph(observedOrganism(capCurrent.save().organisms[0])),
+  );
   page.off('download', record);
   await refugeProtocol(page);
   await test.info().attach('raw-depth-cap-boundaries.json', {
     body: JSON.stringify({
-      rawChecks,
       depth: 1087,
+      explicitFullGenotype: full,
+      routineObservationIsProjection: true,
+      completeFirstSaveMatchedPredecessor: true,
       capInputBytes: Buffer.byteLength(cap),
       acceptedReferenceOutputBytes: Buffer.byteLength(JSON.stringify(capReference.save())),
-      nativeOutputBytes: null, // Oversized native output is deliberately not downloaded.
+      nativeOutputBytes: null,
       downloads,
       before,
     }),
     contentType: 'application/json',
   });
-  const frozen = JSON.parse(readFileSync('test/fixtures/refuges/provenance.json', 'utf8'));
-  const historicalBoundary = frozen.combinedRawBoundaries.find(
-    (row: any) => row.project === test.info().project.name,
-  );
-  expect(historicalBoundary).toMatchObject({
-    deepestCompleteCommonPath: 1087,
-    adjacentUnsupported: 1088,
-  });
   const adjacentRaw = fixtureText('native-depth-direct/inputs/desktop-combined-1088.json');
-  const adjacent = Ecosystem.load(adjacentRaw),
-    adjacentOriginal = acceptedReference(adjacentRaw);
-  const previousErrors = await page.evaluate(() => window.terrainNative.errors.length);
+  const adjacent = Ecosystem.load(adjacentRaw);
   const adjacentTick = await refugeLoad(page, adjacentRaw);
   advance(adjacent, adjacentTick - adjacent.tick);
-  advance(adjacentOriginal, adjacentTick - adjacentOriginal.tick);
-  expect(await refugeSelected(page)).toEqual(refugeGraph(adjacentOriginal.save().organisms[0]));
-  const adjacentSaved = await terrainSave(page, 'original-adjacent-now-supported.json');
-  expect(adjacentSaved).toEqual(JSON.parse(JSON.stringify(adjacent.save())));
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  const adjacentFirst = await terrainSave(page, 'original-adjacent-supported-first.json');
+  expect(adjacentFirst).toEqual(JSON.parse(JSON.stringify(adjacent.save())));
   await page.locator('#step').click();
   adjacent.step();
-  adjacentOriginal.step();
-  await expect(page.locator('#tick')).toHaveText(`TICK ${adjacent.tick.toLocaleString()}`);
   const adjacentStepped = await terrainSave(page, 'original-adjacent-supported-step.json');
   expect(adjacentStepped).toEqual(JSON.parse(JSON.stringify(adjacent.save())));
-  expect(await refugeSelected(page)).toEqual(refugeGraph(adjacentOriginal.save().organisms[0]));
-  expect(await page.evaluate(() => window.terrainNative.errors.length)).toBe(previousErrors);
-  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  expect(await refugeSelected(page)).toEqual(
+    refugeGraph(observedOrganism(adjacent.save().organisms[0])),
+  );
   await test.info().attach('original-adjacent-native-continuation.json', {
     body: JSON.stringify({
-      historicalBoundary,
-      currentFlatCarrierPathSupported: true,
       inputBytes: Buffer.byteLength(adjacentRaw),
       tick: adjacentTick,
       stepTick: adjacentStepped.tick,
+      routineObservationIsProjection: true,
+      completeSavesCompared: true,
     }),
     contentType: 'application/json',
   });

@@ -1779,7 +1779,7 @@ test('native Enter and Space capture preserve focus through live frames and boun
     records.every(
       (record) =>
         record.provenance.captureTick === before.tick &&
-        !Object.hasOwn(record.provenance, 'seed') &&
+        record.provenance.seed === before.settings.seed &&
         JSON.stringify(parseBlueprint(record.blueprint).genome) ===
           JSON.stringify(before.organisms[0].genome),
     ),

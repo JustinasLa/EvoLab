@@ -57,6 +57,20 @@ async function importPaused(page: Page, text: string): Promise<number> {
   expect(posted).toBeDefined();
   if (JSON.parse(text).organisms.length) expect(loaded.paused).toBe(false);
   await pauseReady(page);
+  // Display credits are independent of command receipts and suppressed offscreen.
+  await page.locator('#world').scrollIntoViewIfNeeded();
+  await expect
+    .poll(async () => {
+      const native = await nativeSummary(page);
+      const frame = native.responses.findLast(
+        (response: any) => response.type === 'frame' && response.runId === loaded.runId,
+      );
+      const control = native.responses.findLast(
+        (response: any) => response.runId === loaded.runId && response.paused === true,
+      );
+      return !!frame && !!control && frame.tick === control.tick;
+    })
+    .toBe(true);
   const paused = await nativeSummary(page),
     frames = paused.responses.filter(
       (response: any) => response.type === 'frame' && response.runId === loaded.runId,
@@ -350,20 +364,21 @@ test('B5 real populated native Load/Pause/Step matches complete independent cont
     const loaded = native.responses
       .slice(before.responses.length)
       .find((entry: any) => entry.type === 'loaded');
-    expect(loaded).toMatchObject({ completedTick: 90, paused: false });
-    expect(native.firstFrames[loaded.runId]).toEqual({ tick: 90, selected: null });
+    expect(loaded).toMatchObject({ tick: 90, paused: false });
+    expect(native.firstFrames[loaded.runId].selected).toBeNull();
+    expect(native.firstFrames[loaded.runId].tick).toBeGreaterThanOrEqual(90);
+    expect(native.firstFrames[loaded.runId].tick).toBeLessThanOrEqual(pausedTick);
     const acknowledgement = native.responses
       .slice(before.responses.length)
-      .findLast((entry: any) => entry.type === 'playback' && entry.paused === true);
+      .findLast(
+        (entry: any) =>
+          entry.type === 'control' && entry.operation === 'pause' && entry.paused === true,
+      );
     expect(acknowledgement).toBeDefined();
     const prior = native.responses
-      .filter(
-        (entry: any) =>
-          entry.ordinal < acknowledgement.ordinal &&
-          entry.runId === loaded.runId &&
-          entry.type === 'frame',
-      )
+      .filter((entry: any) => entry.runId === loaded.runId && entry.type === 'frame')
       .at(-1);
+    expect(acknowledgement.tick).toBe(pausedTick);
     expect(prior.tick).toBe(pausedTick);
     advance(reference, pausedTick - 90);
     const paused = rawWorld(await nativeDownload(page));

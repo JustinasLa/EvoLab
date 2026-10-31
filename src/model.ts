@@ -284,18 +284,263 @@ export interface PlaybackState {
   extinction: ExtinctionSummary | null;
 }
 export interface RetainedWorldState {
-  frame: Frame;
+  state: ControlState;
+  telemetry: TelemetrySnapshot;
+}
+export type Speed = 1 | 4 | 12;
+export function nextSessionId(value: number): number {
+  if (value >= Number.MAX_SAFE_INTEGER)
+    throw new Error('Session counter exhausted. Restart the worker.');
+  return value + 1;
+}
+export type WorldPresentation = Pick<Frame, 'stats' | 'climate' | 'offset' | 'terrain'> & {
+  thermalRefuges: RefugeSummary;
+  anchorTemperature: number | null;
+  anchorRefugeUnits: number;
+};
+export type HabitatFrame = Omit<Frame, 'telemetry' | 'interventions'>;
+export interface DisplayView {
+  epoch: number;
+  enabled: boolean;
+  visible: boolean;
+}
+export interface TargetRun {
+  id: number;
+  fromTick: number;
+  targetTick: number;
+  status: 'running' | 'suspended' | 'reached' | 'cancelled' | 'extinct';
+  stoppedTick: number | null;
+}
+export interface TickRate {
+  value: number | null;
+  elapsedMs: number;
+  completedTicks: number;
+  context: 'visible' | 'hidden';
+  status: 'warming' | 'measured' | 'paused' | 'timing-gap';
+}
+export interface ControlState {
+  replacementId: number;
+  revision: number;
+  world: WorldPresentation;
   selected: Organism | null;
   settings: Settings;
+  speed: Speed;
   playback: PlaybackState;
+  target: TargetRun | null;
+  display: DisplayView;
+  rate: TickRate;
 }
-export interface LoadFailureResponse {
-  type: 'error';
+export interface TelemetrySnapshot {
+  revision: number;
+  tick: number;
+  telemetry: TelemetryState;
+  interventions: InterventionState;
+}
+export interface AcceptedTelemetrySource extends TelemetrySnapshot {
   runId: number;
-  operation: 'load';
-  requestId: number;
-  message: string;
+  replacementId: number;
+}
+export type CommandPayload =
+  | { type: 'start'; settings: Settings; display: DisplayView; terrain: TerrainRecipe }
+  | { type: 'load'; text: string }
+  | { type: 'capture-design'; source: 'organism' | 'lineage'; sourceId: number; captureId: number }
+  | { type: 'pause' | 'resume' | 'step' | 'save' }
+  | { type: 'snapshot'; display: boolean }
+  | { type: 'run-to'; targetTick: number }
+  | { type: 'cancel-target'; targetId: number }
+  | { type: 'speed'; value: Speed }
+  | { type: 'pause-on-extinction'; value: boolean }
+  | { type: 'display-view'; view: DisplayView }
+  | { type: 'settings'; settings: Partial<Pick<Settings, 'mutation' | 'nutrients' | 'climate'>> }
+  | { type: 'inspect'; x: number; y: number }
+  | {
+      type: 'paint';
+      tool: 'food' | 'wall' | 'erase' | 'plant';
+      x: number;
+      y: number;
+      radius: number;
+      genome: Genome;
+      strokeId?: number;
+    }
+  | { type: 'clear-walls'; action: 'clear' }
+  | { type: 'regenerate-walls'; action: 'regenerate'; recipe: TerrainRecipe; resolvedSeed: number }
+  | ({ type: 'paint-refuge'; x: number; y: number; strokeId: number } & RefugeBrush)
+  | { type: 'refuge-mode'; rulesVersion: 1; enabled: boolean }
+  | { type: 'clear-refuges'; rulesVersion: 1 }
+  | { type: 'shock'; kind: 'cold' | 'heat' }
+  | {
+      type: 'begin-stroke';
+      strokeId: number;
+      tool: StrokeTool;
+      radius: number;
+      rulesVersion?: 1;
+      units?: number;
+    }
+  | { type: 'end-stroke'; strokeId: number }
+  | { type: 'export-measurements'; format: MeasurementFormat };
+export type OrdinaryCommand = CommandPayload & { runId: number; commandId: number };
+export interface FlowAck {
+  type: 'flow-ack';
+  runId: number;
+  channel: 'progress' | 'display';
+  sequence: number;
+}
+export type WorkerCommand = OrdinaryCommand | FlowAck;
+export type WorkerResponse = (
+  | {
+      type: 'progress';
+      runId: number;
+      sequence: number;
+      state: ControlState;
+      telemetry?: TelemetrySnapshot;
+    }
+  | {
+      type: 'frame';
+      runId: number;
+      sequence: number;
+      viewEpoch: number;
+      state: ControlState;
+      frame: HabitatFrame;
+      selectedId: number;
+    }
+  | {
+      type: 'control';
+      runId: number;
+      commandId: number;
+      state: ControlState;
+      telemetry?: TelemetrySnapshot;
+      operation?: string;
+    }
+  | {
+      type: 'loaded';
+      runId: number;
+      commandId: number;
+      state: ControlState;
+      telemetry: TelemetrySnapshot;
+      operation?: string;
+    }
+  | {
+      type: 'design-captured';
+      operation: 'capture-design';
+      runId: number;
+      commandId: number;
+      captureId: number;
+      source: 'organism' | 'lineage';
+      sourceId: number;
+      genome: Genome;
+      completedTick: number;
+      seed: number;
+      state: ControlState;
+    }
+  | {
+      type: 'saved';
+      operation?: 'save';
+      runId: number;
+      commandId: number;
+      state: ControlState;
+      text: string;
+      completedTick: number;
+      seed: number;
+      byteLength: number;
+    }
+  | {
+      type: 'measurement-exported';
+      operation: 'export-measurements';
+      runId: number;
+      commandId: number;
+      state: ControlState;
+      text: string;
+      format: MeasurementFormat;
+      completedTick: number;
+      seed: number;
+      byteLength: number;
+    }
+  | {
+      type: 'manual-result';
+      operation: ManualOperation;
+      runId: number;
+      commandId: number;
+      state: ControlState;
+      telemetry?: TelemetrySnapshot;
+      strokeId?: number;
+      status: 'applied' | 'no-op' | 'rejected';
+      completedTick: number;
+      rowSequence: number | null;
+    }
+  | {
+      type: 'error';
+      runId: number;
+      commandId?: number;
+      operation?: string;
+      format?: MeasurementFormat;
+      strokeId?: number;
+      code:
+        | 'invalid-command'
+        | 'stale-run'
+        | 'invalid-target'
+        | 'target-busy'
+        | 'load-failed'
+        | 'save-failed'
+        | 'fatal';
+      message: string;
+      fatal?: true;
+      recovery?: RetainedWorldState;
+    }
+) & {
+  source?: 'organism' | 'lineage';
+  sourceId?: number;
+  captureId?: number;
+  action?: string;
+  recipe?: TerrainRecipe;
+  resolvedSeed?: number;
+  rulesVersion?: number;
+  tool?: string;
+  units?: number;
+  radius?: number;
+  x?: number;
+  y?: number;
+  enabled?: boolean;
+  terrain?: TerrainRecipe;
+  detail?: TerrainDetail;
+  nonzeroCells?: number;
+  changedCells?: number;
+  saturatedCells?: number;
+};
+export type LoadFailureResponse = Extract<WorkerResponse, { type: 'error' }> & {
   recovery: RetainedWorldState;
+};
+export function observedGenome(genome: Genome): Genome {
+  return {
+    cells: genome.cells.map(({ x, y, type }) => ({ x, y, type })),
+    preference: genome.preference,
+    tolerance: genome.tolerance,
+    tempo: genome.tempo,
+    behavior: structuredClone(genome.behavior),
+  };
+}
+export function observedSettings(settings: Settings): Settings {
+  return {
+    seed: settings.seed,
+    mutation: settings.mutation,
+    nutrients: settings.nutrients,
+    climate: settings.climate,
+  };
+}
+export function observedOrganism(organism: Organism): Organism {
+  return {
+    id: organism.id,
+    species: organism.species,
+    x: organism.x,
+    y: organism.y,
+    rotation: organism.rotation,
+    direction: organism.direction,
+    age: organism.age,
+    energy: organism.energy,
+    generation: organism.generation,
+    children: organism.children,
+    ancestry: Array.from(organism.ancestry),
+    genome: observedGenome(organism.genome),
+  };
 }
 export interface WorldEcology {
   settings: Settings;
@@ -897,4 +1142,27 @@ export function temperature(
         0.12 * Math.sin(tick / 650)) +
     offset;
   return refugeUnits === 0 ? clamp(raw, 0, 1) : clamp(raw + refugeUnits / 100, 0, 1);
+}
+
+export function commandEcho(data: Record<string, any>): Record<string, unknown> {
+  const keys =
+    data.type === 'capture-design'
+      ? ['source', 'sourceId', 'captureId']
+      : data.type === 'clear-walls'
+        ? ['action']
+        : data.type === 'regenerate-walls'
+          ? ['action', 'recipe', 'resolvedSeed']
+          : data.type === 'refuge-mode'
+            ? ['rulesVersion', 'enabled']
+            : data.type === 'clear-refuges'
+              ? ['rulesVersion']
+              : data.type === 'paint-refuge'
+                ? ['rulesVersion', 'tool', 'units', 'radius', 'x', 'y']
+                : data.type === 'begin-stroke' &&
+                    ['warm', 'cool', 'erase-temperature'].includes(data.tool)
+                  ? ['rulesVersion', 'tool', 'units', 'radius']
+                  : [];
+  return Object.fromEntries(
+    keys.filter((key) => Object.hasOwn(data, key)).map((key) => [key, data[key]]),
+  );
 }

@@ -138,7 +138,7 @@ export function registerNativeEvidence(): void {
                 ordinal: state.posts.length + 1,
                 type: data.type,
                 runId: data.runId,
-                requestId: data.requestId,
+                requestId: data.commandId,
                 commandId: data.commandId,
                 timeMs: performance.now(),
                 speed: data.value,
@@ -168,18 +168,18 @@ export function registerNativeEvidence(): void {
               type: data.type,
               operation: data.operation,
               runId: data.runId,
-              requestId: data.requestId,
+              requestId: data.commandId,
               commandId: data.commandId,
               completedTick: data.completedTick,
-              tick: data.frame?.stats.tick ?? data.recovery?.frame.stats.tick,
-              selected: data.selected?.id ?? data.recovery?.selected?.id ?? null,
-              paused: data.playback?.paused ?? data.recovery?.playback.paused,
+              tick: data.state?.world.stats.tick ?? data.recovery?.state.world.stats.tick,
+              selected: data.state?.selected?.id ?? data.recovery?.state.selected?.id ?? null,
+              paused: data.state?.playback.paused ?? data.recovery?.state.playback.paused,
               recovery: data.recovery
                 ? {
-                    selected: data.recovery.selected?.id ?? null,
-                    paused: data.recovery.playback.paused,
-                    tick: data.recovery.frame.stats.tick,
-                    settings: data.recovery.settings,
+                    selected: data.recovery.state.selected?.id ?? null,
+                    paused: data.recovery.state.playback.paused,
+                    tick: data.recovery.state.world.stats.tick,
+                    settings: data.recovery.state.settings,
                   }
                 : undefined,
               byteLength: data.byteLength,
@@ -190,7 +190,7 @@ export function registerNativeEvidence(): void {
             if (data.type === 'frame' && !state.firstFrames[data.runId])
               state.firstFrames[data.runId] = {
                 tick: data.frame.stats.tick,
-                selected: data.selected?.id ?? null,
+                selected: data.state.selected?.id ?? null,
               };
           });
           const terminate = worker.terminate.bind(worker);

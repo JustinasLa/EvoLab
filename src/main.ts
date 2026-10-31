@@ -12,6 +12,7 @@ import {
   DEFAULTS,
   COLORS,
   WIDTH,
+  commandEcho,
   HEIGHT,
   WORLD_MAX_BYTES,
   MANUAL_CAPACITY,
@@ -23,13 +24,23 @@ import {
   validGenome,
   cloneGenome,
   validSettings,
-  type Frame,
+  observedSettings,
+  nextSessionId,
+  type HabitatFrame,
+  type WorldPresentation,
+  type CommandPayload,
+  type ControlState,
+  type DisplayView,
+  type AcceptedTelemetrySource,
+  type TelemetrySnapshot,
+  type WorkerResponse,
   type Genome,
   type Organism,
   type Settings,
   type Tool,
   type CellType,
   type PlaybackState,
+  type PaintTool,
   type StrokeTool,
   type RefugeBrush,
   type RefugeSummary,
@@ -48,7 +59,7 @@ import {
   type Camera,
 } from './view';
 import { createTelemetryView } from './telemetry-view';
-import { emptyRefuges, refugeTool, refugeSummary } from './refuges';
+import { emptyRefuges, refugeTool, refugeSummary, validRefugeBrush } from './refuges';
 import {
   createLibrary,
   libraryCandidate,
@@ -66,12 +77,185 @@ import {
   serializeBlueprint,
 } from './blueprint';
 
-export function mount(root: HTMLElement, worker: Worker): () => void {
+export function captureCommand(data: any, settings: Settings): CommandPayload {
+  if (!data || typeof data !== 'object') throw new Error('Invalid control.');
+  const coordinates = (): void => {
+    if (!integer(data.x, 0, WIDTH - 1) || !integer(data.y, 0, HEIGHT - 1))
+      throw new Error('Invalid habitat coordinates.');
+  };
+  switch (data.type) {
+    case 'start':
+      if (
+        !validSettings(data.settings) ||
+        (data.terrain !== undefined && !validTerrain(data.terrain)) ||
+        !data.display ||
+        !integer(data.display.epoch, 0, Number.MAX_SAFE_INTEGER) ||
+        typeof data.display.enabled !== 'boolean' ||
+        typeof data.display.visible !== 'boolean'
+      )
+        throw new Error('Invalid initial settings or display.');
+      return {
+        type: 'start',
+        settings: observedSettings(data.settings),
+        terrain: { ...(data.terrain === undefined ? DEFAULT_TERRAIN : data.terrain) },
+        display: {
+          epoch: data.display.epoch,
+          enabled: data.display.enabled,
+          visible: data.display.visible,
+        },
+      };
+    case 'load':
+      if (
+        typeof data.text !== 'string' ||
+        data.text.length > WORLD_MAX_BYTES ||
+        new TextEncoder().encode(data.text).byteLength > WORLD_MAX_BYTES
+      )
+        throw new Error('World file exceeds 2.5 MB or is not text.');
+      return { type: 'load', text: data.text };
+    case 'capture-design':
+      if (
+        !['organism', 'lineage'].includes(data.source) ||
+        !integer(data.sourceId, 1, 1e9) ||
+        !integer(data.captureId, 1, Number.MAX_SAFE_INTEGER)
+      )
+        throw new Error('Invalid design capture source.');
+      return {
+        type: 'capture-design',
+        source: data.source,
+        sourceId: data.sourceId,
+        captureId: data.captureId,
+      };
+    case 'pause':
+    case 'resume':
+    case 'step':
+    case 'save':
+      return { type: data.type };
+    case 'snapshot':
+      if (typeof data.display !== 'boolean') throw new Error('Invalid refresh request.');
+      return { type: 'snapshot', display: data.display };
+    case 'run-to':
+      if (!integer(data.targetTick, 0, 1e9))
+        throw new Error('Choose an absolute whole tick from 0 to 1000000000.');
+      return { type: 'run-to', targetTick: data.targetTick };
+    case 'cancel-target':
+      if (!integer(data.targetId, 1, Number.MAX_SAFE_INTEGER))
+        throw new Error('No active target to cancel.');
+      return { type: 'cancel-target', targetId: data.targetId };
+    case 'speed':
+      if (![1, 4, 12].includes(data.value)) throw new Error('Invalid speed.');
+      return { type: 'speed', value: data.value };
+    case 'pause-on-extinction':
+      if (typeof data.value !== 'boolean') throw new Error('Invalid extinction preference.');
+      return { type: 'pause-on-extinction', value: data.value };
+    case 'settings': {
+      if (
+        !data.settings ||
+        typeof data.settings !== 'object' ||
+        Object.keys(data.settings).some(
+          (key) => !['mutation', 'nutrients', 'climate'].includes(key),
+        ) ||
+        !validSettings({ ...settings, ...data.settings })
+      )
+        throw new Error('Invalid live settings.');
+      const patch: Partial<Settings> = {};
+      for (const key of ['mutation', 'nutrients', 'climate'] as const)
+        if (Object.hasOwn(data.settings, key)) patch[key] = data.settings[key];
+      return { type: 'settings', settings: patch };
+    }
+    case 'inspect':
+      coordinates();
+      return { type: 'inspect', x: data.x, y: data.y };
+    case 'paint':
+      coordinates();
+      if (
+        !['food', 'wall', 'erase', 'plant'].includes(data.tool) ||
+        !integer(data.radius, 0, 8) ||
+        !validGenome(data.genome)
+      )
+        throw new Error('Draw 1–16 connected cells with valid traits before painting.');
+      return {
+        type: 'paint',
+        tool: data.tool,
+        x: data.x,
+        y: data.y,
+        radius: data.radius,
+        genome: cloneGenome(data.genome),
+        ...(data.strokeId === undefined ? {} : { strokeId: data.strokeId }),
+      };
+    case 'export-measurements':
+      if (!['csv', 'json'].includes(data.format)) throw new Error('Invalid measurement format.');
+      return { type: 'export-measurements', format: data.format };
+    case 'begin-stroke':
+      if (
+        !integer(data.strokeId, 1, Number.MAX_SAFE_INTEGER) ||
+        (!['food', 'wall', 'erase'].includes(data.tool) && !validRefugeBrush(data)) ||
+        !integer(data.radius, 0, 8)
+      )
+        throw new Error('Invalid brush stroke.');
+      return {
+        type: 'begin-stroke',
+        ...(refugeTool(data.tool) ? { rulesVersion: 1 as const, units: data.units } : {}),
+        strokeId: data.strokeId,
+        tool: data.tool,
+        radius: data.radius,
+      };
+    case 'end-stroke':
+      if (!integer(data.strokeId, 1, Number.MAX_SAFE_INTEGER))
+        throw new Error('Invalid stroke closure.');
+      return { type: 'end-stroke', strokeId: data.strokeId };
+    case 'refuge-mode':
+      if (data.rulesVersion !== 1 || typeof data.enabled !== 'boolean')
+        throw new Error('Invalid painted temperature mode payload.');
+      return { type: 'refuge-mode', rulesVersion: 1, enabled: data.enabled };
+    case 'clear-refuges':
+      if (data.rulesVersion !== 1) throw new Error('Invalid painted temperature clear payload.');
+      return { type: 'clear-refuges', rulesVersion: 1 };
+    case 'paint-refuge':
+      coordinates();
+      if (!validRefugeBrush(data) || !integer(data.strokeId, 1, Number.MAX_SAFE_INTEGER))
+        throw new Error('Invalid painted temperature payload.');
+      return {
+        type: 'paint-refuge',
+        rulesVersion: 1,
+        tool: data.tool,
+        units: data.units,
+        radius: data.radius,
+        strokeId: data.strokeId,
+        x: data.x,
+        y: data.y,
+      };
+    case 'clear-walls':
+      if (data.action !== 'clear' || data.recipe !== undefined || data.resolvedSeed !== undefined)
+        throw new Error('Invalid clear walls action.');
+      return { type: 'clear-walls', action: 'clear' };
+    case 'regenerate-walls':
+      if (
+        data.action !== 'regenerate' ||
+        !validTerrain(data.recipe) ||
+        !integer(data.resolvedSeed, 0, 4294967295)
+      )
+        throw new Error('Invalid regenerate walls action.');
+      return {
+        type: 'regenerate-walls',
+        action: 'regenerate',
+        recipe: { ...data.recipe },
+        resolvedSeed: data.resolvedSeed,
+      };
+    case 'shock':
+      if (data.kind !== 'cold' && data.kind !== 'heat') throw new Error('Invalid climate event.');
+      return { type: 'shock', kind: data.kind };
+    default:
+      throw new Error('Unknown control.');
+  }
+}
+
+export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): () => void {
   root.innerHTML = markup;
-  const elements = new Map(
+  const controls = new Map(
     [...root.querySelectorAll<HTMLElement>('[id]')].map((element) => [element.id, element]),
   );
-  const get = <T extends HTMLElement>(id: string): T => elements.get(id) as T;
+  const get = <T extends HTMLElement>(id: string): T =>
+    (controls.get(id) as T | undefined) ?? root.querySelector<T>(`#${id}`)!;
   const refugeButtons = [...root.querySelectorAll<HTMLButtonElement>('[data-refuge-tool]')];
   const captureButton = document.createElement('button');
   captureButton.id = 'capture-selected';
@@ -80,7 +264,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   const captureStatus = document.createElement('p');
   captureStatus.id = 'capture-status';
   captureStatus.className = 'muted';
-  captureStatus.textContent = 'Inspect an organism to capture its last received genotype.';
+  captureStatus.textContent = 'Inspect an organism to request its complete current genotype.';
   captureButton.setAttribute('aria-describedby', captureStatus.id);
   get('specimen-details').append(captureButton, captureStatus);
   get('help-dialog').append(
@@ -105,9 +289,6 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     revision: number;
     refugeReset: 'off-empty';
   } | null = null;
-  let settledSettings: Partial<Settings> = {};
-  const latestSettingId: Partial<Record<keyof Settings, number>> = {};
-  const settledSettingId: Partial<Record<keyof Settings, number>> = {};
   let settings = { ...DEFAULTS },
     runId = 0,
     paused = false,
@@ -118,7 +299,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   let refugeIntensity = 4,
     confirmedRefuges = refugeSummary(emptyRefuges()),
     settledRefugeId = 0;
-  let frame: Frame | undefined,
+  let frame: HabitatFrame | undefined,
     selected: Organism | null = null,
     blueprint = founder(0),
     cellType: CellType = 4;
@@ -127,6 +308,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     designRevision = 0,
     blueprintRequest = 0;
   let acceptedObservationRun: number | undefined;
+  let observationTick: number | undefined;
   let replacementGeneration = 0;
   let replacement:
     | {
@@ -179,7 +361,6 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     if (element.textContent !== value) element.textContent = value;
   };
   const notice = (message: string): void => text('notice', message);
-  const send = (data: object): void => worker.postMessage(data);
   const libraryStatus = (message: string): void => {
     if (alive) text('library-status', message);
   };
@@ -204,21 +385,23 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       !stopped &&
       acceptedObservationRun === runId &&
       selected !== null &&
-      Number.isSafeInteger(frame?.stats.tick) &&
-      frame!.stats.tick >= 0;
+      Number.isSafeInteger(observationTick) &&
+      observationTick! >= 0;
     if (!eligible && document.activeElement === captureButton) {
       if (!get('organism-panel').hidden && get<HTMLDetailsElement>('specimen-details').open)
         get('specimen-details').querySelector('summary')!.focus();
       else get('organism-tab').focus();
     }
-    captureButton.disabled = !eligible;
-    const busy = libraryBusy() || !!candidate;
-    captureButton.setAttribute('aria-disabled', String(busy));
-    captureStatus.textContent = eligible
+    if (captureButton.disabled === eligible) captureButton.disabled = !eligible;
+    const busy = libraryBusy() || !!candidate || !!captureIntent;
+    if (captureButton.getAttribute('aria-disabled') !== String(busy))
+      captureButton.setAttribute('aria-disabled', String(busy));
+    const message = eligible
       ? busy
         ? 'Library busy or an unsaved blueprint is pending. Capture is not started; playback is unchanged.'
-        : 'Captures the last received genotype and observation tick, not fitness or living identity.'
+        : 'Requests the complete current genotype at a worker response tick; the displayed observation may be earlier. No fitness or living identity is captured.'
       : 'Inspect an organism after the current world response to capture it.';
+    if (captureStatus.textContent !== message) captureStatus.textContent = message;
   }
   function cancelDialog(message: string): void {
     if (!dialogIntent) return;
@@ -259,7 +442,9 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     designRevision++;
   }
   function invalidateObservation(): void {
+    captureIntent = null;
     acceptedObservationRun = undefined;
+    observationTick = undefined;
     cancelReplacement('the world changed.');
     cancelDialog('The world changed.');
     if (candidate && candidateRun !== undefined && libraryWorking !== 'write') {
@@ -710,33 +895,161 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       }, 1000);
     }
   }
-  type Owner = {
+  let captureSequence = 0;
+  let captureIntent: {
     id: number;
+    action: 'copy' | 'export' | 'library';
+    source: 'organism' | 'lineage';
+    sourceId: number;
+    selectedId: number | null;
+    revision: number;
+    replacementGeneration: number;
     run: number;
-    operation: TrackedOperation;
-    applicable: boolean;
-    format?: MeasurementFormat;
-    strokeId?: number;
-    completing: boolean;
-    failed: boolean;
-    terrainRevision: number;
-    terrainPayload?: {
-      action: 'clear' | 'regenerate';
-      recipe?: TerrainRecipe;
-      resolvedSeed?: number;
+  } | null = null;
+  function requestCapture(
+    action: 'copy' | 'export' | 'library',
+    source: 'organism' | 'lineage',
+    sourceId: number,
+  ): void {
+    if (captureIntent || hasOwner('capture-design') || lifecycleBusy() || stopped) {
+      if (action === 'library')
+        libraryStatus('Capture unavailable or busy. No playback action was taken.');
+      else notice('Design capture busy; wait for its acknowledgement.');
+      return;
+    }
+    captureSequence = increment(captureSequence);
+    if (action === 'copy') cancelReplacement('superseded by a newer full design capture.');
+    const intent = {
+      id: captureSequence,
+      action,
+      source,
+      sourceId,
+      selectedId: selected?.id ?? null,
+      revision: designRevision,
+      replacementGeneration,
+      run: runId,
     };
-    refugePayload?: Record<string, unknown>;
-    setting?: { key: 'mutation' | 'nutrients' | 'climate'; value: number };
+    captureIntent = intent;
+    if (!send({ type: 'capture-design', source, sourceId, captureId: intent.id }))
+      captureIntent = null;
+    updateCapture();
+  }
+  function completeCapture(data: Extract<WorkerResponse, { type: 'design-captured' }>): void {
+    const intent = captureIntent;
+    if (!intent || intent.id !== data.captureId) return;
+    captureIntent = null;
+    if (
+      !alive ||
+      intent.run !== runId ||
+      intent.revision !== designRevision ||
+      intent.replacementGeneration !== replacementGeneration ||
+      intent.selectedId !== (selected?.id ?? null) ||
+      intent.source !== data.source ||
+      intent.sourceId !== data.sourceId
+    ) {
+      if (intent.action === 'library')
+        libraryStatus('Capture cancelled: the selection, designer or world changed.');
+      else notice('Design capture cancelled: the selection, designer or world changed.');
+      updateCapture();
+      return;
+    }
+    if (!integer(data.completedTick, 0, 1e9) || !validGenome(data.genome))
+      throw new Error('Invalid full design capture.');
+    if (intent.action === 'library') {
+      if (libraryBusy() || candidate) {
+        libraryStatus('Capture unavailable or busy. Existing candidate preserved.');
+        return;
+      }
+      try {
+        serializeBlueprint({
+          name: speciesName(data.genome),
+          description: '',
+          genome: data.genome,
+        });
+        const value = libraryCandidate(data.genome, speciesName(data.genome), '', {
+          captureTick: data.completedTick,
+          seed: data.seed,
+        });
+        stageCandidate(value, true);
+        void writeLibrary({ type: 'create', candidate: value });
+      } catch (error) {
+        libraryStatus(libraryMessage(error));
+      }
+    } else if (intent.action === 'copy') {
+      // copyDesign validates and detaches the full blueprint before replacing the design.
+      if (!copyDesign(data.genome)) return;
+      tab('organism');
+      notice(
+        `Anatomy copied in full at worker tick ${data.completedTick}. Edit it, then place it in the world.`,
+      );
+    } else exportBlueprint(data.genome, speciesName(data.genome), '');
+    updateCapture();
+  }
+  type TargetTicket = { wireId: number | null };
+  type Entry = {
+    ticket: number;
+    payload: CommandPayload;
+    generation: number;
+    reserved: boolean;
+    terrainRevision?: number;
+    echo?: Record<string, unknown>;
+    targetTicket?: TargetTicket;
+    cancelTicket?: TargetTicket;
   };
-  const owners = new Map<number, Owner>();
-  type Download = { url: string; timer?: ReturnType<typeof setTimeout> };
-  const downloads: Partial<Record<'save' | 'export-measurements', Download>> = {};
-  let postingId = 0,
-    strokeId = 0,
-    terminated = false,
-    worldRead = false,
-    readGeneration = 0;
-  let closeLease: { run: number; strokeId: number; posted: boolean } | null = null;
+  type Posted = Omit<Entry, 'payload'> & {
+    type: CommandPayload['type'];
+    commandId: number;
+    runId: number;
+    strokeId?: number;
+    format?: MeasurementFormat;
+  };
+  const pending: Entry[] = [];
+  const pendingSettings: Partial<Record<keyof Settings, { ticket: number; value: number }>> = {};
+  let posted: Posted | null = null,
+    ticket = 0,
+    wireId = 0,
+    generation = 0;
+  let rejectedTicket = -1;
+  let latestState: ControlState | undefined,
+    acceptedRun = 0,
+    latestTelemetry: AcceptedTelemetrySource | null = null;
+  let targetTicket: TargetTicket | undefined;
+  let targetPresentationReplacement: number | undefined,
+    targetTransition = '';
+  let establishedRun: number | null = null,
+    discardFenceEpoch = 0,
+    displayWatermark = 0,
+    progressWatermark = 0;
+  let desiredView: DisplayView = {
+    epoch: 0,
+    enabled: renderHabitat,
+    visible:
+      document.visibilityState !== 'hidden' &&
+      canvas.getBoundingClientRect().width > 0 &&
+      canvas.getBoundingClientRect().height > 0,
+  };
+  let acknowledgedView: DisplayView = { ...desiredView },
+    viewIntent: DisplayView | null = null;
+  get<HTMLInputElement>('render-habitat').checked = renderHabitat;
+  let heldDisplay: { runId: number; sequence: number; viewEpoch: number } | null = null;
+  let pendingFrame: Extract<WorkerResponse, { type: 'frame' }> | null = null;
+  let displayedRevision = -1,
+    displayedEpoch = -1,
+    displayedSelected = 0;
+  let worldRequest = 0,
+    reading = false;
+  let pendingSpeed: { ticket: number; value: number } | null = null,
+    pendingExtinction: { ticket: number; value: boolean } | null = null;
+  let waitingFile: {
+    file: File;
+    request: number;
+    generation: number;
+    run: number;
+    terrainRevision: number;
+  } | null = null;
+  let strokeId = 0,
+    terminated = false;
+  let closeLease: { strokeId: number; beginPosted: boolean; posted: boolean } | null = null;
   let localStroke: {
     id: number;
     tool: StrokeTool;
@@ -746,23 +1059,42 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   } | null = null;
   let ownerPointer: number | null = null;
   let availabilityState = -1;
-  const isManual = (operation: TrackedOperation): boolean =>
-    [
-      'begin-stroke',
-      'paint',
-      'settings',
-      'shock',
-      'clear-walls',
-      'regenerate-walls',
-      'refuge-mode',
-      'paint-refuge',
-      'clear-refuges',
-    ].includes(operation);
-  const hasOwner = (operation: TrackedOperation): boolean =>
-    [...owners.values()].some((owner) => owner.operation === operation);
-  const lifecycleBusy = (): boolean => hasOwner('start') || hasOwner('load');
+  type Download = { url: string; timer?: ReturnType<typeof setTimeout> };
+  const downloads: Partial<Record<'save' | 'export-measurements', Download>> = {};
+  const lifecycleBusy = (): boolean =>
+    posted?.type === 'start' ||
+    posted?.type === 'load' ||
+    pending.some((entry) => entry.payload.type === 'start' || entry.payload.type === 'load');
   const manualCount = (): number =>
-    [...owners.values()].filter((owner) => isManual(owner.operation)).length;
+    pending.filter((entry) =>
+      [
+        'begin-stroke',
+        'paint',
+        'settings',
+        'shock',
+        'clear-walls',
+        'regenerate-walls',
+        'refuge-mode',
+        'paint-refuge',
+        'clear-refuges',
+      ].includes(entry.payload.type),
+    ).length +
+    Number(
+      !!posted &&
+        [
+          'begin-stroke',
+          'paint',
+          'settings',
+          'shock',
+          'clear-walls',
+          'regenerate-walls',
+          'refuge-mode',
+          'paint-refuge',
+          'clear-refuges',
+        ].includes(posted.type),
+    );
+  const hasOwner = (type: CommandPayload['type']): boolean =>
+    posted?.type === type || pending.some((entry) => entry.payload.type === type);
   function availability(): void {
     const unavailable = terminated || stopped || lifecycleBusy(),
       exportBlocked =
@@ -800,112 +1132,33 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     URL.revokeObjectURL(owned.url);
     if (alive) availability();
   }
-  function invalidate(keepRun?: number): void {
-    cancelReset(false);
-    for (const owner of owners.values()) if (owner.run !== keepRun) owner.applicable = false;
-    clearDownload('save');
-    clearDownload('export-measurements');
-  }
   function terminate(): void {
-    invalidate();
     if (!terminated) {
       worker.terminate();
       terminated = true;
-      owners.clear();
-      closeLease = null;
     }
-    localStroke = null;
+    clearDownload('save');
+    clearDownload('export-measurements');
+    closeLease = localStroke = null;
     ownerPointer = null;
     dragging = false;
     if (alive) availability();
   }
-  function admissible(operation: TrackedOperation): boolean {
-    if (
-      !alive ||
-      terminated ||
-      postingId >=
-        Number.MAX_SAFE_INTEGER -
-          (closeLease && !closeLease.posted && operation !== 'end-stroke' ? 1 : 0) ||
-      (stopped && operation !== 'start' && operation !== 'load' && operation !== 'end-stroke')
-    ) {
-      if (alive) notice('Ecosystem transport unavailable; no new action admitted.');
-      return false;
+  function postInternal(data: Record<string, unknown>): void {
+    if (terminated) return;
+    try {
+      worker.postMessage(data);
+    } catch {
+      terminate();
+      stop();
+      notice('The worker connection failed. Reload the page to restart.');
     }
-    const busy =
-      operation === 'start' || operation === 'load'
-        ? lifecycleBusy()
-        : operation === 'end-stroke'
-          ? false
-          : operation === 'settings'
-            ? manualCount() >= MANUAL_CAPACITY
-            : lifecycleBusy() ||
-              (isManual(operation)
-                ? manualCount() >= MANUAL_CAPACITY
-                : hasOwner(operation) || !!downloads[operation as 'save' | 'export-measurements']);
-    if (busy)
-      notice(
-        'Worker capacity busy. Earlier admitted actions may still complete; try a new action after they drain.',
-      );
-    return !busy;
   }
   function postTracked(
-    operation: TrackedOperation,
+    type: CommandPayload['type'],
     payload: Record<string, unknown> = {},
-    requestedRun = runId,
-    draftRevision = terrainRevision,
   ): boolean {
-    if (!admissible(operation)) return false;
-    const owner: Owner = {
-      id: ++postingId,
-      run: requestedRun,
-      operation,
-      applicable: true,
-      completing: false,
-      failed: false,
-      terrainRevision: draftRevision,
-      ...(payload.format ? { format: payload.format as MeasurementFormat } : {}),
-      ...(payload.strokeId ? { strokeId: payload.strokeId as number } : {}),
-    };
-    if (operation === 'clear-walls') owner.terrainPayload = { action: 'clear' };
-    if (
-      ['refuge-mode', 'paint-refuge', 'clear-refuges'].includes(operation) ||
-      (operation === 'begin-stroke' && refugeTool(payload.tool))
-    )
-      owner.refugePayload = Object.fromEntries(
-        ['rulesVersion', 'tool', 'units', 'radius', 'x', 'y', 'enabled']
-          .filter((key) => Object.hasOwn(payload, key))
-          .map((key) => [key, payload[key]]),
-      );
-    if (operation === 'regenerate-walls')
-      owner.terrainPayload = {
-        action: 'regenerate',
-        recipe: { ...(payload.recipe as TerrainRecipe) },
-        resolvedSeed: payload.resolvedSeed as number,
-      };
-    if (operation === 'settings') {
-      const [key, value] = Object.entries(payload.settings as object)[0];
-      owner.setting = { key: key as 'mutation' | 'nutrients' | 'climate', value: value as number };
-      latestSettingId[key as keyof Settings] = owner.id;
-    }
-    owners.set(owner.id, owner);
-    availability();
-    try {
-      send({
-        type: operation,
-        ...payload,
-        runId: requestedRun,
-        ...(isManual(operation) || operation === 'end-stroke'
-          ? { commandId: owner.id }
-          : { requestId: owner.id }),
-      });
-      return operation !== 'settings' || !owner.failed;
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'DataCloneError') owners.delete(owner.id);
-      else terminate();
-      if (alive) notice('Could not post this action. No automatic retry was queued.');
-      availability();
-      return false;
-    }
+    return send({ type, ...payload });
   }
   function endStroke(): void {
     dragging = false;
@@ -914,237 +1167,291 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     const lease = closeLease;
     if (!lease || lease.posted) return;
     lease.posted = true;
-    if (!postTracked('end-stroke', { strokeId: lease.strokeId }, lease.run)) {
+    if (!send({ type: 'end-stroke', strokeId: lease.strokeId })) {
       terminate();
       stop();
     }
   }
-  function download(owner: Owner, data: any): void {
-    const operation = owner.operation as 'save' | 'export-measurements';
-    if (
-      typeof data.text !== 'string' ||
-      !integer(data.completedTick, 0, 1e9) ||
-      !integer(data.seed, 0, 4294967295) ||
-      data.text.length > WORLD_MAX_BYTES ||
-      !integer(data.byteLength, 0, WORLD_MAX_BYTES) ||
-      new TextEncoder().encode(data.text).byteLength !== data.byteLength
-    )
-      throw new Error('Invalid completed download payload; no download created.');
-    const anchor = document.createElement('a');
-    let lease: Download | undefined,
-      dispatched = false;
+  function increment(value: number): number {
     try {
-      const format = owner.format ?? 'json';
-      const url = URL.createObjectURL(
-        new Blob([data.text], {
-          type: format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json;charset=utf-8',
-        }),
-      );
-      lease = { url };
-      downloads[operation] = lease;
-      anchor.href = url;
-      anchor.download =
-        operation === 'save'
-          ? `evolab-world-${data.seed}.json`
-          : `evolab-measurements-${data.seed}-tick-${data.completedTick}.${format}`;
-      document.body.append(anchor);
-      anchor.click();
-      const owned = lease;
-      lease.timer = setTimeout(() => clearDownload(operation, owned), 1000);
-      dispatched = true;
-      notice(
-        operation === 'save'
-          ? 'World saved, including every organism and its ancestry.'
-          : `Download requested: retained observations as of completed tick ${data.completedTick}.`,
-      );
-    } finally {
-      anchor.remove();
-      if (!dispatched && lease) clearDownload(operation, lease);
+      return nextSessionId(value);
+    } catch (error) {
+      stop();
+      throw error;
     }
   }
-  function terminal(data: any): boolean {
-    const kinds = ['saved', 'measurement-exported', 'manual-result', 'started', 'loaded'];
+  function releaseDiscard(): void {
     if (
-      !kinds.includes(data.type) &&
-      !(data.type === 'error' && typeof data.operation === 'string')
+      !alive ||
+      !heldDisplay ||
+      pendingFrame ||
+      establishedRun !== runId ||
+      acknowledgedView.epoch < discardFenceEpoch ||
+      ((!desiredView.enabled || !desiredView.visible) &&
+        acknowledgedView.enabled &&
+        acknowledgedView.visible)
+    )
+      return;
+    const token = heldDisplay;
+    heldDisplay = null;
+    displayWatermark = token.sequence;
+    postInternal({
+      type: 'flow-ack',
+      channel: 'display',
+      runId: token.runId,
+      sequence: token.sequence,
+    });
+  }
+  function pump(): void {
+    // Only proven nonposts continue here. The admitted queue is bounded to
+    // 32 intents; a rejected action is retired, never put back or retried.
+    for (let remaining = 33; remaining > 0; remaining--) if (!postNext()) return;
+  }
+  function postNext(): boolean {
+    if (!alive || terminated || posted) return false;
+    const previousRun = runId,
+      previousEstablished = establishedRun;
+    const start = pending[0]?.payload.type === 'start';
+    if (viewIntent && !start && establishedRun === runId && !stopped) {
+      const view = viewIntent;
+      viewIntent = null;
+      wireId = increment(wireId);
+      posted = {
+        type: 'display-view',
+        ticket: 0,
+        generation,
+        reserved: false,
+        runId,
+        commandId: wireId,
+      };
+      postInternal({ type: 'display-view', view, runId, commandId: wireId });
+      return false;
+    }
+    const entry = pending.shift();
+    if (!entry) {
+      releaseDiscard();
+      return false;
+    }
+    let payload = entry.payload;
+    if (payload.type === 'cancel-target' && entry.cancelTicket) {
+      payload.targetId = entry.cancelTicket.wireId!;
+    }
+    wireId = increment(wireId);
+    if (entry.targetTicket) entry.targetTicket.wireId = wireId;
+    if (payload.type === 'start' || payload.type === 'load') {
+      invalidateObservation();
+      runId = increment(runId);
+      stopped = false;
+      establishedRun = null;
+      pendingFrame = null;
+      telemetry.update({ status: 'pending', commandId: wireId });
+      if (payload.type === 'start') {
+        payload.display = { ...desiredView };
+        if (viewIntent?.epoch === desiredView.epoch) viewIntent = null;
+      }
+      text('run-state', 'LOADING');
+    }
+    if (payload.type === 'begin-stroke' && closeLease?.strokeId === payload.strokeId)
+      closeLease.beginPosted = true;
+    posted = {
+      ...('strokeId' in payload ? { strokeId: payload.strokeId } : {}),
+      ...('format' in payload ? { format: payload.format } : {}),
+      type: payload.type,
+      ticket: entry.ticket,
+      generation: entry.generation,
+      reserved: entry.reserved,
+      commandId: wireId,
+      runId,
+      targetTicket: entry.targetTicket,
+      cancelTicket: entry.cancelTicket,
+      terrainRevision: entry.terrainRevision,
+      echo: commandEcho(payload),
+    };
+    availability();
+    try {
+      const previousSave = downloads.save,
+        previousExport = downloads['export-measurements'];
+      worker.postMessage({ ...payload, runId, commandId: wireId });
+      if (payload.type === 'start' || payload.type === 'load') {
+        if (previousSave) clearDownload('save', previousSave);
+        if (previousExport) clearDownload('export-measurements', previousExport);
+      }
+    } catch (error) {
+      rejectedTicket = entry.ticket;
+      if (error instanceof DOMException && error.name === 'DataCloneError') {
+        posted = null;
+        if (payload.type === 'capture-design') {
+          captureIntent = null;
+          updateCapture();
+        }
+        runId = previousRun;
+        establishedRun =
+          previousEstablished ?? (latestState && acceptedRun === previousRun ? previousRun : null);
+        for (const key of ['mutation', 'nutrients', 'climate'] as const)
+          if (pendingSettings[key]?.ticket === entry.ticket) {
+            delete pendingSettings[key];
+            delete settingsEdits[key];
+          }
+        if (pendingSpeed?.ticket === entry.ticket) pendingSpeed = null;
+        if (pendingExtinction?.ticket === entry.ticket) pendingExtinction = null;
+        if (entry.targetTicket) {
+          // A dependent Cancel has no worker target to cancel. Independent
+          // later actions retain their original FIFO positions and payloads.
+          for (let index = pending.length - 1; index >= 0; index--)
+            if (pending[index].cancelTicket === entry.targetTicket) pending.splice(index, 1);
+          if (targetTicket === entry.targetTicket) {
+            targetTicket = undefined;
+            targetTransition = '';
+            text('target-status', '');
+          }
+        }
+        if (payload.type === 'begin-stroke') {
+          for (let index = pending.length - 1; index >= 0; index--) {
+            const queued = pending[index].payload;
+            if ('strokeId' in queued && queued.strokeId === payload.strokeId)
+              pending.splice(index, 1);
+          }
+          closeLease = null;
+          localStroke = null;
+          ownerPointer = null;
+          dragging = false;
+        }
+        if (latestState && establishedRun === runId) {
+          accept(latestState);
+          renderObservation(latestState.world, latestState.selected, true);
+          renderSettings(latestState.settings);
+          renderPlayback(latestState.playback);
+          get<HTMLSelectElement>('speed').value = String(pendingSpeed?.value ?? latestState.speed);
+        }
+        // A posted begin owns a real worker stroke. If its close cannot post,
+        // termination remains the only honest release of that reservation.
+        if (payload.type === 'end-stroke') {
+          terminate();
+          stop();
+        }
+        availability();
+        notice('Could not post this action. No automatic retry was queued.');
+        return true;
+      } else {
+        terminate();
+        stop();
+      }
+      notice('Could not post this action. No automatic retry was queued.');
+    }
+    return false;
+  }
+  function send(data: any, capturedTerrainRevision = terrainRevision): boolean {
+    if (
+      !alive ||
+      terminated ||
+      (stopped && data.type !== 'start' && data.type !== 'load' && data.type !== 'end-stroke')
     )
       return false;
-    const operation = data.operation as TrackedOperation,
-      manual = isManual(operation) || operation === 'end-stroke',
-      id = manual ? data.commandId : data.requestId,
-      owner = owners.get(id);
-    const expected =
-      operation === 'save'
-        ? 'saved'
-        : operation === 'export-measurements'
-          ? 'measurement-exported'
-          : operation === 'start'
-            ? 'started'
-            : operation === 'load'
-              ? 'loaded'
-              : 'manual-result';
     if (
-      !owner ||
-      owner.completing ||
-      owner.operation !== operation ||
-      owner.run !== data.runId ||
-      owner.format !== data.format ||
-      owner.strokeId !== data.strokeId ||
-      (manual ? data.requestId !== undefined : data.commandId !== undefined) ||
-      (data.type !== 'error' && data.type !== expected)
-    )
-      return true;
-    if (
-      owner.terrainPayload &&
-      (data.action !== owner.terrainPayload.action ||
-        (owner.terrainPayload.action === 'clear'
-          ? data.recipe !== undefined || data.resolvedSeed !== undefined
-          : !validTerrain(data.recipe) ||
-            !sameTerrain(data.recipe, owner.terrainPayload.recipe!) ||
-            data.resolvedSeed !== owner.terrainPayload.resolvedSeed))
-    )
-      return true;
-    if (
-      owner.refugePayload &&
-      Object.entries(owner.refugePayload).some(([key, value]) => data[key] !== value)
-    )
-      return true;
-    owner.completing = true;
+      (data.type === 'save' || data.type === 'export-measurements') &&
+      (hasOwner(data.type) || downloads[data.type as 'save' | 'export-measurements'])
+    ) {
+      notice('Worker capacity busy; wait for the earlier download.');
+      return false;
+    }
     try {
-      if (!alive || !owner.applicable || owner.run !== runId) return true;
-      if (data.type === 'error') {
-        owner.failed = true;
-        settleSetting(owner, false);
-        if (typeof data.message !== 'string' || data.message.length > 512)
-          throw new Error('Invalid worker error payload.');
-        if (data.fatal) {
-          invalidate();
-          stop();
-        } else if (data.recovery && (operation === 'load' || operation === 'start')) {
-          stopped = false;
-          renderSettings(data.recovery.settings);
-          renderPlayback(data.recovery.playback);
-          if (validTerrain(data.recovery.frame.terrain))
-            installTerrain(data.recovery.frame.terrain, -1);
-          renderFrame(data.recovery.frame, data.recovery.selected, true);
-        }
-        notice(data.message);
-      } else if (data.type === 'started' || data.type === 'loaded') {
-        if (
-          !integer(data.completedTick, 0, 1e9) ||
-          !validSettings(data.settings) ||
-          data.seed !== data.settings.seed
-        )
-          throw new Error('Invalid lifecycle terminal.');
-        if (!validTerrain(data.terrain)) throw new Error('Invalid lifecycle wall recipe.');
-        stopped = false;
-        renderSettings(data.settings);
-        installTerrain(data.terrain, owner.terrainRevision);
-        settledTerrainId = owner.id;
-        installRefuges(data.thermalRefuges);
-        settledRefugeId = owner.id;
-        renderPlayback(data.playback);
-        telemetry.reset();
-        updates = 0;
-        if (data.type === 'started') {
-          selected = null;
-          frame = undefined;
-          notice('');
-        } else {
-          notice(
-            `World restored. Playback follows Pause on extinction.${data.terrainMigration ? ' Saved terrain kept; default wall recipe supplied for future actions.' : ''} ${data.refugeMigration ? 'Legacy climate retained; painted refuges are disabled.' : 'Imported painted field.'}`,
-          );
-        }
-      } else if (data.type === 'manual-result') {
-        if (
-          !['applied', 'no-op', 'rejected'].includes(data.status) ||
-          !integer(data.completedTick, 0, 1e9) ||
-          (data.rowSequence !== null && !integer(data.rowSequence, 1, Number.MAX_SAFE_INTEGER))
-        )
-          throw new Error('Invalid manual completion payload.');
-        owner.failed = data.status === 'rejected';
-        settleSetting(owner, !owner.failed);
-        if (owner.refugePayload && operation !== 'begin-stroke' && !owner.failed) {
-          if (operation === 'refuge-mode' && owner.id > settledRefugeId) {
-            settledRefugeId = owner.id;
-            installRefuges({
-              ...confirmedRefuges,
-              enabled: data.enabled,
-              nonzeroCells: data.nonzeroCells,
-            });
-          }
-          notice(
-            data.status === 'no-op'
-              ? 'Painted temperature unchanged; no manual entry recorded.'
-              : 'Painted temperature action applied; consequences begin on the next ecological tick.',
-          );
-        }
-        if (owner.terrainPayload && !owner.failed) {
-          if (!validTerrain(data.terrain)) throw new Error('Invalid completed wall recipe.');
-          if (
-            owner.terrainPayload.recipe &&
-            !sameTerrain(data.terrain, owner.terrainPayload.recipe)
-          )
-            throw new Error('Completed wall recipe differs from the submitted recipe.');
-          if (owner.id > settledTerrainId) {
-            settledTerrainId = owner.id;
-            installTerrain(
-              data.terrain,
-              operation === 'regenerate-walls' ? owner.terrainRevision : -1,
-            );
-          }
-          notice(
-            data.status === 'no-op'
-              ? 'Walls unchanged; no manual entry recorded.'
-              : 'Wall action applied. Living cells protected; food handling recorded in manual history.',
-          );
-        }
-        if (owner.failed)
-          notice('Worker rejected this manual action; no successful effect recorded.');
-      } else if (!stopped) download(owner, data);
-    } catch (error) {
-      owner.failed = true;
-      settleSetting(owner, false);
-      if (alive && owner.applicable && owner.run === runId)
-        notice(
-          error instanceof Error
-            ? error.message.slice(0, 512)
-            : 'Could not complete this download.',
-        );
-    } finally {
-      if (owners.get(id) === owner) owners.delete(id);
-      if (
-        operation === 'end-stroke' &&
-        closeLease?.posted &&
-        closeLease.run === owner.run &&
-        closeLease.strokeId === owner.strokeId
+      let payload = captureCommand(data, settings);
+      const reserved = payload.type === 'pause' || payload.type === 'cancel-target';
+      let segment = pending.length;
+      while (
+        segment > 0 &&
+        ['speed', 'inspect', 'settings'].includes(pending[segment - 1].payload.type)
       )
-        closeLease = null;
-      if (alive) availability();
+        segment--;
+      const superseded = ['speed', 'inspect', 'settings'].includes(payload.type)
+        ? pending.slice(segment).filter((entry) => entry.payload.type === payload.type)
+        : [];
+      if (payload.type === 'settings') {
+        const merged: Partial<Settings> = {};
+        for (const entry of superseded)
+          if (entry.payload.type === 'settings') Object.assign(merged, entry.payload.settings);
+        payload = { type: 'settings', settings: { ...merged, ...payload.settings } };
+      }
+      if (
+        payload.type !== 'start' &&
+        (reserved
+          ? pending.some((entry) => entry.reserved)
+          : payload.type !== 'end-stroke' &&
+            pending.filter((entry) => !entry.reserved).length -
+              superseded.length +
+              Number(
+                !!closeLease && !pending.some((entry) => entry.payload.type === 'end-stroke'),
+              ) >=
+              30)
+      ) {
+        dragging = false;
+        notice('Controls busy; wait for acknowledgement.');
+        return false;
+      }
+      for (const entry of superseded) pending.splice(pending.indexOf(entry), 1);
+      ticket = increment(ticket);
+      const entry: Entry = {
+        ticket,
+        payload,
+        generation,
+        reserved,
+        terrainRevision: capturedTerrainRevision,
+      };
+      if (payload.type === 'speed') pendingSpeed = { ticket, value: payload.value };
+      if (payload.type === 'pause-on-extinction')
+        pendingExtinction = { ticket, value: payload.value };
+      if (payload.type === 'run-to') {
+        targetTicket = { wireId: null };
+        entry.targetTicket = targetTicket;
+        text('target-status', 'Target request pending acknowledgement.');
+        get<HTMLButtonElement>('cancel-target').disabled = false;
+      }
+      if (payload.type === 'cancel-target' && targetTicket) entry.cancelTicket = targetTicket;
+      if (payload.type === 'settings')
+        for (const key of ['mutation', 'nutrients', 'climate'] as const) {
+          const value = payload.settings[key];
+          if (value !== undefined) {
+            pendingSettings[key] = { ticket, value };
+            settingsEdits[key] = value;
+          }
+        }
+      pending.push(entry);
+      availability();
+      pump();
+      return rejectedTicket !== entry.ticket;
+    } catch (error) {
+      dragging = false;
+      notice((error as Error).message);
+      return false;
     }
-    return true;
   }
-  function settleSetting(owner: Owner, applied: boolean): void {
-    if (!owner.setting) return;
-    const { key, value } = owner.setting;
-    if (applied && owner.id > (settledSettingId[key] ?? 0)) {
-      settledSettingId[key] = owner.id;
-      settledSettings[key] = value;
-      confirmedSettings[key] = value;
-    } else if (!applied && latestSettingId[key] === owner.id) {
-      delete settingsEdits[key];
-      settings[key] = confirmedSettings[key];
-      get<HTMLInputElement>(key).value = String(settings[key]);
-      text(
-        `${key}-value`,
-        key === 'nutrients' ? `${settings[key]}%` : `${Math.round(settings[key] * 100)}%`,
-      );
+  function freshness(): void {
+    const current = latestState;
+    text(
+      'habitat-freshness',
+      `World tick ${current?.world.stats.tick ?? 'unknown'} · habitat tick ${frame?.stats.tick ?? 'not received'} · ${!desiredView.visible ? 'Habitat not visible' : !desiredView.enabled ? 'Rendering off' : !frame || displayedEpoch !== desiredView.epoch ? 'Refreshing habitat…' : displayedRevision !== current?.revision ? (frame.stats.tick === current?.world.stats.tick ? 'Habitat awaiting latest edit' : 'Habitat is behind world progress') : `Habitat current at tick ${frame.stats.tick}`}`,
+    );
+  }
+  function changeView(enabled = desiredView.enabled, visible = desiredView.visible): void {
+    if (!alive || (enabled === desiredView.enabled && visible === desiredView.visible)) return;
+    desiredView = { epoch: increment(desiredView.epoch), enabled, visible };
+    viewIntent = { ...desiredView };
+    if (!enabled || !visible) discardFenceEpoch = desiredView.epoch;
+    if (pendingFrame) {
+      pendingFrame = null;
+      discardFenceEpoch = desiredView.epoch;
     }
+    get<HTMLInputElement>('render-habitat').checked = enabled;
+    text('render-pending', 'Rendering preference pending');
+    freshness();
+    pump();
+    releaseDiscard();
   }
   function renderPlayback(playback: PlaybackState): void {
     if (stopped) return;
     paused = playback.paused;
-    get<HTMLInputElement>('pause-on-extinction').checked = playback.pauseOnExtinction;
+    get<HTMLInputElement>('pause-on-extinction').checked =
+      pendingExtinction?.value ?? playback.pauseOnExtinction;
     text('pause', paused ? '▶ Resume' : 'Ⅱ Pause');
     get<HTMLButtonElement>('step').disabled = !paused;
     text('run-state', paused ? 'PAUSED' : 'LIVE');
@@ -1166,13 +1473,21 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       `${paused ? 'Paused' : 'Empty world running'} · ${summary.cause === 'empty-import' ? 'imported empty world' : 'total extinction'} at tick ${summary.tick.toLocaleString()}. ${cause}${!paused ? ' Pause on extinction is off.' : ''}`,
     );
   }
-  function renderSettings(next: Settings): void {
-    confirmedSettings = { ...next, ...settledSettings };
-    settings = { ...confirmedSettings, ...settingsEdits };
+  function renderSettings(next: Settings, replaceDraft = true): void {
+    const lifecycle = posted?.type === 'start' || posted?.type === 'load';
+    const replaceDraftSeed = lifecycle
+      ? replaceDraft && posted?.terrainRevision === terrainRevision
+      : next.seed !== confirmedSettings.seed;
+    confirmedSettings = { ...next };
     settingsEdits = {};
-    settledSettings = {};
-    for (const id of ['seed', 'mutation', 'nutrients', 'climate'] as const)
-      get<HTMLInputElement>(id).value = String(settings[id]);
+    for (const key of ['mutation', 'nutrients', 'climate'] as const)
+      if (pendingSettings[key]) settingsEdits[key] = pendingSettings[key]!.value;
+    settings = { ...next, ...settingsEdits };
+    for (const id of ['seed', 'mutation', 'nutrients', 'climate'] as const) {
+      const control = get<HTMLInputElement>(id);
+      if ((id !== 'seed' || replaceDraftSeed) && control.value !== String(settings[id]))
+        control.value = String(settings[id]);
+    }
     text('mutation-value', `${Math.round(settings.mutation * 100)}%`);
     text('climate-value', `${Math.round(settings.climate * 100)}%`);
     text('nutrients-value', `${settings.nutrients}%`);
@@ -1189,6 +1504,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       };
     return (follows || input.checkValidity()) && validTerrain(recipe) ? recipe : null;
   }
+  let previewKey = '';
   function renderTerrain(): void {
     const recipe = readTerrain(),
       worldSeed = Number(get<HTMLInputElement>('seed').value);
@@ -1220,6 +1536,9 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         ? 'Draft matches the committed recipe, not necessarily the live cells.'
         : 'Unapplied draft; use Regenerate walls or confirm a reset to commit.',
     );
+    const key = JSON.stringify([recipe, worldSeed]);
+    if (key === previewKey) return;
+    previewKey = key;
     const preview = get<HTMLCanvasElement>('terrain-preview'),
       context = preview.getContext('2d')!;
     const walls = generateTerrain(recipe, worldSeed);
@@ -1250,9 +1569,22 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     stopped = true;
     invalidateObservation();
     paused = true;
+    clearDownload('save');
+    clearDownload('export-measurements');
+    const retainedClose = closeLease?.beginPosted
+      ? pending.find((entry) => entry.payload.type === 'end-stroke')
+      : undefined;
+    pending.length = 0;
+    if (retainedClose) pending.push(retainedClose);
+    viewIntent = null;
+    establishedRun = null;
+    pendingFrame = null;
+    targetTicket = undefined;
+    get<HTMLButtonElement>('cancel-target').disabled = true;
     text('pause', '▶ Resume');
     get<HTMLButtonElement>('step').disabled = true;
     text('run-state', 'STOPPED');
+    text('tick-rate', 'Measured ticks/s: — · paused/stopped');
     root.classList.add('paused');
     availability();
   }
@@ -1374,7 +1706,10 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     }
   }
   function reset(initial = false): void {
-    if (!alive) return;
+    if (!alive || lifecycleBusy()) {
+      notice('World replacement capacity busy; wait for acknowledgement.');
+      return;
+    }
     const seed = Number(get<HTMLInputElement>('seed').value),
       next = { ...settings, seed };
     if (!get<HTMLInputElement>('seed').checkValidity() || !validSettings(next)) {
@@ -1405,31 +1740,45 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     get('cancel-reset').focus();
   }
   function replaceWorld(
-    operation: 'start' | 'load',
-    payload: Record<string, unknown>,
+    operation: 'start',
+    data: { settings: Settings; terrain: TerrainRecipe },
     revision = terrainRevision,
-  ): boolean {
-    if (!admissible(operation)) return false;
+  ): void {
     cancelReset(false);
-    endStroke();
-    if (terminated) return false;
-    const previousRun = runId,
-      previousEdits = settingsEdits,
-      previousSettled = settledSettings;
-    settingsEdits = {};
-    settledSettings = {};
     invalidateObservation();
-    runId++;
-    if (operation === 'start') notice('');
-    if (!postTracked(operation, payload, runId, revision)) {
-      runId = previousRun;
-      settingsEdits = previousEdits;
-      settledSettings = previousSettled;
-      return false;
+    const payload = captureCommand({ type: operation, ...data, display: desiredView }, settings);
+    try {
+      generation = increment(generation);
+    } catch {
+      notice('Session counter exhausted. Restart the worker.');
+      return;
     }
-    readGeneration++;
-    invalidate(runId);
-    return true;
+    worldRequest++;
+    waitingFile = null;
+    blueprintRequest++;
+    if (closeLease?.beginPosted) endStroke();
+    else {
+      closeLease = null;
+      localStroke = null;
+      ownerPointer = null;
+      dragging = false;
+    }
+    const retainedClose = pending.find((entry) => entry.payload.type === 'end-stroke');
+    pending.length = 0;
+    if (retainedClose) pending.push(retainedClose);
+    targetTicket = undefined;
+    for (const key of ['mutation', 'nutrients', 'climate'] as const) delete pendingSettings[key];
+    settingsEdits = {};
+    pendingSpeed = pendingExtinction = null;
+    establishedRun = null;
+    pendingFrame = null;
+    updates = 0;
+    stopped = false;
+    notice(
+      'Reseeding cancels unposted old-world controls. An already posted Save still completes.',
+    );
+    text('run-state', 'LOADING');
+    send(payload, revision);
   }
   function setZoom(next: number, anchorX?: number, anchorY?: number): void {
     const old = viewport(canvas, camera),
@@ -1447,6 +1796,8 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       p = point(canvas, camera, event.clientX - rect.left, event.clientY - rect.top);
     if (!p) return;
     if (tool === 'inspect') {
+      captureIntent = null;
+      updateCapture();
       get<HTMLDetailsElement>('specimen-details').open = true;
       send({ type: 'inspect', ...p });
       tab('organism');
@@ -1516,7 +1867,8 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       (['food', 'wall', 'erase'].includes(tool) || refugeTool(tool)) &&
       (closeLease ||
         manualCount() > MANUAL_CAPACITY - 2 ||
-        postingId > Number.MAX_SAFE_INTEGER - 3 ||
+        pending.filter((entry) => !entry.reserved).length > 27 ||
+        wireId > Number.MAX_SAFE_INTEGER - 3 ||
         strokeId === Number.MAX_SAFE_INTEGER)
     ) {
       notice('Brush capacity busy. A fresh pointer press is required after earlier work drains.');
@@ -1528,7 +1880,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     }
     if (['food', 'wall', 'erase'].includes(tool) || refugeTool(tool)) {
       const id = ++strokeId;
-      closeLease = { run: runId, strokeId: id, posted: false };
+      closeLease = { strokeId: id, beginPosted: false, posted: false };
       const frozenBrush = refugeTool(tool)
         ? {
             rulesVersion: 1 as const,
@@ -1539,7 +1891,8 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         : undefined;
       localStroke = { id, tool: tool as StrokeTool, radius: brush, count: 0, brush: frozenBrush };
       if (!postTracked('begin-stroke', { strokeId: id, tool, radius: brush, ...frozenBrush })) {
-        closeLease = null;
+        if (closeLease?.beginPosted) endStroke();
+        else closeLease = null;
         localStroke = null;
         return;
       }
@@ -1598,7 +1951,11 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     .forEach((b) => b.addEventListener('click', () => tab(b.dataset.tab!)));
   get('pause').addEventListener('click', () => {
     if (stopped) return;
-    if (paused && !frame?.stats.population && get<HTMLInputElement>('pause-on-extinction').checked)
+    if (
+      paused &&
+      !latestState?.world.stats.population &&
+      get<HTMLInputElement>('pause-on-extinction').checked
+    )
       notice('Place an organism, or turn off Pause on extinction and press Resume.');
     send({ type: paused ? 'resume' : 'pause' });
   });
@@ -1615,6 +1972,33 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   get('speed').addEventListener('change', () =>
     send({ type: 'speed', value: Number(get<HTMLSelectElement>('speed').value) }),
   );
+  get('render-habitat').addEventListener('change', () => {
+    if (stopped || !alive) {
+      get<HTMLInputElement>('render-habitat').checked = desiredView.enabled;
+      notice('Rendering preference cannot change while stopped.');
+      return;
+    }
+    changeView(get<HTMLInputElement>('render-habitat').checked);
+  });
+  get('refresh-habitat').addEventListener('click', () => send({ type: 'snapshot', display: true }));
+  const runToTick = (): void => {
+    const input = get<HTMLInputElement>('target-tick');
+    if (!input.value.trim() || !input.checkValidity()) {
+      text('target-status', 'Choose an absolute whole tick from 0 to 1000000000.');
+      return;
+    }
+    send({ type: 'run-to', targetTick: Number(input.value) });
+  };
+  get('run-to-tick').addEventListener('click', runToTick);
+  get('target-tick').addEventListener('keydown', (event) => {
+    if ((event as KeyboardEvent).key === 'Enter') {
+      event.preventDefault();
+      runToTick();
+    }
+  });
+  get('cancel-target').addEventListener('click', () => {
+    send({ type: 'cancel-target', targetId: targetTicket?.wireId ?? latestState?.target?.id ?? 1 });
+  });
   get('thermal').addEventListener('click', () => {
     thermal = !thermal;
     get('thermal').setAttribute('aria-pressed', String(thermal));
@@ -1643,17 +2027,13 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   });
   for (const id of ['mutation', 'nutrients', 'climate'] as const)
     get(id).addEventListener('input', () => {
-      endStroke();
       const value = Number(get<HTMLInputElement>(id).value);
-      if (
-        !validSettings({ ...settings, [id]: value }) ||
-        !postTracked('settings', { settings: { [id]: value } })
-      ) {
+      endStroke();
+      if (!send({ type: 'settings', settings: { [id]: value } })) {
         get<HTMLInputElement>(id).value = String(settings[id]);
         return;
       }
       settings[id] = value;
-      settingsEdits[id] = settings[id];
       text(
         `${id}-value`,
         id === 'nutrients' ? `${settings[id]}%` : `${Math.round(settings[id] * 100)}%`,
@@ -1696,7 +2076,6 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       },
     );
   get('clear-walls').addEventListener('click', () => {
-    if (!admissible('clear-walls')) return;
     endStroke();
     postTracked('clear-walls', { action: 'clear' });
   });
@@ -1706,7 +2085,6 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       notice('Choose a valid wall recipe and whole-number terrain seed.');
       return;
     }
-    if (!admissible('regenerate-walls')) return;
     const resolvedSeed = resolvedTerrainSeed(recipe, confirmedSettings.seed);
     endStroke();
     postTracked('regenerate-walls', { action: 'regenerate', recipe: { ...recipe }, resolvedSeed });
@@ -1927,17 +2305,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
       libraryStatus('Capture unavailable or busy. No playback action was taken.');
       return;
     }
-    try {
-      stageCandidate(
-        libraryCandidate(selected!.genome, speciesName(selected!.genome), '', {
-          captureTick: frame!.stats.tick,
-        }),
-        true,
-      );
-      void writeLibrary({ type: 'create', candidate: candidate! });
-    } catch (error) {
-      libraryStatus(libraryMessage(error));
-    }
+    requestCapture('library', 'organism', selected!.id);
   });
   listen(get('library-add'), 'click', () => {
     if (candidate) void writeLibrary({ type: 'create', candidate });
@@ -2013,62 +2381,77 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   });
   root.addEventListener('click', (event) => {
     if ((event.target as HTMLElement).closest('#copy-organism') && selected) {
-      if (copyDesign(selected.genome))
-        notice('Anatomy copied. Edit it, then place it in the world.');
+      requestCapture('copy', 'organism', selected.id);
     }
     if ((event.target as HTMLElement).closest('#export-organism-blueprint') && selected)
-      exportBlueprint(selected.genome, speciesName(selected.genome), '');
+      requestCapture('export', 'organism', selected.id);
   });
   get('help').addEventListener('click', () => get<HTMLDialogElement>('help-dialog').showModal());
   get('close-help').addEventListener('click', () => get<HTMLDialogElement>('help-dialog').close());
-  get('save').addEventListener('click', () => postTracked('save'));
-  for (const format of ['json', 'csv'] as const)
-    get(`measurements-${format}`).addEventListener('click', () =>
-      postTracked('export-measurements', { format }),
+  get('save').addEventListener('click', () => send({ type: 'save' }));
+  for (const format of ['csv', 'json'] as const)
+    get('measurements-' + format).addEventListener('click', () =>
+      send({ type: 'export-measurements', format }),
     );
-  get('load').addEventListener('click', () => {
-    cancelReset(false);
-    readGeneration++;
-    get<HTMLInputElement>('file').value = '';
-    get<HTMLInputElement>('file').click();
-  });
-  get('file').addEventListener('cancel', () => {
-    readGeneration++;
-    get<HTMLInputElement>('file').value = '';
-  });
-  get('file').addEventListener('change', async () => {
-    const input = get<HTMLInputElement>('file'),
-      file = input.files?.[0],
-      generation = ++readGeneration,
-      capturedRun = runId;
-    const capturedTerrainRevision = terrainRevision;
-    if (!file) return;
-    if (worldRead) {
-      notice('A native world-file read is still outstanding. No second read was started.');
-      input.value = '';
-      return;
-    }
-    const current = (): boolean => alive && generation === readGeneration && capturedRun === runId;
-    worldRead = true;
+  const worldInput = get<HTMLInputElement>('file');
+  function invalidateCandidate(): void {
+    worldRequest++;
+    waitingFile = null;
+    const index = pending.findIndex((entry) => entry.payload.type === 'load');
+    if (index >= 0) pending.splice(index, 1);
+  }
+  async function readWorld(): Promise<void> {
+    if (reading || !waitingFile || !alive) return;
+    const request = waitingFile;
+    waitingFile = null;
+    reading = true;
+    const current = (): boolean =>
+      alive &&
+      request.request === worldRequest &&
+      request.generation === generation &&
+      request.run === runId;
     try {
-      if (file.size > WORLD_MAX_BYTES) throw new Error('World file exceeds 2.5 MB.');
-      const content = await file.text();
-      if (current() && replaceWorld('load', { text: content }, capturedTerrainRevision))
-        input.value = '';
+      if (request.file.size > WORLD_MAX_BYTES) throw new Error('World file exceeds 2.5 MB.');
+      const content = await request.file.text();
+      if (current()) {
+        if (lifecycleBusy())
+          notice('World replacement capacity busy; choose the file again after acknowledgement.');
+        else {
+          endStroke();
+          send({ type: 'load', text: content }, request.terrainRevision);
+        }
+      }
     } catch (error) {
       if (current()) notice(error instanceof Error ? error.message : 'Could not read this world.');
     } finally {
-      worldRead = false;
-      if (generation === readGeneration) input.value = '';
+      reading = false;
+      if (request.request === worldRequest) worldInput.value = '';
+      if (alive) void readWorld();
     }
+  }
+  get('load').addEventListener('click', () => {
+    cancelReset(false);
+    invalidateCandidate();
+    worldInput.value = '';
+    worldInput.click();
+  });
+  worldInput.addEventListener('cancel', () => {
+    invalidateCandidate();
+    worldInput.value = '';
+  });
+  worldInput.addEventListener('change', () => {
+    invalidateCandidate();
+    const file = worldInput.files?.[0];
+    if (!file) return;
+    waitingFile = { file, request: worldRequest, generation, run: runId, terrainRevision };
+    if (reading)
+      notice('World read still outstanding; only the latest waiting selection is retained.');
+    void readWorld();
   });
   const keyboard = (event: KeyboardEvent): void => {
     if (
       (event.target instanceof HTMLElement &&
-        (event.target.matches('input,select,textarea') ||
-          (event.code === 'Space' && event.target.matches('button')))) ||
-      (event.target instanceof HTMLElement &&
-        !!event.target.closest('#local-library, #library-dialog, #capture-selected')) ||
+        event.target.closest('input,select,textarea,button,[contenteditable="true"],dialog')) ||
       event.ctrlKey ||
       event.metaKey ||
       event.altKey ||
@@ -2097,24 +2480,27 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   window.addEventListener('resize', resize);
   function installRefuges(summary: RefugeSummary): void {
     confirmedRefuges = { ...summary };
-    get<HTMLInputElement>('refuge-enabled').checked = summary.enabled;
+    const control = get<HTMLInputElement>('refuge-enabled');
+    if (control.checked !== summary.enabled) control.checked = summary.enabled;
     text(
       'refuge-summary',
       `${summary.enabled ? (summary.nonzeroCells ? 'Enabled · painted' : 'Enabled · empty') : summary.nonzeroCells ? 'Disabled · stored paint' : 'Disabled · empty'} · ${summary.nonzeroCells}/4096 nonzero cells · offsets ${summary.minimumUnits}..${summary.maximumUnits} units · rules 1`,
     );
     availability();
   }
-  function renderFrame(next: Frame, selection: Organism | null, displayOnly = false): void {
+  function renderObservation(
+    next: WorldPresentation,
+    selection: Organism | null,
+    displayOnly = false,
+  ): void {
     const previousSelection = selected?.id;
-    const previousPopulation = frame?.stats.population;
-    frame = next;
-    installRefuges(refugeSummary(next.thermalRefuges));
+    const previousPopulation = latestState?.world.stats.population;
     selected = selection;
     if (!stopped) acceptedObservationRun = runId;
+    observationTick = next.stats.tick;
     updateCapture();
-    dirty = true;
     if (!displayOnly) updates++;
-    const s = frame.stats;
+    const s = next.stats;
     const lineages = `${s.species} lineage${s.species === 1 ? '' : 's'}`;
     text('population', s.population.toLocaleString());
     text('species-count', lineages);
@@ -2126,16 +2512,22 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     text('world-count', `${s.population} organism${s.population === 1 ? '' : 's'} · ${lineages}`);
     text('season', s.season);
     text('weather', s.event);
-    telemetry.update(frame, runId);
     if (
       displayOnly ||
       paused ||
-      !s.population ||
-      updates % 4 === 1 ||
+      (s.population
+        ? updates % 4 === 1
+        : previousPopulation !== 0 || latestState?.world.stats.tick !== s.tick) ||
       previousSelection !== selected?.id
     )
-      get('inspector').innerHTML = organismHtml(selected, frame);
-    if (displayOnly || !s.population || previousPopulation === 0 || updates % 12 === 1) {
+      get('inspector').innerHTML =
+        `${organismHtml(selected, next)}<p class="muted">Observed at tick ${s.tick}.</p>`;
+    if (
+      displayOnly ||
+      (!s.population && previousPopulation !== 0) ||
+      (previousPopulation === 0 && s.population > 0) ||
+      updates % 12 === 1
+    ) {
       const list = get('lineages');
       list.replaceChildren();
       for (const species of s.top) {
@@ -2144,7 +2536,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         b.title = 'Copy this lineage into the organism designer';
         b.innerHTML = `${genomeSvg(species.genome, 56)}<span><strong>${species.name} <small>#${species.id}</small></strong><i><b style="width:${(species.count / Math.max(1, s.population)) * 100}%"></b></i></span><em>${species.count}</em>`;
         b.addEventListener('click', () => {
-          if (copyDesign(species.genome)) tab('organism');
+          requestCapture('copy', 'lineage', species.id);
         });
         list.append(b);
       }
@@ -2153,36 +2545,411 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
           '<p class="muted">This world is quiet. Plant a new organism or reseed.</p>';
     }
   }
-  worker.onmessage = ({ data }) => {
-    if (!alive || terminated) return;
-    if (!data || typeof data !== 'object') return;
-    if (terminal(data)) return;
-    if (data.runId !== runId) return;
-    if (data.type === 'error') {
-      if (data.fatal) {
-        invalidate();
-        stop();
-      } else if (data.recovery && !stopped) {
-        renderSettings(data.recovery.settings);
-        renderPlayback(data.recovery.playback);
-        if (validTerrain(data.recovery.frame.terrain))
-          installTerrain(data.recovery.frame.terrain, -1);
-        renderFrame(data.recovery.frame, data.recovery.selected, true);
+  function renderTarget(observation: ControlState): void {
+    const replacement = targetPresentationReplacement !== observation.replacementId;
+    targetPresentationReplacement = observation.replacementId;
+    const active = observation.target;
+    const progress = get<HTMLProgressElement>('target-progress');
+    progress.hidden = !active;
+    if (active) {
+      progress.max = Math.max(1, active.targetTick - active.fromTick);
+      progress.value = Math.max(
+        0,
+        Math.min(progress.max, observation.world.stats.tick - active.fromTick),
+      );
+      if (active.targetTick === active.fromTick) progress.value = progress.max;
+      const message = `Tick ${observation.world.stats.tick} / absolute target ${active.targetTick}; ${Math.max(0, active.targetTick - observation.world.stats.tick)} remaining · ${active.status}`;
+      text('target-details', message);
+      progress.setAttribute('aria-valuetext', message);
+      const transition = `${observation.replacementId}:${active.id}:${active.status}`;
+      if (!targetTicket && transition !== targetTransition) {
+        targetTransition = transition;
+        text('target-status', `Absolute target ${active.targetTick} ${active.status}.`);
       }
-      notice(data.message);
+    } else {
+      text('target-details', '');
+      progress.removeAttribute('aria-valuetext');
+      progress.removeAttribute('value');
+      if (replacement) {
+        targetTransition = '';
+        if (!targetTicket) text('target-status', '');
+      }
+    }
+  }
+  function accept(
+    observation: ControlState,
+    source?: TelemetrySnapshot,
+    replaceDraft = true,
+  ): void {
+    if (stopped || establishedRun !== runId) return;
+    const differentRun = acceptedRun !== runId;
+    if (differentRun) {
+      acceptedRun = runId;
+      latestTelemetry = null;
+    }
+    if (!latestState || differentRun || observation.revision > latestState.revision) {
+      if (!differentRun && latestState && observation.replacementId !== latestState.replacementId)
+        return;
+      renderObservation(
+        observation.world,
+        observation.selected,
+        differentRun || observation.playback.paused,
+      );
+      latestState = observation;
+      installRefuges(observation.world.thermalRefuges);
+      const recipeRevision =
+        replaceDraft && posted && ['start', 'load', 'regenerate-walls'].includes(posted.type)
+          ? (posted.terrainRevision ?? -1)
+          : -1;
+      installTerrain(observation.world.terrain, recipeRevision);
+      renderSettings(observation.settings, replaceDraft);
+      renderPlayback(observation.playback);
+      get<HTMLSelectElement>('speed').value = String(pendingSpeed?.value ?? observation.speed);
+      const measured = observation.rate;
+      text(
+        'tick-rate',
+        measured.status === 'paused'
+          ? 'Measured ticks/s: — · paused/stopped'
+          : measured.value === null
+            ? 'Measured ticks/s: measuring…'
+            : `Measured ${measured.value.toFixed(1)} ticks/s · ${measured.completedTicks} ticks / ${measured.elapsedMs.toFixed(0)} ms · observed tick ${observation.world.stats.tick}${measured.context === 'hidden' ? ' · hidden/throttled' : ''}${measured.status === 'timing-gap' ? ' · timing-gap (full elapsed interval)' : ''}`,
+      );
+      freshness();
+    }
+    const current = latestState;
+    if (!current || observation.replacementId !== current.replacementId) return;
+    renderTarget(current);
+    get<HTMLButtonElement>('cancel-target').disabled =
+      !targetTicket &&
+      (!current.target || !['running', 'suspended'].includes(current.target.status));
+    if (
+      source &&
+      source.revision <= current.revision &&
+      source.tick <= current.world.stats.tick &&
+      (!latestTelemetry ||
+        (source.revision > latestTelemetry.revision && source.tick >= latestTelemetry.tick))
+    )
+      latestTelemetry = { ...source, runId, replacementId: current.replacementId };
+    telemetry.update({
+      status: 'accepted',
+      runId,
+      replacementId: current.replacementId,
+      currentTick: current.world.stats.tick,
+      currentRevision: current.revision,
+      source: latestTelemetry,
+    });
+  }
+  function download(
+    data: Extract<WorkerResponse, { type: 'saved' | 'measurement-exported' }>,
+  ): void {
+    const operation = data.type === 'saved' ? 'save' : 'export-measurements';
+    if (
+      typeof data.text !== 'string' ||
+      data.text.length > WORLD_MAX_BYTES ||
+      !integer(data.completedTick, 0, 1e9) ||
+      !integer(data.seed, 0, 4294967295) ||
+      !integer(data.byteLength, 0, WORLD_MAX_BYTES) ||
+      new TextEncoder().encode(data.text).byteLength !== data.byteLength
+    )
+      throw new Error('Invalid completed download payload; no download created.');
+    const format = data.type === 'saved' ? 'json' : data.format;
+    const anchor = document.createElement('a');
+    let lease: Download | undefined,
+      dispatched = false;
+    try {
+      const url = URL.createObjectURL(
+        new Blob([data.text], {
+          type: format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json;charset=utf-8',
+        }),
+      );
+      lease = { url };
+      downloads[operation] = lease;
+      anchor.href = url;
+      anchor.download =
+        operation === 'save'
+          ? 'evolab-world-' + data.seed + '.json'
+          : 'evolab-measurements-' + data.seed + '-tick-' + data.completedTick + '.' + format;
+      document.body.append(anchor);
+      anchor.click();
+      const owned = lease;
+      lease.timer = setTimeout(() => clearDownload(operation, owned), 1000);
+      dispatched = true;
+    } finally {
+      anchor.remove();
+      if (!dispatched && lease) clearDownload(operation, lease);
+    }
+  }
+  worker.onmessage = ({ data: raw }) => {
+    if (!alive || !raw || typeof raw !== 'object') return;
+    const data = raw as WorkerResponse;
+    if (data.type === 'progress') {
+      if (!integer(data.sequence, 1, Number.MAX_SAFE_INTEGER)) return;
+      if (data.runId === runId && establishedRun === runId && !stopped)
+        accept(data.state, data.telemetry);
+      if (data.sequence <= progressWatermark) return;
+      progressWatermark = data.sequence;
+      postInternal({
+        type: 'flow-ack',
+        channel: 'progress',
+        runId: data.runId,
+        sequence: data.sequence,
+      });
+      pump();
       return;
     }
-    if (data.type === 'playback') {
-      renderPlayback(data.playback);
+    if (data.type === 'frame') {
+      if (!integer(data.sequence, 1, Number.MAX_SAFE_INTEGER)) return;
+      if (data.sequence <= displayWatermark) return;
+      heldDisplay = { runId: data.runId, sequence: data.sequence, viewEpoch: data.viewEpoch };
+      if (data.runId === runId && establishedRun === runId && !stopped) accept(data.state);
+      if (
+        data.runId !== runId ||
+        establishedRun !== runId ||
+        stopped ||
+        !desiredView.visible ||
+        data.viewEpoch !== desiredView.epoch ||
+        data.state.revision < displayedRevision
+      ) {
+        if (data.viewEpoch !== desiredView.epoch || !desiredView.visible)
+          discardFenceEpoch = Math.max(discardFenceEpoch, desiredView.epoch);
+        pendingFrame = null;
+        pump();
+        releaseDiscard();
+        return;
+      }
+      pendingFrame = data;
+      dirty = true;
       return;
     }
-    if (data.type !== 'frame' || stopped) return;
-    if (integer(data.refugeModeId, 0, Number.MAX_SAFE_INTEGER)) {
-      if (data.refugeModeId < settledRefugeId) return;
-      settledRefugeId = data.refugeModeId;
+    const completion = posted;
+    if (
+      !completion ||
+      data.commandId !== completion.commandId ||
+      data.runId !== completion.runId ||
+      ('requestId' in data && data.requestId !== undefined) ||
+      data.operation !== completion.type ||
+      Object.entries(completion.echo ?? {}).some(
+        ([key, value]) =>
+          JSON.stringify((data as unknown as Record<string, unknown>)[key]) !==
+          JSON.stringify(value),
+      ) ||
+      ('format' in data ? data.format : undefined) !== completion.format ||
+      ('strokeId' in data ? data.strokeId : undefined) !== completion.strokeId ||
+      !(
+        data.type === 'error' ||
+        data.type ===
+          (completion.type === 'save'
+            ? 'saved'
+            : completion.type === 'capture-design'
+              ? 'design-captured'
+              : completion.type === 'export-measurements'
+                ? 'measurement-exported'
+                : [
+                      'begin-stroke',
+                      'end-stroke',
+                      'paint',
+                      'settings',
+                      'shock',
+                      'clear-walls',
+                      'regenerate-walls',
+                      'refuge-mode',
+                      'paint-refuge',
+                      'clear-refuges',
+                    ].includes(completion.type)
+                  ? 'manual-result'
+                  : completion.type === 'load'
+                    ? 'loaded'
+                    : 'control')
+      )
+    ) {
+      if (
+        data.type === 'error' &&
+        data.fatal &&
+        data.runId === runId &&
+        data.commandId === undefined &&
+        data.operation === undefined &&
+        !('requestId' in data && data.requestId !== undefined)
+      ) {
+        stop();
+        notice(data.message);
+      }
+      return;
     }
-    renderPlayback(data.playback);
-    renderFrame(data.frame, data.selected);
+    if (completion.generation !== generation && data.runId === runId && !stopped) {
+      const retained = data.type === 'error' ? data.recovery?.state : data.state;
+      const source =
+        data.type === 'error'
+          ? data.recovery?.telemetry
+          : 'telemetry' in data
+            ? data.telemetry
+            : undefined;
+      if (retained && (!latestState || retained.revision > latestState.revision)) {
+        latestState = retained;
+        acceptedRun = runId;
+        if (source) latestTelemetry = { ...source, runId, replacementId: retained.replacementId };
+      }
+    }
+    const captureAction = completion.type === 'capture-design' ? captureIntent?.action : undefined;
+    const current = completion.generation === generation && data.runId === runId && !stopped;
+    try {
+      if (current) {
+        if (data.type === 'error' || (data.type === 'manual-result' && data.status === 'rejected'))
+          rejectedTicket = completion.ticket;
+        if (completion.targetTicket === targetTicket) targetTicket = undefined;
+        for (const key of ['mutation', 'nutrients', 'climate'] as const)
+          if (pendingSettings[key] && pendingSettings[key]!.ticket <= completion.ticket) {
+            delete pendingSettings[key];
+            delete settingsEdits[key];
+          }
+        if (pendingSpeed && pendingSpeed.ticket <= completion.ticket) pendingSpeed = null;
+        if (pendingExtinction && pendingExtinction.ticket <= completion.ticket)
+          pendingExtinction = null;
+        if (
+          data.type === 'error' &&
+          (typeof data.message !== 'string' || data.message.length > 512)
+        )
+          throw new Error('Invalid worker error payload.');
+        if (
+          data.type === 'manual-result' &&
+          (!['applied', 'no-op', 'rejected'].includes(data.status) ||
+            !integer(data.completedTick, 0, 1e9) ||
+            (data.rowSequence !== null && !integer(data.rowSequence, 1, Number.MAX_SAFE_INTEGER)))
+        )
+          throw new Error('Invalid manual completion payload.');
+        const observation = data.type === 'error' ? data.recovery?.state : data.state;
+        if (
+          observation &&
+          (completion.type === 'start' || completion.type === 'load') &&
+          (!validSettings(observation.settings) || !integer(observation.world?.stats?.tick, 0, 1e9))
+        )
+          throw new Error('Invalid lifecycle terminal.');
+        const source =
+          data.type === 'error'
+            ? data.recovery?.telemetry
+            : data.type === 'saved' ||
+                data.type === 'measurement-exported' ||
+                data.type === 'design-captured'
+              ? undefined
+              : data.telemetry;
+        if (data.type === 'error' && data.fatal) {
+          stop();
+          establishedRun = null;
+        } else if (observation) {
+          if (
+            (completion.type === 'start' &&
+              (data.type === 'control' || (data.type === 'error' && data.recovery))) ||
+            (completion.type === 'load' &&
+              (data.type === 'loaded' ||
+                (data.type === 'error' && data.code === 'load-failed' && data.recovery)))
+          ) {
+            establishedRun = runId;
+            stopped = false;
+            if (data.type !== 'error') {
+              updates = 0;
+            }
+          }
+          if (establishedRun === runId) {
+            if (observation.display.epoch >= acknowledgedView.epoch)
+              acknowledgedView = { ...observation.display };
+            if (acknowledgedView.epoch === desiredView.epoch) text('render-pending', '');
+            accept(
+              observation,
+              source,
+              data.type !== 'error' &&
+                !(data.type === 'manual-result' && data.status === 'rejected'),
+            );
+            if (
+              (data.type === 'error' ||
+                (data.type === 'manual-result' && data.status === 'rejected')) &&
+              completion.type === 'settings'
+            )
+              renderSettings(observation.settings);
+          }
+        } else if (completion.type === 'load' || completion.type === 'start') {
+          stop();
+          telemetry.update({ status: 'unavailable' });
+        }
+        if (data.type === 'design-captured') completeCapture(data);
+        if (data.type === 'error') {
+          if (completion.type === 'capture-design') {
+            captureIntent = null;
+            updateCapture();
+            if (captureAction === 'library') libraryStatus(data.message);
+          }
+          if (completion.type === 'run-to') {
+            if (!targetTicket) text('target-status', data.message);
+          } else notice(data.message);
+        } else if (data.type === 'loaded')
+          notice('World restored. Playback follows Pause on extinction. Imported painted field.');
+        else if (
+          data.type === 'manual-result' &&
+          ['clear-walls', 'regenerate-walls'].includes(completion.type) &&
+          data.status !== 'rejected'
+        ) {
+          if (!validTerrain(data.terrain)) throw new Error('Invalid completed wall recipe.');
+          if (
+            completion.echo?.recipe &&
+            !sameTerrain(data.terrain, completion.echo.recipe as TerrainRecipe)
+          )
+            throw new Error('Completed wall recipe differs from the submitted recipe.');
+          notice(
+            data.status === 'no-op'
+              ? 'Walls unchanged; no manual entry recorded.'
+              : 'Wall action applied. Living cells protected; food handling recorded in manual history.',
+          );
+        } else if (
+          data.type === 'manual-result' &&
+          ['refuge-mode', 'paint-refuge', 'clear-refuges'].includes(completion.type) &&
+          data.status !== 'rejected'
+        )
+          notice(
+            data.status === 'no-op'
+              ? 'Painted temperature unchanged; no manual entry recorded.'
+              : 'Painted temperature action applied; consequences begin on the next ecological tick.',
+          );
+        else if (data.type === 'manual-result' && data.status === 'rejected')
+          notice('Worker rejected this manual action; no successful effect recorded.');
+      }
+      if (data.type === 'saved' || (data.type === 'measurement-exported' && current)) {
+        try {
+          download(data);
+          if (current)
+            notice(
+              data.type === 'saved'
+                ? 'World saved, including every organism and its ancestry.'
+                : 'Download requested: retained observations as of completed tick ' +
+                    data.completedTick +
+                    '.',
+            );
+        } catch {
+          if (current) notice('Could not download this world. Try saving again.');
+        }
+      }
+    } catch (error) {
+      rejectedTicket = completion.ticket;
+      if (completion.type === 'capture-design') {
+        const action = captureAction;
+        captureIntent = null;
+        updateCapture();
+        if (action === 'library')
+          libraryStatus(
+            error instanceof Error ? error.message : 'Could not capture the complete design.',
+          );
+      }
+      if (current && completion.type === 'settings' && latestState)
+        renderSettings(latestState.settings);
+      if (current)
+        notice(
+          error instanceof Error ? error.message.slice(0, 512) : 'Could not complete this action.',
+        );
+    } finally {
+      if (completion.type === 'end-stroke' && closeLease?.strokeId === completion.strokeId)
+        closeLease = null;
+      posted = null;
+      availability();
+      pump();
+      releaseDiscard();
+    }
   };
   const workerFailed = (): void => {
     if (!alive) return;
@@ -2194,13 +2961,63 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   worker.addEventListener('messageerror', workerFailed);
   function render(): void {
     telemetry.render();
-    if (dirty && frame) {
-      draw(canvas, buffer, frame, camera, thermal, selected?.id ?? 0);
+    if (
+      dirty &&
+      !stopped &&
+      establishedRun === runId &&
+      desiredView.visible &&
+      (pendingFrame || frame)
+    ) {
+      const consumed = pendingFrame;
+      if (pendingFrame) {
+        frame = pendingFrame.frame;
+        displayedRevision = pendingFrame.state.revision;
+        displayedEpoch = pendingFrame.viewEpoch;
+        displayedSelected = pendingFrame.selectedId;
+        pendingFrame = null;
+      }
+      draw(canvas, buffer, frame!, camera, thermal, displayedSelected);
       dirty = false;
+      freshness();
+      if (consumed) {
+        const token = consumed;
+        heldDisplay = null;
+        displayWatermark = token.sequence;
+        postInternal({
+          type: 'flow-ack',
+          channel: 'display',
+          runId: token.runId,
+          sequence: token.sequence,
+        });
+        pump();
+      }
     }
     animation = requestAnimationFrame(render);
   }
   editor();
+  let intersecting = desiredView.visible;
+  const visibility = (): void =>
+    changeView(
+      desiredView.enabled,
+      document.visibilityState !== 'hidden' &&
+        intersecting &&
+        canvas.getBoundingClientRect().width > 0 &&
+        canvas.getBoundingClientRect().height > 0,
+    );
+  const intersection =
+    typeof IntersectionObserver === 'undefined'
+      ? undefined
+      : new IntersectionObserver((entries) => {
+          for (const entry of entries)
+            if (entry.target === canvas)
+              intersecting =
+                entry.isIntersecting &&
+                entry.intersectionRect.width > 0 &&
+                entry.intersectionRect.height > 0;
+          visibility();
+        });
+  intersection?.observe(canvas);
+  document.addEventListener('visibilitychange', visibility);
   choose(tool);
   tab('organism');
   renderTerrain();
@@ -2208,9 +3025,24 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   animation = requestAnimationFrame(render);
   return () => {
     alive = false;
+    worldRequest++;
+    blueprintRequest++;
+    waitingFile = null;
+    pending.length = 0;
+    posted = null;
+    frame = undefined;
+    pendingFrame = null;
+    heldDisplay = null;
+    latestState = undefined;
+    latestTelemetry = null;
+    viewIntent = null;
+    targetTicket = undefined;
+    intersection?.disconnect();
+    document.removeEventListener('visibilitychange', visibility);
     cancelReset(false);
-    readGeneration++;
+    captureIntent = null;
     acceptedObservationRun = undefined;
+    observationTick = undefined;
     cancelReplacement('view disposed.');
     cancelDialog('View disposed.');
     libraryRequest++;
