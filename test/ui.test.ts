@@ -1049,7 +1049,10 @@ describe('D9 lifetime ownership with real processing and independently gated ter
     expect(bridge.counts.maximum).toBeLessThanOrEqual(36);
   });
   it('D9-A2 holds real serialized results across256 successful and failed replacement barriers without refilling', async () => {
-    vi.useFakeTimers();
+    // Own the actual download lease timers. Keep this fixture's deliberately
+    // held RAF callback: fake-clock advancement must not introduce 60 native
+    // rendering turns per barrier that this ownership test never requested.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const bridge = ownershipBridge(),
       captures = vi.spyOn(Ecosystem.prototype, 'measurements'),
       saves = vi.spyOn(Ecosystem.prototype, 'save');
@@ -1571,6 +1574,46 @@ describe('owned command admission and real-worker interleavings', () => {
     expect(get('run-state').textContent).toBe('STOPPED');
     expect(get('telemetry-summary').textContent).toContain('history unknown');
   });
+  it('keeps terrain seed drafts through running observations and frozen reset confirmation', () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    set('seed', '99');
+    harness.advance();
+    harness.deliver();
+    expect(get<HTMLInputElement>('seed').value).toBe('99');
+    get('reset').click();
+    expect(get('reset-payload').textContent).toContain('World seed 99');
+    set('seed', '101');
+    set('terrain-preset', 'open-field', 'change');
+    get('confirm-reset').click();
+    harness.deliver();
+    expect(harness.save().settings.seed).toBe(99);
+    expect(get<HTMLInputElement>('seed').value).toBe('101');
+    expect(get<HTMLSelectElement>('terrain-preset').value).toBe('open-field');
+    expect(get('world-label').textContent).toBe('WORLD 0099');
+  });
+  it('keeps edits newer than the original world-file read separate from its committed recipe and seed', async () => {
+    const harness = realWorker(true);
+    harness.deliver();
+    let finish!: (text: string) => void;
+    upload({
+      size: 1,
+      text: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    });
+    set('seed', '99');
+    set('terrain-preset', 'open-field', 'change');
+    const incoming = new Ecosystem({ ...DEFAULTS, seed: 73 }).save();
+    finish(JSON.stringify(incoming));
+    await Promise.resolve();
+    harness.deliver();
+    expect(get<HTMLInputElement>('seed').value).toBe('99');
+    expect(get<HTMLSelectElement>('terrain-preset').value).toBe('open-field');
+    expect(get('world-label').textContent).toBe('WORLD 0073');
+    expect(harness.save().settings.seed).toBe(73);
+  });
   it('rejects complete invalid payloads before capture and detaches every admitted field', () => {
     const invalid = [
       null,
@@ -1591,6 +1634,20 @@ describe('owned command admission and real-worker interleavings', () => {
       { type: 'inspect', x: -1, y: 0 },
       { type: 'paint', tool: 'plant', x: 0, y: 0, radius: 0, genome: { ...founder(0), cells: [] } },
       { type: 'shock', kind: 'rain' },
+      { type: 'capture-design', source: 'unsupported', sourceId: 1, captureId: 1 },
+      { type: 'refuge-mode', rulesVersion: 2, enabled: true },
+      {
+        type: 'paint-refuge',
+        rulesVersion: 1,
+        tool: 'warm',
+        units: 33,
+        radius: 0,
+        x: 0,
+        y: 0,
+        strokeId: 1,
+      },
+      { type: 'clear-walls', action: 'clear', recipe: DEFAULT_TERRAIN },
+      { type: 'regenerate-walls', action: 'regenerate', recipe: DEFAULT_TERRAIN, resolvedSeed: -1 },
     ];
     for (const payload of invalid) expect(() => captureCommand(payload, DEFAULTS)).toThrow();
     const original = { type: 'paint', tool: 'plant', x: 40, y: 40, radius: 0, genome: founder(0) };
@@ -2760,6 +2817,68 @@ describe('explicit native full design ownership', () => {
       expect(bridge.records.size).toBe(0);
     },
   );
+  function inspectedBridge() {
+    const bridge = ownershipBridge();
+    root.querySelector<HTMLButtonElement>('[data-tool="inspect"]')!.click();
+    const area = viewport(get<HTMLCanvasElement>('world'), { zoom: 1, x: 0, y: 0 });
+    pointer('pointerdown', area.left + 120.5 * area.scale, area.top + 78.5 * area.scale);
+    pointer('pointerup');
+    return bridge;
+  }
+  it('keeps one full capture charged while repeated copy and library admissions report busy', () => {
+    const bridge = inspectedBridge();
+    bridge.holdTerminals((data) => data.operation === 'capture-design');
+    click('copy-organism');
+    const id = [...bridge.records.keys()][0];
+    click('copy-organism');
+    expect(get('notice').textContent).toContain('capture busy');
+    click('capture-selected');
+    expect(get('library-status').textContent).toContain('unavailable or busy');
+    expect(bridge.records.size).toBe(1);
+    bridge.deliver(id);
+    expect(bridge.records.size).toBe(0);
+    expect(get('notice').textContent).toContain('copied in full');
+  });
+  it('retires a proven nonposting full capture without changing the design or queuing a retry', () => {
+    const bridge = inspectedBridge();
+    const original = bridge.endpoint.postMessage;
+    vi.spyOn(bridge.endpoint, 'postMessage').mockImplementation((command: any) => {
+      if (command.type === 'capture-design')
+        throw new DOMException('proven capture nonpost', 'DataCloneError');
+      original(command);
+    });
+    set('blueprint-name', 'retained after nonpost');
+    click('copy-organism');
+    expect(get('notice').textContent).toContain('No automatic retry');
+    expect(get<HTMLInputElement>('blueprint-name').value).toBe('retained after nonpost');
+    expect(bridge.records.size).toBe(0);
+    expect(bridge.counts.terminated).toBe(0);
+    expect(get('run-state').textContent).toBe('PAUSED');
+  });
+  it.each(['copy', 'library'] as const)(
+    'reports a failed full %s source read and retains designer, playback and native ownership truthfully',
+    (action) => {
+      const bridge = inspectedBridge();
+      bridge.holdTerminals((data) => data.operation === 'capture-design');
+      set('blueprint-name', 'retained on source failure');
+      click(action === 'library' ? 'capture-selected' : 'copy-organism');
+      const [id, record] = [...bridge.records][0];
+      record.terminal = {
+        ...record.terminal,
+        type: 'error',
+        code: 'invalid-command',
+        message: 'The design source is no longer alive.',
+      };
+      bridge.deliver(id);
+      expect(get('notice').textContent).toContain('no longer alive');
+      if (action === 'library')
+        expect(get('library-status').textContent).toContain('no longer alive');
+      expect(get<HTMLInputElement>('blueprint-name').value).toBe('retained on source failure');
+      expect(get('run-state').textContent).toBe('PAUSED');
+      expect(bridge.records.size).toBe(0);
+      expect(URL.createObjectURL).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('explicit bounded local library', () => {
@@ -2843,6 +2962,61 @@ describe('explicit bounded local library', () => {
       }
       expect(storage.values.get(first)).toBe(encodeRecord(draft('Library replacement'), 1));
       expect(get('run-state').textContent).toBe(playback);
+    },
+  );
+
+  function holdLibraryCapture() {
+    const original = worker.postMessage.getMockImplementation()!;
+    let held: any;
+    worker.postMessage.mockImplementation((command) => {
+      if (command.type === 'capture-design') held = command;
+      else original(command);
+    });
+    click('capture-selected');
+    return { deliver: () => original(held), command: () => held };
+  }
+  it('cancels a delayed library full capture after a newer designer edit without storing a stale candidate', async () => {
+    const capture = holdLibraryCapture();
+    set('blueprint-name', 'newer design');
+    capture.deliver();
+    await flush();
+    expect(get('library-status').textContent).toContain('Capture cancelled');
+    expect(get<HTMLInputElement>('blueprint-name').value).toBe('newer design');
+    expect(get('library-candidate').hidden).toBe(true);
+    expect(storage.values.size).toBe(0);
+  });
+  it('preserves a newer unsaved candidate when an earlier complete library capture returns', async () => {
+    const capture = holdLibraryCapture();
+    await uploadLocal(serializeBlueprint(draft('Retained newer candidate').blueprint));
+    capture.deliver();
+    await flush();
+    expect(get('library-candidate-name').textContent).toBe('Retained newer candidate');
+    expect(get('library-status').textContent).toContain('Existing candidate preserved');
+    expect(storage.values.size).toBe(0);
+  });
+  it.each(['oversized', 'malformed'] as const)(
+    'preserves design and library after a %s complete source response',
+    async (kind) => {
+      const capture = holdLibraryCapture();
+      const emit = worker.emit.bind(worker);
+      const original = worker.postMessage.getMockImplementation();
+      worker.postMessage.mockImplementation((command) => {
+        if (command.type === 'capture-design') {
+          const genome: any = structuredClone(organism.genome);
+          if (kind === 'oversized')
+            genome.legacyExtensions = [['retained', [['string', 'é'.repeat(20000)]]]];
+          else genome.cells = [];
+          emit({ type: 'design-captured', genome });
+        } else original!(command);
+      });
+      worker.commands(capture.command());
+      worker.postMessage(capture.command());
+      await flush();
+      expect(storage.values.size).toBe(0);
+      expect(get('library-candidate').hidden).toBe(true);
+      expect(get('library-status').textContent).not.toBe('');
+      expect(get('library-status').textContent).not.toContain('Write committed');
+      expect(get('run-state').textContent).toBe('LIVE');
     },
   );
 

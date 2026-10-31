@@ -256,7 +256,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   const captureStatus = document.createElement('p');
   captureStatus.id = 'capture-status';
   captureStatus.className = 'muted';
-  captureStatus.textContent = 'Inspect an organism to capture its last received genotype.';
+  captureStatus.textContent = 'Inspect an organism to request its complete current genotype.';
   captureButton.setAttribute('aria-describedby', captureStatus.id);
   get('specimen-details').append(captureButton, captureStatus);
   get('help-dialog').append(
@@ -384,14 +384,16 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         get('specimen-details').querySelector('summary')!.focus();
       else get('organism-tab').focus();
     }
-    captureButton.disabled = !eligible;
+    if (captureButton.disabled === eligible) captureButton.disabled = !eligible;
     const busy = libraryBusy() || !!candidate || !!captureIntent;
-    captureButton.setAttribute('aria-disabled', String(busy));
-    captureStatus.textContent = eligible
+    if (captureButton.getAttribute('aria-disabled') !== String(busy))
+      captureButton.setAttribute('aria-disabled', String(busy));
+    const message = eligible
       ? busy
         ? 'Library busy or an unsaved blueprint is pending. Capture is not started; playback is unchanged.'
         : 'Requests the complete current genotype at a worker response tick; the displayed observation may be earlier. No fitness or living identity is captured.'
       : 'Inspect an organism after the current world response to capture it.';
+    if (captureStatus.textContent !== message) captureStatus.textContent = message;
   }
   function cancelDialog(message: string): void {
     if (!dialogIntent) return;
@@ -951,6 +953,11 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         return;
       }
       try {
+        serializeBlueprint({
+          name: speciesName(data.genome),
+          description: '',
+          genome: data.genome,
+        });
         const value = libraryCandidate(data.genome, speciesName(data.genome), '', {
           captureTick: data.completedTick,
           seed: data.seed,
@@ -1026,7 +1033,13 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     reading = false;
   let pendingSpeed: { ticket: number; value: number } | null = null,
     pendingExtinction: { ticket: number; value: boolean } | null = null;
-  let waitingFile: { file: File; request: number; generation: number; run: number } | null = null;
+  let waitingFile: {
+    file: File;
+    request: number;
+    generation: number;
+    run: number;
+    terrainRevision: number;
+  } | null = null;
   let strokeId = 0,
     terminated = false;
   let closeLease: { strokeId: number; beginPosted: boolean; posted: boolean } | null = null;
@@ -1444,13 +1457,20 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     );
   }
   function renderSettings(next: Settings): void {
+    const lifecycle = posted?.type === 'start' || posted?.type === 'load';
+    const replaceDraftSeed = lifecycle
+      ? posted?.terrainRevision === terrainRevision
+      : next.seed !== confirmedSettings.seed;
     confirmedSettings = { ...next };
     settingsEdits = {};
     for (const key of ['mutation', 'nutrients', 'climate'] as const)
       if (pendingSettings[key]) settingsEdits[key] = pendingSettings[key]!.value;
     settings = { ...next, ...settingsEdits };
-    for (const id of ['seed', 'mutation', 'nutrients', 'climate'] as const)
-      get<HTMLInputElement>(id).value = String(settings[id]);
+    for (const id of ['seed', 'mutation', 'nutrients', 'climate'] as const) {
+      const control = get<HTMLInputElement>(id);
+      if ((id !== 'seed' || replaceDraftSeed) && control.value !== String(settings[id]))
+        control.value = String(settings[id]);
+    }
     text('mutation-value', `${Math.round(settings.mutation * 100)}%`);
     text('climate-value', `${Math.round(settings.climate * 100)}%`);
     text('nutrients-value', `${settings.nutrients}%`);
@@ -2376,7 +2396,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           notice('World replacement capacity busy; choose the file again after acknowledgement.');
         else {
           endStroke();
-          send({ type: 'load', text: content });
+          send({ type: 'load', text: content }, request.terrainRevision);
         }
       }
     } catch (error) {
@@ -2401,7 +2421,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     invalidateCandidate();
     const file = worldInput.files?.[0];
     if (!file) return;
-    waitingFile = { file, request: worldRequest, generation, run: runId };
+    waitingFile = { file, request: worldRequest, generation, run: runId, terrainRevision };
     if (reading)
       notice('World read still outstanding; only the latest waiting selection is retained.');
     void readWorld();
@@ -2438,7 +2458,8 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   window.addEventListener('resize', resize);
   function installRefuges(summary: RefugeSummary): void {
     confirmedRefuges = { ...summary };
-    get<HTMLInputElement>('refuge-enabled').checked = summary.enabled;
+    const control = get<HTMLInputElement>('refuge-enabled');
+    if (control.checked !== summary.enabled) control.checked = summary.enabled;
     text(
       'refuge-summary',
       `${summary.enabled ? (summary.nonzeroCells ? 'Enabled · painted' : 'Enabled · empty') : summary.nonzeroCells ? 'Disabled · stored paint' : 'Disabled · empty'} · ${summary.nonzeroCells}/4096 nonzero cells · offsets ${summary.minimumUnits}..${summary.maximumUnits} units · rules 1`,
@@ -2742,6 +2763,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         if (source) latestTelemetry = { ...source, runId, replacementId: retained.replacementId };
       }
     }
+    const captureAction = completion.type === 'capture-design' ? captureIntent?.action : undefined;
     const current = completion.generation === generation && data.runId === runId && !stopped;
     try {
       if (current) {
@@ -2821,6 +2843,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           if (completion.type === 'capture-design') {
             captureIntent = null;
             updateCapture();
+            if (captureAction === 'library') libraryStatus(data.message);
           }
           if (completion.type === 'run-to') {
             if (!targetTicket) text('target-status', data.message);
@@ -2874,7 +2897,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     } catch (error) {
       rejectedTicket = completion.ticket;
       if (completion.type === 'capture-design') {
-        const action = captureIntent?.action;
+        const action = captureAction;
         captureIntent = null;
         updateCapture();
         if (action === 'library')

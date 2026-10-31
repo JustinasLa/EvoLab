@@ -1371,6 +1371,30 @@ describe('bounded long-run transport', () => {
       extra.dispose();
     },
   );
+  it('keeps the five ranked lineage projections detached even when every living organism has a distinct lineage', () => {
+    const world = new Ecosystem({ ...DEFAULTS, climate: 0, nutrients: 0 }, false, {
+      terrain: { version: 1, preset: 'open-field', seed: null },
+    });
+    for (let position = 0; position < 1600; position++)
+      world.spawn(
+        { cells: [{ x: 0, y: 0, type: 4 }], preference: 0.5, tolerance: 0.3, tempo: 2 },
+        position % WIDTH,
+        Math.floor(position / WIDTH),
+      );
+    const before = JSON.stringify(world.save());
+    const frame = world.frame();
+    expect(frame.stats.species).toBe(1600);
+    expect(frame.stats.top.map((value) => [value.id, value.count])).toEqual([
+      [5, 1],
+      [6, 1],
+      [7, 1],
+      [8, 1],
+      [9, 1],
+    ]);
+    for (const value of frame.stats.top) value.genome.cells[0].type = 8;
+    expect(world.frame().stats.top.every((value) => value.genome.cells[0].type === 4)).toBe(true);
+    expect(JSON.stringify(world.save())).toBe(before);
+  });
   it('projects only recursively known detached observations while complete saves retain arbitrary validated extensions', () => {
     const file: any = new Ecosystem().save();
     file.settings.extension = 'settings-extension';

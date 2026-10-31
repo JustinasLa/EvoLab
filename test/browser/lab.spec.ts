@@ -322,15 +322,35 @@ async function observeTerrainNative(
                 pausePostedSequence: null,
               };
               awaitingPause = null;
-              // B1–B3 retain their required tick-0 reset Save. B7/B8 instead
-              // opt into the separate receipt-driven protocol below.
-              if (pauseAt === 'lifecycle-post' && window.terrainNative.pauseOnLifecycle) {
-                pendingLifecycle.pausePostedSequence = ++sequence;
+            }
+            return result;
+          },
+        });
+        const descriptor = Object.getOwnPropertyDescriptor(Worker.prototype, 'onmessage')!;
+        let handler: ((event: MessageEvent) => void) | null = null;
+        Object.defineProperty(worker, 'onmessage', {
+          get: () => handler,
+          set(next: ((event: MessageEvent) => void) | null) {
+            handler = next;
+            descriptor.set!.call(worker, (event: MessageEvent) => {
+              next?.(event);
+              const data = event.data;
+              const receipt = window.terrainNative.lifecycle.at(-1);
+              if (
+                pauseAt === 'lifecycle-post' &&
+                window.terrainNative.pauseOnLifecycle &&
+                data.operation === pendingLifecycle?.operation &&
+                data.commandId === pendingLifecycle?.requestId &&
+                receipt &&
+                data.state &&
+                !data.state.playback.paused
+              ) {
+                receipt.pausePostedSequence = ++sequence;
+                awaitingPause = receipt;
                 document.getElementById('pause')!.click();
                 window.terrainNative.fifoPauses++;
               }
-            }
-            return result;
+            });
           },
         });
         let source: any = null;
@@ -405,11 +425,12 @@ async function observeTerrainNative(
               )
                 return;
               receipt.pageStateBeforePause = document.getElementById('run-state')!.textContent;
-              receipt.pausePostedSequence = ++sequence;
-              awaitingPause = receipt;
-              if (!evidence.playback?.paused) document.getElementById('pause')!.click();
-              else receipt.pauseAcknowledgedSequence = ++sequence;
-              evidence.fifoPauses++;
+              if (!evidence.playback?.paused) {
+                receipt.pausePostedSequence = ++sequence;
+                awaitingPause = receipt;
+                document.getElementById('pause')!.click();
+                evidence.fifoPauses++;
+              }
             }, 0);
           }
         });
@@ -427,7 +448,7 @@ async function terrainNativeFrame(page: import('@playwright/test').Page, recover
           lifecycle = evidence.lifecycle.at(-1),
           acknowledged =
             recoveryRun === undefined
-              ? typeof lifecycle?.pauseAcknowledgedSequence === 'number'
+              ? lifecycle?.paused || typeof lifecycle?.pauseAcknowledgedSequence === 'number'
               : evidence.errors.some(
                   (error) =>
                     error.operation === 'load' &&
@@ -465,6 +486,10 @@ function expectReceiptDrivenTerrainPauses(lifecycle: Window['terrainNative']['li
   for (const receipt of lifecycle) {
     expect(receipt.requestId).toBeGreaterThan(0);
     expect(receipt.postedSequence).toBeLessThan(receipt.receivedSequence);
+    if (receipt.paused) {
+      expect(receipt.pausePostedSequence).toBeNull();
+      continue;
+    }
     expect(receipt.pausePostedSequence).not.toBeNull();
     expect(receipt.receivedSequence).toBeLessThan(receipt.pausePostedSequence!);
     expect(receipt.pauseAcknowledgedSequence).not.toBeNull();
@@ -4945,7 +4970,7 @@ async function refugeLoad(page: import('@playwright/test').Page, text: string): 
           latest = native.lifecycle.at(-1);
         return (
           native.frameRunId === latest?.runId &&
-          !!latest?.pauseAcknowledgedSequence &&
+          (latest?.paused || !!latest?.pauseAcknowledgedSequence) &&
           native.playback?.paused
         );
       }),
@@ -5025,9 +5050,14 @@ async function refugeProtocol(page: import('@playwright/test').Page, receiptDriv
   else {
     expect(evidence.fifoPauses).toBeGreaterThan(0);
     for (const receipt of evidence.lifecycle) {
-      expect(receipt.pausePostedSequence!).toBeLessThan(receipt.receivedSequence);
-      expect(receipt.pauseAcknowledgedSequence).not.toBeNull();
       expect(receipt.completedTick).toBe(0);
+      if (receipt.paused) {
+        expect(receipt.pausePostedSequence).toBeNull();
+        continue;
+      }
+      expect(receipt.pausePostedSequence!).toBeGreaterThan(receipt.receivedSequence);
+      expect(receipt.pauseAcknowledgedSequence).not.toBeNull();
+      expect(receipt.pauseAcknowledgedSequence!).toBeGreaterThan(receipt.pausePostedSequence!);
     }
   }
   await test.info().attach('native-refuge-protocol.json', {
@@ -5229,10 +5259,12 @@ test('B23-4 capacity and late-load rejection preserve full state while stale man
         ),
       )
       .toBe(1);
-    const replacement = Ecosystem.load(text),
-      tick = await refugeLoad(page, text);
-    advance(replacement, tick);
+    const replacement = Ecosystem.load(text);
+    const loading = refugeLoad(page, text);
+    await expect(page.locator('#save')).toBeDisabled();
     await page.evaluate(() => window.measurementGate.releaseResults());
+    const tick = await loading;
+    advance(replacement, tick);
     await expect(page.locator('#refuge-enabled')).toBeChecked();
     await page.locator('#step').click();
     replacement.step();

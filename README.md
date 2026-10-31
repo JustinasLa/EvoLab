@@ -20,6 +20,7 @@ lineages spread by surviving and producing descendants.
 - **Design your own life** — draw connected organisms, choose their preferred temperature, and place them directly in the ecosystem.
 - **Inspect the survivors** — follow population, dominant lineages, anatomy, energy, offspring and recent lineage ancestry.
 - **Explore at your pace** — pan, zoom, pause, single-step, and change simulation speed independently of rendering.
+- **Run deliberately** — choose an exact tick target, pause or cancel it, disable habitat rendering, and observe measured throughput and honest image freshness.
 - **Keep whole worlds** — save and restore terrain, every organism, counters, settings and random-generator state.
 
 EvoLab uses an original cellular simulation and interface. It is artificial life,

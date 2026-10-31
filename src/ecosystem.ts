@@ -1152,7 +1152,7 @@ export class Ecosystem {
           id: o.species,
           count: 1,
           generation: o.generation,
-          genome: observedGenome(o.genome),
+          genome: o.genome,
           name: speciesName(o.genome),
         });
       generation = Math.max(generation, o.generation);
@@ -1192,7 +1192,10 @@ export class Ecosystem {
           this.tick < this.eventUntil
             ? `${this.eventOffset < 0 ? 'Cold snap' : 'Heatwave'} · ${this.eventUntil - this.tick} ticks`
             : 'Drifting climate',
-        top: [...species.values()].sort((a, b) => b.count - a.count).slice(0, 5),
+        top: [...species.values()]
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 5)
+          .map((species) => ({ ...species, genome: observedGenome(species.genome) })),
       },
     };
   }
