@@ -139,6 +139,8 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
     page = Math.min(page, Math.max(0, Math.ceil(matching.length / PAGE_SIZE) - 1));
     previous.disabled = page === 0;
     next.disabled = (page + 1) * PAGE_SIZE >= matching.length;
+    if ((active === previous && previous.disabled) || (active === next && next.disabled))
+      search.focus({ preventScroll: true });
     const visible = matching.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
     const resultText = matching.length
       ? `${matching.length} matching of ${facts.size} retained identities · showing ${page * PAGE_SIZE + 1}–${page * PAGE_SIZE + visible.length}`

@@ -8,6 +8,7 @@ import {
   sameTickLineages,
   readmittedParentOrder,
   relationshipEviction,
+  paginationEviction,
 } from './fixtures/lineage';
 import { legacyV7, advance } from './fixtures/telemetry';
 
@@ -195,6 +196,26 @@ describe('bounded retained lineage evidence', () => {
     expect(get('lineage-detail').textContent).toContain('evidence was pruned');
     expect(document.activeElement).toBe(get('lineage-search'));
   });
+
+  for (const pager of ['previous', 'next'] as const) {
+    it(`returns focused ${pager} pagination to search when real eviction removes the last page`, () => {
+      const world = paginationEviction();
+      update(world);
+      search('extinct');
+      expect(get('lineage-results').textContent).toContain('41 matching');
+      const buttons = root.querySelectorAll<HTMLButtonElement>('.lineage-pages button');
+      if (pager === 'previous') buttons[1].click();
+      const target = buttons[pager === 'previous' ? 0 : 1];
+      expect(target.disabled).toBe(false);
+      target.focus();
+      world.step();
+      update(world);
+      expect(get('lineage-results').textContent).toContain('40 matching');
+      expect(get('lineage-results').textContent).toContain('showing 1–40');
+      expect(target.disabled).toBe(true);
+      expect(document.activeElement).toBe(get('lineage-search'));
+    });
+  }
 
   it('pages and searches all living IDs beyond the summary ring and preserves focused identity', () => {
     const world = sameTickLineages();

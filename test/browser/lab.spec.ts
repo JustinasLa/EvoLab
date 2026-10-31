@@ -47,6 +47,7 @@ import { readFileSync } from 'node:fs';
 import {
   admissionGenome,
   relationshipEviction,
+  paginationEviction,
   contradictoryPruning,
   impossibleReadmission,
   omittedNewestAdmission,
@@ -6099,6 +6100,42 @@ test.describe('retained lineage explorer', () => {
       expect(await terrainSave(page, `eviction-${selectedEvidence}-after.json`)).toEqual(
         reference.save(),
       );
+    });
+  }
+
+  for (const pager of ['previous', 'next'] as const) {
+    test(`native focused ${pager} pagination recovers safely across real archive eviction`, async ({
+      page,
+    }) => {
+      await observeTerrainNative(page);
+      await page.goto('/');
+      await terrainNativeFrame(page);
+      const world = paginationEviction();
+      await importTelemetryWorld(page, world.save());
+      await page.locator('#ecosystem-tab').click();
+      await page.locator('#lineage-heading').click();
+      await page.locator('#lineage-search').fill('extinct');
+      await expect(page.locator('#lineage-results')).toContainText('41 matching');
+      if (pager === 'previous') await page.getByRole('button', { name: 'Next lineages' }).click();
+      const reference = Ecosystem.load(await terrainSave(page, `pager-${pager}-before.json`));
+      const target = page.getByRole('button', {
+        name: pager === 'previous' ? 'Previous lineages' : 'Next lineages',
+      });
+      await expect(target).toBeEnabled();
+      await target.focus();
+      await expect(target).toBeFocused();
+      await page.evaluate(() => document.getElementById('step')!.click());
+      reference.step();
+      await expect(page.locator('#lineage-observed')).toHaveText(
+        `Observed at tick ${reference.tick}.`,
+      );
+      await expect(page.locator('#lineage-results')).toContainText('40 matching');
+      await expect(page.locator('#lineage-results')).toContainText('showing 1–40');
+      await expect(target).toBeDisabled();
+      await expect(page.locator('#lineage-search')).toBeFocused();
+      await page.keyboard.press('Space');
+      await expect(page.locator('#run-state')).toHaveText('PAUSED');
+      expect(await terrainSave(page, `pager-${pager}-after.json`)).toEqual(reference.save());
     });
   }
 

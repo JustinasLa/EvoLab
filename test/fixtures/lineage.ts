@@ -208,3 +208,20 @@ export function relationshipEviction() {
   }
   return { world, parent, extinct, retained };
 }
+
+/** Three funded births prune one of exactly 41 extinct identities from the event ring. */
+export function paginationEviction() {
+  const world = new Ecosystem({ ...DEFAULTS, mutation: 1, climate: 0, nutrients: 0 }, false);
+  for (let i = 0; i < 41; i++) {
+    const extinct = world.spawn(admissionGenome(), 10, 10)!;
+    world.kill(extinct, 'manual');
+  }
+  for (const x of [120, 124, 130]) {
+    const reproducer = world.spawn(admissionGenome(), x, 78)!;
+    reproducer.age = 32;
+    reproducer.energy = 30;
+  }
+  for (let i = 0; i < 427; i++)
+    world.spawn(admissionGenome(), i % WIDTH, 10 + Math.floor(i / WIDTH));
+  return world;
+}
