@@ -337,6 +337,39 @@ async function observeTerrainNative(
             pausePostedSequence: number | null;
           } | null = null,
           awaitingPause: Window['terrainNative']['lifecycle'][number] | null = null;
+        const recordLifecycle = (data: any) => {
+          const posted = pendingLifecycle;
+          if (
+            !posted ||
+            !((data.type === 'control' && data.operation === 'start') || data.type === 'loaded') ||
+            data.operation !== posted.operation ||
+            data.type !== (posted.operation === 'start' ? 'control' : 'loaded') ||
+            data.runId !== posted.runId ||
+            data.commandId !== posted.requestId
+          )
+            return;
+          const evidence = window.terrainNative;
+          if (posted.received)
+            return evidence.lifecycle.find(
+              (receipt) => receipt.runId === data.runId && receipt.requestId === data.commandId,
+            );
+          posted.received = true;
+          const receipt: Window['terrainNative']['lifecycle'][number] = {
+            type: data.type,
+            paused: data.state.playback.paused,
+            runId: data.runId,
+            requestId: data.commandId,
+            completedTick: data.state.world.stats.tick,
+            postedSequence: posted.postedSequence,
+            receivedSequence: ++sequence,
+            pausePostedSequence: null,
+            pauseAcknowledgedSequence: null,
+            pageStateBeforePause: null,
+          };
+          evidence.lifecycle.push(receipt);
+          if (evidence.lifecycle.length > 4) evidence.lifecycle.shift();
+          return receipt;
+        };
         worker.postMessage = new Proxy(worker.postMessage, {
           apply(post, receiver, messages) {
             const result = Reflect.apply(post, receiver, messages);
@@ -363,27 +396,33 @@ async function observeTerrainNative(
           set(next: ((event: MessageEvent) => void) | null) {
             handler = next;
             descriptor.set!.call(worker, (event: MessageEvent) => {
-              next?.call(worker, event);
               const data = event.data;
+              // The gate may invoke this wrapper before the raw observer listener.
+              // Establish the matching receipt independently of listener registration order.
+              const receipt = recordLifecycle(data);
+              const posted = pendingLifecycle;
+              next?.call(worker, event);
               if (data.type === 'manual-result') {
                 window.terrainNative.manualDeliveries++;
                 window.terrainNative.lastManualDelivered = data.commandId;
               }
-              const receipt = window.terrainNative.lifecycle.at(-1);
-              if (
-                pauseAt === 'lifecycle-post' &&
-                window.terrainNative.pauseOnLifecycle &&
-                data.operation === pendingLifecycle?.operation &&
-                data.commandId === pendingLifecycle?.requestId &&
-                receipt &&
-                data.state &&
-                !data.state.playback.paused
-              ) {
-                receipt.pageStateBeforePause = document.getElementById('run-state')!.textContent;
-                receipt.pausePostedSequence = ++sequence;
-                awaitingPause = receipt;
-                document.getElementById('pause')!.click();
-                window.terrainNative.fifoPauses++;
+              if (receipt) {
+                const pauseAfterDelivery = () => {
+                  if (
+                    pendingLifecycle !== posted ||
+                    !window.terrainNative.pauseOnLifecycle ||
+                    receipt.paused ||
+                    receipt.pausePostedSequence !== null
+                  )
+                    return;
+                  receipt.pageStateBeforePause = document.getElementById('run-state')!.textContent;
+                  receipt.pausePostedSequence = ++sequence;
+                  awaitingPause = receipt;
+                  document.getElementById('pause')!.click();
+                  window.terrainNative.fifoPauses++;
+                };
+                if (pauseAt === 'lifecycle-post') pauseAfterDelivery();
+                else setTimeout(pauseAfterDelivery, 0);
               }
             });
           },
@@ -427,50 +466,7 @@ async function observeTerrainNative(
             evidence.errors.push(data);
             if (evidence.errors.length > 4) evidence.errors.shift();
           }
-          const posted = pendingLifecycle;
-          if (
-            ((data.type === 'control' && data.operation === 'start') || data.type === 'loaded') &&
-            posted &&
-            !posted.received &&
-            data.operation === posted.operation &&
-            data.type === (posted.operation === 'start' ? 'control' : 'loaded') &&
-            data.runId === posted.runId &&
-            data.commandId === posted.requestId
-          ) {
-            posted.received = true;
-            const receipt: Window['terrainNative']['lifecycle'][number] = {
-              type: data.type,
-              paused: data.state.playback.paused,
-              runId: data.runId,
-              requestId: data.commandId,
-              completedTick: data.state.world.stats.tick,
-              postedSequence: posted.postedSequence,
-              receivedSequence: ++sequence,
-              pausePostedSequence: posted.pausePostedSequence,
-              pauseAcknowledgedSequence: null,
-              pageStateBeforePause: null,
-            };
-            evidence.lifecycle.push(receipt);
-            if (evidence.lifecycle.length > 4) evidence.lifecycle.shift();
-            if (posted.pausePostedSequence !== null) awaitingPause = receipt;
-            // Run after this genuine message finishes dispatching to the application.
-            // This ordinary timer does not replace or shorten any Worker timer.
-            setTimeout(() => {
-              if (
-                pauseAt !== 'lifecycle-receipt' ||
-                pendingLifecycle !== posted ||
-                !evidence.pauseOnLifecycle
-              )
-                return;
-              receipt.pageStateBeforePause = document.getElementById('run-state')!.textContent;
-              if (!evidence.playback?.paused) {
-                receipt.pausePostedSequence = ++sequence;
-                awaitingPause = receipt;
-                document.getElementById('pause')!.click();
-                evidence.fifoPauses++;
-              }
-            }, 0);
-          }
+          recordLifecycle(data);
         });
         return worker;
       },
