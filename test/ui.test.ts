@@ -10,7 +10,7 @@ import { DEFAULTS, founder, type Frame, type PlaybackState, type WorldFile } fro
 import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../src/blueprint';
 import { startWorker, type Scope } from '../src/worker';
 import { emptyRefuges, refugeSummary, activeRefugeUnits, localTemperature } from '../src/refuges';
-import { legacyV3 } from './fixtures/telemetry';
+import { legacyV3, legacyV7 } from './fixtures/telemetry';
 import { storedSensoryGenome } from './fixtures/sensory-legacy';
 import { libraryHarness } from './fixtures/library';
 import { classifyRecord, encodeRecord, libraryCandidate } from '../src/library';
@@ -5350,9 +5350,9 @@ describe('authoritative playback presentation', () => {
       click('reset');
       harness.deliver();
       expect(get<HTMLInputElement>('pause-on-extinction').checked).toBe(preference);
-      const { lineageArchive: _lineageArchive, ...historical } = nearDeath();
-      const empty = { ...historical, version: 7 };
+      const empty = legacyV7(nearDeath());
       empty.organisms = [];
+      expect(Ecosystem.load(JSON.stringify(empty)).save().organisms).toEqual([]);
       await loadText(JSON.stringify(empty));
       harness.deliver();
       expect(get<HTMLInputElement>('pause-on-extinction').checked).toBe(preference);
