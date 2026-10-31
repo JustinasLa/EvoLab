@@ -89,11 +89,13 @@ measurements with real telemetry and lineage recording; browser/worker schedulin
 rendering, varied anatomies and hardware can differ. Setup, serialization and
 assertions stay outside timing, and there is no wall-clock pass/fail threshold.
 
-The first local full 100,000-tick default-seed run took 208.45 seconds on Node
-24.22.1, Linux x64, an eight-logical-CPU AMD EPYC host. Even that one trajectory
-exceeds the 73 seconds left by the preceding 827-second mandatory CI job's
-900-second budget. The complete corpus therefore has its own CI job, with no
-changes to mandatory checks, coverage discovery, thresholds or deadlines.
+The complete three-seed corpus took 430.22 seconds locally;
+the separate throughput command took 5.46 seconds. This run
+used Node 24.22.1, Linux x64 and an eight-logical-CPU AMD EPYC
+host. Shared-host timings are contextual, not performance guarantees. The
+preceding mandatory hosted job took 827 of its 900 seconds, leaving 73 seconds.
+The complete corpus therefore has its own CI job, with no changes to mandatory
+checks, coverage discovery, thresholds or deadlines.
 
 ## License
 
