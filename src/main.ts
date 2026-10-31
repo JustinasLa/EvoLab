@@ -893,6 +893,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     sourceId: number;
     selectedId: number | null;
     revision: number;
+    replacementGeneration: number;
     run: number;
   } | null = null;
   function requestCapture(
@@ -907,6 +908,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       return;
     }
     captureSequence = increment(captureSequence);
+    if (action === 'copy') cancelReplacement('superseded by a newer full design capture.');
     const intent = {
       id: captureSequence,
       action,
@@ -914,6 +916,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       sourceId,
       selectedId: selected?.id ?? null,
       revision: designRevision,
+      replacementGeneration,
       run: runId,
     };
     captureIntent = intent;
@@ -929,6 +932,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       !alive ||
       intent.run !== runId ||
       intent.revision !== designRevision ||
+      intent.replacementGeneration !== replacementGeneration ||
       intent.selectedId !== (selected?.id ?? null) ||
       intent.source !== data.source ||
       intent.sourceId !== data.sourceId

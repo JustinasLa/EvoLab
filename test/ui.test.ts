@@ -2802,6 +2802,50 @@ describe('explicit bounded local library', () => {
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
   });
 
+  it.each(['library-first', 'capture-first'])(
+    'keeps the newest designer replacement intent across held library and full-capture owners: %s',
+    async (order) => {
+      const playback = get('run-state').textContent;
+      storage.values.set(first, encodeRecord(draft('Library replacement'), 1));
+      await open();
+      const original = worker.postMessage.getMockImplementation()!;
+      let held: any;
+      worker.postMessage.mockImplementation((command) => {
+        if (command.type === 'capture-design') held = command;
+        else original(command);
+      });
+      storage.faults.completionStall = 'readonly';
+      if (order === 'capture-first') click('copy-organism');
+      click('library-load');
+      await flush();
+      const owner = storage.current;
+      if (order === 'library-first') click('copy-organism');
+      expect(held?.type).toBe('capture-design');
+      delete storage.faults.completionStall;
+      if (order === 'library-first') {
+        owner.releaseCompletion();
+        await flush();
+        expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
+        original(held);
+        await flush();
+        expect(get<HTMLInputElement>('blueprint-name').value).toBe(
+          model.speciesName(organism.genome),
+        );
+      } else {
+        original(held);
+        await flush();
+        owner.releaseCompletion();
+        await flush();
+        expect(get<HTMLDialogElement>('library-dialog').open).toBe(true);
+        click('library-confirm');
+        await flush();
+        expect(get<HTMLInputElement>('blueprint-name').value).toBe('Library replacement');
+      }
+      expect(storage.values.get(first)).toBe(encodeRecord(draft('Library replacement'), 1));
+      expect(get('run-state').textContent).toBe(playback);
+    },
+  );
+
   it('preserves current world and manual interventions through library design replacement with the real worker', async () => {
     const harness = realWorker(true);
     harness.deliver();
