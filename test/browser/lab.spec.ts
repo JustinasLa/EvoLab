@@ -749,21 +749,51 @@ test('terrain imports preserve explicit cells and newer drafts while stale nativ
   await expect(page.locator('#notice')).toContainText('Invalid ecosystem wall recipe');
   await expect(page.locator('#terrain-preset')).toHaveValue('chambered-refuges');
   expect(await terrainSave(page, 'terrain-rejected-preserved.json')).toEqual(reference.save());
+  await terrainNativeFrame(
+    page,
+    await page.evaluate(() => window.terrainNative.errors.at(-1).runId),
+  );
+  await page.evaluate(() => window.measurementGate.waitForDrain());
+  const deliveredBefore = await page.evaluate(() => window.terrainNative.manualDeliveries);
   await page.evaluate(() => {
     window.measurementGate.deliveryBlocked = true;
+    // Preserve the drained visible habitat while withholding this exact wall terminal.
+    document.getElementById('clear-walls')!.click();
   });
-  await page.locator('#clear-walls').click();
-  await expect.poll(() => page.evaluate(() => window.measurementGate.pending.size)).toBe(1);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const terminal = window.terrainNative.manual;
+        return (
+          terminal?.operation === 'clear-walls' &&
+          window.measurementGate.pending.has(terminal.commandId)
+        );
+      }),
+    )
+    .toBe(true);
+  const held = await page.evaluate(() => ({
+    id: window.terrainNative.manual.commandId,
+    lifecyclePosts: window.measurementGate.counts.L,
+  }));
+  expect(await page.evaluate(() => window.terrainNative.manualDeliveries)).toBe(deliveredBefore);
   await page.locator('#reset').click();
   await page.locator('#confirm-reset').click();
-  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  await expect(page.locator('#run-state')).toHaveText('LOADING');
+  await expect(page.locator('#save')).toBeDisabled();
+  expect(await page.evaluate(() => window.measurementGate.counts.L)).toBe(held.lifecyclePosts);
   const reset = new Ecosystem(DEFAULTS, true, {
     terrain: { version: 1, preset: 'chambered-refuges', seed: 99 },
   });
   await page.evaluate(() => window.measurementGate.releaseResults());
+  await expect
+    .poll(() => page.evaluate(() => window.terrainNative.manualDeliveries))
+    .toBe(deliveredBefore + 1);
+  expect(await page.evaluate(() => window.terrainNative.lastManualDelivered)).toBe(held.id);
+  advance(reset, (await terrainNativeFrame(page)).frame.stats.tick);
   expect(await terrainSave(page, 'terrain-stale-owner-reset.json')).toEqual(reset.save());
   await expect(page.locator('#terrain-committed')).toContainText('Chambered refuges');
-  expect(await page.evaluate(() => window.measurementGate.pending.size)).toBe(0);
+  await expect.poll(() => page.evaluate(() => window.measurementGate.pending.size)).toBe(0);
+  expectReceiptDrivenTerrainPauses(await page.evaluate(() => window.terrainNative.lifecycle));
 });
 
 test('terrain controls and reset dialog remain keyboard-accessible without view-driven mutation at all declared widths', async ({
@@ -5357,12 +5387,18 @@ for (const pauseAt of ['lifecycle-post', 'lifecycle-receipt'] as const) {
     expect((await terrainNativeFrame(page, recoveryRun)).frame).toEqual(
       terrainExpectedFrame(reference),
     );
+    await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+    await page.locator('#world').scrollIntoViewIfNeeded();
+    await page.evaluate(() => window.measurementGate.waitForDrain());
+    await expect(page.locator('#refuge-enabled')).toBeChecked();
     const deliveredBefore = await page.evaluate(() => window.terrainNative.manualDeliveries);
     await page.evaluate(() => {
       window.measurementGate.deliveryBlocked = true;
+      // The acknowledged-state helper cannot complete while this result is held.
+      // Activate without scrolling a display-view command ahead of refuge-mode.
+      document.getElementById('refuge-enabled')!.click();
     });
     try {
-      await refugeMode(page, false);
       await expect
         .poll(() =>
           page.evaluate(
