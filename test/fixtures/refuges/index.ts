@@ -32,7 +32,7 @@ export function fixtureText(name: string): string {
 export const acceptedReference = (text: string): AcceptedEcosystem => AcceptedEcosystem.load(text);
 
 export function predecessor(saved: WorldFile): WorldFileV6 {
-  const { thermalRefuges: _thermalRefuges, ...retained } = saved;
+  const { thermalRefuges: _thermalRefuges, lineageArchive: _lineageArchive, ...retained } = saved;
   assert.ok(retained.interventions.entries.every((entry) => !entry.kind.startsWith('refuge-')));
   return {
     ...retained,

@@ -1,11 +1,23 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { startWorker, type Scope } from '../src/worker';
 import { Ecosystem } from '../src/ecosystem';
-import { legacyV3, legacyV4, legacyV5, legacyV6 } from './fixtures/telemetry';
+import { legacyV3, legacyV4, legacyV5, legacyV6, legacyV7 } from './fixtures/telemetry';
 import { DEFAULT_TERRAIN } from '../src/terrain';
 import { readFileSync } from 'node:fs';
 import { acceptedReference, fixtureText, predecessor, identicalRecords } from './fixtures/refuges';
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
+import {
+  contradictoryPruning,
+  impossibleReadmission,
+  omittedNewestAdmission,
+  sameTickLineages,
+  falsePruningClaim,
+  reversedPrunedParent,
+  reversedReadmittedParent,
+  omittedRelatedChild,
+  missingFinalExtinction,
+  extinctionOccupancyContradiction,
+} from './fixtures/lineage';
 import {
   DEFAULTS,
   WIDTH,
@@ -14,6 +26,7 @@ import {
   founder,
   index,
   type WorldFile,
+  type WorldFileV5,
   type Genome,
   type Frame,
 } from '../src/model';
@@ -123,7 +136,7 @@ function workerHarness(startFunction = startWorker) {
   const saveText = (): string => send({ type: 'save' }).text;
   const save = (): WorldFile => JSON.parse(saveText());
   const advance = () => tasks.shift()!();
-  const load = (file: WorldFile, runId = 1) =>
+  const load = (file: WorldFile | WorldFileV5, runId = 1) =>
     send({ type: 'load', runId, text: JSON.stringify(file) });
   const frame = (): Frame => send({ type: 'snapshot' }).frame;
   return {
@@ -1565,7 +1578,7 @@ describe('authoritative extinction playback', () => {
       });
       expect(harness.tasks).toHaveLength(1);
       harness.load(terminalWorld(), 3);
-      const empty = terminalWorld();
+      const empty = legacyV5(terminalWorld());
       empty.organisms = [];
       harness.load(empty, 4);
       expect(harness.last('loaded').playback).toEqual({
@@ -1606,7 +1619,7 @@ describe('authoritative extinction playback', () => {
     (preference) => {
       const harness = workerHarness();
       if (!preference) harness.send({ type: 'pause-on-extinction', runId: 0, value: false });
-      const empty = terminalWorld();
+      const empty = legacyV5(terminalWorld());
       empty.organisms = [];
       harness.load(empty);
       expect(harness.save()).toEqual(Ecosystem.load(JSON.stringify(empty)).save());
@@ -1736,7 +1749,7 @@ describe('authoritative extinction playback', () => {
     'keeps exact empty Step paused with preference %s without replacing the extinction record',
     (preference) => {
       const harness = workerHarness();
-      const empty = terminalWorld();
+      const empty = legacyV5(terminalWorld());
       empty.organisms = [];
       harness.load(empty);
       if (!preference) harness.send({ type: 'pause-on-extinction', runId: 1, value: false });
@@ -1853,13 +1866,14 @@ describe('integrated extinction and telemetry', () => {
     expect(harness.tasks).toHaveLength(0);
   });
 
-  it.each([2, 3, 4, 5, 6, 7])(
+  it.each([2, 3, 4, 5, 6, 7, 8])(
     'migrates/restores v%i then preserves terminal and pending history through an empty save continuation',
     (version) => {
       const harness = workerHarness();
       const current = terminalWorld(1, 5, 89);
       const {
         telemetry: _telemetry,
+        lineageArchive: _lineageArchive,
         interventions: _interventions,
         terrain: _terrain,
         thermalRefuges: _thermalRefuges,
@@ -1876,7 +1890,9 @@ describe('integrated extinction and telemetry', () => {
                 ? legacyV5(current)
                 : version === 6
                   ? legacyV6(current)
-                  : current;
+                  : version === 7
+                    ? legacyV7(current)
+                    : current;
       expect(file.version).toBe(version);
       if (file.version === 2) expect(file).not.toHaveProperty('telemetry');
       else {
@@ -1904,19 +1920,24 @@ describe('integrated extinction and telemetry', () => {
         });
       if (file.version >= 4) {
         expect(imported).toEqual(
-          file.version === 7
+          file.version === 8
             ? file
-            : file.version === 5 || file.version === 6
+            : file.version >= 5
               ? {
                   ...file,
-                  version: 7,
-                  terrain: file.version === 6 ? file.terrain : { ...DEFAULT_TERRAIN },
-                  thermalRefuges: { version: 1, enabled: false, cells: [] },
+                  version: 8,
+                  lineageArchive: imported.lineageArchive,
+                  terrain: file.version >= 6 ? file.terrain : { ...DEFAULT_TERRAIN },
+                  thermalRefuges:
+                    file.version === 7
+                      ? file.thermalRefuges
+                      : { version: 1, enabled: false, cells: [] },
                   interventions: { ...file.interventions, version: 3 },
                 }
               : {
                   ...file,
-                  version: 7,
+                  version: 8,
+                  lineageArchive: imported.lineageArchive,
                   terrain: { ...DEFAULT_TERRAIN },
                   thermalRefuges: { version: 1, enabled: false, cells: [] },
                   interventions: {
@@ -1937,7 +1958,7 @@ describe('integrated extinction and telemetry', () => {
       harness.advance();
       reference.step();
       const terminal = harness.save();
-      expect(terminal.version).toBe(7);
+      expect(terminal.version).toBe(8);
       expect(terminal.telemetry.version).toBe(2);
       expect(terminal.telemetry.samples.at(-1)).toMatchObject({
         fromTick: version === 2 ? 89 : 60,
@@ -1972,6 +1993,89 @@ describe('integrated extinction and telemetry', () => {
 });
 
 describe('failed-load retained-world recovery', () => {
+  it('C16-R1 rejects both pruning provenance variants and same-tick FIFO inversion with complete save preservation', () => {
+    const swapped = sameTickLineages().save();
+    [swapped.lineageArchive.summaries[0], swapped.lineageArchive.summaries[1]] = [
+      swapped.lineageArchive.summaries[1],
+      swapped.lineageArchive.summaries[0],
+    ];
+    const harness = workerHarness();
+    harness.load(terminalWorld(12));
+    harness.send({ type: 'pause' });
+    harness.advance(); // Settle the already queued callback while paused.
+    harness.send({ type: 'inspect', x: 40, y: 40 });
+    const before = harness.saveText(),
+      control = Ecosystem.load(before);
+    let runId = 1;
+    for (const invalid of [
+      contradictoryPruning(false),
+      contradictoryPruning(true),
+      swapped,
+      omittedNewestAdmission(),
+      impossibleReadmission(),
+      falsePruningClaim(),
+      reversedPrunedParent(),
+      reversedReadmittedParent(),
+      reversedReadmittedParent(true),
+      omittedRelatedChild(),
+      missingFinalExtinction(),
+      extinctionOccupancyContradiction(),
+    ]) {
+      harness.send({ type: 'load', runId: ++runId, text: JSON.stringify(invalid) });
+      expect(harness.last('error')).toMatchObject({
+        runId,
+        operation: 'load',
+        message: 'Invalid ecosystem lineage archive.',
+        recovery: { selected: { id: control.save().organisms[0].id }, playback: { paused: true } },
+      });
+      expect(harness.saveText()).toBe(before);
+      expect(harness.tasks).toHaveLength(0);
+    }
+    harness.send({ type: 'step' });
+    control.step();
+    expect(harness.save()).toEqual(control.save());
+  });
+  it('rejects corrupt current archive atomically and keeps exact full-save recovery and future ordering', () => {
+    const harness = workerHarness();
+    harness.load(terminalWorld(12));
+    harness.send({ type: 'pause' });
+    harness.send({ type: 'inspect', x: 40, y: 40 });
+    const before = harness.save(),
+      text = harness.saveText();
+    const invalid = structuredClone(before);
+    invalid.lineageArchive.living[0].liveCount++;
+    harness.send({ type: 'load', runId: 2, text: JSON.stringify(invalid) });
+    expect(harness.last('error')).toMatchObject({
+      runId: 2,
+      operation: 'load',
+      message: 'Invalid ecosystem lineage archive.',
+      recovery: {
+        selected: { id: before.organisms[0].id },
+        settings: before.settings,
+        playback: { paused: true },
+      },
+    });
+    expect(harness.saveText()).toBe(text);
+    const control = Ecosystem.load(text);
+    harness.send({
+      type: 'paint',
+      runId: 1,
+      tool: 'plant',
+      x: 80,
+      y: 80,
+      radius: 0,
+      genome: mouth,
+    });
+    expect(harness.last('error').message).toContain('obsolete');
+    expect(harness.saveText()).toBe(text);
+    harness.send({ type: 'step', runId: 2 });
+    control.step();
+    expect(harness.save()).toEqual(control.save());
+    expect(harness.tasks).toHaveLength(1);
+    harness.advance();
+    expect(harness.tasks).toHaveLength(0);
+    expect(harness.save()).toEqual(control.save());
+  });
   it('recovers a held terminal frame immediately under the adopted ID without mutation or scheduling', () => {
     const frameSpy = vi.spyOn(Ecosystem.prototype, 'frame');
     const harness = workerHarness();
