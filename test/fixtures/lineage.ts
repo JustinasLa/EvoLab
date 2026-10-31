@@ -189,3 +189,22 @@ export function extinctionOccupancyContradiction(): WorldFile {
   };
   return saved;
 }
+
+/** The next real tick prunes the extinct child's last summary/creation evidence. */
+export function relationshipEviction() {
+  const world = new Ecosystem({ ...DEFAULTS, mutation: 1, climate: 0, nutrients: 0 }, false);
+  const parent = world.spawn(admissionGenome(), 120, 78)!;
+  const extinct = world.spawn(admissionGenome(), 122, 78, undefined, parent)!;
+  world.kill(extinct, 'manual');
+  const retained = world.spawn(admissionGenome(), 124, 78, undefined, parent)!;
+  const reproducer = world.spawn(admissionGenome(), 130, 78)!;
+  for (let i = 0; i < 254; i++) {
+    const filler = world.spawn(admissionGenome(), 10, 10)!;
+    world.kill(filler, 'manual');
+  }
+  for (const organism of [parent, retained, reproducer]) {
+    organism.age = 32;
+    organism.energy = 30;
+  }
+  return { world, parent, extinct, retained };
+}

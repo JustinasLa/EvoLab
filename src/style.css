@@ -1281,6 +1281,68 @@ dialog a {
   }
 }
 
+#lineage-explorer {
+  min-width: 0;
+}
+#lineage-search {
+  width: 100%;
+}
+#lineage-rows {
+  list-style: none;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+#lineage-rows button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  margin: 4px 0;
+}
+#lineage-rows svg {
+  flex: 0 0 40px;
+}
+#lineage-rows [aria-pressed='true'] {
+  border-color: var(--accent, #c4f16f);
+  box-shadow: inset 3px 0 #c4f16f;
+}
+#lineage-detail {
+  overflow-wrap: anywhere;
+}
+#lineage-detail button {
+  margin: 3px;
+}
+.lineage-pages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.lineage-timeline {
+  border-left: 2px solid #899caa;
+  margin-left: 8px;
+  padding-left: 24px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.lineage-timeline li {
+  padding: 5px 0;
+  font-size: 12px;
+}
+
+.lineage-event-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  color: #c4f16f;
+}
+.lineage-event-chart text {
+  fill: currentColor;
+  font-size: 11px;
+}
+
 #local-checkpoints {
   min-width: 0;
   overflow-wrap: anywhere;
