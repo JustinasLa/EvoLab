@@ -556,6 +556,8 @@ function validateArchive(
     const parent = state.summaries.find((row) => row.id === summary.parentId);
     if (parent?.genomeStatus === 'retained')
       requireArchive(state.summaries.indexOf(parent) < state.summaries.indexOf(summary));
+    else if (parent && finalAdmissions.get(parent.id)!.position !== -2)
+      requireArchive(state.summaries.indexOf(summary) < state.summaries.indexOf(parent));
   }
   const ambiguous = (summary: LineageSummary): boolean =>
     summary.origin === 'legacy-unknown' &&

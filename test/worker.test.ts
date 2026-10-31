@@ -13,6 +13,7 @@ import {
   sameTickLineages,
   falsePruningClaim,
   reversedPrunedParent,
+  reversedReadmittedParent,
   missingFinalExtinction,
   extinctionOccupancyContradiction,
 } from './fixtures/lineage';
@@ -2013,6 +2014,8 @@ describe('failed-load retained-world recovery', () => {
       impossibleReadmission(),
       falsePruningClaim(),
       reversedPrunedParent(),
+      reversedReadmittedParent(),
+      reversedReadmittedParent(true),
       missingFinalExtinction(),
       extinctionOccupancyContradiction(),
     ]) {

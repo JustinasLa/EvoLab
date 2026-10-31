@@ -33,6 +33,8 @@ import {
   falsePruningClaim,
   prunedCreationOrder,
   reversedPrunedParent,
+  readmittedParentOrder,
+  reversedReadmittedParent,
   missingFinalExtinction,
   extinctionOccupancyContradiction,
 } from '../fixtures/lineage';
@@ -2888,6 +2890,8 @@ test('lineage correction rejects provenance, FIFO order and omitted admissions w
     ['impossible-readmission', impossibleReadmission()],
     ['false-pruning-claim', falsePruningClaim()],
     ['pruned-parent-order', reversedPrunedParent()],
+    ['extinction-readmitted-parent-order', reversedReadmittedParent()],
+    ['legacy-readmitted-parent-order', reversedReadmittedParent(true)],
     ['missing-final-extinction', missingFinalExtinction()],
     ['extinction-occupancy', extinctionOccupancyContradiction()],
   ] as const) {
@@ -2960,6 +2964,61 @@ for (const parentOrder of [false, true])
       await recordLineageDownload(
         testInfo,
         `lineage-${parentOrder ? 'pruned-parent' : 'r3-adjacent'}-${suffix}`,
+        bytes,
+      );
+    expect(errors).toEqual([]);
+  });
+
+for (const legacy of [false, true])
+  test(`lineage ${legacy ? 'legacy' : 'fresh'} parent readmission follows retained child through native FIFO continuation`, async ({
+    page,
+  }, testInfo) => {
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await observeTelemetry(page);
+    const reference = readmittedParentOrder(legacy);
+    const input = Buffer.from(JSON.stringify(reference.save()));
+    expect(
+      reference
+        .lineageSnapshot()
+        .summaries.slice(0, 2)
+        .map((row) => row.id),
+    ).toEqual([261, 5]);
+    await page.goto('/');
+    await requestPause(page);
+    await importTelemetryWorld(page, JSON.parse(input.toString()));
+    const before = await downloadPausedWorld(page);
+    advance(reference, JSON.parse(before.toString()).tick - reference.tick);
+    expect(JSON.parse(before.toString())).toEqual(reference.save());
+    await importTelemetryWorld(page, JSON.parse(before.toString()));
+    advance(reference, (await telemetryFrame(page)).stats.tick - reference.tick);
+    await paintCell(page, 'plant', 80, 80);
+    referenceManualPaint(reference, 'plant', 80, 80, 0, founder(0));
+    await page.getByTitle('Advance one tick while paused').click();
+    await expectPausedWorld(page, reference.tick + 1);
+    reference.step();
+    const continued = await downloadPausedWorld(page);
+    expect(JSON.parse(continued.toString())).toEqual(reference.save());
+    expect(reference.lineageSnapshot().summaries.map((row) => row.id)).toEqual([
+      5,
+      ...Array.from({ length: 255 }, (_, offset) => offset + 262),
+    ]);
+    await importTelemetryWorld(page, JSON.parse(continued.toString()));
+    advance(reference, (await telemetryFrame(page)).stats.tick - reference.tick);
+    await page.getByTitle('Advance one tick while paused').click();
+    await expectPausedWorld(page, reference.tick + 1);
+    reference.step();
+    const reloaded = await downloadPausedWorld(page);
+    expect(JSON.parse(reloaded.toString())).toEqual(reference.save());
+    for (const [suffix, bytes] of [
+      ['input', input],
+      ['before', before],
+      ['continued', continued],
+      ['reload-step', reloaded],
+    ] as const)
+      await recordLineageDownload(
+        testInfo,
+        `lineage-${legacy ? 'legacy' : 'fresh'}-readmitted-parent-${suffix}`,
         bytes,
       );
     expect(errors).toEqual([]);

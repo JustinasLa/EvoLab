@@ -1,6 +1,6 @@
 import { Ecosystem } from '../../src/ecosystem';
 import { DEFAULTS, WIDTH, type Genome, type WorldFile } from '../../src/model';
-import { advance, legacyV5 } from './telemetry';
+import { advance, legacyV5, legacyV7 } from './telemetry';
 
 export const admissionGenome = (): Genome => ({
   cells: [{ x: 0, y: 0, type: 7 }],
@@ -81,6 +81,34 @@ export function prunedCreationOrder(parent = true): Ecosystem {
 
 export function reversedPrunedParent(): WorldFile {
   const saved = prunedCreationOrder().save();
+  [saved.lineageArchive.summaries[0], saved.lineageArchive.summaries[1]] = [
+    saved.lineageArchive.summaries[1],
+    saved.lineageArchive.summaries[0],
+  ];
+  return saved;
+}
+
+export function readmittedParentOrder(legacy = false): Ecosystem {
+  let world = sameTickLineages();
+  if (legacy) {
+    world = Ecosystem.load(JSON.stringify(legacyV7(world.save())));
+    advance(world, 1);
+  }
+  const parent = world.organisms.get(1)!;
+  world.spawn(admissionGenome(), 40, 40, undefined, parent);
+  world.kill(parent, 'manual');
+  for (let species = 260; species >= 254; species--)
+    world.kill(
+      [...world.organisms.values()].find((organism) => organism.species === species)!,
+      'manual',
+    );
+  for (let admission = 0; admission < 254; admission++)
+    world.kill(world.spawn(admissionGenome(), 80, 80)!, 'manual');
+  return world;
+}
+
+export function reversedReadmittedParent(legacy = false): WorldFile {
+  const saved = readmittedParentOrder(legacy).save();
   [saved.lineageArchive.summaries[0], saved.lineageArchive.summaries[1]] = [
     saved.lineageArchive.summaries[1],
     saved.lineageArchive.summaries[0],

@@ -22,6 +22,8 @@ import {
   falsePruningClaim,
   prunedCreationOrder,
   reversedPrunedParent,
+  readmittedParentOrder,
+  reversedReadmittedParent,
   missingFinalExtinction,
   extinctionOccupancyContradiction,
 } from './fixtures/lineage';
@@ -218,6 +220,42 @@ describe('strict bounded archive candidate validation', () => {
     ];
     expect(Ecosystem.load(JSON.stringify(unrelated)).save()).toEqual(unrelated);
   });
+  it.each([false, true])(
+    'C16-OWNER-R1-001 preserves child founding before parent extinction readmission with legacy %s',
+    (legacy) => {
+      const world = readmittedParentOrder(legacy);
+      const saved = world.save();
+      expect(saved.lineageArchive.summaries.map((row) => row.id)).toEqual([
+        261,
+        5,
+        ...Array.from({ length: 254 }, (_, offset) => offset + 262),
+      ]);
+      expect(saved.lineageArchive.summaries.slice(0, 2)).toMatchObject([
+        { id: 261, parentId: 5, genomeStatus: 'retained', admittedTick: world.tick },
+        { id: 5, genomeStatus: legacy ? 'legacy-unknown' : 'pruned', admittedTick: world.tick },
+      ]);
+      expect(saved.lineageArchive.events).toHaveLength(512);
+      expect(saved.lineageArchive.events.filter((event) => [5, 261].includes(event.id))).toEqual(
+        [],
+      );
+      expect(saved.lineageArchive).toMatchObject({
+        summariesPruned: true,
+        eventsPruned: true,
+        eventsEvictedThroughTick: world.tick,
+      });
+      rejects(reversedReadmittedParent(legacy));
+      const text = JSON.stringify(saved);
+      const restored = Ecosystem.load(text);
+      expect(JSON.stringify(restored.save())).toBe(text);
+      for (const candidate of [world, restored]) candidate.spawn(admissionGenome(), 80, 80);
+      expect(restored.save()).toEqual(world.save());
+      expect(world.lineageSnapshot().summaries.map((row) => row.id)).toEqual([
+        5,
+        ...Array.from({ length: 255 }, (_, offset) => offset + 262),
+      ]);
+    },
+  );
+
   it('C16-R3-001 rejects impossible readmission at 255 following admissions and continues retained detail', () => {
     const invalid = impossibleReadmission();
     expect(invalid.tick).toBe(0);
