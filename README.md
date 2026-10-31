@@ -94,8 +94,12 @@ the separate throughput command took 5.46 seconds. This run
 used Node 24.22.1, Linux x64 and an eight-logical-CPU AMD EPYC
 host. Shared-host timings are contextual, not performance guarantees. The
 preceding mandatory hosted job took 827 of its 900 seconds, leaving 73 seconds.
-The complete corpus therefore has its own CI job, with no changes to mandatory
-checks, coverage discovery, thresholds or deadlines.
+The complete corpus therefore has its own CI job. Formatting, full production-line
+coverage and build run separately from the complete desktop/mobile browser suite;
+the **Build and test** gate requires both jobs to succeed, including when either
+fails, is cancelled or is skipped. Each workload retains a 15-minute job timeout.
+The complete browser command, four workers, assertion deadlines, latency limits,
+coverage discovery and thresholds remain unchanged.
 
 ## License
 
