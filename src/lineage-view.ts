@@ -24,8 +24,7 @@ const PAGE_SIZE = 40;
 // or replace a scroll container. Identity keys are scoped to each parent.
 function reconcile(parent: Element, content: Element): void {
   const remaining = [...parent.childNodes];
-  let before = parent.firstChild;
-  for (const wanted of [...content.childNodes]) {
+  const pairs = [...content.childNodes].map((wanted) => {
     const index = remaining.findIndex((candidate) => {
       if (candidate.nodeType !== wanted.nodeType) return false;
       if (candidate instanceof Element && wanted instanceof Element)
@@ -37,7 +36,12 @@ function reconcile(parent: Element, content: Element): void {
         );
       return true;
     });
-    const node = index < 0 ? wanted : remaining.splice(index, 1)[0];
+    return { wanted, node: index < 0 ? wanted : remaining.splice(index, 1)[0] };
+  });
+  // Remove obsolete siblings first so survivors do not need to move around them.
+  for (const node of remaining) node.remove();
+  let before = parent.firstChild;
+  for (const { wanted, node } of pairs) {
     if (node !== wanted) {
       if (node instanceof Element && wanted instanceof Element) {
         for (const name of node.getAttributeNames())
@@ -51,7 +55,6 @@ function reconcile(parent: Element, content: Element): void {
     if (node !== before) parent.insertBefore(node, before);
     before = node.nextSibling;
   }
-  for (const node of remaining) node.remove();
 }
 
 /** A view-only projection. It never sends commands or reconstructs missing history. */
@@ -164,7 +167,7 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
       rowContent.append(li);
     }
     reconcile(rows, rowContent);
-    if (focusedId && !rows.contains(active))
+    if (focusedId && document.activeElement !== active)
       (rows.querySelector<HTMLButtonElement>(`[data-lineage-id="${focusedId}"]`) ?? search).focus();
     clear.disabled = selected === undefined;
     const content = document.createElement('div');
@@ -204,6 +207,7 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
     );
     const ancestor = parent(entry);
     const relation = document.createElement('p');
+    relation.dataset.lineageKey = 'parent';
     relation.append('Parent: ');
     if (ancestor != null)
       relation.append(
@@ -221,8 +225,11 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
           : 'none recorded for this origin.',
       );
     content.append(relation);
-    const children = [...facts.values()].filter((child) => parent(child) === entry.id);
+    const children = [...facts.values()]
+      .filter((child) => parent(child) === entry.id)
+      .sort((a, b) => a.id - b.id);
     const childList = document.createElement('p');
+    childList.dataset.lineageKey = 'children';
     childList.append('Children with retained transitions: ');
     for (const child of children) childList.append(link(child.id), document.createTextNode(' '));
     if (!children.length) childList.append('none retained (not proof of no descendants).');
@@ -274,7 +281,7 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
     if (!transitions.length) paragraph('No timeline events retained for this identity.');
     content.append(timeline);
     reconcile(detail, content);
-    if (detailFocusedId && !detail.contains(active))
+    if (detailFocusedId && document.activeElement !== active)
       (
         detail.querySelector<HTMLButtonElement>(`[data-lineage-id="${detailFocusedId}"]`) ?? detail
       ).focus();

@@ -5994,6 +5994,54 @@ test.describe('retained lineage explorer', () => {
     expect(after).toEqual(reference.save());
   });
 
+  test('native relationship focus survives a sibling extinction observation', async ({ page }) => {
+    await observeTerrainNative(page);
+    await page.goto('/');
+    await terrainNativeFrame(page);
+    const world = new Ecosystem({ ...DEFAULTS, mutation: 0, climate: 0, nutrients: 0 }, false);
+    const parent = world.spawn(admissionGenome(), 120, 78)!;
+    const first = world.spawn(admissionGenome(), 122, 78, undefined, parent)!;
+    const second = world.spawn(admissionGenome(), 124, 78, undefined, parent)!;
+    first.energy = 0.001;
+    await importTelemetryWorld(page, world.save());
+    await page.locator('#ecosystem-tab').click();
+    await page.locator('#lineage-heading').click();
+    await page.locator('#lineage-search').fill(String(parent.species));
+    await page.locator('#lineage-rows button').click();
+    const before = await terrainSave(page, 'focused-extinction-before.json');
+    expect(before.organisms.map((organism) => organism.id)).toContain(first.id);
+    const reference = Ecosystem.load(before);
+    const target = page.locator(`#lineage-detail button[data-lineage-id="${second.species}"]`);
+    await target.focus();
+    await page.evaluate(() => {
+      (window as any).focusedRelation = document.activeElement;
+      // Activate the real Step control without moving focus off the relationship.
+      document.getElementById('step')!.click();
+    });
+    reference.step();
+    expect(reference.organisms.has(first.id)).toBe(false);
+    await expect(page.locator('#lineage-observed')).toHaveText(
+      `Observed at tick ${reference.tick}.`,
+    );
+    await expect(target).toBeFocused();
+    expect(await target.evaluate((element) => element === (window as any).focusedRelation)).toBe(
+      true,
+    );
+    expect(
+      await page
+        .locator('[data-lineage-key="children"] button')
+        .evaluateAll((buttons) =>
+          buttons.map((button) => Number((button as HTMLElement).dataset.lineageId)),
+        ),
+    ).toEqual([first.species, second.species]);
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#lineage-detail')).toContainText(
+      `Lineage #${second.species} · Living`,
+    );
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    expect(await terrainSave(page, 'focused-extinction-after.json')).toEqual(reference.save());
+  });
+
   test('empty and overflowing archives expose pruned ancestry with bounded phone-safe navigation', async ({
     page,
   }) => {

@@ -130,6 +130,29 @@ describe('bounded retained lineage evidence', () => {
     expect(document.activeElement).toBe(get('lineage-detail'));
   });
 
+  it('keeps focused relationship controls stable when a preceding child becomes extinct', () => {
+    const world = fresh();
+    const parent = world.spawn(admissionGenome(), 10, 10)!;
+    const first = world.spawn(admissionGenome(), 12, 10, undefined, parent)!;
+    const second = world.spawn(admissionGenome(), 14, 10, undefined, parent)!;
+    update(world);
+    select(parent.species);
+    const target = get('lineage-detail').querySelector<HTMLButtonElement>(
+      `[data-lineage-id="${second.species}"]`,
+    )!;
+    const relation = target.parentElement!;
+    target.focus();
+    world.kill(first, 'manual');
+    update(world);
+    expect(target.parentElement).toBe(relation);
+    expect(document.activeElement).toBe(target);
+    expect(
+      [...relation.querySelectorAll('button')].map((button) => Number(button.dataset.lineageId)),
+    ).toEqual([first.species, second.species]);
+    target.click();
+    expect(get('lineage-detail').textContent).toContain(`Lineage #${second.species} · Living`);
+  });
+
   it('pages and searches all living IDs beyond the summary ring and preserves focused identity', () => {
     const world = sameTickLineages();
     for (let i = 0; i < 60; i++) world.spawn(admissionGenome(), i, 10);
