@@ -5921,8 +5921,23 @@ test.describe('retained lineage explorer', () => {
     replacement.spawn(admissionGenome(), 10, 10);
     replacement.spawn(admissionGenome(), 12, 10);
     await page.locator('#lineage-detail button').focus();
-    await importTelemetryWorld(page, replacement.save());
+    // Keep native focus recovery observable: the ordinary import helper clicks Pause/Save.
+    await page.locator('#file').setInputFiles({
+      name: 'replacement-lineages.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify(replacement.save())),
+    });
+    await expect(page.locator('#notice')).toContainText('World restored');
     await expect(search).toBeFocused();
+    await page.locator('#pause').evaluate((button: HTMLButtonElement) => {
+      if (button.textContent === 'Ⅱ Pause') button.click();
+    });
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    await expect(page.getByTitle('Advance one tick while paused')).toBeEnabled();
+    await expect(search).toBeFocused();
+    const replacementTick = Number((await page.locator('#tick').textContent())!.replace(/\D/g, ''));
+    expect(replacementTick).toBeGreaterThanOrEqual(replacement.tick);
+    advance(replacement, replacementTick - replacement.tick);
     await page.keyboard.press('Space');
     await expect(page.locator('#run-state')).toHaveText('PAUSED');
     expect(await downloadWorld(page)).toEqual(Buffer.from(JSON.stringify(replacement.save())));
