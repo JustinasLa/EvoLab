@@ -5401,14 +5401,18 @@ for (const pauseAt of ['lifecycle-post', 'lifecycle-receipt'] as const) {
     try {
       await expect
         .poll(() =>
-          page.evaluate(
-            () =>
-              [...window.measurementGate.pending.values()].filter(
-                (owner: any) => owner.operation === 'refuge-mode',
-              ).length,
-          ),
+          page.evaluate((deliveredBefore) => {
+            const terminal = window.terrainNative.manual;
+            const owner = terminal && window.measurementGate.pending.get(terminal.commandId);
+            return (
+              terminal?.operation === 'refuge-mode' &&
+              owner?.operation === terminal.operation &&
+              owner.runId === terminal.runId &&
+              window.terrainNative.manualDeliveries === deliveredBefore
+            );
+          }, deliveredBefore),
         )
-        .toBe(1);
+        .toBe(true);
       const held = await page.evaluate(() => {
         const native = window.terrainNative;
         return {
