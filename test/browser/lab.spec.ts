@@ -1253,7 +1253,7 @@ for (const operation of [
           },
         });
       } else if (operation === 'refuge-mode') {
-        await page.locator('#refuge-enabled').click();
+        await page.locator('#refuge-enabled').evaluate((input: HTMLInputElement) => input.click());
         reference.changeRefugeMode(true);
       } else if (operation === 'clear-refuges') {
         // Keep the already-drained habitat visible after arming. A native
@@ -1289,7 +1289,21 @@ for (const operation of [
         await page.mouse.up();
       }
     }
-    await expect(page.locator('#run-state')).toHaveText('STOPPED');
+    try {
+      await expect(page.locator('#run-state')).toHaveText('STOPPED');
+    } catch (error) {
+      const diagnosis = await page.evaluate(() => ({
+        visible: window.publicationFault.visible,
+        postsAfterArm: window.publicationFault.postsAfterArm,
+        pendingAtArm: window.publicationFault.pendingAtArm,
+        latest: window.publicationFault.latest,
+        failures: window.publicationFault.failures,
+        failureMessage: window.publicationFault.failureMessage,
+        pending: [...window.measurementGate.pending.keys()],
+      }));
+      console.error('publication-fault ownership', operation, JSON.stringify(diagnosis));
+      throw error;
+    }
     await expect(page.locator('#notice')).toContainText('The action completed');
     await expect(page.locator('#notice')).toContainText('World preserved');
     await expect(page.locator('#step')).toBeDisabled();
@@ -1299,9 +1313,9 @@ for (const operation of [
       counts: { ...window.measurementGate.counts },
       pending: [...window.measurementGate.pending],
     }));
-    if (operation === 'clear-refuges') {
+    if (operation === 'clear-refuges' || operation === 'refuge-mode') {
       expect(stopped.postsAfterArm[0]).toEqual({
-        type: 'clear-refuges',
+        type: operation,
         commandId: (stopped.latest as { commandId: number }).commandId,
         runId: (stopped.latest as { runId: number }).runId,
       });

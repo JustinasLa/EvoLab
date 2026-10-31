@@ -114,6 +114,7 @@ type BrowserFixture = {
   documentId: string;
   workerIds: string[];
   commands: Command[];
+  commandRevision: number;
   phase: string | null;
   expected: { runId: number; replacementId: number } | null;
   runId: number | null;
@@ -190,6 +191,7 @@ function installBrowserFixture(epoch: string): void {
     documentId: crypto.randomUUID(),
     workerIds: [],
     commands: [],
+    commandRevision: 0,
     phase: null,
     expected: null,
     runId: null,
@@ -269,6 +271,7 @@ function installBrowserFixture(epoch: string): void {
             runId: data.runId,
             postedAt: performance.now(),
           });
+          state.commandRevision++;
         }
         return Reflect.apply(nativePost, worker, messages);
       };
@@ -310,6 +313,7 @@ function installBrowserFixture(epoch: string): void {
           state: data.state ?? data.recovery?.state,
           ...(data.type === 'saved' ? { text: data.text } : {}),
         };
+        state.commandRevision++;
         if (data.type === 'error')
           state.violation = `Command ${command.type}/${command.commandId} failed: ${data.message}`;
       });
@@ -543,6 +547,9 @@ export async function runFortyControls(options: {
   let documentId: string | undefined, workerId: string | undefined;
   let loadedIdentity: Identity | undefined,
     commands: Omit<Command, 'terminal'>[] = [];
+  let commandRevision: number | null = null;
+  let commandSnapshotChecks = 0,
+    commandSnapshotTransfers = 0;
   let activeOperation: Operation | undefined;
   let status = 'incomplete',
     originalError: string | undefined,
@@ -626,6 +633,8 @@ export async function runFortyControls(options: {
       checkedSaves: operations.filter((op) => op.expectedType === 'save' && op.status === 'checked')
         .length,
       retainedRecords: records.length,
+      commandSnapshotChecks,
+      commandSnapshotTransfers,
       inputAck: inputLatencies.length,
       savedSettle: settlingLatencies.length,
       reveal: revealLatencies.length,
@@ -986,26 +995,42 @@ export async function runFortyControls(options: {
   };
   const partialBuffers = new Map<string, Buffer>();
   const snapshotCommands = async () => {
-    commands = await fence.wait(() =>
-      page.evaluate((epoch) => {
-        const f = window.fortyFixture;
-        f.check(epoch);
-        return f.commands.map(({ terminal, ...c }) => ({
-          ...c,
-          terminal: terminal
-            ? {
-                type: terminal.type,
-                operation: terminal.operation,
-                runId: terminal.runId,
-                commandId: terminal.commandId,
-                receivedAt: terminal.receivedAt,
-                replacementId: terminal.state.replacementId,
-                tick: terminal.state.world.stats.tick,
-              }
-            : undefined,
-        }));
-      }, fence.epoch),
+    const snapshot = await fence.wait(() =>
+      page.evaluate(
+        ({ epoch, revision }) => {
+          const f = window.fortyFixture;
+          // Every checkpoint still crosses the browser fence, even on a cache hit.
+          f.check(epoch);
+          return {
+            revision: f.commandRevision,
+            commands:
+              f.commandRevision === revision
+                ? null
+                : f.commands.map(({ terminal, ...c }) => ({
+                    ...c,
+                    terminal: terminal
+                      ? {
+                          type: terminal.type,
+                          operation: terminal.operation,
+                          runId: terminal.runId,
+                          commandId: terminal.commandId,
+                          receivedAt: terminal.receivedAt,
+                          replacementId: terminal.state.replacementId,
+                          tick: terminal.state.world.stats.tick,
+                        }
+                      : undefined,
+                  })),
+          };
+        },
+        { epoch: fence.epoch, revision: commandRevision },
+      ),
     );
+    commandSnapshotChecks++;
+    if (snapshot.commands !== null) {
+      commands = snapshot.commands;
+      commandRevision = snapshot.revision;
+      commandSnapshotTransfers++;
+    }
     expect(commands.length).toBeLessThanOrEqual(MAX_COMMANDS);
   };
   const canvas = async () => {

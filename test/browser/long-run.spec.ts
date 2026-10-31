@@ -214,12 +214,12 @@ async function observe(
           if (data.type === 'frame') {
             evidence.frames++;
             evidence.frameAt = performance.now();
-          } else
-            evidence.metadataBytes += new TextEncoder().encode(JSON.stringify(data)).byteLength;
-          if (data.type === 'progress' || data.type === 'telemetry')
-            evidence.telemetryJSONBytes += new TextEncoder().encode(
-              JSON.stringify(data),
-            ).byteLength;
+          } else {
+            const bytes = new TextEncoder().encode(JSON.stringify(data)).byteLength;
+            evidence.metadataBytes += bytes;
+            if (data.type === 'progress' || data.type === 'telemetry')
+              evidence.telemetryJSONBytes += bytes;
+          }
           if (data.type === 'saved') {
             evidence.savedText = data.text;
             evidence.saveTextBytes += new TextEncoder().encode(data.text).byteLength;
