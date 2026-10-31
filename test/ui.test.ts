@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount } from '../src/main';
 import { draw, genomeSvg, organismHtml, point, viewport } from '../src/view';
 import { Ecosystem } from '../src/ecosystem';
+import { DEFAULT_TERRAIN } from '../src/terrain';
 import { DEFAULTS, founder, type Frame, type PlaybackState, type WorldFile } from '../src/model';
 import { parseBlueprint, serializeBlueprint, BLUEPRINT_MAX_BYTES } from '../src/blueprint';
 import { startWorker, type Scope } from '../src/worker';
 import { storedSensoryGenome } from './fixtures/sensory-legacy';
+import { emptyRefuges, refugeSummary } from '../src/refuges';
 class WorkerStub extends EventTarget {
   playback: PlaybackState = { paused: false, pauseOnExtinction: true, extinction: null };
   postMessage = vi.fn((data: any) => {
@@ -17,6 +19,7 @@ class WorkerStub extends EventTarget {
         completedTick: 0,
         seed: data.settings.seed,
         settings: data.settings,
+        terrain: data.terrain,
       });
     if (['begin-stroke', 'end-stroke', 'paint', 'settings', 'shock'].includes(data.type))
       this.emit({
@@ -57,6 +60,8 @@ class WorkerStub extends EventTarget {
     if (data.playback) this.playback = data.playback;
     this.onmessage?.({
       data: {
+        terrain: { ...DEFAULT_TERRAIN },
+        thermalRefuges: refugeSummary(emptyRefuges()),
         playback: this.playback,
         runId:
           runId ??
@@ -73,7 +78,10 @@ const world = new Ecosystem(),
   sample = world.frame(),
   organism = [...world.organisms.values()][0];
 const get = <T extends HTMLElement>(id: string): T => root.querySelector(`#${id}`)!;
-const click = (id: string) => get(id).click();
+const click = (id: string) => {
+  get(id).click();
+  if (id === 'reset' && get<HTMLDialogElement>('reset-dialog').open) get('confirm-reset').click();
+};
 const set = (id: string, value: string, event = 'input') => {
   get<HTMLInputElement>(id).value = value;
   get(id).dispatchEvent(new Event(event));
@@ -236,7 +244,16 @@ function ownershipBridge(mountFunction = mount, beforePublish: (data: any) => vo
   };
 }
 describe('post-success publication failures with real ecology and independent physical owners', () => {
-  it.each(['start', 'load', 'settings', 'paint', 'shock'])(
+  it.each([
+    'start',
+    'load',
+    'settings',
+    'paint',
+    'shock',
+    'refuge-mode',
+    'paint-refuge',
+    'clear-refuges',
+  ])(
     'shows an independent stopped failure after one successful %s and recovers the applied world explicitly',
     async (operation) => {
       let armed = false,
@@ -263,12 +280,24 @@ describe('post-success publication failures with real ecology and independent ph
       });
       bridge.advance();
       expect(bridge.callbackCount).toBe(0);
+      if (operation === 'paint-refuge' || operation === 'clear-refuges') {
+        click('refuge-enabled');
+        if (operation === 'clear-refuges') {
+          root.querySelector<HTMLButtonElement>('[data-tool="warm"]')!.click();
+          pointer('pointerdown', 50, 50);
+          pointer('pointerup');
+        }
+      }
       bridge.holdTerminals();
       click('measurements-json');
       click('save');
       set('mutation', '0.2');
-      if (operation === 'paint') {
-        root.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
+      if (operation === 'paint' || operation === 'paint-refuge') {
+        root
+          .querySelector<HTMLButtonElement>(
+            `[data-tool="${operation === 'paint' ? 'food' : 'warm'}"]`,
+          )!
+          .click();
         pointer('pointerdown', 50, 50);
       } else {
         root.querySelector<HTMLButtonElement>('[data-tool="food"]')!.click();
@@ -293,6 +322,8 @@ describe('post-success publication failures with real ecology and independent ph
       if (operation === 'start') click('reset');
       else if (operation === 'load') await loadText(JSON.stringify(candidate.save()));
       else if (operation === 'settings') set('nutrients', '7');
+      else if (operation === 'refuge-mode') click('refuge-enabled');
+      else if (operation === 'clear-refuges') click('clear-refuges');
       else if (operation === 'shock')
         root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
       else {
@@ -312,6 +343,15 @@ describe('post-success publication failures with real ecology and independent ph
       if (operation === 'start') reference = new Ecosystem(command.settings);
       else if (operation === 'load') reference = candidate;
       else if (operation === 'settings') reference.changeSettings(command.settings);
+      else if (operation === 'refuge-mode') reference.changeRefugeMode(command.enabled);
+      else if (operation === 'clear-refuges') reference.clearRefuges();
+      else if (operation === 'paint-refuge')
+        reference.paintRefuge(
+          command,
+          command.x,
+          command.y,
+          reference.save().interventions.entries.at(-1)!.sequence,
+        );
       else if (operation === 'shock') {
         const before = { offset: reference.eventOffset, until: reference.eventUntil };
         reference.shock(command.kind);
@@ -969,7 +1009,10 @@ beforeEach(() => {
   const ctx = new Proxy(
     { createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }) },
     {
-      get: (o, p) => (p in o ? o[p as keyof typeof o] : vi.fn()),
+      get: (target, property) => {
+        if (!(property in target)) Reflect.set(target, property, vi.fn());
+        return Reflect.get(target, property);
+      },
       set: (o, p, v) => {
         Reflect.set(o, p, v);
         return true;
@@ -1027,6 +1070,174 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe('ecosystem desk', () => {
+  it('keeps canvas method identities and complete invocation records stable within each fixture', () => {
+    const context = get<HTMLCanvasElement>('world').getContext('2d')!,
+      fillRect = context.fillRect,
+      before = vi.mocked(fillRect).mock.calls.length;
+    expect(context.fillRect).toBe(fillRect);
+    expect(context.clearRect).not.toBe(fillRect);
+    context.fillRect(1, 2, 3, 4);
+    expect(vi.mocked(fillRect).mock.calls).toHaveLength(before + 1);
+    expect(vi.mocked(fillRect).mock.calls.at(-1)).toEqual([1, 2, 3, 4]);
+    context.lineWidth = 3;
+    expect(context.lineWidth).toBe(3);
+    expect(context.createImageData(2, 3).data).toEqual(new Uint8ClampedArray(24));
+    context.fillRect = vi.fn();
+    expect(context.fillRect).not.toBe(fillRect);
+    expect(context.toString).toBe(Object.prototype.toString);
+  });
+  it('confirms every user reset with a frozen payload, cancellation focus and no ecological command on cancellation', () => {
+    click('ecosystem-tab');
+    root.querySelector<HTMLDetailsElement>('.world-settings')!.open = true;
+    const before = worker.postMessage.mock.calls.length;
+    get('reset').click();
+    expect(get<HTMLDialogElement>('reset-dialog').open).toBe(true);
+    expect(document.activeElement).toBe(get('cancel-reset'));
+    expect(worker.postMessage.mock.calls).toHaveLength(before);
+    get('reset-dialog').dispatchEvent(new Event('cancel', { cancelable: true }));
+    expect(get<HTMLDialogElement>('reset-dialog').open).toBe(false);
+    expect(document.activeElement).toBe(get('reset'));
+    expect(worker.postMessage.mock.calls).toHaveLength(before);
+    get('reset').click();
+    set('seed', '99');
+    set('terrain-preset', 'open-field', 'change');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space' }));
+    expect(worker.postMessage.mock.calls).toHaveLength(before);
+    get('confirm-reset').click();
+    expect(worker.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'start', settings: DEFAULTS, terrain: DEFAULT_TERRAIN }),
+    );
+    expect(get<HTMLSelectElement>('terrain-preset').value).toBe('open-field');
+    expect(get('terrain-draft-status').textContent).toContain('Unapplied');
+    expect(get('terrain-committed').textContent).toContain('Porous ridges');
+  });
+  it('validates draft seed bounds without posting, and invalidates reset confirmation on load and disposal', () => {
+    get<HTMLInputElement>('terrain-follow').checked = false;
+    get('terrain-follow').dispatchEvent(new Event('change'));
+    expect(get('terrain-seed-label').hidden).toBe(false);
+    for (const seed of ['-1', '4294967296', '0.5', '']) {
+      set('terrain-seed', seed);
+      const before = worker.postMessage.mock.calls.length;
+      click('regenerate-walls');
+      get('reset').click();
+      expect(get('notice').textContent).toContain('valid wall recipe');
+      expect(worker.postMessage.mock.calls).toHaveLength(before);
+      expect(get('terrain-preview-caption').textContent).toContain('unavailable');
+    }
+    set('terrain-seed', '4294967295');
+    get('reset').click();
+    expect(get('reset-payload').textContent).toContain('4294967295');
+    click('load');
+    expect(get<HTMLDialogElement>('reset-dialog').open).toBe(false);
+    get('confirm-reset').click();
+    expect(worker.postMessage.mock.calls).toHaveLength(1);
+    get('reset').click();
+    dispose();
+    get('reset').click();
+    expect(get<HTMLDialogElement>('reset-dialog').open).toBe(false);
+    set('terrain-seed', '0');
+    expect(worker.postMessage.mock.calls).toHaveLength(1);
+  });
+  it('separates immutable wall owners from newer drafts and preserves paused selected real ecology through clear/no-op/regenerate', () => {
+    const bridge = ownershipBridge();
+    bridge.holdTerminals();
+    click('clear-walls');
+    const first = [...bridge.records.values()].find(
+      (record) => record.command.type === 'clear-walls',
+    )!;
+    expect(first.command).toMatchObject({ action: 'clear', runId: 1 });
+    bridge.emit({ ...first.terminal, action: 'regenerate' });
+    expect(get('notice').textContent).not.toContain('Wall action applied');
+    bridge.deliver(first.command.commandId);
+    expect(get('notice').textContent).toContain('Wall action applied');
+    set('terrain-preset', 'chambered-refuges', 'change');
+    get<HTMLInputElement>('terrain-follow').checked = false;
+    get('terrain-follow').dispatchEvent(new Event('change'));
+    set('terrain-seed', '0');
+    click('regenerate-walls');
+    const pending = [...bridge.records.values()].find(
+      (record) => record.command.type === 'regenerate-walls',
+    )!;
+    for (const extra of [
+      { action: 'clear' },
+      { resolvedSeed: 1 },
+      { recipe: { ...pending.command.recipe, seed: 1 } },
+      { recipe: null },
+      { requestId: pending.command.commandId },
+    ])
+      bridge.emit({ ...pending.terminal, ...extra });
+    expect(get('terrain-committed').textContent).toContain('Porous ridges');
+    set('terrain-preset', 'open-field', 'change');
+    bridge.deliver(pending.command.commandId);
+    expect(get('terrain-committed').textContent).toContain('Chambered refuges');
+    expect(get<HTMLSelectElement>('terrain-preset').value).toBe('open-field');
+    expect(get('run-state').textContent).toBe('PAUSED');
+    click('clear-walls');
+    bridge.deliverAll();
+    click('clear-walls');
+    bridge.deliverAll();
+    expect(get('notice').textContent).toContain('unchanged');
+    click('regenerate-walls');
+    bridge.deliverAll();
+    expect(get('terrain-committed').textContent).toContain('Open field');
+    expect(get('terrain-draft-status').textContent).toContain('matches');
+  });
+  it('requires exact current wall metadata and echoes even for correlated errors, without consuming other native owners', () => {
+    const bridge = ownershipBridge();
+    bridge.holdTerminals();
+    set('terrain-preset', 'open-field', 'change');
+    click('regenerate-walls');
+    const pending = [...bridge.records.values()][0];
+    bridge.emit({ ...pending.terminal, terrain: null });
+    expect(get('notice').textContent).toContain('Invalid completed wall recipe');
+    bridge.deliver(pending.command.commandId);
+    click('regenerate-walls');
+    const next = [...bridge.records.values()][0];
+    bridge.emit({ ...next.terminal, terrain: { ...DEFAULT_TERRAIN } });
+    expect(get('notice').textContent).toContain('differs');
+    bridge.deliver(next.command.commandId);
+    click('clear-walls');
+    const rejected = [...bridge.records.values()][0];
+    bridge.emit({
+      type: 'error',
+      operation: 'clear-walls',
+      runId: 1,
+      commandId: rejected.command.commandId,
+      action: 'regenerate',
+      message: 'wrong echo',
+    });
+    bridge.deliver(rejected.command.commandId);
+    expect(get('notice').textContent).toContain('unchanged');
+    click('clear-walls');
+    const error = [...bridge.records.values()][0];
+    bridge.emit({
+      type: 'error',
+      operation: 'clear-walls',
+      runId: 1,
+      commandId: error.command.commandId,
+      action: 'clear',
+      message: 'matching wall error',
+    });
+    expect(get('notice').textContent).toBe('matching wall error');
+    bridge.deliver(error.command.commandId);
+  });
+  it('keeps newer terrain drafts through rejected real imports and revokes old wall results across reset', async () => {
+    const bridge = ownershipBridge();
+    bridge.holdTerminals();
+    click('clear-walls');
+    const old = [...bridge.records.values()][0];
+    await loadText('{}');
+    set('terrain-preset', 'open-field', 'change');
+    const load = [...bridge.records.values()].find((record) => record.command.type === 'load')!;
+    bridge.deliver(load.command.requestId);
+    expect(get('terrain-committed').textContent).toContain('Porous ridges');
+    expect(get<HTMLSelectElement>('terrain-preset').value).toBe('open-field');
+    bridge.deliver(old.command.commandId);
+    expect(get<HTMLSelectElement>('terrain-preset').value).toBe('open-field');
+    get('reset').click();
+    get('cancel-reset').click();
+    expect(bridge.records.size).toBe(0);
+  });
   it('reuses mounted output nodes and changes text only when the displayed value changes', () => {
     const population = get('population'),
       observer = new MutationObserver(() => {}),
@@ -1098,6 +1309,7 @@ describe('ecosystem desk', () => {
     expect(worker.postMessage).toHaveBeenCalledWith({
       type: 'start',
       settings: DEFAULTS,
+      terrain: DEFAULT_TERRAIN,
       runId: 1,
       requestId: 1,
     });
@@ -1148,8 +1360,8 @@ describe('ecosystem desk', () => {
     expect(get('species-count').textContent).toBe('1 lineage');
     expect(get('world-count').textContent).toBe('1 organism · 1 lineage');
     const populated = Ecosystem.load(JSON.stringify(world.save()));
-    populated.spawn(founder(1), 2, 10, 2);
-    populated.spawn(founder(2), 2, 25, 3);
+    populated.spawn(founder(1), 2, 10);
+    populated.spawn(founder(2), 2, 25);
     for (let update = 0; update < 12; update++) emit(populated.frame());
     expect(root.querySelectorAll('.lineage')).toHaveLength(3);
     expect(get('species-count').textContent).toBe('3 lineages');
@@ -2054,7 +2266,8 @@ describe('authoritative playback presentation', () => {
       click('reset');
       harness.deliver();
       expect(get<HTMLInputElement>('pause-on-extinction').checked).toBe(preference);
-      const empty = nearDeath();
+      const { lineageArchive: _lineageArchive, ...historical } = nearDeath();
+      const empty = { ...historical, version: 7 };
       empty.organisms = [];
       await loadText(JSON.stringify(empty));
       harness.deliver();
@@ -2450,5 +2663,223 @@ describe('pixel rendering and view transforms', () => {
     expect(genomeSvg(founder(0))).toContain('svg');
     expect(organismHtml(null, sample)).toContain('Click any');
     expect(organismHtml(organism, sample)).toContain('Preferred');
+  });
+});
+
+describe('explicit painted temperature controls and authoritative views', () => {
+  it('does not let held earlier mode receipts or frames revert a newer authoritative frame', () => {
+    const bridge = ownershipBridge();
+    bridge.holdTerminals((data) => data.operation === 'refuge-mode');
+    click('refuge-enabled');
+    const firstId = [...bridge.records.keys()][0],
+      earlierFrame = structuredClone(bridge.latestFrame);
+    click('refuge-enabled');
+    const secondId = [...bridge.records.keys()].at(-1)!;
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(false);
+    expect(bridge.latestFrame.refugeModeId).toBe(secondId);
+    bridge.deliver(firstId);
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(false);
+    bridge.emit(earlierFrame);
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(false);
+    bridge.deliver(secondId);
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(false);
+    expect(bridge.records.size).toBe(0);
+  });
+  it('keeps authoritative mode during pending delivery, rejects wrong echoes and drains the matching owner once', () => {
+    const bridge = ownershipBridge();
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(false);
+    bridge.holdTerminals((data) => data.operation === 'refuge-mode');
+    click('refuge-enabled');
+    const [id, record] = [...bridge.records].find(
+      ([, record]) => record.command.type === 'refuge-mode',
+    )!;
+    expect(get('refuge-pending').textContent).toContain('Pending');
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(true);
+    bridge.emit({ ...record.terminal, enabled: false });
+    expect(get('refuge-pending').textContent).toContain('Pending');
+    bridge.deliver(id);
+    expect(get('refuge-pending').textContent).toBe('');
+    expect(get('notice').textContent).toContain('applied');
+    bridge.holdTerminals(() => false);
+    click('refuge-enabled');
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(false);
+    bridge.emit(record.terminal);
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(false);
+  });
+  it('paints temperature independently of invalid designer anatomy and freezes each stroke configuration', () => {
+    const bridge = ownershipBridge();
+    click('refuge-enabled');
+    root.querySelector<HTMLButtonElement>('[data-x="4"][data-y="4"]')!.click();
+    set('brush', '1');
+    set('refuge-intensity', '25');
+    root.querySelector<HTMLButtonElement>('[data-tool="warm"]')!.click();
+    pointer('pointerdown', 50, 50);
+    pointer('pointermove', 60, 50);
+    set('refuge-intensity', '4');
+    pointer('pointermove', 70, 50);
+    pointer('pointerup');
+    const history = bridge.latestFrame.frame.interventions.entries;
+    expect(history.at(-1)).toMatchObject({
+      kind: 'refuge-paint',
+      detail: { rulesVersion: 1, units: 25, radius: 1, successfulCommands: 2 },
+    });
+    root.querySelector<HTMLButtonElement>('[data-tool="cool"]')!.click();
+    pointer('pointerdown');
+    pointer('pointerup');
+    expect(bridge.latestFrame.frame.interventions.entries.at(-1)).toMatchObject({
+      detail: { tool: 'cool', units: -4 },
+    });
+    root.querySelector<HTMLButtonElement>('[data-tool="erase-temperature"]')!.click();
+    expect(get<HTMLInputElement>('refuge-intensity').disabled).toBe(true);
+    pointer('pointerdown');
+    pointer('pointerup');
+    expect(bridge.latestFrame.frame.interventions.entries.at(-1)).toMatchObject({
+      detail: { tool: 'erase-temperature', units: 0 },
+    });
+    get<HTMLInputElement>('refuge-intensity').type = 'number';
+    set('refuge-intensity', '33');
+    expect(get('notice').textContent).toContain('whole-number');
+    expect(bridge.records.size).toBe(0);
+  });
+  it('retains inactive stored paint, clears only temperature and truthfully distinguishes no-op actions', () => {
+    const bridge = ownershipBridge();
+    click('refuge-enabled');
+    root.querySelector<HTMLButtonElement>('[data-tool="warm"]')!.click();
+    pointer('pointerdown');
+    pointer('pointerup');
+    const before = bridge.latestFrame.frame;
+    click('refuge-enabled');
+    expect(get('refuge-summary').textContent).toContain('Disabled · stored paint');
+    const disabledTool = root.querySelector<HTMLButtonElement>('button[data-tool="warm"]')!;
+    expect(disabledTool.disabled).toBe(true);
+    disabledTool.disabled = false;
+    disabledTool.click();
+    expect(get('notice').textContent).toContain('Enable painted temperature');
+    pointer('pointerdown');
+    pointer('pointerup');
+    expect(get('notice').textContent).toContain('disabled');
+    click('clear-refuges');
+    expect(get('refuge-summary').textContent).toContain('Disabled · empty');
+    expect(bridge.latestFrame.frame.stats).toEqual(before.stats);
+    expect(bridge.latestFrame.frame.cells).toEqual(before.cells);
+    click('clear-refuges');
+    expect(get('notice').textContent).toContain('unchanged');
+  });
+  it('restores imported mode and failed-load field atomically without posting draft intensity as settings', async () => {
+    const harness = realWorker();
+    harness.deliver();
+    const candidate = new Ecosystem();
+    candidate.changeRefugeMode(true);
+    candidate.paintRefuge({ rulesVersion: 1, tool: 'warm', radius: 0, units: 25 }, 120, 78);
+    await loadText(JSON.stringify(candidate.save()));
+    harness.deliver();
+    expect(get('notice').textContent).toContain('Imported painted field');
+    set('refuge-intensity', '31');
+    const before = harness.save(),
+      calls = worker.postMessage.mock.calls.length;
+    await loadText(
+      JSON.stringify({
+        ...before,
+        thermalRefuges: { ...before.thermalRefuges, cells: [[37440, 4]] },
+      }),
+    );
+    harness.deliver();
+    expect(harness.save()).toEqual(before);
+    expect(get<HTMLInputElement>('refuge-enabled').checked).toBe(true);
+    expect(get<HTMLInputElement>('refuge-intensity').value).toBe('31');
+    expect(worker.postMessage.mock.calls.slice(calls).map(([command]) => command.type)).toEqual([
+      'load',
+    ]);
+    click('pause');
+    harness.deliver();
+    click('step');
+    harness.deliver();
+    candidate.step();
+    expect(harness.save()).toEqual(candidate.save());
+  });
+  it('shares all32 manual owners and the reserved close lease without retrying rejected thermal points', () => {
+    const bridge = ownershipBridge();
+    click('refuge-enabled');
+    root.querySelector<HTMLButtonElement>('[data-tool="warm"]')!.click();
+    bridge.blockProcessing();
+    pointer('pointerdown');
+    for (let point = 0; point < 32; point++) pointer('pointermove', 50 + point, 50);
+    pointer('pointerup');
+    expect(bridge.records.size).toBe(33);
+    expect(bridge.counts.M).toBe(33);
+    expect(bridge.counts.C).toBe(1);
+    expect(get('notice').textContent).toContain('Partial temperature stroke');
+    bridge.processAll();
+    expect(bridge.records.size).toBe(0);
+    const count = bridge.counts.M;
+    expect(get('refuge-pending').textContent).toBe('');
+    expect(bridge.counts.M).toBe(count);
+  });
+  it('stops an injected four-command thermal UI ceiling without modifying real production limits', async () => {
+    vi.resetModules();
+    vi.doMock('../src/model', async (original) => ({
+      ...(await original<object>()),
+      STROKE_COMMAND_CAPACITY: 4,
+    }));
+    const { mount: boundedMount } = await import('../src/main');
+    vi.doUnmock('../src/model');
+    const bridge = ownershipBridge(boundedMount);
+    click('refuge-enabled');
+    root.querySelector<HTMLButtonElement>('[data-tool="warm"]')!.click();
+    pointer('pointerdown');
+    for (let command = 1; command < 4; command++) pointer('pointermove');
+    pointer('pointermove');
+    pointer('pointerup');
+    expect(bridge.counts).toMatchObject({ M: 6, C: 1 });
+    expect(bridge.latestFrame.frame.interventions.entries.at(-1).detail.successfulCommands).toBe(4);
+    expect(bridge.records.size).toBe(0);
+  });
+  it('presents all three distinct manual thermal detail kinds without treating them as shocks', () => {
+    const bridge = ownershipBridge();
+    click('refuge-enabled');
+    root.querySelector<HTMLButtonElement>('[data-tool="warm"]')!.click();
+    pointer('pointerdown');
+    pointer('pointerup');
+    click('clear-refuges');
+    for (const entry of bridge.latestFrame.frame.interventions.entries) {
+      set('telemetry-intervention', String(entry.sequence), 'change');
+      paint(0);
+      const detail = get('telemetry').textContent;
+      expect(detail).toContain('Rules version');
+      if (entry.kind === 'refuge-paint') expect(detail).toContain('not a replay');
+      if (entry.kind === 'refuge-clear') expect(detail).toContain('Mode unchanged');
+    }
+  });
+  it('uses exact authoritative normalized anchor input in inspection and temperature pixels, preserving functional colors', () => {
+    const candidate = new Ecosystem({ ...DEFAULTS, climate: 0 }, false);
+    candidate.spawn(
+      {
+        behavior: { version: 1 as const, mode: 'legacy' as const },
+        cells: [{ x: 0, y: 0, type: 7 }],
+        preference: 0.75,
+        tolerance: 0.125,
+        tempo: 5,
+      },
+      120,
+      78,
+    );
+    candidate.changeRefugeMode(true);
+    candidate.paintRefuge({ rulesVersion: 1, tool: 'warm', radius: 0, units: 25 }, 120, 78);
+    const frame = candidate.frame(),
+      selected = candidate.save().organisms[0];
+    expect(organismHtml(selected, frame)).toContain('0.75');
+    expect(organismHtml(selected, frame)).toContain('+0.25 (25 units)');
+    const canvas = get<HTMLCanvasElement>('world'),
+      buffer = document.createElement('canvas'),
+      context = buffer.getContext('2d')!,
+      putImageData = vi.fn();
+    context.putImageData = putImageData;
+    draw(canvas, buffer, frame, { zoom: 1, x: 0, y: 0 }, true, 0);
+    const image = putImageData.mock.calls.at(-1)![0];
+    expect(Array.from(image.data.slice(0, 3))).toEqual([28, 31, 40]);
+    const position = (78 * 240 + 120) * 4;
+    expect(Array.from(image.data.slice(position, position + 3))).not.toEqual([37, 25, 30]);
+    candidate.changeRefugeMode(false);
+    expect(organismHtml(selected, candidate.frame())).toContain('0 (0 units)');
   });
 });

@@ -85,9 +85,21 @@ export function restoreHistoricalGenome(genome: Genome): HistoricalGenome {
     });
   return restored;
 }
+function historicalScalars(saved: WorldFile) {
+  const {
+    terrain: _terrain,
+    thermalRefuges: _refuges,
+    lineageArchive: _archive,
+    ...historical
+  } = structuredClone(saved);
+  return { ...historical, interventions: { ...historical.interventions, version: 1 as const } };
+}
+export function restoreHistoricalOrganism(organism: WorldFile['organisms'][number]) {
+  return { ...structuredClone(organism), genome: restoreHistoricalGenome(organism.genome) };
+}
 export function syntheticHistoricalWorld(saved: WorldFile): WorldFileV5 {
   return {
-    ...structuredClone(saved),
+    ...historicalScalars(saved),
     version: 5,
     organisms: saved.organisms.map((organism) => {
       assert.ok(validGenome(organism.genome));
@@ -98,7 +110,7 @@ export function syntheticHistoricalWorld(saved: WorldFile): WorldFileV5 {
 }
 export function restoreHistoricalWorld(saved: WorldFile): WorldFileV5 {
   return {
-    ...structuredClone(saved),
+    ...historicalScalars(saved),
     version: 5,
     organisms: saved.organisms.map((organism) => ({
       ...structuredClone(organism),

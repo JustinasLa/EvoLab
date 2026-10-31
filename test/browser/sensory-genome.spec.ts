@@ -308,7 +308,7 @@ test('B5 real populated native Load/Pause/Step matches complete independent cont
   page,
 }, info) => {
   const oldInitial = JSON.parse(baselineFixtures['native-B5-baseline-initial.json']);
-  const setup = new Ecosystem({ seed: 42, mutation: 0.12, nutrients: 0, climate: 0.8 }, false);
+  const setup = Ecosystem.load(JSON.stringify(oldInitial));
   for (const [offset, source] of oldInitial.organisms.entries()) {
     const genome = migrateHistoricalGenome(source.genome);
     if (offset === 1)
@@ -323,7 +323,7 @@ test('B5 real populated native Load/Pause/Step matches complete independent cont
         mode: 'evolved',
         reactions: { food: 'flee', wall: 'ignore', harmless: 'chase', dangerous: 'ignore' },
       };
-    setup.spawn(genome, source.x, source.y, source.species, undefined, 0)!.energy = 100;
+    setup.organisms.get(source.id)!.genome = genome;
   }
   assert.deepStrictEqual(restoreHistoricalWorld(setup.save()), oldInitial);
   advance(setup, 90);
@@ -444,13 +444,40 @@ test('B6 read-only inactive disclosure fits four widths and observation/camera/k
     await page.locator('#thermal').click();
     await page.locator('#thermal').click();
     await page.getByRole('tab', { name: 'Organism', exact: true }).click();
+    expect(page.viewportSize()?.width).toBe(width);
     layouts.push(
-      await page.evaluate(() => ({
-        width: innerWidth,
-        innerWidth,
-        scrollWidth: document.documentElement.scrollWidth,
-        fits: document.documentElement.scrollWidth <= innerWidth,
-      })),
+      await page.evaluate((requestedWidth) => {
+        const root = document.documentElement;
+        const nodes = [...document.querySelectorAll<HTMLElement>('body *')];
+        const overflowing = nodes
+          .filter((node) => {
+            const box = node.getBoundingClientRect();
+            return box.width > 0 && (box.left < -0.5 || box.right > requestedWidth + 0.5);
+          })
+          .map((node) => ({
+            tag: node.tagName,
+            id: node.id,
+            left: node.getBoundingClientRect().left,
+            right: node.getBoundingClientRect().right,
+          }));
+        return {
+          requestedWidth,
+          innerWidth,
+          clientWidth: root.clientWidth,
+          scrollWidth: root.scrollWidth,
+          bodyScrollWidth: document.body.scrollWidth,
+          visualWidth: visualViewport?.width,
+          visualScale: visualViewport?.scale,
+          deviceScaleFactor: devicePixelRatio,
+          overflowing,
+          fits:
+            innerWidth === requestedWidth &&
+            root.clientWidth === requestedWidth &&
+            root.scrollWidth <= requestedWidth &&
+            document.body.scrollWidth <= requestedWidth &&
+            overflowing.length === 0,
+        };
+      }, width),
     );
     await page.screenshot({ path: info.outputPath(`B6-inactive-${width}.png`), fullPage: true });
     await expect(page.locator('#run-state')).toHaveText('PAUSED');

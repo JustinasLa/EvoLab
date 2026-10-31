@@ -1,14 +1,30 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { startWorker, type Scope } from '../src/worker';
 import { Ecosystem } from '../src/ecosystem';
-import { legacyV3, legacyV4 } from './fixtures/telemetry';
 import {
   baselineFixtures,
   syntheticHistoricalWorld,
   restoreHistoricalWorld,
+  restoreHistoricalOrganism,
   storedSensoryGenome,
 } from './fixtures/sensory-legacy';
+import { legacyV3, legacyV4, legacyV5, legacyV6, legacyV7, legacyV8 } from './fixtures/telemetry';
+import { DEFAULT_TERRAIN } from '../src/terrain';
+import { readFileSync } from 'node:fs';
+import { acceptedReference, fixtureText, predecessor, identicalRecords } from './fixtures/refuges';
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
+import {
+  contradictoryPruning,
+  impossibleReadmission,
+  omittedNewestAdmission,
+  sameTickLineages,
+  falsePruningClaim,
+  reversedPrunedParent,
+  reversedReadmittedParent,
+  omittedRelatedChild,
+  missingFinalExtinction,
+  extinctionOccupancyContradiction,
+} from './fixtures/lineage';
 import {
   DEFAULTS,
   WIDTH,
@@ -17,6 +33,7 @@ import {
   founder,
   index,
   type WorldFile,
+  type WorldFileV5,
   type Genome,
   type Frame,
 } from '../src/model';
@@ -33,7 +50,18 @@ function sender(scope: Scope) {
     runId = 0,
     stroke = 0,
     active = 0;
-  const manual = ['begin-stroke', 'end-stroke', 'paint', 'settings', 'shock'];
+  const manual = [
+    'begin-stroke',
+    'end-stroke',
+    'paint',
+    'settings',
+    'shock',
+    'clear-walls',
+    'regenerate-walls',
+    'refuge-mode',
+    'paint-refuge',
+    'clear-refuges',
+  ];
   function raw(data: any): void {
     const tracked = [...manual, 'start', 'load', 'save', 'export-measurements'].includes(data.type);
     if (data.type === 'start' || data.type === 'load') runId = data.runId;
@@ -116,7 +144,7 @@ function workerHarness(startFunction = startWorker) {
   const saveText = (): string => send({ type: 'save' }).text;
   const save = (): WorldFile => JSON.parse(saveText());
   const advance = () => tasks.shift()!();
-  const load = (file: WorldFile, runId = 1) =>
+  const load = (file: WorldFile | WorldFileV5, runId = 1) =>
     send({ type: 'load', runId, text: JSON.stringify(file) });
   const frame = (): Frame => send({ type: 'snapshot' }).frame;
   return {
@@ -136,6 +164,444 @@ function workerHarness(startFunction = startWorker) {
     },
   };
 }
+describe('frozen raw boundary admission and recovery', () => {
+  it.each(['known-climate-overflow', 'known-energy-negative-overflow'])(
+    'rejects original raw %s before replacement and preserves independent exact Step',
+    (name) => {
+      const text = fixtureText(`capture-boundaries-attempt2/inputs/${name}.json`);
+      expect(text).toContain(name === 'known-climate-overflow' ? '1e999' : '-1e999');
+      expect(() => acceptedReference(text)).toThrow();
+      const original = fixtureText('capture-direct/inputs/direct-organism-prototype-v6.json'),
+        reference = acceptedReference(original),
+        harness = workerHarness();
+      harness.send({ type: 'load', runId: 1, text: original });
+      harness.send({ type: 'pause' });
+      harness.send({ type: 'inspect', x: 120, y: 78 });
+      const before = harness.saveText(),
+        queued = harness.tasks.length,
+        count = harness.responseCount;
+      identicalRecords(
+        restoreHistoricalOrganism(harness.last().selected),
+        reference.save().organisms[0],
+      );
+      harness.send({ type: 'load', runId: 2, text });
+      expect(harness.responseCount).toBe(count + 1);
+      const error = harness.last('error');
+      expect(error).toMatchObject({
+        runId: 2,
+        operation: 'load',
+        recovery: { playback: { paused: true } },
+      });
+      expect(error).not.toHaveProperty('fatal');
+      expect(harness.tasks).toHaveLength(queued);
+      identicalRecords(
+        restoreHistoricalOrganism(error.recovery.selected),
+        reference.save().organisms[0],
+      );
+      identicalRecords(error.recovery.settings, reference.save().settings);
+      expect(harness.saveText()).toBe(before);
+      expect(predecessor(harness.save())).toEqual(JSON.parse(JSON.stringify(reference.save())));
+      harness.send({ type: 'step' });
+      reference.step();
+      expect(predecessor(harness.save())).toEqual(JSON.parse(JSON.stringify(reference.save())));
+      identicalRecords(
+        restoreHistoricalOrganism(harness.last().selected),
+        reference.save().organisms[0],
+      );
+    },
+  );
+  for (const location of ['settings', 'organism', 'genome', 'cell'])
+    for (const family of ['overflow', 'signed', 'prototype'])
+      it(`retains native structured-clone ${location} ${family} descriptors and detached ownership`, () => {
+        const text = fixtureText(`capture-direct/inputs/direct-${location}-${family}-v6.json`),
+          reference = acceptedReference(text),
+          harness = workerHarness();
+        harness.send({ type: 'load', runId: 1, text });
+        harness.send({ type: 'pause' });
+        harness.send({ type: 'inspect', x: 120, y: 78 });
+        const settings = harness.last('loaded').settings,
+          selected = harness.last().selected;
+        // Lifecycle settings intentionally expose only the four known UI fields.
+        const { seed, mutation, nutrients, climate } = reference.save().settings;
+        identicalRecords(settings, { seed, mutation, nutrients, climate });
+        identicalRecords(restoreHistoricalOrganism(selected), reference.save().organisms[0]);
+        for (const record of [settings, selected, selected.genome, selected.genome.cells[0]])
+          Object.defineProperty(record, '__proto__', {
+            value: { changed: true },
+            configurable: true,
+          });
+        harness.send({ type: 'snapshot' });
+        identicalRecords(
+          restoreHistoricalOrganism(harness.last().selected),
+          reference.save().organisms[0],
+        );
+        expect(predecessor(harness.save())).toEqual({
+          ...JSON.parse(JSON.stringify(reference.save())),
+          organisms:
+            location === 'genome' || location === 'cell'
+              ? reference.save().organisms
+              : JSON.parse(JSON.stringify(reference.save())).organisms,
+        });
+        harness.send({ type: 'step' });
+        reference.step();
+        identicalRecords(
+          restoreHistoricalOrganism(harness.last().selected),
+          reference.save().organisms[0],
+        );
+        expect(predecessor(harness.save())).toEqual({
+          ...JSON.parse(JSON.stringify(reference.save())),
+          organisms:
+            location === 'genome' || location === 'cell'
+              ? reference.save().organisms
+              : JSON.parse(JSON.stringify(reference.save())).organisms,
+        });
+      });
+});
+
+describe('terrain worker ownership, literal migration and nonfatal size preservation', () => {
+  it.each([1, 4, 12])(
+    'keeps wall operations, paused Step and running callbacks exact at speed %i',
+    (speed) => {
+      const harness = workerHarness(),
+        reference = new Ecosystem();
+      harness.load(reference.save());
+      harness.send({ type: 'speed', value: speed });
+      harness.send({ type: 'pause' });
+      harness.send({ type: 'inspect', x: 120, y: 78 });
+      const queued = harness.tasks.length;
+      for (const action of ['clear', 'regenerate'] as const) {
+        const type = action === 'clear' ? 'clear-walls' : 'regenerate-walls';
+        const recipe = { version: 1 as const, preset: 'chambered-refuges' as const, seed: 0 };
+        const expected = reference.changeTerrain(action, recipe);
+        harness.send({
+          type,
+          action,
+          ...(action === 'regenerate' ? { recipe, resolvedSeed: 0 } : {}),
+        });
+        expect(harness.last('manual-result')).toMatchObject({
+          operation: type,
+          action,
+          status: 'applied',
+          rowSequence: expected.rowSequence,
+          detail: expected.detail,
+          terrain: reference.terrain,
+        });
+        expect(harness.save()).toEqual(reference.save());
+        expect(harness.tasks).toHaveLength(queued);
+        expect(harness.last().selected.id).toBe(1);
+        expect(harness.last().playback.paused).toBe(true);
+      }
+      harness.send({
+        type: 'regenerate-walls',
+        action: 'regenerate',
+        recipe: reference.terrain,
+        resolvedSeed: 0,
+      });
+      expect(harness.last('manual-result')).toMatchObject({ status: 'no-op', rowSequence: null });
+      harness.send({ type: 'step' });
+      reference.step();
+      expect(harness.save()).toEqual(reference.save());
+      harness.send({ type: 'resume' });
+      harness.advance();
+      for (let step = 0; step < speed; step++) reference.step();
+      harness.send({ type: 'pause' });
+      expect(harness.save()).toEqual(reference.save());
+      expect(harness.tasks).toHaveLength(1);
+    },
+  );
+  it('rejects malformed wall payloads, duplicate/out-of-order IDs, wrong runs and a delayed closed stroke without mutation', () => {
+    const harness = workerHarness();
+    harness.send({ type: 'start', settings: DEFAULTS, runId: 1 });
+    harness.send({ type: 'pause' });
+    const before = harness.save();
+    for (const payload of [
+      { type: 'clear-walls', action: 'regenerate' },
+      { type: 'clear-walls', action: 'clear', recipe: DEFAULT_TERRAIN },
+      {
+        type: 'regenerate-walls',
+        action: 'regenerate',
+        recipe: { ...DEFAULT_TERRAIN, seed: -1 },
+        resolvedSeed: 42,
+      },
+      { type: 'regenerate-walls', action: 'regenerate', recipe: DEFAULT_TERRAIN, resolvedSeed: 41 },
+      { type: 'regenerate-walls', action: 'clear', recipe: DEFAULT_TERRAIN, resolvedSeed: 42 },
+    ]) {
+      harness.send(payload);
+      expect(harness.last('error').message).toContain('Invalid wall');
+      expect(harness.save()).toEqual(before);
+    }
+    const raw = (data: any) => harness.scope.onmessage!({ data } as MessageEvent);
+    const command = {
+      type: 'regenerate-walls',
+      action: 'regenerate',
+      recipe: DEFAULT_TERRAIN,
+      resolvedSeed: 42,
+      runId: 1,
+      commandId: 1000,
+    };
+    raw({ ...command, requestId: 1 });
+    expect(harness.save()).toEqual(before);
+    const beforeFrame = harness.frame();
+    raw({ ...command, runId: 0 });
+    expect(harness.last('error')).toMatchObject({
+      action: 'regenerate',
+      recipe: DEFAULT_TERRAIN,
+      resolvedSeed: 42,
+    });
+    raw(command);
+    expect(harness.frame()).toEqual(beforeFrame);
+    raw({ ...command, commandId: 999 });
+    expect(harness.frame()).toEqual(beforeFrame);
+    raw({ type: 'begin-stroke', commandId: 1001, runId: 1, strokeId: 1, tool: 'food', radius: 0 });
+    raw({ type: 'clear-walls', action: 'clear', commandId: 1002, runId: 1 });
+    const cleared = harness.last('manual-result');
+    expect(cleared).toMatchObject({ operation: 'clear-walls', action: 'clear', status: 'applied' });
+    raw({
+      type: 'paint',
+      commandId: 1003,
+      runId: 1,
+      strokeId: 1,
+      tool: 'food',
+      x: 1,
+      y: 1,
+      radius: 0,
+      genome: founder(0),
+    });
+    expect(harness.last('error').message).toContain('closed');
+    raw({
+      type: 'start',
+      requestId: 1004,
+      runId: 2,
+      settings: DEFAULTS,
+      terrain: { ...DEFAULT_TERRAIN, version: 99 },
+    });
+    expect(harness.last('error').recovery.frame.terrain).toEqual(DEFAULT_TERRAIN);
+    expect(harness.last('error').recovery.playback.paused).toBe(true);
+    raw({ type: 'save', requestId: 1005, runId: 2 });
+    const reference = new Ecosystem();
+    reference.changeTerrain('clear');
+    expect(JSON.parse(harness.last('saved').text)).toEqual(reference.save());
+  });
+  it('retains complete opaque world5 values through successor reload and cap-size failure without changing complete state or callback ownership', () => {
+    const original = JSON.parse(readFileSync('test/fixtures/terrain/legacy5-opaque.json', 'utf8'));
+    const harness = workerHarness();
+    harness.send({ type: 'load', text: JSON.stringify(original), runId: 1 });
+    expect(harness.last('loaded')).toMatchObject({
+      terrainMigration: true,
+      terrain: DEFAULT_TERRAIN,
+      playback: { paused: false },
+    });
+    harness.send({ type: 'pause' });
+    const reference = Ecosystem.load(JSON.stringify(original));
+    expect(harness.save()).toEqual(reference.save());
+    const saved = harness.save();
+    harness.load(saved, 2);
+    harness.send({ type: 'pause' });
+    harness.send({ type: 'step' });
+    reference.step();
+    expect(harness.save()).toEqual(reference.save());
+    const capped = structuredClone(original);
+    capped.organisms[0].padding = '';
+    capped.organisms[0].padding = 'x'.repeat(
+      WORLD_MAX_BYTES - Buffer.byteLength(JSON.stringify(capped)),
+    );
+    let active: Ecosystem;
+    const originalFrame = Ecosystem.prototype.frame;
+    vi.spyOn(Ecosystem.prototype, 'frame').mockImplementation(function (this: Ecosystem) {
+      active = this;
+      return originalFrame.call(this);
+    });
+    harness.send({ type: 'load', runId: 3, text: JSON.stringify(capped) });
+    harness.send({ type: 'pause' });
+    harness.send({ type: 'inspect', x: 120, y: 78 });
+    const before = active!.save(),
+      frame = harness.last(),
+      callbacks = [...harness.tasks];
+    harness.send({ type: 'save' });
+    expect(harness.last('error')).toMatchObject({ operation: 'save', runId: 3 });
+    expect(harness.last('error')).not.toHaveProperty('fatal');
+    expect(active!.save()).toEqual(before);
+    expect(harness.tasks).toEqual(callbacks);
+    expect(harness.last()).toEqual(frame);
+    const migrated = Ecosystem.load(JSON.stringify(capped));
+    migrated.step();
+    harness.send({ type: 'step' });
+    expect(active!.save()).toEqual(migrated.save());
+    expect(harness.last().selected).toEqual(migrated.save().organisms[0]);
+  });
+});
+describe('painted temperature native protocol', () => {
+  function thermalHarness() {
+    const harness = workerHarness();
+    let commandId = 0;
+    const send = (type: string, payload: object = {}, runId = 1) => {
+      const manual = [
+        'refuge-mode',
+        'paint-refuge',
+        'clear-refuges',
+        'begin-stroke',
+        'end-stroke',
+      ].includes(type);
+      const message = {
+        type,
+        runId,
+        ...payload,
+        ...(manual
+          ? { commandId: ++commandId }
+          : ['start', 'load', 'save'].includes(type)
+            ? { requestId: ++commandId }
+            : {}),
+      };
+      harness.scope.onmessage!({ data: message } as MessageEvent);
+      return message;
+    };
+    const save = () => {
+      send('save');
+      return JSON.parse(harness.last('saved').text) as WorldFile;
+    };
+    send('start', { settings: DEFAULTS });
+    send('pause');
+    return { ...harness, send, save };
+  }
+  const brush = { rulesVersion: 1 as const, tool: 'warm' as const, radius: 1, units: 4 };
+  it.each([1, 4, 12])(
+    'keeps paused edits, exact Step and one running callback at cadence %i',
+    (speed) => {
+      const harness = thermalHarness(),
+        reference = new Ecosystem();
+      harness.send('speed', { value: speed });
+      harness.send('refuge-mode', { rulesVersion: 1, enabled: true });
+      reference.changeRefugeMode(true);
+      harness.send('begin-stroke', { ...brush, strokeId: 8 });
+      const command = harness.send('paint-refuge', { ...brush, strokeId: 8, x: 0, y: 0 });
+      const outcome = reference.paintRefuge(brush, 0, 0);
+      expect(harness.last('manual-result')).toMatchObject({
+        ...command,
+        type: 'manual-result',
+        status: 'applied',
+        ...outcome,
+      });
+      expect(harness.save()).toEqual(reference.save());
+      expect(Object.prototype.toString.call(harness.last().frame.thermalRefuges.units)).toBe(
+        '[object Int8Array]',
+      );
+      harness.send('end-stroke', { strokeId: 8 });
+      harness.send('step');
+      reference.step();
+      expect(harness.save()).toEqual(reference.save());
+      harness.send('resume');
+      harness.advance();
+      advanceReference(reference, speed);
+      harness.send('pause');
+      expect(harness.save()).toEqual(reference.save());
+      expect(harness.tasks).toHaveLength(1);
+      harness.send('refuge-mode', { rulesVersion: 1, enabled: false });
+      reference.changeRefugeMode(false);
+      harness.send('clear-refuges', { rulesVersion: 1 });
+      reference.clearRefuges();
+      expect(harness.save()).toEqual(reference.save());
+      expect(harness.transferStats.buffers).toBe(harness.transferStats.batches * 3);
+      expect(harness.transferStats.duplicates).toBe(0);
+    },
+  );
+  function advanceReference(world: Ecosystem, ticks: number) {
+    for (let tick = 0; tick < ticks; tick++) world.step();
+  }
+  it('rejects malformed, mismatched, stale, duplicate and closed commands with exact echoes and no changes', () => {
+    const harness = thermalHarness();
+    const before = harness.save();
+    harness.send('paint-refuge', { ...brush, strokeId: 8, x: 0, y: 0 });
+    expect(harness.last('error').message).toContain('closed');
+    expect(harness.save()).toEqual(before);
+    harness.send('refuge-mode', { rulesVersion: 2, enabled: true });
+    expect(harness.last('error').operation).toBe('refuge-mode');
+    harness.send('clear-refuges', { rulesVersion: 2 });
+    expect(harness.last('error').operation).toBe('clear-refuges');
+    harness.send('refuge-mode', { rulesVersion: 1, enabled: true });
+    harness.send('begin-stroke', { ...brush, strokeId: 8 });
+    for (const payload of [
+      { ...brush, units: 8 },
+      { ...brush, tool: 'cool', units: -4 },
+      { ...brush, radius: 0 },
+      { ...brush, rulesVersion: 2 },
+      { ...brush, x: 240 },
+    ]) {
+      const state = harness.save();
+      harness.send('paint-refuge', { x: 0, y: 0, strokeId: 8, ...payload });
+      expect(harness.last('error').operation).toBe('paint-refuge');
+      expect(harness.save()).toEqual(state);
+    }
+    const command = harness.send('paint-refuge', { ...brush, strokeId: 8, x: 0, y: 0 });
+    const applied = harness.save();
+    harness.scope.onmessage!({ data: command } as MessageEvent);
+    expect(harness.save()).toEqual(applied);
+    harness.send('paint-refuge', { ...brush, strokeId: 8, x: 0, y: 0 }, 0);
+    expect(harness.save()).toEqual(applied);
+    harness.send('refuge-mode', { rulesVersion: 1, enabled: false });
+    const disabled = harness.save();
+    harness.send('paint-refuge', { ...brush, strokeId: 8, x: 0, y: 0 });
+    expect(harness.save()).toEqual(disabled);
+  });
+  it('counts all 4096 valid dabs including saturation no-ops and reserves no row for the 4097th rejection', () => {
+    const harness = thermalHarness();
+    harness.send('refuge-mode', { rulesVersion: 1, enabled: true });
+    const config = { ...brush, radius: 0, units: 32, strokeId: 9 };
+    harness.send('begin-stroke', config);
+    for (let dab = 0; dab < 4096; dab++) harness.send('paint-refuge', { ...config, x: 0, y: 0 });
+    expect(harness.last('manual-result')).toMatchObject({
+      status: 'no-op',
+      rowSequence: null,
+      nonzeroCells: 1,
+    });
+    const before = harness.save();
+    harness.send('paint-refuge', { ...config, x: 1, y: 0 });
+    expect(harness.last('error').message).toContain('exhausted');
+    expect(harness.save()).toEqual(before);
+    expect(before.interventions.entries.at(-1)).toMatchObject({
+      detail: { successfulCommands: 1, changedBrushCells: 1 },
+    });
+  });
+  it.each(['refuge-mode', 'paint-refuge', 'clear-refuges'])(
+    'reports truthful applied-before-terminal-publication failure for %s',
+    (operation) => {
+      const harness = thermalHarness(),
+        reference = new Ecosystem();
+      if (operation !== 'refuge-mode') {
+        harness.send('refuge-mode', { rulesVersion: 1, enabled: true });
+        reference.changeRefugeMode(true);
+      }
+      if (operation === 'clear-refuges') {
+        harness.send('begin-stroke', { ...brush, strokeId: 8 });
+        harness.send('paint-refuge', { ...brush, strokeId: 8, x: 0, y: 0 });
+        reference.paintRefuge(brush, 0, 0);
+      }
+      if (operation === 'paint-refuge') harness.send('begin-stroke', { ...brush, strokeId: 8 });
+      const publish = harness.scope.postMessage;
+      let thrown = false;
+      harness.scope.postMessage = (data, transfer) => {
+        if (!thrown && data.operation === operation) {
+          thrown = true;
+          throw new Error('terminal publication failed');
+        }
+        publish(data, transfer);
+      };
+      if (operation === 'refuge-mode') {
+        harness.send(operation, { rulesVersion: 1, enabled: true });
+        reference.changeRefugeMode(true);
+      } else if (operation === 'paint-refuge') {
+        harness.send(operation, { ...brush, strokeId: 8, x: 0, y: 0 });
+        reference.paintRefuge(brush, 0, 0);
+      } else {
+        harness.send(operation, { rulesVersion: 1 });
+        reference.clearRefuges();
+      }
+      expect(harness.last('error')).toMatchObject({ fatal: true });
+      expect(harness.last('error').message).toContain('The action completed');
+      expect(harness.last('error')).not.toHaveProperty('operation');
+      expect(harness.save()).toEqual(reference.save());
+    },
+  );
+});
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
@@ -205,7 +671,18 @@ describe('correlated manual/export worker protocol', () => {
         type,
         runId,
         ...payload,
-        [['begin-stroke', 'paint', 'end-stroke', 'settings', 'shock'].includes(type)
+        [[
+          'begin-stroke',
+          'paint',
+          'end-stroke',
+          'settings',
+          'shock',
+          'clear-walls',
+          'regenerate-walls',
+          'refuge-mode',
+          'paint-refuge',
+          'clear-refuges',
+        ].includes(type)
           ? 'commandId'
           : 'requestId']: ++posting,
       };
@@ -215,7 +692,19 @@ describe('correlated manual/export worker protocol', () => {
     return { ...harness, post, raw };
   }
   it.each([
-    ...['initial-start', 'start', 'load', 'settings', 'paint', 'shock'].flatMap((operation) =>
+    ...[
+      'initial-start',
+      'start',
+      'load',
+      'settings',
+      'paint',
+      'shock',
+      'clear-walls',
+      'regenerate-walls',
+      'refuge-mode',
+      'paint-refuge',
+      'clear-refuges',
+    ].flatMap((operation) =>
       ['frame-build', 'frame-publication'].flatMap((fault) =>
         (operation === 'initial-start' ? [false] : [false, true]).map((pending) => [
           operation,
@@ -252,6 +741,29 @@ describe('correlated manual/export worker protocol', () => {
         targetRun = ['start', 'load'].includes(operation) ? 2 : 1,
         publish = harness.scope.postMessage,
         originalFrame = Ecosystem.prototype.frame;
+      if (operation === 'paint-refuge' || operation === 'clear-refuges') {
+        harness.post('refuge-mode', { rulesVersion: 1, enabled: true });
+        reference.changeRefugeMode(true);
+        if (operation === 'clear-refuges') {
+          harness.post('begin-stroke', {
+            strokeId: 20,
+            rulesVersion: 1,
+            tool: 'warm',
+            radius: 0,
+            units: 4,
+          });
+          harness.post('paint-refuge', {
+            strokeId: 20,
+            rulesVersion: 1,
+            tool: 'warm',
+            radius: 0,
+            units: 4,
+            x: 1,
+            y: 1,
+          });
+          reference.paintRefuge({ rulesVersion: 1, tool: 'warm', radius: 0, units: 4 }, 1, 1);
+        }
+      }
       vi.spyOn(Ecosystem.prototype, 'frame').mockImplementation(function (this: Ecosystem) {
         if (armed && fault === 'frame-build') {
           armed = false;
@@ -291,6 +803,25 @@ describe('correlated manual/export worker protocol', () => {
             after: { offset: reference.eventOffset, until: reference.eventUntil },
           },
         });
+      } else if (operation === 'refuge-mode') {
+        harness.post('refuge-mode', { rulesVersion: 1, enabled: true });
+        reference.changeRefugeMode(true);
+      } else if (operation === 'clear-refuges') {
+        harness.post('clear-refuges', { rulesVersion: 1 });
+        reference.clearRefuges();
+      } else if (operation === 'paint-refuge') {
+        const brush = { rulesVersion: 1 as const, tool: 'warm' as const, radius: 0, units: 4 };
+        harness.post('begin-stroke', { ...brush, strokeId: 21 });
+        harness.post('paint-refuge', { ...brush, strokeId: 21, x: 1, y: 1 });
+        reference.paintRefuge(brush, 1, 1);
+      } else if (operation === 'clear-walls' || operation === 'regenerate-walls') {
+        const action = operation === 'clear-walls' ? 'clear' : 'regenerate';
+        const recipe = { version: 1 as const, preset: 'chambered-refuges' as const, seed: 0 };
+        harness.post(operation, {
+          action,
+          ...(action === 'regenerate' ? { recipe, resolvedSeed: 0 } : {}),
+        });
+        reference.changeTerrain(action, recipe);
       } else {
         harness.post('begin-stroke', { strokeId: 1, tool: 'food', radius: 0 });
         harness.post('paint', {
@@ -1139,7 +1670,7 @@ describe('authoritative extinction playback', () => {
       });
       expect(harness.tasks).toHaveLength(1);
       harness.load(terminalWorld(), 3);
-      const empty = terminalWorld();
+      const empty = legacyV5(terminalWorld());
       empty.organisms = [];
       harness.load(empty, 4);
       expect(harness.last('loaded').playback).toEqual({
@@ -1180,7 +1711,7 @@ describe('authoritative extinction playback', () => {
     (preference) => {
       const harness = workerHarness();
       if (!preference) harness.send({ type: 'pause-on-extinction', runId: 0, value: false });
-      const empty = terminalWorld();
+      const empty = legacyV5(terminalWorld());
       empty.organisms = [];
       harness.load(empty);
       expect(harness.save()).toEqual(Ecosystem.load(JSON.stringify(empty)).save());
@@ -1310,7 +1841,7 @@ describe('authoritative extinction playback', () => {
     'keeps exact empty Step paused with preference %s without replacing the extinction record',
     (preference) => {
       const harness = workerHarness();
-      const empty = terminalWorld();
+      const empty = legacyV5(terminalWorld());
       empty.organisms = [];
       harness.load(empty);
       if (!preference) harness.send({ type: 'pause-on-extinction', runId: 1, value: false });
@@ -1427,13 +1958,19 @@ describe('integrated extinction and telemetry', () => {
     expect(harness.tasks).toHaveLength(0);
   });
 
-  it.each([2, 3, 4, 5, 6])(
+  it.each([2, 3, 4, 5, 6, 7, 8, 9])(
     'migrates/restores v%i then preserves terminal and pending history through an empty save continuation',
     (version) => {
       const harness = workerHarness();
       const current = terminalWorld(1, 5, 89);
-      const historical = syntheticHistoricalWorld(current);
-      const { telemetry: _telemetry, interventions: _interventions, ...legacy } = historical;
+      const {
+        telemetry: _telemetry,
+        lineageArchive: _lineageArchive,
+        interventions: _interventions,
+        terrain: _terrain,
+        thermalRefuges: _thermalRefuges,
+        ...legacy
+      } = syntheticHistoricalWorld(current);
       const file =
         version === 2
           ? { ...legacy, version: 2 as const }
@@ -1442,8 +1979,14 @@ describe('integrated extinction and telemetry', () => {
             : version === 4
               ? legacyV4(current)
               : version === 5
-                ? historical
-                : current;
+                ? legacyV5(current)
+                : version === 6
+                  ? legacyV6(current)
+                  : version === 7
+                    ? legacyV7(current)
+                    : version === 8
+                      ? legacyV8(current)
+                      : current;
       expect(file.version).toBe(version);
       if (file.version === 2) expect(file).not.toHaveProperty('telemetry');
       else {
@@ -1470,23 +2013,40 @@ describe('integrated extinction and telemetry', () => {
           samples: file.telemetry.samples.map((sample) => ({ ...sample, adaptation: null })),
         });
       if (file.version >= 4) {
-        expect(file.version === 6 ? imported : restoreHistoricalWorld(imported)).toEqual(
-          file.version >= 5
+        expect(imported).toEqual(
+          file.version === 9
             ? file
-            : {
-                ...file,
-                version: 5,
-                interventions: {
-                  version: 1,
-                  originTick: file.tick,
-                  originKind: 'legacy-import',
-                  originSettings: { ...file.settings },
-                  prefixSettings: { ...file.settings },
-                  totalEntries: 0,
-                  evictedThroughTick: null,
-                  entries: [],
+            : file.version >= 5
+              ? {
+                  ...file,
+                  version: 9,
+                  organisms: imported.organisms,
+                  lineageArchive: imported.lineageArchive,
+                  terrain: file.version >= 6 ? file.terrain : { ...DEFAULT_TERRAIN },
+                  thermalRefuges:
+                    file.version >= 7
+                      ? file.thermalRefuges
+                      : { version: 1, enabled: false, cells: [] },
+                  interventions: { ...file.interventions, version: 3 },
+                }
+              : {
+                  ...file,
+                  version: 9,
+                  organisms: imported.organisms,
+                  lineageArchive: imported.lineageArchive,
+                  terrain: { ...DEFAULT_TERRAIN },
+                  thermalRefuges: { version: 1, enabled: false, cells: [] },
+                  interventions: {
+                    version: 3,
+                    originTick: file.tick,
+                    originKind: 'legacy-import',
+                    originSettings: { ...file.settings },
+                    prefixSettings: { ...file.settings },
+                    totalEntries: 0,
+                    evictedThroughTick: null,
+                    entries: [],
+                  },
                 },
-              },
         );
         expect(file.telemetry.adaptationOriginTick).toBe(0);
         for (const sample of file.telemetry.samples) expect(sample.adaptation).not.toBeNull();
@@ -1494,7 +2054,7 @@ describe('integrated extinction and telemetry', () => {
       harness.advance();
       reference.step();
       const terminal = harness.save();
-      expect(terminal.version).toBe(6);
+      expect(terminal.version).toBe(9);
       expect(terminal.telemetry.version).toBe(2);
       expect(terminal.telemetry.samples.at(-1)).toMatchObject({
         fromTick: version === 2 ? 89 : 60,
@@ -1529,6 +2089,89 @@ describe('integrated extinction and telemetry', () => {
 });
 
 describe('failed-load retained-world recovery', () => {
+  it('C16-R1 rejects both pruning provenance variants and same-tick FIFO inversion with complete save preservation', () => {
+    const swapped = sameTickLineages().save();
+    [swapped.lineageArchive.summaries[0], swapped.lineageArchive.summaries[1]] = [
+      swapped.lineageArchive.summaries[1],
+      swapped.lineageArchive.summaries[0],
+    ];
+    const harness = workerHarness();
+    harness.load(terminalWorld(12));
+    harness.send({ type: 'pause' });
+    harness.advance(); // Settle the already queued callback while paused.
+    harness.send({ type: 'inspect', x: 40, y: 40 });
+    const before = harness.saveText(),
+      control = Ecosystem.load(before);
+    let runId = 1;
+    for (const invalid of [
+      contradictoryPruning(false),
+      contradictoryPruning(true),
+      swapped,
+      omittedNewestAdmission(),
+      impossibleReadmission(),
+      falsePruningClaim(),
+      reversedPrunedParent(),
+      reversedReadmittedParent(),
+      reversedReadmittedParent(true),
+      omittedRelatedChild(),
+      missingFinalExtinction(),
+      extinctionOccupancyContradiction(),
+    ]) {
+      harness.send({ type: 'load', runId: ++runId, text: JSON.stringify(invalid) });
+      expect(harness.last('error')).toMatchObject({
+        runId,
+        operation: 'load',
+        message: 'Invalid ecosystem lineage archive.',
+        recovery: { selected: { id: control.save().organisms[0].id }, playback: { paused: true } },
+      });
+      expect(harness.saveText()).toBe(before);
+      expect(harness.tasks).toHaveLength(0);
+    }
+    harness.send({ type: 'step' });
+    control.step();
+    expect(harness.save()).toEqual(control.save());
+  });
+  it('rejects corrupt current archive atomically and keeps exact full-save recovery and future ordering', () => {
+    const harness = workerHarness();
+    harness.load(terminalWorld(12));
+    harness.send({ type: 'pause' });
+    harness.send({ type: 'inspect', x: 40, y: 40 });
+    const before = harness.save(),
+      text = harness.saveText();
+    const invalid = structuredClone(before);
+    invalid.lineageArchive.living[0].liveCount++;
+    harness.send({ type: 'load', runId: 2, text: JSON.stringify(invalid) });
+    expect(harness.last('error')).toMatchObject({
+      runId: 2,
+      operation: 'load',
+      message: 'Invalid ecosystem lineage archive.',
+      recovery: {
+        selected: { id: before.organisms[0].id },
+        settings: before.settings,
+        playback: { paused: true },
+      },
+    });
+    expect(harness.saveText()).toBe(text);
+    const control = Ecosystem.load(text);
+    harness.send({
+      type: 'paint',
+      runId: 1,
+      tool: 'plant',
+      x: 80,
+      y: 80,
+      radius: 0,
+      genome: mouth,
+    });
+    expect(harness.last('error').message).toContain('obsolete');
+    expect(harness.saveText()).toBe(text);
+    harness.send({ type: 'step', runId: 2 });
+    control.step();
+    expect(harness.save()).toEqual(control.save());
+    expect(harness.tasks).toHaveLength(1);
+    harness.advance();
+    expect(harness.tasks).toHaveLength(0);
+    expect(harness.save()).toEqual(control.save());
+  });
   it('recovers a held terminal frame immediately under the adopted ID without mutation or scheduling', () => {
     const frameSpy = vi.spyOn(Ecosystem.prototype, 'frame');
     const harness = workerHarness();
@@ -1562,7 +2205,7 @@ describe('failed-load retained-world recovery', () => {
     for (let repeat = 0; repeat < 2; repeat++)
       harness.send({ type: 'load', runId: 3 + repeat, text: 'not json' });
     expect(harness.transferStats.batches).toBeGreaterThan(0);
-    expect(harness.transferStats.buffers).toBe(harness.transferStats.batches * 2);
+    expect(harness.transferStats.buffers).toBe(harness.transferStats.batches * 3);
     expect(harness.transferStats.duplicates).toBe(0);
     expect(harness.transferStats.detached).toBe(harness.transferStats.buffers);
     expect(harness.save()).toEqual(before);

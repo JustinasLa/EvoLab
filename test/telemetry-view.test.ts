@@ -8,6 +8,7 @@ import {
   storedSensoryGenome,
   syntheticHistoricalWorld,
 } from './fixtures/sensory-legacy';
+import { legacyV3 } from './fixtures/telemetry';
 
 let root: HTMLElement, controller: ReturnType<typeof createTelemetryView>, width: number;
 const advance = (world: Ecosystem, ticks: number) => {
@@ -24,17 +25,7 @@ function show(frame: Frame, run = 1) {
   controller.render();
 }
 function legacy(world: Ecosystem): WorldFileV3 {
-  const saved = syntheticHistoricalWorld(world.save()),
-    { adaptationOriginTick: _origin, ...telemetry } = saved.telemetry;
-  return {
-    ...saved,
-    version: 3,
-    telemetry: {
-      ...telemetry,
-      version: 1,
-      samples: telemetry.samples.map(({ adaptation: _adaptation, ...sample }) => sample),
-    },
-  };
+  return legacyV3(world.save());
 }
 beforeEach(() => {
   width = 300;
@@ -119,6 +110,23 @@ describe('bounded model-dependent telemetry presentation', () => {
       expect(world.save()).toEqual(before);
     },
   );
+  it('renders exact terrain details separately from climate shocks and discloses unknown prior geometry', () => {
+    const world = new Ecosystem();
+    const cleared = world.changeTerrain('clear');
+    show(world.frame());
+    expect(get('telemetry-intervention-details').textContent).toContain('Wall actionclear');
+    expect(get('telemetry-intervention-details').textContent).toContain(
+      String(cleared.detail.removedWalls),
+    );
+    expect(get('telemetry-intervention-details').textContent).toContain(
+      'Terrain history before the first retained wall action is unknown',
+    );
+    expect(get('telemetry-intervention-details').textContent).not.toContain('Climate shock');
+    world.changeTerrain('regenerate', { version: 1, preset: 'chambered-refuges', seed: 0 });
+    show(world.frame());
+    expect(get('telemetry-intervention-details').textContent).toContain('chambered-refuges');
+    expect(get('telemetry-intervention-details').textContent).toContain('Walls added');
+  });
   it('presents each real manual kind without inventing samples and redraws same-tick coalesced portions', () => {
     const world = new Ecosystem(DEFAULTS, false),
       paint = (x: number, sequence: number | null = null) =>
