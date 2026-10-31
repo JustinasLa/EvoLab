@@ -67,7 +67,9 @@ async function download(page: Page, selector: string) {
   const pending = page.waitForEvent('download');
   await page.locator(selector).click();
   const file = await pending;
-  return (await readFile((await file.path())!)).toString();
+  const text = (await readFile((await file.path())!)).toString();
+  if (selector === '#save') await expect(page.locator('#save')).toBeEnabled();
+  return text;
 }
 async function run(
   page: Page,

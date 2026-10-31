@@ -24,8 +24,28 @@ function harness(now = () => 0) {
   const send = (data: any) => scope.onmessage?.({ data } as MessageEvent);
   return { scope, messages, tasks, send, dispose, cancel };
 }
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 describe('bounded comparison worker', () => {
+  it('boots its native module entrypoint with the real default scheduler and monotonic clock', async () => {
+    vi.useFakeTimers();
+    const scope = { onmessage: null, postMessage: vi.fn() } as ComparisonScope;
+    vi.stubGlobal('self', scope);
+    vi.stubGlobal('document', undefined);
+    vi.resetModules();
+    await import('../src/comparison-worker');
+    expect(scope.onmessage).toBeTypeOf('function');
+    scope.onmessage!({ data: { type: 'start', text: text(), plan } } as MessageEvent);
+    vi.runAllTimers();
+    expect(scope.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'complete' }),
+    );
+    expect(scope.onmessage).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it('runs the real engine with one scheduled callback and one unacknowledged progress, then releases', () => {
     const test = harness(),
       checkpoint = text();

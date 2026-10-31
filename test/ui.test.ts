@@ -1569,7 +1569,7 @@ describe('owned command admission and real-worker interleavings', () => {
     click('confirm-reset');
     harness.deliver();
     expect(construct).not.toHaveBeenCalled();
-    expect(get('comparison-status').textContent).toContain('world changed');
+    expect(get('comparison-status').textContent).toContain('lifecycle changed');
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
   it('rejects invalid slider edits, non-Error reads and conflicting same-run replacement identities', async () => {

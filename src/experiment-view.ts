@@ -37,6 +37,8 @@ export function mountComparisons(
     clearTimeout(timer);
     if (url) URL.revokeObjectURL(url);
     url = undefined;
+    for (const branch of ['control', 'treatment'])
+      get<HTMLButtonElement>(branch).disabled = !result;
   };
   const releaseWorker = (): void => {
     if (worker) {
@@ -94,6 +96,8 @@ export function mountComparisons(
       if (!result || url) return;
       try {
         url = URL.createObjectURL(new Blob([result[branch].state], { type: 'application/json' }));
+        for (const branch of ['control', 'treatment'])
+          get<HTMLButtonElement>(branch).disabled = true;
         const anchor = document.createElement('a');
         anchor.href = url;
         anchor.download = `evolab-${branch}-${result.seed}-tick-${result.plan.horizonTick}.json`;
@@ -176,7 +180,9 @@ export function mountComparisons(
         failed('Could not start the comparison worker. No result retained.');
       }
     },
-    failed,
+    failed(message: string): void {
+      if (capture) failed(message);
+    },
     invalidate(): void {
       if (capture || worker || result) failed('Comparison cleared: the sandbox lifecycle changed.');
     },

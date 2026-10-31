@@ -158,6 +158,8 @@ describe('comparison presentation ownership', () => {
     expect(get('results').childElementCount).toBe(0);
     view.invalidate();
     expect(get('status').textContent).toContain('lifecycle changed');
+    view.failed('An old capture failed after invalidation.');
+    expect(get('status').textContent).toContain('lifecycle changed');
     click('start');
     view.saved(text(), 0);
     late({ data: completed() } as MessageEvent);
