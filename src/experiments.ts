@@ -22,6 +22,7 @@ export function createComparison(text: string, input: ComparisonPlan) {
   const control = Ecosystem.load(text),
     treatment = Ecosystem.load(text),
     sourceTick = control.tick,
+    seed = control.settings.seed,
     plan = { ...input };
   if (
     plan.horizonTick <= sourceTick ||
@@ -60,6 +61,7 @@ export function createComparison(text: string, input: ComparisonPlan) {
   return {
     advance(now: () => number) {
       if (disposed) throw new Error('Comparison was disposed.');
+      const [control, treatment] = worlds;
       const began = now();
       for (
         let count = 0;
@@ -93,7 +95,7 @@ export function createComparison(text: string, input: ComparisonPlan) {
       return { sourceTick, tick: control.tick, horizonTick: plan.horizonTick };
     },
     result(): ComparisonResult {
-      if (disposed || control.tick !== plan.horizonTick)
+      if (disposed || worlds[0].tick !== plan.horizonTick)
         throw new Error('Comparison has no completed result.');
       for (const [position, world] of worlds.entries()) {
         const state = JSON.stringify(world.save());
@@ -105,7 +107,7 @@ export function createComparison(text: string, input: ComparisonPlan) {
       return structuredClone({
         plan,
         sourceTick,
-        seed: control.settings.seed,
+        seed,
         control: branches[0],
         treatment: branches[1],
       });

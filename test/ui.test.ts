@@ -1516,6 +1516,62 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe('owned command admission and real-worker interleavings', () => {
+  it('captures comparison sources through complete native Save without advancing or replacing the sandbox', () => {
+    const endpoint = {
+      onmessage: null,
+      onerror: null,
+      onmessageerror: null,
+      postMessage: vi.fn(),
+      terminate: vi.fn(),
+    };
+    const construct = vi.fn(function () {
+      return endpoint;
+    });
+    vi.stubGlobal('Worker', construct);
+    const harness = realWorker(true);
+    click('comparison-start');
+    expect(get('comparison-status').textContent).toContain('busy or unavailable');
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    const before = harness.save();
+    click('comparison-start');
+    harness.deliver();
+    expect(construct).toHaveBeenCalledTimes(1);
+    const source = endpoint.postMessage.mock.calls[0][0];
+    expect(source.type).toBe('start');
+    expect(JSON.parse(source.text)).toEqual(before);
+    expect(harness.save()).toEqual(before);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    click('load');
+    expect(endpoint.terminate).toHaveBeenCalledTimes(1);
+    expect(get('comparison-status').textContent).toContain('lifecycle changed');
+  });
+  it('routes rejected comparison Saves and transport failures without downloads or wedged ownership', () => {
+    click('comparison-start');
+    worker.emit({ type: 'error', message: 'Complete checkpoint rejected.', fatal: false });
+    expect(get('comparison-status').textContent).toContain('checkpoint rejected');
+    worker.postMessage.mockImplementationOnce(() => {
+      throw new DOMException('clone', 'DataCloneError');
+    });
+    click('comparison-start');
+    expect(get('comparison-status').textContent).toContain('busy or unavailable');
+    expect(get<HTMLButtonElement>('comparison-start').disabled).toBe(false);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+  it('rejects a delayed comparison capture when confirmed reset has taken ownership', () => {
+    const construct = vi.fn();
+    vi.stubGlobal('Worker', construct);
+    const harness = realWorker(true);
+    harness.deliver();
+    click('comparison-start');
+    click('reset');
+    click('confirm-reset');
+    harness.deliver();
+    expect(construct).not.toHaveBeenCalled();
+    expect(get('comparison-status').textContent).toContain('world changed');
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
   it('rejects invalid slider edits, non-Error reads and conflicting same-run replacement identities', async () => {
     const harness = realWorker(true);
     harness.deliver();

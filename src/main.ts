@@ -1,4 +1,5 @@
 import { mountCheckpoints } from './checkpoint-view';
+import { mountComparisons } from './experiment-view';
 import './style.css';
 import {
   DEFAULT_TERRAIN,
@@ -996,7 +997,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     echo?: Record<string, unknown>;
     targetTicket?: TargetTicket;
     cancelTicket?: TargetTicket;
-    checkpoint?: boolean;
+    checkpoint?: boolean | 'comparison';
   };
   type Posted = Omit<Entry, 'payload'> & {
     type: CommandPayload['type'];
@@ -1334,7 +1335,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         }
         availability();
         if (entry.checkpoint)
-          checkpoints.failed('Checkpoint Save could not be posted. Retry explicitly.');
+          captureFailed(entry.checkpoint, 'Complete Save could not be posted. Retry explicitly.');
         notice('Could not post this action. No automatic retry was queued.');
         return true;
       } else {
@@ -1342,12 +1343,16 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         stop();
       }
       if (entry.checkpoint)
-        checkpoints.failed('Checkpoint Save could not be posted. Retry explicitly.');
+        captureFailed(entry.checkpoint, 'Complete Save could not be posted. Retry explicitly.');
       notice('Could not post this action. No automatic retry was queued.');
     }
     return false;
   }
-  function send(data: any, capturedTerrainRevision = terrainRevision, checkpoint = false): boolean {
+  function send(
+    data: any,
+    capturedTerrainRevision = terrainRevision,
+    checkpoint: boolean | 'comparison' = false,
+  ): boolean {
     if (
       !alive ||
       terminated ||
@@ -1574,6 +1579,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     if (focus) get('reset').focus();
   }
   function stop(): void {
+    comparisons.invalidate();
     checkpoints.invalidate();
     stopped = true;
     invalidateObservation();
@@ -1755,6 +1761,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   ): void {
     cancelReset(false);
     checkpoints.invalidate();
+    comparisons.invalidate();
     invalidateObservation();
     const payload = captureCommand({ type: operation, ...data, display: desiredView }, settings);
     try {
@@ -2398,6 +2405,17 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   });
   get('help').addEventListener('click', () => get<HTMLDialogElement>('help-dialog').showModal());
   get('close-help').addEventListener('click', () => get<HTMLDialogElement>('help-dialog').close());
+  function captureFailed(target: boolean | 'comparison', message: string): void {
+    if (target === 'comparison') comparisons.failed(message);
+    else checkpoints.failed(message);
+  }
+  const comparisons = mountComparisons(root, {
+    context: () => `${generation}:${runId}:${worldRequest}`,
+    capture: () => {
+      if (lifecycleBusy() || hasOwner('save') || downloads.save) return false;
+      return send({ type: 'save' }, terrainRevision, 'comparison');
+    },
+  });
   const checkpoints = mountCheckpoints(root, {
     context: () => `${generation}:${runId}:${worldRequest}`,
     capture: () => {
@@ -2420,6 +2438,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   const worldInput = get<HTMLInputElement>('file');
   function invalidateCandidate(): void {
     checkpoints.invalidate();
+    comparisons.invalidate();
     worldRequest++;
     waitingFile = null;
     const index = pending.findIndex((entry) => entry.payload.type === 'load');
@@ -2936,9 +2955,13 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           notice('Worker rejected this manual action; no successful effect recorded.');
       }
       if (completion.checkpoint) {
-        if (data.type === 'saved' && current) checkpoints.saved(data.text);
-        else
-          checkpoints.failed(
+        if (data.type === 'saved' && current) {
+          if (completion.checkpoint === 'comparison')
+            comparisons.saved(data.text, data.completedTick);
+          else checkpoints.saved(data.text);
+        } else
+          captureFailed(
+            completion.checkpoint,
             data.type === 'error'
               ? data.message
               : 'Checkpoint capture cancelled: the world changed.',
@@ -3085,6 +3108,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     blueprintReader?.abort();
     library.dispose();
     checkpoints.dispose();
+    comparisons.dispose();
     for (const cleanup of cleanups) cleanup();
     if (exportUrl) URL.revokeObjectURL(exportUrl);
     candidate = undefined;
