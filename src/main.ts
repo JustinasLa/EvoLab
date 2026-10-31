@@ -1626,6 +1626,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     }
     tool = next;
     clearPlacement();
+    get('cancel-placement').hidden = tool !== 'plant';
     root
       .querySelectorAll<HTMLButtonElement>('button[data-tool]')
       .forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === tool)));
@@ -1949,9 +1950,11 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   });
   canvas.addEventListener('pointermove', (event) => {
     if (ownerPointer !== null && event.pointerId !== ownerPointer) return;
-    const rect = canvas.getBoundingClientRect();
-    hover = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-    dirty = true;
+    if (tool === 'plant') {
+      const rect = canvas.getBoundingClientRect();
+      hover = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      dirty = true;
+    }
     if (!dragging || event.pointerId !== ownerPointer) return;
     if (tool === 'pan') {
       camera.x += event.clientX - lastX;
@@ -2500,6 +2503,11 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     void readWorld();
   });
   const keyboard = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape' && tool === 'plant' && !root.querySelector('dialog[open]')) {
+      event.preventDefault();
+      choose('pan');
+      return;
+    }
     if (
       (event.target instanceof HTMLElement &&
         event.target.closest('input,select,textarea,button,[contenteditable="true"],dialog')) ||
@@ -2511,7 +2519,6 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     )
       return;
     const key = event.key.toLowerCase();
-    if (key === 'escape') choose('pan');
     if ((key === 'r' || key === 'm') && !event.repeat) {
       event.preventDefault();
       transform(key === 'r' ? 'rotate' : 'mirror');

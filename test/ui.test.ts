@@ -2982,16 +2982,21 @@ describe('explicit bounded local library', () => {
     click('capture-selected');
     return { deliver: () => original(held), command: () => held };
   }
-  it('cancels a delayed library full capture after a newer designer edit without storing a stale candidate', async () => {
-    const capture = holdLibraryCapture();
-    set('blueprint-name', 'newer design');
-    capture.deliver();
-    await flush();
-    expect(get('library-status').textContent).toContain('Capture cancelled');
-    expect(get<HTMLInputElement>('blueprint-name').value).toBe('newer design');
-    expect(get('library-candidate').hidden).toBe(true);
-    expect(storage.values.size).toBe(0);
-  });
+  it.each(['name', 'rotate', 'mirror'])(
+    'cancels a delayed library full capture after %s without storing a stale candidate',
+    async (action) => {
+      const capture = holdLibraryCapture();
+      if (action === 'name') set('blueprint-name', 'newer design');
+      else click(`${action}-design`);
+      capture.deliver();
+      await flush();
+      expect(get('library-status').textContent).toContain('Capture cancelled');
+      if (action === 'name')
+        expect(get<HTMLInputElement>('blueprint-name').value).toBe('newer design');
+      expect(get('library-candidate').hidden).toBe(true);
+      expect(storage.values.size).toBe(0);
+    },
+  );
   it('preserves a newer unsaved candidate when an earlier complete library capture returns', async () => {
     const capture = holdLibraryCapture();
     await uploadLocal(serializeBlueprint(draft('Retained newer candidate').blueprint));
@@ -3205,6 +3210,40 @@ describe('explicit bounded local library', () => {
       expect(document.activeElement).toBe(ecosystem);
       expect(get('library-status').textContent).toBe(cancelled);
       expect(storage.connection.transaction).toHaveBeenCalledTimes(transactions);
+    },
+  );
+
+  it.each(
+    ['initial', 'final'].flatMap((phase) =>
+      ['rotate', 'mirror'].map((action) => ({ phase, action })),
+    ),
+  )(
+    'keeps a $action transform authoritative across a delayed $phase library load',
+    async ({ phase, action }) => {
+      storage.values.set(first, encodeRecord(draft('must not publish'), 1));
+      await open();
+      if (phase === 'final') {
+        click('library-load');
+        await flush();
+      }
+      storage.faults.txStall = true;
+      storage.faults.abortThrow = true;
+      click(phase === 'initial' ? 'library-load' : 'library-confirm');
+      await flush();
+      const owner = storage.current;
+      click(`${action}-design`);
+      const transformed = get('editor').innerHTML;
+      expect(get('library-status').textContent).toContain('Load into designer cancelled');
+      expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
+      expect(owner.native.abort).toHaveBeenCalledOnce();
+      delete storage.faults.txStall;
+      delete storage.faults.abortThrow;
+      owner.complete();
+      await flush();
+      expect(get('editor').innerHTML).toBe(transformed);
+      expect(get<HTMLInputElement>('blueprint-name').value).not.toBe('must not publish');
+      expect(get<HTMLDialogElement>('library-dialog').open).toBe(false);
+      expect(storage.values.get(first)).toBe(encodeRecord(draft('must not publish'), 1));
     },
   );
 
@@ -5106,6 +5145,8 @@ describe('standalone blueprint files', () => {
     'name',
     'description',
     'reset-design',
+    'rotate',
+    'mirror',
     'copy',
     'common',
     'reseed',
@@ -5123,6 +5164,8 @@ describe('standalone blueprint files', () => {
       if (action === 'name') set('blueprint-name', 'edited');
       if (action === 'description') set('blueprint-description', 'edited');
       if (action === 'reset-design') click('clear-design');
+      if (action === 'rotate') click('rotate-design');
+      if (action === 'mirror') click('mirror-design');
       if (action === 'copy') click('copy-organism');
       if (action === 'common') root.querySelector<HTMLButtonElement>('.lineage')!.click();
       if (action === 'reseed') click('reset');
@@ -5187,6 +5230,34 @@ describe('standalone blueprint files', () => {
     }
     expect(worker.commands).toHaveBeenCalledTimes(1);
     expect(get('world').dataset.tool).toBe('pan');
+  });
+
+  it('transforms full passive and opaque payloads in the designer without changing a real paused world', async () => {
+    const harness = realWorker();
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    harness.advance();
+    const original = storedSensoryGenome();
+    await importDraft(
+      serializeBlueprint({ name: 'Full design', description: 'Retain payload', genome: original }),
+    );
+    const before = harness.save();
+    click('rotate-design');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'm' }));
+    const transformed = viewModule.transformDesign(
+      viewModule.transformDesign(original, 'rotate'),
+      'mirror',
+    );
+    expect((await exported()).genome).toEqual(transformed);
+    expect(harness.save()).toEqual(before);
+    click('plant-design');
+    pointer('pointerdown');
+    window.dispatchEvent(new Event('pointerup'));
+    harness.deliver();
+    expect(harness.save().organisms.at(-1)!.genome).toEqual(transformed);
+    expect(get('notice').textContent).toContain('Organism placed');
+    expect(get('run-state').textContent).toBe('PAUSED');
   });
 
   it('keeps complete paused real-worker saves identical until explicit planting and exact Step', async () => {
@@ -5735,6 +5806,95 @@ describe('display-only retained-world races', () => {
     expect(get('notice').textContent).toBe('Tick failed');
   });
 });
+describe('placement preview controls', () => {
+  const touch = (type: string, x: number, y: number, id = 7) => {
+    const event = new MouseEvent(type, { clientX: x, clientY: y, bubbles: true });
+    Object.defineProperties(event, { pointerType: { value: 'touch' }, pointerId: { value: id } });
+    get('world').dispatchEvent(event);
+  };
+  it('draws seam ghosts with feedback through the same zoom/pan camera and cancels without commands', () => {
+    const drawSpy = vi.spyOn(viewModule, 'draw');
+    emit(new Ecosystem(DEFAULTS, false).frame());
+    paint(0);
+    click('plant-design');
+    const canvas = get<HTMLCanvasElement>('world');
+    let v = viewport(canvas, { zoom: 1, x: 0, y: 0 });
+    const commands = worker.commands.mock.calls.length;
+    pointer('pointermove', v.left + v.scale / 2, v.top + v.scale / 2);
+    paint(1);
+    expect(get('placement-feedback').textContent).toContain('Valid in displayed tick 0 at 0, 0');
+    expect(drawSpy.mock.calls.at(-1)![6]!.positions).toContain(model.index(239, 0));
+    click('zoom-in');
+    paint(2);
+    const camera = drawSpy.mock.calls.at(-1)![3];
+    v = viewport(canvas, camera);
+    pointer('pointermove', v.left + 239.5 * v.scale, v.top + 155.5 * v.scale);
+    paint(3);
+    expect(get('placement-feedback').textContent).toContain('at 239, 155');
+    expect(drawSpy.mock.calls.at(-1)![6]!.positions).toEqual(
+      model.positions({ genome: founder(0), x: 239, y: 155, rotation: 0 }),
+    );
+    const blocked = new Ecosystem(DEFAULTS, false);
+    blocked.walls[model.index(239, 155)] = 1;
+    emit(blocked.frame());
+    paint(4);
+    expect(get('placement-feedback').textContent).toContain('Blocked');
+    pointer('pointerleave');
+    paint(5);
+    expect(drawSpy.mock.calls.at(-1)![6]).toBeUndefined();
+    pointer('pointermove', v.left - 1, v.top - 1);
+    paint(6);
+    expect(get('placement-feedback').textContent).toContain('Move over');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    paint(7);
+    expect(get('placement-feedback').textContent).toBe('');
+    expect(get('world').dataset.tool).toBe('pan');
+    expect(worker.commands).toHaveBeenCalledTimes(commands);
+  });
+  it('previews touch before stamping, invalidates confirmation on a transform, and cancels pointers', () => {
+    emit(new Ecosystem(DEFAULTS, false).frame());
+    paint(0);
+    click('plant-design');
+    const v = viewport(get<HTMLCanvasElement>('world'), { zoom: 1, x: 0, y: 0 });
+    const x = v.left + 20.5 * v.scale,
+      y = v.top + 20.5 * v.scale;
+    const commands = worker.commands.mock.calls.length;
+    touch('pointerdown', x, y);
+    touch('pointermove', x, y, 9);
+    touch('pointerup', x, y);
+    pointer('pointerleave');
+    paint(1);
+    expect(get('placement-feedback').textContent).toContain('Tap this anchor again');
+    expect(worker.commands).toHaveBeenCalledTimes(commands);
+    click('rotate-design');
+    touch('pointerdown', x, y);
+    touch('pointerup', x, y);
+    expect(worker.commands).toHaveBeenCalledTimes(commands);
+    touch('pointerdown', x, y);
+    touch('pointerup', x, y);
+    expect(worker.commands).toHaveBeenCalledTimes(commands + 1);
+    touch('pointerdown', -100, -100);
+    touch('pointercancel', -100, -100);
+    paint(2);
+    expect(get('placement-feedback').textContent).toContain('Move over');
+    click('cancel-placement');
+    expect(canvasTool()).toBe('pan');
+  });
+  function canvasTool() {
+    return get('world').dataset.tool;
+  }
+  it('rejects invalid transforms, preserves native input keys, and ignores held transform shortcuts', () => {
+    const before = get('editor').innerHTML;
+    get('blueprint-name').dispatchEvent(new KeyboardEvent('keydown', { key: 'r', bubbles: true }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', repeat: true }));
+    expect(get('editor').innerHTML).toBe(before);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'r' }));
+    get('editor').querySelector<HTMLButtonElement>('[data-x="4"][data-y="4"]')!.click();
+    click('rotate-design');
+    expect(get('notice').textContent).toContain('connected cells before transforming');
+  });
+});
+
 describe('pixel rendering and view transforms', () => {
   it('draws functional cells, food, temperature, selection and population history', () => {
     const canvas = get<HTMLCanvasElement>('world'),
