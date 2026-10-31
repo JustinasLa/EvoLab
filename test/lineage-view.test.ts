@@ -98,6 +98,38 @@ describe('bounded retained lineage evidence', () => {
     expect(changed).toHaveBeenCalled();
   });
 
+  it('retains pressed navigation and timeline scroll while real observations change', () => {
+    const world = fresh();
+    const parent = world.spawn(admissionGenome(), 10, 10)!;
+    const child = world.spawn(admissionGenome(), 12, 10, undefined, parent)!;
+    update(world);
+    select(parent.species);
+    const row = get('lineage-rows').querySelector<HTMLButtonElement>(
+      `[data-lineage-id="${child.species}"]`,
+    )!;
+    const relation = get('lineage-detail').querySelector<HTMLButtonElement>(
+      `[data-lineage-id="${child.species}"]`,
+    )!;
+    const timeline = get('lineage-detail').querySelector<HTMLOListElement>('.lineage-timeline')!;
+    timeline.scrollTop = 80;
+    row.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    advance(world, 1);
+    const nextChild = world.spawn(admissionGenome(), 14, 10, undefined, parent)!;
+    update(world);
+    expect(get('lineage-rows').querySelector(`[data-lineage-id="${child.species}"]`)).toBe(row);
+    expect(get('lineage-detail').querySelector(`[data-lineage-id="${child.species}"]`)).toBe(
+      relation,
+    );
+    expect(get('lineage-detail').querySelector('.lineage-timeline')).toBe(timeline);
+    expect(timeline.scrollTop).toBe(80);
+    expect(timeline.textContent).toContain(`child #${nextChild.species}`);
+    expect(get('lineage-detail').textContent).toContain('Observed at tick 1');
+    row.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+    row.click();
+    expect(get('lineage-detail').textContent).toContain(`Lineage #${child.species} · Living`);
+    expect(document.activeElement).toBe(get('lineage-detail'));
+  });
+
   it('pages and searches all living IDs beyond the summary ring and preserves focused identity', () => {
     const world = sameTickLineages();
     for (let i = 0; i < 60; i++) world.spawn(admissionGenome(), i, 10);

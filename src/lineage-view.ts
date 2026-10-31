@@ -20,6 +20,40 @@ interface Evidence {
 }
 const PAGE_SIZE = 40;
 
+// Reconcile owned nodes so a worker observation cannot detach a pressed control
+// or replace a scroll container. Identity keys are scoped to each parent.
+function reconcile(parent: Element, content: Element): void {
+  const remaining = [...parent.childNodes];
+  let before = parent.firstChild;
+  for (const wanted of [...content.childNodes]) {
+    const index = remaining.findIndex((candidate) => {
+      if (candidate.nodeType !== wanted.nodeType) return false;
+      if (candidate instanceof Element && wanted instanceof Element)
+        return (
+          candidate.tagName === wanted.tagName &&
+          candidate.namespaceURI === wanted.namespaceURI &&
+          candidate.getAttribute('data-lineage-key') === wanted.getAttribute('data-lineage-key') &&
+          candidate.getAttribute('data-lineage-id') === wanted.getAttribute('data-lineage-id')
+        );
+      return true;
+    });
+    const node = index < 0 ? wanted : remaining.splice(index, 1)[0];
+    if (node !== wanted) {
+      if (node instanceof Element && wanted instanceof Element) {
+        for (const name of node.getAttributeNames())
+          node.toggleAttribute(name, wanted.hasAttribute(name));
+        for (const attribute of [...wanted.attributes])
+          if (node.getAttribute(attribute.name) !== attribute.value)
+            node.setAttribute(attribute.name, attribute.value);
+        reconcile(node, wanted);
+      } else if (node.textContent !== wanted.textContent) node.textContent = wanted.textContent;
+    }
+    if (node !== before) parent.insertBefore(node, before);
+    before = node.nextSibling;
+  }
+  for (const node of remaining) node.remove();
+}
+
 /** A view-only projection. It never sends commands or reconstructs missing history. */
 export function createLineageView(root: HTMLElement, changed: () => void) {
   const get = <T extends HTMLElement>(id: string): T => root.querySelector<T>(`#${id}`)!;
@@ -82,11 +116,6 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
     button.addEventListener('click', () => select(id));
     return button;
   }
-  function paragraph(text: string): void {
-    const p = document.createElement('p');
-    p.textContent = text;
-    detail.append(p);
-  }
   function render(): void {
     if (!data || panel.hidden || !explorer.open) return;
     const query = search.value.trim().toLowerCase();
@@ -115,11 +144,12 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
         : 'No retained lineages. Earlier ancestry is unknown.';
     if (results.textContent !== resultText) results.textContent = resultText;
     observed.textContent = `Observed at tick ${tick}.`;
-    // Restore keyboard focus to the same identity across observations.
+    // Retain the original navigation targets across observations.
     const detailFocusedId = detail.contains(active) ? active?.dataset.lineageId : undefined;
-    rows.replaceChildren();
+    const rowContent = document.createElement('ul');
     for (const entry of visible) {
       const li = document.createElement('li');
+      li.dataset.lineageKey = String(entry.id);
       const button = link(entry.id);
       button.dataset.lineageId = String(entry.id);
       button.setAttribute('aria-pressed', String(selected === entry.id));
@@ -131,12 +161,18 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
         ),
       );
       li.append(button);
-      rows.append(li);
+      rowContent.append(li);
     }
-    if (focusedId)
+    reconcile(rows, rowContent);
+    if (focusedId && !rows.contains(active))
       (rows.querySelector<HTMLButtonElement>(`[data-lineage-id="${focusedId}"]`) ?? search).focus();
     clear.disabled = selected === undefined;
-    detail.replaceChildren();
+    const content = document.createElement('div');
+    const paragraph = (text: string): void => {
+      const p = document.createElement('p');
+      p.textContent = text;
+      content.append(p);
+    };
     const entry = selected === undefined ? undefined : facts.get(selected);
     if (!entry) {
       paragraph(
@@ -144,13 +180,14 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
           ? 'Select a lineage to inspect retained evidence.'
           : `Lineage #${selected}: evidence was pruned. No organisms highlighted.`,
       );
+      reconcile(detail, content);
       return;
     }
     const heading = document.createElement('h3');
     heading.textContent = `Lineage #${entry.id} · ${state(entry)}`;
-    detail.append(heading);
+    content.append(heading);
     const body = genome(entry);
-    if (body) detail.insertAdjacentHTML('beforeend', genomeSvg(body, 72));
+    if (body) content.insertAdjacentHTML('beforeend', genomeSvg(body, 72));
     paragraph(
       `Anatomy category: ${category(entry)}. ${entry.summary?.foundingGenome ? 'Retained founding anatomy.' : body ? 'Current living representative; founding anatomy unknown / pruned.' : `Founding anatomy ${entry.summary?.genomeStatus ?? 'unknown / pruned'}.`}`,
     );
@@ -183,15 +220,16 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
           ? 'unknown ancestry before retained evidence.'
           : 'none recorded for this origin.',
       );
-    detail.append(relation);
+    content.append(relation);
     const children = [...facts.values()].filter((child) => parent(child) === entry.id);
     const childList = document.createElement('p');
     childList.append('Children with retained transitions: ');
     for (const child of children) childList.append(link(child.id), document.createTextNode(' '));
     if (!children.length) childList.append('none retained (not proof of no descendants).');
-    detail.append(childList);
+    content.append(childList);
     const timeline = document.createElement('ol');
     timeline.className = 'lineage-timeline';
+    timeline.dataset.lineageKey = String(entry.id);
     timeline.setAttribute('aria-label', `Retained timeline for lineage #${entry.id}`);
     const transitions: { tick: number; label: string }[] = [];
     const createdTick = birth(entry),
@@ -230,12 +268,13 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
           return `<path d="M${x} 22v20" stroke="currentColor"><title>Tick ${event.tick}: ${event.label}</title></path>`;
         })
         .join('')}`;
-      detail.append(chart);
+      content.append(chart);
     }
     if (createdTick == null) paragraph('Creation tick unknown / pruned. No inferred birth event.');
     if (!transitions.length) paragraph('No timeline events retained for this identity.');
-    detail.append(timeline);
-    if (detailFocusedId)
+    content.append(timeline);
+    reconcile(detail, content);
+    if (detailFocusedId && !detail.contains(active))
       (
         detail.querySelector<HTMLButtonElement>(`[data-lineage-id="${detailFocusedId}"]`) ?? detail
       ).focus();
@@ -261,6 +300,8 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
   return {
     update(value: LineagePresentation, at: number, replacementId: number): void {
       if (replacement !== replacementId) {
+        rows.replaceChildren();
+        detail.replaceChildren();
         selected = undefined;
         page = 0;
       }
