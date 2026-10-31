@@ -117,6 +117,22 @@ function expected(source: string, horizon: number, intervention?: 'heat' | 'cold
   return world.save();
 }
 
+test('native comparison disclosure activation leaves paused sandbox playback and state unchanged', async ({
+  page,
+}) => {
+  const sandbox = await download(page, '#save');
+  const summary = page.locator('#comparisons > summary');
+  await summary.focus();
+  await page.keyboard.press('Space');
+  await expect(page.locator('#comparisons')).not.toHaveAttribute('open');
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  await page.keyboard.press('Space');
+  await expect(page.locator('#comparisons')).toHaveAttribute('open');
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  expect(await download(page, '#save')).toBe(sandbox);
+  expect(await page.evaluate(() => window.comparisonNative.created)).toBe(0);
+});
+
 test('native checkpoint forks repeat identical full control states and bounded samples without changing the sandbox', async ({
   page,
 }, info) => {

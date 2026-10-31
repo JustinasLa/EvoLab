@@ -1517,6 +1517,19 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe('owned command admission and real-worker interleavings', () => {
+  it('preserves native comparison disclosure activation without a sandbox playback command', () => {
+    const summary = get('comparisons').querySelector('summary')!;
+    const before = worker.commands.mock.calls.length;
+    const space = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      code: 'Space',
+      key: ' ',
+    });
+    summary.dispatchEvent(space);
+    expect(space.defaultPrevented).toBe(false);
+    expect(worker.commands.mock.calls).toHaveLength(before);
+  });
   it('captures comparison sources through complete native Save without advancing or replacing the sandbox', () => {
     const endpoint = {
       onmessage: null,

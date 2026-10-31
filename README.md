@@ -23,6 +23,7 @@ lineages spread by surviving and producing descendants.
 - **Explore at your pace** — pan, zoom, pause, single-step, and change simulation speed independently of rendering.
 - **Run deliberately** — choose an exact tick target, pause or cancel it, disable habitat rendering, and observe measured throughput and honest image freshness.
 - **Keep whole worlds** — save and restore terrain, every organism, counters, settings and random-generator state.
+- **Compare checkpoint climates** — fork one complete world into isolated control and heatwave/cold-snap branches, apply treatment at an exact tick, and retain bounded samples and final worlds without editing the sandbox.
 
 EvoLab uses an original cellular simulation and interface. It is artificial life,
 not a calibrated biological model.
@@ -61,6 +62,11 @@ Native sensory-data cases retain download bytes and resource receipts, exercise
 populated-load resumption followed by explicit Pause, and compare exact Step
 endpoints at every speed with independent engine continuations. Mobile checks
 use Chromium emulation, not physical-device certification.
+
+Checkpoint comparison checks cover same-runtime control/control identity, exact
+treatment boundaries, equal bounded horizons, extinction, cancellation and
+delayed-import ownership. They verify orchestration against the same ecosystem
+engine, not an independent ecological implementation or a statistical claim.
 
 ## License
 
