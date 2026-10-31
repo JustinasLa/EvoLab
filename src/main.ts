@@ -1,3 +1,4 @@
+import { mountCheckpoints } from './checkpoint-view';
 import './style.css';
 import {
   DEFAULT_TERRAIN,
@@ -998,6 +999,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     echo?: Record<string, unknown>;
     targetTicket?: TargetTicket;
     cancelTicket?: TargetTicket;
+    checkpoint?: boolean;
   };
   type Posted = Omit<Entry, 'payload'> & {
     type: CommandPayload['type'];
@@ -1261,6 +1263,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       ...('format' in payload ? { format: payload.format } : {}),
       type: payload.type,
       ticket: entry.ticket,
+      checkpoint: entry.checkpoint,
       generation: entry.generation,
       reserved: entry.reserved,
       commandId: wireId,
@@ -1333,17 +1336,21 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           stop();
         }
         availability();
+        if (entry.checkpoint)
+          checkpoints.failed('Checkpoint Save could not be posted. Retry explicitly.');
         notice('Could not post this action. No automatic retry was queued.');
         return true;
       } else {
         terminate();
         stop();
       }
+      if (entry.checkpoint)
+        checkpoints.failed('Checkpoint Save could not be posted. Retry explicitly.');
       notice('Could not post this action. No automatic retry was queued.');
     }
     return false;
   }
-  function send(data: any, capturedTerrainRevision = terrainRevision): boolean {
+  function send(data: any, capturedTerrainRevision = terrainRevision, checkpoint = false): boolean {
     if (
       !alive ||
       terminated ||
@@ -1399,6 +1406,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         generation,
         reserved,
         terrainRevision: capturedTerrainRevision,
+        checkpoint,
       };
       if (payload.type === 'speed') pendingSpeed = { ticket, value: payload.value };
       if (payload.type === 'pause-on-extinction')
@@ -1584,6 +1592,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     if (focus) get('reset').focus();
   }
   function stop(): void {
+    checkpoints.invalidate();
     stopped = true;
     invalidateObservation();
     paused = true;
@@ -1764,6 +1773,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     revision = terrainRevision,
   ): void {
     cancelReset(false);
+    checkpoints.invalidate();
     invalidateObservation();
     const payload = captureCommand({ type: operation, ...data, display: desiredView }, settings);
     try {
@@ -2407,6 +2417,20 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   });
   get('help').addEventListener('click', () => get<HTMLDialogElement>('help-dialog').showModal());
   get('close-help').addEventListener('click', () => get<HTMLDialogElement>('help-dialog').close());
+  const checkpoints = mountCheckpoints(root, {
+    context: () => `${generation}:${runId}:${worldRequest}`,
+    capture: () => {
+      if (lifecycleBusy() || hasOwner('save') || downloads.save) return false;
+      return send({ type: 'save' }, terrainRevision, true);
+    },
+    restore: (content) => {
+      if (lifecycleBusy()) return false;
+      cancelReset(false);
+      invalidateCandidate();
+      endStroke();
+      return send({ type: 'load', text: content });
+    },
+  });
   get('save').addEventListener('click', () => send({ type: 'save' }));
   for (const format of ['csv', 'json'] as const)
     get('measurements-' + format).addEventListener('click', () =>
@@ -2414,6 +2438,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     );
   const worldInput = get<HTMLInputElement>('file');
   function invalidateCandidate(): void {
+    checkpoints.invalidate();
     worldRequest++;
     waitingFile = null;
     const index = pending.findIndex((entry) => entry.payload.type === 'load');
@@ -2946,7 +2971,15 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         else if (data.type === 'manual-result' && data.status === 'rejected')
           notice('Worker rejected this manual action; no successful effect recorded.');
       }
-      if (data.type === 'saved' || (data.type === 'measurement-exported' && current)) {
+      if (completion.checkpoint) {
+        if (data.type === 'saved' && current) checkpoints.saved(data.text);
+        else
+          checkpoints.failed(
+            data.type === 'error'
+              ? data.message
+              : 'Checkpoint capture cancelled: the world changed.',
+          );
+      } else if (data.type === 'saved' || (data.type === 'measurement-exported' && current)) {
         try {
           download(data);
           if (current)
@@ -3099,6 +3132,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     clearTimeout(exportTimer);
     blueprintReader?.abort();
     library.dispose();
+    checkpoints.dispose();
     for (const cleanup of cleanups) cleanup();
     if (exportUrl) URL.revokeObjectURL(exportUrl);
     candidate = undefined;

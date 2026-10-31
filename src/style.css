@@ -1342,3 +1342,12 @@ dialog a {
   fill: currentColor;
   font-size: 11px;
 }
+
+#local-checkpoints {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.checkpoint-fields select {
+  width: 100%;
+  min-width: 0;
+}
