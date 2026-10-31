@@ -3,7 +3,12 @@ import { createLineageView } from '../src/lineage-view';
 import { markup } from '../src/view';
 import { Ecosystem } from '../src/ecosystem';
 import { DEFAULTS, encodeLegacyValue, type LineagePresentation } from '../src/model';
-import { admissionGenome, sameTickLineages, readmittedParentOrder } from './fixtures/lineage';
+import {
+  admissionGenome,
+  sameTickLineages,
+  readmittedParentOrder,
+  relationshipEviction,
+} from './fixtures/lineage';
 import { legacyV7, advance } from './fixtures/telemetry';
 
 let root: HTMLDivElement;
@@ -140,17 +145,55 @@ describe('bounded retained lineage evidence', () => {
     const target = get('lineage-detail').querySelector<HTMLButtonElement>(
       `[data-lineage-id="${second.species}"]`,
     )!;
-    const relation = target.parentElement!;
+    const relation = target.parentElement!.parentElement!;
     target.focus();
     world.kill(first, 'manual');
     update(world);
-    expect(target.parentElement).toBe(relation);
+    expect(target.parentElement!.parentElement).toBe(relation);
     expect(document.activeElement).toBe(target);
     expect(
       [...relation.querySelectorAll('button')].map((button) => Number(button.dataset.lineageId)),
     ).toEqual([first.species, second.species]);
     target.click();
     expect(get('lineage-detail').textContent).toContain(`Lineage #${second.species} · Living`);
+  });
+
+  it('keeps a retained child and separator together when earlier relationship evidence expires', () => {
+    const { world, parent, extinct, retained } = relationshipEviction();
+    update(world);
+    search(String(parent.species));
+    select(parent.species);
+    const detail = get('lineage-detail');
+    expect(detail.querySelector(`[data-lineage-id="${extinct.species}"]`)).not.toBeNull();
+    const target = detail.querySelector<HTMLButtonElement>(
+      `[data-lineage-id="${retained.species}"]`,
+    )!;
+    const wrapper = target.parentElement!;
+    const separator = wrapper.lastChild;
+    target.focus();
+    world.step();
+    update(world);
+    expect(world.lineageSnapshot().events.some((event) => event.id === extinct.species)).toBe(
+      false,
+    );
+    expect(detail.querySelector(`[data-lineage-id="${extinct.species}"]`)).toBeNull();
+    expect(target.parentElement).toBe(wrapper);
+    expect(wrapper.lastChild).toBe(separator);
+    expect(document.activeElement).toBe(target);
+  });
+
+  it('returns focus to search when selected evidence and its parent control expire', () => {
+    const { world, parent, extinct } = relationshipEviction();
+    update(world);
+    search(String(extinct.species));
+    select(extinct.species);
+    get('lineage-detail')
+      .querySelector<HTMLButtonElement>(`[data-lineage-id="${parent.species}"]`)!
+      .focus();
+    world.step();
+    update(world);
+    expect(get('lineage-detail').textContent).toContain('evidence was pruned');
+    expect(document.activeElement).toBe(get('lineage-search'));
   });
 
   it('pages and searches all living IDs beyond the summary ring and preserves focused identity', () => {

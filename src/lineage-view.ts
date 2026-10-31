@@ -184,6 +184,8 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
           : `Lineage #${selected}: evidence was pruned. No organisms highlighted.`,
       );
       reconcile(detail, content);
+      if (detailFocusedId && document.activeElement !== active)
+        search.focus({ preventScroll: true });
       return;
     }
     const heading = document.createElement('h3');
@@ -231,7 +233,12 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
     const childList = document.createElement('p');
     childList.dataset.lineageKey = 'children';
     childList.append('Children with retained transitions: ');
-    for (const child of children) childList.append(link(child.id), document.createTextNode(' '));
+    for (const child of children) {
+      const item = document.createElement('span');
+      item.dataset.lineageKey = String(child.id);
+      item.append(link(child.id), document.createTextNode(' '));
+      childList.append(item);
+    }
     if (!children.length) childList.append('none retained (not proof of no descendants).');
     content.append(childList);
     const timeline = document.createElement('ol');
@@ -283,7 +290,7 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
     reconcile(detail, content);
     if (detailFocusedId && document.activeElement !== active)
       (
-        detail.querySelector<HTMLButtonElement>(`[data-lineage-id="${detailFocusedId}"]`) ?? detail
+        detail.querySelector<HTMLButtonElement>(`[data-lineage-id="${detailFocusedId}"]`) ?? search
       ).focus();
   }
   search.addEventListener('input', () => {

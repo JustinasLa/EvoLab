@@ -46,6 +46,7 @@ import { DEFAULT_TERRAIN, generateTerrain } from '../../src/terrain';
 import { readFileSync } from 'node:fs';
 import {
   admissionGenome,
+  relationshipEviction,
   contradictoryPruning,
   impossibleReadmission,
   omittedNewestAdmission,
@@ -6041,6 +6042,65 @@ test.describe('retained lineage explorer', () => {
     await expect(page.locator('#run-state')).toHaveText('PAUSED');
     expect(await terrainSave(page, 'focused-extinction-after.json')).toEqual(reference.save());
   });
+
+  for (const selectedEvidence of ['retained', 'expiring'] as const) {
+    test(`native relationship ownership across real archive eviction / ${selectedEvidence}`, async ({
+      page,
+    }) => {
+      await observeTerrainNative(page);
+      await page.goto('/');
+      await terrainNativeFrame(page);
+      const { world, parent, extinct, retained } = relationshipEviction();
+      await importTelemetryWorld(page, world.save());
+      await page.locator('#ecosystem-tab').click();
+      await page.locator('#lineage-heading').click();
+      const selected = selectedEvidence === 'retained' ? parent.species : extinct.species;
+      await page.locator('#lineage-search').fill(String(selected));
+      await page.locator('#lineage-rows button').click();
+      const before = await terrainSave(page, `eviction-${selectedEvidence}-before.json`);
+      const reference = Ecosystem.load(before);
+      const id = selectedEvidence === 'retained' ? retained.species : parent.species;
+      const target = page.locator(`#lineage-detail button[data-lineage-id="${id}"]`);
+      await target.scrollIntoViewIfNeeded();
+      await target.focus();
+      await target.evaluate((element) => {
+        (window as any).evictionTarget = element;
+      });
+      if (selectedEvidence === 'retained') {
+        const box = (await target.boundingBox())!;
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await page.mouse.down();
+      }
+      await page.evaluate(() => document.getElementById('step')!.click());
+      reference.step();
+      expect(reference.lineageSnapshot().events.some((event) => event.id === extinct.species)).toBe(
+        false,
+      );
+      await expect(page.locator('#lineage-observed')).toHaveText(
+        `Observed at tick ${reference.tick}.`,
+      );
+      if (selectedEvidence === 'retained') {
+        expect(await target.evaluate((element) => element === (window as any).evictionTarget)).toBe(
+          true,
+        );
+        await expect(target).toBeFocused();
+        const box = (await target.boundingBox())!;
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await page.mouse.up();
+        await expect(page.locator('#lineage-detail')).toContainText(
+          `Lineage #${retained.species} · Living`,
+        );
+      } else {
+        await expect(page.locator('#lineage-detail')).toContainText('evidence was pruned');
+        await expect(page.locator('#lineage-search')).toBeFocused();
+        await page.keyboard.press('Space');
+      }
+      await expect(page.locator('#run-state')).toHaveText('PAUSED');
+      expect(await terrainSave(page, `eviction-${selectedEvidence}-after.json`)).toEqual(
+        reference.save(),
+      );
+    });
+  }
 
   test('empty and overflowing archives expose pruned ancestry with bounded phone-safe navigation', async ({
     page,
