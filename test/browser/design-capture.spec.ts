@@ -231,6 +231,29 @@ test('complete evolved and opaque genotype survives selected/common copy, direct
     body: before,
     contentType: 'application/json',
   });
+  // Deliberate placement of the captured full design allocates fresh identity.
+  const reference = Ecosystem.load(before.toString());
+  await page.locator('#plant-design').click();
+  await page.locator('#world').scrollIntoViewIfNeeded();
+  const point = await page.locator('#world').evaluate((canvas: HTMLCanvasElement) => {
+    const box = canvas.getBoundingClientRect(),
+      scale = Math.min(canvas.clientWidth / 240, canvas.clientHeight / 156);
+    return {
+      x: box.left + (canvas.clientWidth - 240 * scale) / 2 + 40.5 * scale,
+      y: box.top + (canvas.clientHeight - 156 * scale) / 2 + 40.5 * scale,
+    };
+  });
+  await page.mouse.click(point.x, point.y);
+  const outcome = reference.paint('plant', 40, 40, 0, genome);
+  expect(outcome.placement).toBeDefined();
+  reference.appendIntervention({ kind: 'placement', detail: outcome.placement! });
+  await expect(page.locator('#population')).toHaveText('2');
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  const placed = JSON.parse((await download(page, '#save')).toString());
+  expect(placed).toEqual(reference.save());
+  expect(placed.organisms[1].genome).toEqual(genome);
+  expect(placed.organisms[1].id).not.toBe(file.organisms[0].id);
+  expect(placed.births).toBe(file.births);
 });
 
 test('a genuine held native full response cannot replace a newer designer edit and releases its one owned command', async ({

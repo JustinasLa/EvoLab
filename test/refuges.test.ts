@@ -21,6 +21,7 @@ import {
 } from '../src/refuges';
 import { acceptedReference, fixtureText, predecessor, identicalRecords } from './fixtures/refuges';
 import { advance } from './fixtures/telemetry';
+import { restoreHistoricalWorld } from './fixtures/sensory-legacy';
 
 const brush = (units = 4, radius = 0): RefugeBrush => ({
   rulesVersion: 1,
@@ -309,6 +310,7 @@ describe('painted temperature mechanics and genuine accepted-base equivalence', 
       version: _version,
       ...afterEcology
     } = world.save();
+    afterEcology.organisms = restoreHistoricalWorld(world.save()).organisms as any;
     expect({ version: 6, ...afterEcology }).toEqual(beforeEcology);
     expect(world.lineageSnapshot()).toEqual(archive);
     expect(world.clearRefuges()).toMatchObject({ removedCells: 1, nonzeroCells: 0 });
@@ -360,13 +362,19 @@ describe('strict owned field and history, without narrowing historically open re
             original = JSON.stringify(reference.save()),
             reloaded = Ecosystem.load(current),
             oldReloaded = acceptedReference(original);
-          identicalRecords(predecessor(reloaded.save()), oldReloaded.save());
+          identicalRecords(
+            predecessor(reloaded.save()),
+            location === 'genome' || location === 'cell' ? reference.save() : oldReloaded.save(),
+          );
           world.step();
           reference.step();
           identicalRecords(predecessor(world.save()), reference.save());
           reloaded.step();
           oldReloaded.step();
-          identicalRecords(predecessor(reloaded.save()), oldReloaded.save());
+          identicalRecords(
+            predecessor(reloaded.save()),
+            location === 'genome' || location === 'cell' ? reference.save() : oldReloaded.save(),
+          );
         }
       });
   for (const [location, deepest] of [
@@ -387,7 +395,13 @@ describe('strict owned field and history, without narrowing historically open re
         } catch (error) {
           failure = error;
         }
-        if (failure) expect(() => Ecosystem.load(text).save()).toThrow();
+        if (failure && (location === 'settings' || location === 'organism'))
+          expect(() => Ecosystem.load(text).save()).toThrow();
+        else if (failure)
+          identicalRecords(
+            predecessor(Ecosystem.load(text).save()).organisms,
+            JSON.parse(text).organisms,
+          );
         else identicalRecords(predecessor(Ecosystem.load(text).save()), original);
       }
     });

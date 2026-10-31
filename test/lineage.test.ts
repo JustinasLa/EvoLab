@@ -10,7 +10,15 @@ import {
   type LineageSummary,
   type LineageEvent,
 } from '../src/model';
-import { advance, legacyV3, legacyV4, legacyV5, legacyV6, legacyV7 } from './fixtures/telemetry';
+import {
+  advance,
+  legacyV3,
+  legacyV4,
+  legacyV5,
+  legacyV6,
+  legacyV7,
+  legacyV8,
+} from './fixtures/telemetry';
 import { cpus, platform, totalmem } from 'node:os';
 import {
   admissionGenome,
@@ -35,6 +43,7 @@ const genome = (): Genome => ({
   preference: 0.5,
   tolerance: 0.3,
   tempo: 2,
+  behavior: { version: 1 as const, mode: 'legacy' as const },
 });
 const empty = () => new Ecosystem({ ...DEFAULTS, mutation: 0, climate: 0, nutrients: 0 }, false);
 const reload = (world: Ecosystem) => Ecosystem.load(JSON.stringify(world.save()));
@@ -1044,7 +1053,7 @@ describe('bounded observed lineage lifecycle', () => {
     });
     expect(() => reload(world)).toThrow('ecosystem');
   });
-  it.each([2, 3, 4, 5, 6, 7])(
+  it.each([2, 3, 4, 5, 6, 7, 8])(
     'preserves uninterrupted ecology, order and permitted extensions across v%s boundaries',
     (version) => {
       for (const tick of [29, 30, 59, 60, 89])
@@ -1082,7 +1091,9 @@ describe('bounded observed lineage lifecycle', () => {
                     ? v5
                     : version === 6
                       ? legacyV6(saved)
-                      : legacyV7(saved);
+                      : version === 7
+                        ? legacyV7(saved)
+                        : legacyV8(saved);
           const migrated = Ecosystem.load(JSON.stringify(file));
           const physical = ({
             lineageArchive: _archive,
@@ -1092,9 +1103,9 @@ describe('bounded observed lineage lifecycle', () => {
           }: WorldFile) => state;
           expect(physical(migrated.save())).toEqual(physical(saved));
           expect(migrated.lineageSnapshot()).toMatchObject({
-            originKind: 'legacy-import',
-            originTick: tick,
-            events: [],
+            originKind: version === 8 ? saved.lineageArchive.originKind : 'legacy-import',
+            originTick: version === 8 ? saved.lineageArchive.originTick : tick,
+            events: version === 8 ? saved.lineageArchive.events : [],
           });
           if (populated) {
             expect(migrated.lineageSnapshot().living.map((row) => row.id)).toEqual([5, 6]);
@@ -1152,6 +1163,7 @@ describe('bounded observed lineage lifecycle', () => {
           preference: ((position % 10) + 0.12345678901234568) / 10,
           tolerance: 0.3456789012345679,
           tempo: 12,
+          behavior: { version: 1 as const, mode: 'legacy' as const },
         },
         (position % 60) * 4,
         Math.floor(position / 60) * 4,
@@ -1230,7 +1242,7 @@ describe('bounded observed lineage lifecycle', () => {
   it('records the genuine founder and detached ordered founding fields without extensions', () => {
     const world = new Ecosystem();
     const saved = world.save();
-    expect(saved.version).toBe(8);
+    expect(saved.version).toBe(9);
     expect(saved.nextSpecies).toBe(5);
     expect(saved.lineageArchive).toMatchObject({
       version: 1,

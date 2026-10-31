@@ -4,6 +4,9 @@ import {
   LINEAGE_EVENT_CAPACITY,
   integer,
   validGenome,
+  validHistoricalGenome,
+  migrateHistoricalGenome,
+  type HistoricalGenome,
   type Genome,
   type Organism,
   type LivingLineage,
@@ -62,15 +65,18 @@ function metadata(row: LivingLineage): LivingLineage {
   };
 }
 function inherited(genome: Genome): Genome {
-  return {
-    cells: genome.cells.map(({ x, y, type }) => ({ x, y, type })),
-    preference: genome.preference,
-    tolerance: genome.tolerance,
-    tempo: genome.tempo,
-  };
+  // Insertion or archive validation already established the complete contract.
+  return structuredClone(genome);
 }
 export function sameInherited(first: Genome, second: Genome): boolean {
   return (
+    first.behavior.mode === second.behavior.mode &&
+    (first.behavior.mode !== 'evolved' ||
+      second.behavior.mode !== 'evolved' ||
+      (first.behavior.reactions.food === second.behavior.reactions.food &&
+        first.behavior.reactions.wall === second.behavior.reactions.wall &&
+        first.behavior.reactions.harmless === second.behavior.reactions.harmless &&
+        first.behavior.reactions.dangerous === second.behavior.reactions.dangerous)) &&
     Object.is(first.preference, second.preference) &&
     Object.is(first.tolerance, second.tolerance) &&
     Object.is(first.tempo, second.tempo) &&
@@ -204,8 +210,9 @@ export class LineageArchive {
     organisms: Iterable<Organism>,
     tick: number,
     nextSpecies: number,
+    historical = false,
   ): LineageArchive {
-    const state = validateArchive(value, organisms, tick, nextSpecies);
+    const state = validateArchive(value, organisms, tick, nextSpecies, historical);
     const archive = new LineageArchive(state.originKind, state.originTick);
     archive.living = new Map(state.living.map((row) => [row.id, row]));
     archive.summaries = new Map(state.summaries.map((row) => [row.id, row]));
@@ -233,9 +240,10 @@ function validateArchive(
   organisms: Iterable<Organism>,
   tick: number,
   nextSpecies: number,
+  historical: boolean,
 ): LineageArchiveState {
   requireArchive(exact(value, archiveKeys));
-  const state = value as unknown as LineageArchiveState;
+  const state = structuredClone(value) as unknown as LineageArchiveState;
   requireArchive(
     state.version === 1 &&
       (state.originKind === 'fresh' || state.originKind === 'legacy-import') &&
@@ -321,12 +329,18 @@ function validateArchive(
       requireArchive(
         row.origin !== 'legacy-unknown' &&
           row.admittedTick === row.createdTick &&
-          exact(row.foundingGenome, ['cells', 'preference', 'tolerance', 'tempo']) &&
-          validGenome(row.foundingGenome) &&
-          row.foundingGenome.cells.every((cell) => exact(cell, ['x', 'y', 'type'])),
+          (historical
+            ? exact(row.foundingGenome, ['cells', 'preference', 'tolerance', 'tempo']) &&
+              validHistoricalGenome(row.foundingGenome) &&
+              row.foundingGenome.cells.every((cell) => exact(cell, ['x', 'y', 'type']))
+            : validGenome(row.foundingGenome)),
       );
       const group = physical.get(row.id);
-      if (group) requireArchive(sameInherited(group.genome, row.foundingGenome));
+      if (historical)
+        row.foundingGenome = migrateHistoricalGenome(
+          row.foundingGenome as unknown as HistoricalGenome,
+        );
+      if (group) requireArchive(sameInherited(group.genome, row.foundingGenome!));
     } else {
       requireArchive(row.foundingGenome === null);
       requireArchive(

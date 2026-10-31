@@ -22,8 +22,8 @@ import {
   founder,
   speciesName,
   validGenome,
+  cloneGenome,
   validSettings,
-  observedGenome,
   observedSettings,
   nextSessionId,
   type HabitatFrame,
@@ -48,13 +48,21 @@ import {
   type MeasurementFormat,
   type TerrainRecipe,
 } from './model';
-import { draw, genomeSvg, markup, organismHtml, point, viewport, type Camera } from './view';
+import {
+  behaviorStatus,
+  draw,
+  genomeSvg,
+  markup,
+  organismHtml,
+  point,
+  viewport,
+  type Camera,
+} from './view';
 import { createTelemetryView } from './telemetry-view';
 import { emptyRefuges, refugeTool, refugeSummary, validRefugeBrush } from './refuges';
 import {
   createLibrary,
   libraryCandidate,
-  projectGenome,
   LibraryError,
   type LibraryCandidate,
   type LibraryEntry,
@@ -171,7 +179,7 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
         x: data.x,
         y: data.y,
         radius: data.radius,
-        genome: observedGenome(data.genome),
+        genome: cloneGenome(data.genome),
         ...(data.strokeId === undefined ? {} : { strokeId: data.strokeId }),
       };
     case 'export-measurements':
@@ -968,9 +976,8 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         libraryStatus(libraryMessage(error));
       }
     } else if (intent.action === 'copy') {
-      // Validate the full blueprint before replacing the existing design.
-      serializeBlueprint({ name: speciesName(data.genome), description: '', genome: data.genome });
-      copyDesign(data.genome);
+      // copyDesign validates and detaches the full blueprint before replacing the design.
+      if (!copyDesign(data.genome)) return;
       tab('organism');
       notice(
         `Anatomy copied in full at worker tick ${data.completedTick}. Edit it, then place it in the world.`,
@@ -1635,6 +1642,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     text('preference-value', `${Math.round(blueprint.preference * 40)}°`);
     get<HTMLInputElement>('blueprint-name').value = blueprintName;
     get<HTMLTextAreaElement>('blueprint-description').value = blueprintDescription;
+    text('behavior-status', behaviorStatus(blueprint));
     text(
       'design-note',
       validGenome(blueprint)
@@ -1642,14 +1650,23 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         : 'Use 1–16 cells, connected edge to edge.',
     );
   }
-  function copyDesign(genome: Genome): void {
+  function copyDesign(genome: Genome): boolean {
+    let copied: Genome;
+    try {
+      copied = cloneGenome(genome);
+      serializeBlueprint({ name: speciesName(genome), description: '', genome: copied });
+    } catch (error) {
+      notice((error as Error).message);
+      return false;
+    }
     endStroke();
     invalidateDesign();
-    blueprint = projectGenome(genome);
+    blueprint = copied;
     blueprintName = speciesName(genome);
     blueprintDescription = '';
     editor();
     get<HTMLDetailsElement>('specimen-details').open = false;
+    return true;
   }
   function exportBlueprint(genome: Genome, name: string, description: string): void {
     let content: string;
@@ -1795,12 +1812,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         notice('Draw 1–16 connected cells before painting.');
         return;
       }
-      const genome: Genome = {
-        cells: blueprint.cells.map(({ x, y, type }) => ({ x, y, type })),
-        preference: blueprint.preference,
-        tolerance: blueprint.tolerance,
-        tempo: blueprint.tempo,
-      };
+      const genome = cloneGenome(blueprint);
       if (tool === 'plant') {
         endStroke();
         postTracked('paint', { tool, ...p, radius: brush, genome });

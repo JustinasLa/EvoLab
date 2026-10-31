@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { Ecosystem } from '../../src/ecosystem';
 import { DEFAULTS, founder, type WorldFile } from '../../src/model';
 import { serializeBlueprint, parseBlueprint } from '../../src/blueprint';
+import { baselineFixtures, storedSensoryGenome } from '../fixtures/sensory-legacy';
 import { encodeRecord, libraryCandidate, LIBRARY_DATABASE } from '../../src/library';
 
 const first = '00000000-0000-4000-8000-000000000001';
@@ -11,10 +12,15 @@ const third = '00000000-0000-4000-8000-000000000003';
 const candidate = (name = '  <literal> 🌿  ') =>
   libraryCandidate(
     {
+      behavior: storedSensoryGenome().behavior,
+      legacyExtensions: storedSensoryGenome().legacyExtensions,
       cells: [7, 3, 4, 5, 6, 8].map((type, position) => ({
         x: (position % 3) - 1,
         y: Math.floor(position / 3),
         type: type as 3 | 4 | 5 | 6 | 7 | 8,
+        ...(position === 0
+          ? { legacyExtensions: storedSensoryGenome().cells[0].legacyExtensions }
+          : {}),
       })),
       preference: 0.1234567890123456,
       tolerance: 0.4567890123456789,
@@ -87,7 +93,12 @@ async function fixture(page: Page) {
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
   await pausedSave(page);
   const world = new Ecosystem({ ...DEFAULTS, nutrients: 10, mutation: 0, climate: 0 }, false);
-  world.spawn(founder(0), 40, 40);
+  const producer = founder(0),
+    stored = storedSensoryGenome();
+  producer.behavior = stored.behavior;
+  producer.legacyExtensions = stored.legacyExtensions;
+  producer.cells[0].legacyExtensions = stored.cells[0].legacyExtensions;
+  world.spawn(producer, 40, 40);
   const saved = world.save();
   await page.locator('#file').setInputFiles({
     name: 'world.json',
@@ -1524,9 +1535,14 @@ test('native library reload, exact standalone bytes, explicit mutations and comp
   page,
 }, info) => {
   const before = await fixture(page);
+  const oldToken = JSON.stringify(
+    { recordVersion: 1, revision: 1, blueprint: baselineFixtures['blueprint1.json'] },
+    null,
+    1,
+  );
   await database(page, [
     [first, encodeRecord(candidate(), 1)],
-    [second, encodeRecord(candidate('neighbor'), 1)],
+    [second, oldToken],
   ]);
   await openLibrary(page);
   await page.locator(`[data-library-id="${first}"]`).click();
@@ -1575,6 +1591,7 @@ test('native library reload, exact standalone bytes, explicit mutations and comp
   await expect(page.locator(`[data-library-id="${second}"]`)).toBeFocused();
   for (let repeat = 0; repeat < 3; repeat++) expect(await pausedSave(page)).toEqual(before);
   const persisted = await database(page);
+  expect(persisted.find(([id]) => id === second)?.[1]).toBe(oldToken);
   await page.reload();
   await openLibrary(page);
   expect(await database(page)).toEqual(persisted);
@@ -1654,7 +1671,7 @@ test('native overlapping two-page cap, full-string CAS and repair eligibility ra
     revision: 0,
     blueprint: serializeBlueprint(candidate().blueprint),
   });
-  const futureBlueprint = JSON.stringify({ ...candidate().blueprint, version: 2, extra: true });
+  const futureBlueprint = JSON.stringify({ ...candidate().blueprint, version: 3, extra: true });
   const replacements = [
     JSON.stringify({ recordVersion: 2, extra: true }),
     JSON.stringify({ recordVersion: 1, revision: 1, blueprint: futureBlueprint }),
@@ -1761,7 +1778,10 @@ test('native Enter and Space capture preserve focus through live frames and boun
   expect(
     records.every(
       (record) =>
-        record.provenance.captureTick === before.tick && !Object.hasOwn(record.provenance, 'seed'),
+        record.provenance.captureTick === before.tick &&
+        !Object.hasOwn(record.provenance, 'seed') &&
+        JSON.stringify(parseBlueprint(record.blueprint).genome) ===
+          JSON.stringify(before.organisms[0].genome),
     ),
   ).toBe(true);
   const handle = await capture.elementHandle();
@@ -1923,7 +1943,7 @@ for (const scenario of [
   });
 }
 
-test('composed library operations preserve complete world8 archive and measurement intervention exports', async ({
+test('composed library operations preserve complete world9 archive and measurement intervention exports', async ({
   page,
 }, info) => {
   await fixture(page);
@@ -1931,7 +1951,7 @@ test('composed library operations preserve complete world8 archive and measureme
   await page.locator('[data-shock="heat"]').click();
   const before = await pausedSave(page);
   const world = JSON.parse(before.toString()) as WorldFile;
-  expect(world.version).toBe(8);
+  expect(world.version).toBe(9);
   expect(world.lineageArchive.summaries.length).toBeGreaterThan(0);
   expect(world.telemetry.version).toBe(2);
   expect(world.interventions.version).toBe(3);
@@ -1955,7 +1975,7 @@ test('composed library operations preserve complete world8 archive and measureme
   await page.locator('#ecosystem-tab').click();
   expect(await download(page, '#measurements-json')).toEqual(measurements);
   expect(await download(page, '#measurements-csv')).toEqual(csv);
-  await info.attach('composed-world8.json', { contentType: 'application/json', body: before });
+  await info.attach('composed-world9.json', { contentType: 'application/json', body: before });
   await info.attach('composed-measurements.json', {
     contentType: 'application/json',
     body: measurements,

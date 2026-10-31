@@ -1,4 +1,12 @@
-import { validGenome, type Cell, type Genome } from './model';
+import {
+  validGenome,
+  validHistoricalGenome,
+  migrateHistoricalGenome,
+  cloneGenome,
+  exactDataRecord,
+  type Genome,
+  type HistoricalGenome,
+} from './model';
 
 export const BLUEPRINT_MAX_BYTES = 16_384;
 export const BLUEPRINT_NAME_MAX = 80;
@@ -10,6 +18,13 @@ export interface BlueprintFileV1 {
   version: 1;
   name: string;
   description: string;
+  genome: HistoricalGenome;
+}
+export interface BlueprintFile {
+  format: 'evolab-organism-blueprint';
+  version: 2;
+  name: string;
+  description: string;
   genome: Genome;
 }
 
@@ -18,24 +33,19 @@ const genomeKeys = {
   preference: true,
   tolerance: true,
   tempo: true,
-} satisfies Record<keyof Genome, true>;
-const cellKeys = { x: true, y: true, type: true } satisfies Record<keyof Cell, true>;
+};
+const cellKeys = { x: true, y: true, type: true };
 const rootKeys = { format: true, version: true, name: true, description: true, genome: true };
 
 function exactKeys(value: unknown, keys: object): value is Record<string, unknown> {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    !Array.isArray(value) &&
-    Reflect.ownKeys(value).length === Object.keys(keys).length &&
-    Object.keys(keys).every((key) => Object.hasOwn(value, key))
-  );
+  return exactDataRecord(value, Object.keys(keys));
 }
 
-function validate(value: unknown): BlueprintFileV1 {
+function validate(value: unknown): BlueprintFile {
   if (!exactKeys(value, rootKeys) || value.format !== 'evolab-organism-blueprint')
     throw new Error('Choose a standalone EvoLab organism blueprint.');
-  if (value.version !== 1) throw new Error('Unsupported blueprint version. Expected version 1.');
+  if (value.version !== 1 && value.version !== 2)
+    throw new Error('Unsupported blueprint version. Expected version 1 or 2.');
   if (
     typeof value.name !== 'string' ||
     !value.name.trim() ||
@@ -46,27 +56,27 @@ function validate(value: unknown): BlueprintFileV1 {
     throw new Error('Blueprint description must contain at most 1,000 characters.');
   const genome = value.genome;
   if (
-    !exactKeys(genome, genomeKeys) ||
-    !Array.isArray(genome.cells) ||
-    !genome.cells.every((cell) => exactKeys(cell, cellKeys)) ||
-    !validGenome(genome)
+    !(value.version === 1
+      ? exactKeys(genome, genomeKeys) &&
+        Array.isArray(genome.cells) &&
+        genome.cells.every((cell) => exactKeys(cell, cellKeys)) &&
+        validHistoricalGenome(genome)
+      : validGenome(genome))
   )
     throw new Error('Blueprint needs 1–16 connected cells and valid temperature and tempo traits.');
   return {
     format: 'evolab-organism-blueprint',
-    version: 1,
+    version: 2,
     name: value.name,
     description: value.description,
-    genome: {
-      cells: genome.cells.map((cell) => ({ x: cell.x, y: cell.y, type: cell.type })),
-      preference: genome.preference,
-      tolerance: genome.tolerance,
-      tempo: genome.tempo,
-    },
+    genome:
+      value.version === 1
+        ? migrateHistoricalGenome(genome as HistoricalGenome)
+        : cloneGenome(genome as Genome),
   };
 }
 
-export function parseBlueprint(text: string): BlueprintFileV1 {
+export function parseBlueprint(text: string): BlueprintFile {
   if (new TextEncoder().encode(text).byteLength > BLUEPRINT_MAX_BYTES)
     throw new Error('Blueprint files must be 16 KiB or smaller.');
   let value: unknown;
@@ -79,14 +89,17 @@ export function parseBlueprint(text: string): BlueprintFileV1 {
 }
 
 export function serializeBlueprint(
-  input: Pick<BlueprintFileV1, 'name' | 'description' | 'genome'>,
+  input: Pick<BlueprintFile, 'name' | 'description' | 'genome'>,
 ): string {
   const blueprint = validate({
     format: 'evolab-organism-blueprint',
-    version: 1,
+    version: 2,
     name: input.name,
     description: input.description,
     genome: input.genome,
   });
-  return JSON.stringify(blueprint, null, 2);
+  const text = JSON.stringify(blueprint, null, 2);
+  if (new TextEncoder().encode(text).byteLength > BLUEPRINT_MAX_BYTES)
+    throw new Error('Blueprint files must be 16 KiB or smaller.');
+  return text;
 }

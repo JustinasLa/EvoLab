@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Ecosystem } from '../src/ecosystem';
+import { storedSensoryGenome, syntheticHistoricalWorld } from './fixtures/sensory-legacy';
 import {
   DEFAULTS,
   WORLD_MAX_BYTES,
@@ -164,6 +165,33 @@ function decode(text: string): any {
 }
 
 describe('bounded retained measurement codec', () => {
+  it.each(['legacy-json', 'evolved-json', 'legacy-csv', 'evolved-csv'])(
+    'observes the current world without changing inherited data: %s',
+    (variant) => {
+      const world = new Ecosystem({ ...DEFAULTS, nutrients: 0 }, false),
+        genome = storedSensoryGenome();
+      if (variant.startsWith('legacy')) genome.behavior = { version: 1, mode: 'legacy' };
+      world.spawn(genome, 30, 30)!.energy = 100;
+      for (let tick = 0; tick < 90; tick++) world.step();
+      const before = world.save(),
+        format = variant.endsWith('json') ? 'json' : 'csv';
+      const source = world.measurements(),
+        envelope = measurementEnvelope(source);
+      const serialized = serializeMeasurements(source, format);
+      expect(serialized.byteLength).toBe(new TextEncoder().encode(serialized.text).length);
+      expect(envelope.snapshot.worldVersion).toBe(9);
+      expect(envelope).toMatchObject({
+        version: 3,
+        rules: { version: 2 },
+        telemetry: { version: 2 },
+        interventions: { version: 3 },
+      });
+      expect(serialized.text).not.toContain('native-B5');
+      expect(serialized.text).not.toContain('legacyExtensions');
+      expect(world.save()).toEqual(before);
+      expect(Ecosystem.load(JSON.stringify(before)).save()).toEqual(before);
+    },
+  );
   it('reports the current complete-world version without changing measurement format or adding lineage replay', () => {
     const world = new Ecosystem();
     const source = world.measurements();
@@ -202,7 +230,7 @@ describe('bounded retained measurement codec', () => {
         version: 3,
         rules: { version: 2 },
         snapshot: {
-          worldVersion: 8,
+          worldVersion: 9,
           thermalRefuges: {
             version: 1,
             enabled,
@@ -248,7 +276,7 @@ describe('bounded retained measurement codec', () => {
       envelope = measurementEnvelope(source);
     expect(envelope.version).toBe(3);
     expect(envelope.rules.version).toBe(2);
-    expect(envelope.snapshot.worldVersion).toBe(8);
+    expect(envelope.snapshot.worldVersion).toBe(9);
     expect(envelope.snapshot.terrain).toEqual(world.terrain);
     expect(envelope.snapshot.settings).toEqual(DEFAULTS);
     expect(envelope.negativeZeroPaths).toContain('/snapshot/terrain/seed');
@@ -385,7 +413,7 @@ describe('bounded retained measurement codec', () => {
     });
     expect(csv(serializeMeasurements(world.measurements(), 'csv').text)).toHaveLength(311);
     expect(decode(serializeMeasurements(world.measurements(), 'csv').text)).toEqual(actual);
-    const { interventions: _log, terrain: _terrain, ...saved } = world.save(),
+    const { interventions: _log, ...saved } = syntheticHistoricalWorld(world.save()),
       legacy = Ecosystem.load(JSON.stringify({ ...saved, version: 4 }));
     const imported = measurementEnvelope(legacy.measurements());
     expect(imported.windows.settings).toMatchObject({

@@ -9,7 +9,7 @@ import {
   type LibraryEntry,
   type LibraryProblem,
 } from '../src/library';
-import { founder } from '../src/model';
+import { founder, cloneGenome, migrateHistoricalGenome } from '../src/model';
 import { serializeBlueprint } from '../src/blueprint';
 import { libraryHarness as harness } from './fixtures/library';
 
@@ -29,24 +29,34 @@ afterEach(() => {
 });
 
 describe('bounded local record classification', () => {
-  it('projects exact ordered known genome fields and genuine provenance', () => {
-    const genome = {
+  it('retains exact complete current genomes and genuine provenance without truncating oversized opaque data', () => {
+    const historical = {
       ...founder(2),
       extra: 'x'.repeat(100000),
-      cells: founder(2).cells.map((cell) => ({ ...cell, extra: true })),
+      cells: founder(2).cells.map((cell) => ({
+        x: cell.x,
+        y: cell.y,
+        type: cell.type,
+        extra: true,
+      })),
     };
+    delete (historical as any).behavior;
+    expect(() => libraryCandidate(migrateHistoricalGenome(historical), 'name', '')).toThrow();
+    historical.extra = 'retained';
+    const genome = migrateHistoricalGenome(historical),
+      original = cloneGenome(genome);
     const saved = libraryCandidate(genome, '  name  ', 'description', {
       captureTick: 0,
       seed: 4294967295,
     });
-    expect(saved.blueprint.genome).toEqual(founder(2));
+    expect(saved.blueprint.genome).toEqual(original);
     expect(classifyRecord(first, encodeRecord(saved, 2))).toMatchObject({
       kind: 'valid',
       revision: 2,
       provenance: { captureTick: 0, seed: 4294967295 },
     });
     genome.cells[0].x = 4;
-    expect(saved.blueprint.genome.cells[0].x).toBe(0);
+    expect(saved.blueprint.genome).toEqual(original);
     expect(() => libraryCandidate({ ...founder(0), cells: [] }, 'name', '')).toThrow();
   });
   it('establishes all declarations before codec errors and never repairs unknown or future data', () => {
@@ -84,7 +94,7 @@ describe('bounded local record classification', () => {
       JSON.stringify({ recordVersion: 2, extra: true }),
       JSON.stringify({
         ...supported,
-        blueprint: JSON.stringify({ ...blueprint, version: 2, extra: true }),
+        blueprint: JSON.stringify({ ...blueprint, version: 3, extra: true }),
       }),
       JSON.stringify({
         ...supported,
@@ -206,7 +216,7 @@ describe('native event ownership and transactions', () => {
       JSON.stringify({ recordVersion: 2, extra: true }),
       JSON.stringify({
         ...raw,
-        blueprint: JSON.stringify({ ...blueprint, version: 2, extra: true }),
+        blueprint: JSON.stringify({ ...blueprint, version: 3, extra: true }),
       }),
       JSON.stringify({ ...raw, revision: -1 }),
       '{}',

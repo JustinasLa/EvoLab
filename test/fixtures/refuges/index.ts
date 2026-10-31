@@ -1,3 +1,4 @@
+import { syntheticHistoricalWorld } from '../sensory-legacy';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -36,6 +37,7 @@ export function predecessor(saved: WorldFile): WorldFileV6 {
   assert.ok(retained.interventions.entries.every((entry) => !entry.kind.startsWith('refuge-')));
   return {
     ...retained,
+    organisms: syntheticHistoricalWorld(saved).organisms,
     version: 6,
     interventions: {
       ...retained.interventions,

@@ -6,8 +6,10 @@ import {
   serializeBlueprint,
 } from '../src/blueprint';
 import { founder, type CellType, type Genome } from '../src/model';
+import { storedSensoryGenome } from './fixtures/sensory-legacy';
 
 const allTypes = (): Genome => ({
+  behavior: { version: 1 as const, mode: 'legacy' as const },
   cells: [3, 4, 5, 6, 7, 8].map((type, offset) => ({
     x: (offset % 3) - 1,
     y: Math.floor(offset / 3),
@@ -19,19 +21,52 @@ const allTypes = (): Genome => ({
 });
 const envelope = (genome = allTypes()) => ({
   format: 'evolab-organism-blueprint',
-  version: 1,
+  version: 2,
   name: BLUEPRINT_DEFAULT_NAME,
   description: '',
   genome,
 });
 
 describe('standalone blueprint schema', () => {
+  it.each(['serialized', 'parsed'])(
+    'detaches complete evolved and opaque payloads at the %s boundary',
+    (boundary) => {
+      const source = storedSensoryGenome(),
+        original = structuredClone(source);
+      const text = serializeBlueprint({
+        name: '  λ🌱 literal  ',
+        description: '<script>inert</script>',
+        genome: source,
+      });
+      const copied =
+        boundary === 'serialized'
+          ? (JSON.parse(text).genome as Genome)
+          : parseBlueprint(text).genome;
+      expect(copied).toEqual(original);
+      expect(copied.legacyExtensions).not.toBe(source.legacyExtensions);
+      if (copied.behavior.mode === 'evolved') copied.behavior.reactions.food = 'ignore';
+      (copied.legacyExtensions![0][1].at(-1)! as any)[1] = 'copy-only';
+      expect(source).toEqual(original);
+      const snapshot = structuredClone(copied);
+      (source.legacyExtensions![0][1].at(-1)! as any)[1] = 'source-only';
+      expect(copied).toEqual(snapshot);
+      expect(JSON.parse(text).genome).toEqual(original);
+      expect(parseBlueprint(text).name).toBe('  λ🌱 literal  ');
+    },
+  );
   it('round-trips every founder, functional type, precision, order and anatomy boundary', () => {
     const genomes = [
       ...[0, 1, 2, 3].map((kind) => founder(kind)),
       allTypes(),
-      { cells: [{ x: -4, y: 4, type: 8 as const }], preference: 0, tolerance: 0.12, tempo: 2 },
       {
+        behavior: { version: 1 as const, mode: 'legacy' as const },
+        cells: [{ x: -4, y: 4, type: 8 as const }],
+        preference: 0,
+        tolerance: 0.12,
+        tempo: 2,
+      },
+      {
+        behavior: { version: 1 as const, mode: 'legacy' as const },
         cells: Array.from({ length: 16 }, (_, offset) => ({
           x: (offset % 4) + 1,
           y: Math.floor(offset / 4) - 4,
@@ -58,6 +93,7 @@ describe('standalone blueprint schema', () => {
         'preference',
         'tolerance',
         'tempo',
+        'behavior',
       ]);
       expect(Object.keys(JSON.parse(text).genome.cells[0])).toEqual(['x', 'y', 'type']);
     }
@@ -107,7 +143,7 @@ describe('standalone blueprint schema', () => {
     expect(() => parseBlueprint(JSON.stringify(value))).toThrow('standalone'),
   );
 
-  it.each([undefined, '1', 0, -1, 1.5, 2, null, true])(
+  it.each([undefined, '1', 0, -1, 1.5, 3, null, true])(
     'rejects unsupported version %j',
     (version) => {
       const value = { ...envelope(), version };

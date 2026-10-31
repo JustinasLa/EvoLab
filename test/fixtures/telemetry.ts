@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { Ecosystem } from '../../src/ecosystem';
+import { syntheticHistoricalWorld } from './sensory-legacy';
 import {
   DEFAULTS,
   WIDTH,
@@ -9,13 +10,14 @@ import {
   type WorldFileV5,
   type WorldFileV6,
   type WorldFileV7,
+  type WorldFileV8,
 } from '../../src/model';
 
 export function advance(world: Ecosystem, ticks: number): void {
   for (let tick = 0; tick < ticks; tick++) world.step();
 }
 
-export const ecology = ({ telemetry: _telemetry, ...saved }: WorldFile) => saved;
+export const ecology = ({ telemetry: _telemetry, ...saved }: WorldFile | WorldFileV5) => saved;
 
 export function colony(
   count: number,
@@ -29,7 +31,13 @@ export function colony(
   for (let organism = 0; organism < count; organism++)
     assert.ok(
       world.spawn(
-        { cells: [{ x: 0, y: 0, type: 7 }], preference, tolerance, tempo: 2 },
+        {
+          behavior: { version: 1 as const, mode: 'legacy' as const },
+          cells: [{ x: 0, y: 0, type: 7 }],
+          preference,
+          tolerance,
+          tempo: 2,
+        },
         organism % WIDTH,
         Math.floor(organism / WIDTH),
       ),
@@ -44,7 +52,7 @@ export function legacyV3(saved: WorldFile): WorldFileV3 {
     thermalRefuges: _thermalRefuges,
     lineageArchive: _lineageArchive,
     ...historical
-  } = ecology(saved);
+  } = ecology(syntheticHistoricalWorld(saved));
   return {
     ...historical,
     version: 3,
@@ -64,7 +72,7 @@ export function legacyV4(saved: WorldFile): WorldFileV4 {
     terrain: _terrain,
     thermalRefuges: _thermalRefuges,
     ...historical
-  } = saved;
+  } = syntheticHistoricalWorld(saved);
   return { ...historical, version: 4 };
 }
 export function legacyV5(saved: WorldFile): WorldFileV5 {
@@ -74,7 +82,7 @@ export function legacyV5(saved: WorldFile): WorldFileV5 {
     lineageArchive: _lineageArchive,
     interventions,
     ...historical
-  } = saved;
+  } = syntheticHistoricalWorld(saved);
   assert.ok(
     interventions.entries.every(
       (entry) => entry.kind !== 'terrain' && !entry.kind.startsWith('refuge-'),
@@ -96,10 +104,11 @@ export function legacyV6(saved: WorldFile): WorldFileV6 {
     lineageArchive: _lineageArchive,
     interventions,
     ...historical
-  } = saved;
+  } = syntheticHistoricalWorld(saved);
   assert.ok(interventions.entries.every((entry) => !entry.kind.startsWith('refuge-')));
   return {
     ...historical,
+    terrain: structuredClone(saved.terrain),
     version: 6,
     interventions: {
       ...interventions,
@@ -109,6 +118,26 @@ export function legacyV6(saved: WorldFile): WorldFileV6 {
   };
 }
 export function legacyV7(saved: WorldFile): WorldFileV7 {
-  const { lineageArchive: _lineageArchive, ...historical } = saved;
-  return { ...historical, version: 7 };
+  const { lineageArchive: _lineageArchive, ...historical } = syntheticHistoricalWorld(saved);
+  return {
+    ...historical,
+    terrain: structuredClone(saved.terrain),
+    thermalRefuges: structuredClone(saved.thermalRefuges),
+    interventions: structuredClone(saved.interventions),
+    version: 7,
+  };
+}
+
+export function legacyV8(saved: WorldFile): WorldFileV8 {
+  const archive = structuredClone(saved.lineageArchive);
+  for (const row of archive.summaries) {
+    if (row.foundingGenome) {
+      assert.deepEqual(row.foundingGenome.behavior, { version: 1, mode: 'legacy' });
+      assert.equal(row.foundingGenome.legacyExtensions, undefined);
+      assert.ok(row.foundingGenome.cells.every((cell) => cell.legacyExtensions === undefined));
+      const { behavior: _behavior, ...genome } = row.foundingGenome;
+      row.foundingGenome = genome as typeof row.foundingGenome;
+    }
+  }
+  return { ...legacyV7(saved), version: 8, lineageArchive: archive };
 }

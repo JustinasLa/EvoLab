@@ -315,7 +315,13 @@ function fixture(population: number): WorldFile {
   for (let organism = 0; organism < population; organism++) {
     const genome =
       population === 1600
-        ? { cells: [{ x: 0, y: 0, type: 4 as const }], preference: 0.5, tolerance: 0.3, tempo: 2 }
+        ? {
+            cells: [{ x: 0, y: 0, type: 4 as const }],
+            preference: 0.5,
+            tolerance: 0.3,
+            tempo: 2,
+            behavior: { version: 1 as const, mode: 'legacy' as const },
+          }
         : founder(0);
     const spawned = world.spawn(
       genome,
@@ -502,6 +508,7 @@ test('real admitted plant retains its complete anatomy through a later designer 
     preference: 0.725,
     tolerance: 0.42,
     tempo: 5,
+    behavior: { version: 1, mode: 'legacy' },
   };
   const replacement = { ...founder(0), preference: 0.15 };
   await page.locator('#blueprint-file').setInputFiles({
@@ -866,7 +873,7 @@ test('native exact targets, suspended cancellation and render-off editing preser
     mimeType: 'application/json',
     buffer: Buffer.from(JSON.stringify({ ...stepped, version: 99 })),
   });
-  await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5, 6, 7 or 8');
+  await expect(page.locator('#notice')).toContainText('version 2, 3, 4, 5, 6, 7, 8 or 9');
   expect(await settle(page)).toEqual(stepped);
   await capture('retained-world-failed-import');
   await attachEvidence(testInfo, 'native-target-evidence', {

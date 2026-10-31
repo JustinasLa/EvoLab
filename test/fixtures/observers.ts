@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { Ecosystem } from '../../src/ecosystem';
-import { DEFAULTS, type CellType, type WorldFile } from '../../src/model';
+import { DEFAULTS, encodeLegacyValue, type CellType, type WorldFile } from '../../src/model';
 
 export function observerWorld(population = 6, maximal = false): WorldFile {
   const world = new Ecosystem(
@@ -21,6 +21,7 @@ export function observerWorld(population = 6, maximal = false): WorldFile {
         preference: 0.12345678901234568 + (position % (maximal ? 5 : 6)) / 10,
         tolerance: 0.3456789012345679,
         tempo: 12,
+        behavior: { version: 1, mode: 'legacy' },
       },
       maximal ? (position % 60) * 4 : position * 36,
       Math.floor(position / 60) * 4,
@@ -42,6 +43,7 @@ export function observerWorld(population = 6, maximal = false): WorldFile {
       preference: 0.5,
       tolerance: 0.3,
       tempo: 2,
+      behavior: { version: 1, mode: 'legacy' },
     });
     assert.ok(world.recordPaint(outcome, 'food', 0, point, 155, null));
   }
@@ -86,9 +88,13 @@ export function extendedObserverWorld(file: WorldFile, surface: string): WorldFi
   if (surface === 'settings' || surface === 'all') attach(extended.settings, 131072);
   for (const organism of extended.organisms) {
     if (surface === 'organism' || surface === 'all') attach(organism, 16384);
-    if (surface === 'genome' || surface === 'all') attach(organism.genome, 16384);
+    if (surface === 'genome' || surface === 'all')
+      organism.genome.legacyExtensions = [
+        ['observerExtension', encodeLegacyValue(extension(16384))],
+      ];
     if (surface === 'cell' || surface === 'all')
-      for (const cell of organism.genome.cells) attach(cell, 6144);
+      for (const cell of organism.genome.cells)
+        cell.legacyExtensions = [['observerExtension', encodeLegacyValue(extension(6144))]];
   }
   return extended;
 }
@@ -98,6 +104,14 @@ export function withoutObserverExtensions(file: WorldFile): WorldFile {
     const { observerExtension: _extension, ...known } = value as Value & {
       observerExtension?: unknown;
     };
+    const complete = known as Record<string, any>;
+    if (Array.isArray(complete.legacyExtensions)) {
+      const entries = complete.legacyExtensions.filter(
+        ([name]: [string]) => name !== 'observerExtension',
+      );
+      if (entries.length) complete.legacyExtensions = entries;
+      else delete complete.legacyExtensions;
+    }
     return known as Value;
   };
   return {
