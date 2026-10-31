@@ -1292,16 +1292,20 @@ for (const operation of [
     try {
       await expect(page.locator('#run-state')).toHaveText('STOPPED');
     } catch (error) {
-      const diagnosis = await page.evaluate(() => ({
-        visible: window.publicationFault.visible,
-        postsAfterArm: window.publicationFault.postsAfterArm,
-        pendingAtArm: window.publicationFault.pendingAtArm,
-        latest: window.publicationFault.latest,
-        failures: window.publicationFault.failures,
-        failureMessage: window.publicationFault.failureMessage,
-        pending: [...window.measurementGate.pending.keys()],
-      }));
-      console.error('publication-fault ownership', operation, JSON.stringify(diagnosis));
+      try {
+        const diagnosis = await page.evaluate(() => ({
+          visible: window.publicationFault.visible,
+          postsAfterArm: window.publicationFault.postsAfterArm,
+          pendingAtArm: window.publicationFault.pendingAtArm,
+          latest: window.publicationFault.latest,
+          failures: window.publicationFault.failures,
+          failureMessage: window.publicationFault.failureMessage,
+          pending: [...window.measurementGate.pending.keys()],
+        }));
+        console.error('publication-fault ownership', operation, JSON.stringify(diagnosis));
+      } catch {
+        // A closed page or failed diagnostic must preserve the original assertion.
+      }
       throw error;
     }
     await expect(page.locator('#notice')).toContainText('The action completed');
