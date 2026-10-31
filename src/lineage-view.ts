@@ -83,6 +83,34 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
   let page = 0;
   let tick = 0;
   let facts = new Map<number, Evidence>();
+  const pressed = new Set<number>();
+  let deferred = false;
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  const flushDeferred = (): void => {
+    if (!deferred || pressed.size || refreshTimer !== undefined) return;
+    // Native click follows pointerup. Reconcile after that activation has finished.
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined;
+      render();
+    }, 0);
+  };
+  const beginPress = (event: PointerEvent): void => {
+    if (event.target instanceof Element && event.target.closest('button'))
+      pressed.add(event.pointerId);
+  };
+  const endPress = (event: PointerEvent): void => {
+    pressed.delete(event.pointerId);
+    flushDeferred();
+  };
+  const cancelPresses = (): void => {
+    pressed.clear();
+    flushDeferred();
+  };
+  explorer.addEventListener('pointerdown', beginPress);
+  window.addEventListener('pointerup', endPress);
+  window.addEventListener('pointercancel', endPress);
+  window.addEventListener('blur', cancelPresses);
+
   function parent(entry: Evidence): number | null | undefined {
     return entry.row?.parentId ?? entry.created?.parentId;
   }
@@ -121,6 +149,13 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
   }
   function render(): void {
     if (!data || panel.hidden || !explorer.open) return;
+    observed.textContent = `Observed at tick ${tick}.`;
+    if (pressed.size) {
+      deferred = true;
+      return;
+    }
+    deferred = false;
+    retention.textContent = `Bounded evidence: ${data.archive.summaries.length}/${LINEAGE_SUMMARY_CAPACITY} summaries; ${data.archive.events.length}/${LINEAGE_EVENT_CAPACITY} events. Archive origin: ${data.archive.originKind} at tick ${data.archive.originTick}. ${data.archive.summariesPruned ? 'Older summaries pruned.' : 'No summary eviction recorded.'} ${data.archive.eventsPruned ? `Events pruned through tick ${data.archive.eventsEvictedThroughTick}; that tick may be partial.` : 'No event eviction recorded.'} Missing ancestry stays unknown; retained transitions may be incomplete.`;
     const query = search.value.trim().toLowerCase();
     const identity = /^(?:lineage )?#?(\d+)$/.exec(query);
     const active = document.activeElement as HTMLElement | null;
@@ -148,7 +183,6 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
         ? 'No matching lineages.'
         : 'No retained lineages. Earlier ancestry is unknown.';
     if (results.textContent !== resultText) results.textContent = resultText;
-    observed.textContent = `Observed at tick ${tick}.`;
     // Retain the original navigation targets across observations.
     const detailFocusedId = detail.contains(active) ? active?.dataset.lineageId : undefined;
     const rowContent = document.createElement('ul');
@@ -317,6 +351,8 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
   return {
     update(value: LineagePresentation, at: number, replacementId: number): void {
       if (replacement !== replacementId) {
+        pressed.clear();
+        deferred = false;
         rows.replaceChildren();
         detail.replaceChildren();
         selected = undefined;
@@ -342,11 +378,19 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
         const id = parent(entry);
         if (id != null) fact(id);
       }
-      retention.textContent = `Bounded evidence: ${data.archive.summaries.length}/${LINEAGE_SUMMARY_CAPACITY} summaries; ${data.archive.events.length}/${LINEAGE_EVENT_CAPACITY} events. Archive origin: ${data.archive.originKind} at tick ${data.archive.originTick}. ${data.archive.summariesPruned ? 'Older summaries pruned.' : 'No summary eviction recorded.'} ${data.archive.eventsPruned ? `Events pruned through tick ${data.archive.eventsEvictedThroughTick}; that tick may be partial.` : 'No event eviction recorded.'} Missing ancestry stays unknown; retained transitions may be incomplete.`;
       render();
       changed();
     },
     reveal: render,
+    dispose(): void {
+      clearTimeout(refreshTimer);
+      pressed.clear();
+      deferred = false;
+      explorer.removeEventListener('pointerdown', beginPress);
+      window.removeEventListener('pointerup', endPress);
+      window.removeEventListener('pointercancel', endPress);
+      window.removeEventListener('blur', cancelPresses);
+    },
     highlighted(value: LineagePresentation, frameReplacement = replacement): ReadonlySet<number> {
       if (frameReplacement !== replacement) return new Set();
       // Membership comes from the very frame being drawn, never an organism ID cache.

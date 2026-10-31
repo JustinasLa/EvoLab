@@ -5857,9 +5857,12 @@ test.describe('retained lineage explorer', () => {
     ];
     await importTelemetryWorld(page, world.save());
     await page.locator('#ecosystem-tab').click();
-    await page.locator('#lineage-heading').click();
-    await expect(page.locator('#lineage-retention')).toContainText('Bounded evidence');
     const before = await downloadWorld(page);
+    await page.locator('#lineage-heading').focus();
+    await page.keyboard.press('Space');
+    await expect(page.locator('#lineage-explorer')).toHaveJSProperty('open', true);
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    await expect(page.locator('#lineage-retention')).toContainText('Bounded evidence');
     const commands = await page.evaluate(
       () => (window as any).lineageExplorerEvidence.commands.length,
     );
@@ -6053,7 +6056,7 @@ test.describe('retained lineage explorer', () => {
   for (const selectedEvidence of ['retained', 'expiring'] as const) {
     test(`native relationship ownership across real archive eviction / ${selectedEvidence}`, async ({
       page,
-    }) => {
+    }, info) => {
       await observeTerrainNative(page);
       await page.goto('/');
       await terrainNativeFrame(page);
@@ -6073,10 +6076,22 @@ test.describe('retained lineage explorer', () => {
       await target.evaluate((element) => {
         (window as any).evictionTarget = element;
       });
+      const box = (await target.boundingBox())!;
+      const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      const session =
+        selectedEvidence === 'retained' && info.project.name === 'mobile'
+          ? await page.context().newCDPSession(page)
+          : null;
       if (selectedEvidence === 'retained') {
-        const box = (await target.boundingBox())!;
-        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-        await page.mouse.down();
+        if (session)
+          await session.send('Input.dispatchTouchEvent', {
+            type: 'touchStart',
+            touchPoints: [point],
+          });
+        else {
+          await page.mouse.move(point.x, point.y);
+          await page.mouse.down();
+        }
       }
       await page.evaluate(() => document.getElementById('step')!.click());
       reference.step();
@@ -6091,9 +6106,12 @@ test.describe('retained lineage explorer', () => {
           true,
         );
         await expect(target).toBeFocused();
-        const box = (await target.boundingBox())!;
-        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-        await page.mouse.up();
+        expect(await target.boundingBox()).toEqual(box);
+        // Release at the original coordinates: no move may compensate for reflow.
+        if (session) {
+          await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+          await session.detach();
+        } else await page.mouse.up();
         await expect(page.locator('#lineage-detail')).toContainText(
           `Lineage #${retained.species} · Living`,
         );

@@ -2495,7 +2495,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   const keyboard = (event: KeyboardEvent): void => {
     if (
       (event.target instanceof HTMLElement &&
-        event.target.closest('input,select,textarea,button,[contenteditable="true"],dialog')) ||
+        event.target.closest(
+          'input,select,textarea,button,summary,[contenteditable="true"],dialog',
+        )) ||
       event.ctrlKey ||
       event.metaKey ||
       event.altKey ||
@@ -3138,6 +3140,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     candidate = undefined;
     librarySnapshot = { count: 0, rows: [] };
     telemetry.dispose();
+    lineageView.dispose();
     cancelAnimationFrame(animation);
     terminate();
     window.removeEventListener('keydown', keyboard);

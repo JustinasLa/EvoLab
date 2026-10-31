@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createLineageView } from '../src/lineage-view';
 import { markup } from '../src/view';
 import { Ecosystem } from '../src/ecosystem';
@@ -36,6 +36,8 @@ beforeEach(() => {
   changed = vi.fn();
   view = createLineageView(root, changed);
 });
+
+afterEach(() => view.dispose());
 
 describe('bounded retained lineage evidence', () => {
   it('handles controls before data and an empty archive without fabricated events', () => {
@@ -128,13 +130,53 @@ describe('bounded retained lineage evidence', () => {
     );
     expect(get('lineage-detail').querySelector('.lineage-timeline')).toBe(timeline);
     expect(timeline.scrollTop).toBe(80);
-    expect(timeline.textContent).toContain(`child #${nextChild.species}`);
-    expect(get('lineage-detail').textContent).toContain('Observed at tick 1');
+    expect(timeline.textContent).not.toContain(`child #${nextChild.species}`);
+    expect(get('lineage-observed').textContent).toContain('Observed at tick 1');
     row.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
     row.click();
     expect(get('lineage-detail').textContent).toContain(`Lineage #${child.species} · Living`);
     expect(document.activeElement).toBe(get('lineage-detail'));
   });
+
+  for (const finish of ['release', 'cancel', 'blur', 'dispose', 'replacement'] as const) {
+    it(`defers eviction layout through native pointer ownership until ${finish}`, async () => {
+      const { world, parent, extinct, retained } = relationshipEviction();
+      update(world);
+      search(String(parent.species));
+      select(parent.species);
+      const detail = get('lineage-detail');
+      const expired = detail.querySelector(`[data-lineage-id="${extinct.species}"]`)!;
+      const target = detail.querySelector<HTMLButtonElement>(
+        `[data-lineage-id="${retained.species}"]`,
+      )!;
+      const pointer = (type: string, id: number) =>
+        Object.assign(new MouseEvent(type, { bubbles: true }), { pointerId: id });
+      target.dispatchEvent(pointer('pointerdown', 1));
+      target.dispatchEvent(pointer('pointerdown', 2));
+      world.step();
+      update(world);
+      expect(expired.isConnected).toBe(true);
+      expect(get('lineage-observed').textContent).toContain('Observed at tick 1');
+      window.dispatchEvent(pointer('pointerup', 1));
+      window.dispatchEvent(pointer('pointerup', 99));
+      expect(expired.isConnected).toBe(true);
+      if (finish === 'blur') window.dispatchEvent(new Event('blur'));
+      else if (finish === 'replacement') update(fresh(), 2);
+      else {
+        window.dispatchEvent(pointer(finish === 'cancel' ? 'pointercancel' : 'pointerup', 2));
+        // A second terminal before the timer runs must not enqueue duplicate refreshes.
+        window.dispatchEvent(pointer('pointerup', 2));
+        if (finish === 'dispose') view.dispose();
+      }
+      if (finish !== 'replacement') expect(expired.isConnected).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(expired.isConnected).toBe(finish === 'dispose');
+      if (finish === 'replacement')
+        expect(get('lineage-detail').textContent).toContain('Select a lineage');
+      else if (finish !== 'dispose')
+        expect(detail.querySelector(`[data-lineage-id="${retained.species}"]`)).toBe(target);
+    });
+  }
 
   it('keeps focused relationship controls stable when a preceding child becomes extinct', () => {
     const world = fresh();

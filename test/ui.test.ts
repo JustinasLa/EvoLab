@@ -5188,6 +5188,16 @@ describe('standalone blueprint files', () => {
       );
       get(id).dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'p' }));
     }
+    for (const summary of root.querySelectorAll('summary')) {
+      const space = new KeyboardEvent('keydown', {
+        bubbles: true,
+        cancelable: true,
+        code: 'Space',
+        key: ' ',
+      });
+      summary.dispatchEvent(space);
+      expect(space.defaultPrevented).toBe(false);
+    }
     expect(worker.commands).toHaveBeenCalledTimes(1);
     expect(get('world').dataset.tool).toBe('pan');
   });
