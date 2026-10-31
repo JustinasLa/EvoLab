@@ -5,6 +5,7 @@ import {
   HEIGHT,
   LIMIT,
   WIDTH,
+  Random,
   founder,
   index,
   positions,
@@ -98,22 +99,34 @@ describe('placement geometry and detached designer transforms', () => {
     }
   });
 
-  it('leaves the complete world, RNG and identity counters exact after wall/occupancy/capacity failures', () => {
+  it('keeps the single legacy failed attempt, without retries or destructive world edits', () => {
     const world = new Ecosystem(DEFAULTS, false);
     const genome = founder(0);
     world.walls[index(0, 0)] = 1;
     world.food[index(WIDTH - 1, 0)] = 1;
     const before = world.save();
+    const wallRandom = new Random(before.random);
+    wallRandom.int(4);
     expect(world.paint('plant', 0, 0, 0, genome).placement).toBeNull();
-    expect(world.save()).toEqual(before);
+    expect(world.save()).toEqual({
+      ...before,
+      nextSpecies: before.nextSpecies + 1,
+      random: wallRandom.state,
+    });
     world.walls.fill(0);
     world.spawn(genome, 0, 0);
     const occupied = world.save();
+    const occupiedRandom = new Random(occupied.random);
+    occupiedRandom.int(4);
     expect(world.paint('plant', 0, 0, 0, genome).placement).toBeNull();
-    expect(world.save()).toEqual(occupied);
+    expect(world.save()).toEqual({
+      ...occupied,
+      nextSpecies: occupied.nextSpecies + 1,
+      random: occupiedRandom.state,
+    });
     for (let i = 2; i <= LIMIT; i++) world.organisms.set(i, { ...world.organisms.get(1)!, id: i });
     const full = world.save();
     expect(world.paint('plant', 60, 60, 0, genome).placement).toBeNull();
-    expect(world.save()).toEqual(full);
+    expect(world.save()).toEqual({ ...full, nextSpecies: full.nextSpecies + 1 });
   });
 });

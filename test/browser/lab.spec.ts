@@ -6002,7 +6002,7 @@ test('D12-2 touch previews and transform controls preserve complete payloads unt
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
 });
 
-test('D12-3 stale valid preview cannot override worker occupancy and failure changes no world state', async ({
+test('D12-3 stale valid preview cannot override worker occupancy and failure makes one legacy attempt', async ({
   page,
 }) => {
   const reference = placementWorld();
@@ -6030,6 +6030,7 @@ test('D12-3 stale valid preview cannot override worker occupancy and failure cha
   await expect(page.locator('#placement-feedback')).toContainText('Valid');
   await page.mouse.click(at.x, at.y);
   await expect(page.locator('#notice')).toContainText('Placement blocked');
+  expect(reference.paint('plant', 25, 25, 0, founder(0)).placement).toBeNull();
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
   await page.evaluate(() => window.placementDelivery!.release!());
   await expect(page.locator('#placement-feedback')).toContainText('Blocked');
