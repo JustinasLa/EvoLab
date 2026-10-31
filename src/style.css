@@ -1280,3 +1280,12 @@ dialog a {
     min-height: 44px;
   }
 }
+
+#local-checkpoints {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.checkpoint-fields select {
+  width: 100%;
+  min-width: 0;
+}

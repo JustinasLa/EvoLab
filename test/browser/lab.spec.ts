@@ -5891,6 +5891,11 @@ test('local complete checkpoints survive reload, require confirmations, and cont
   const stored = await checkpointBytes(page, 1);
   expect(JSON.parse(stored!).world).toBe(baseline.toString());
   await expect(page.locator('#checkpoint-slot')).toContainText('Literal <checkpoint> 🌿');
+  expect(
+    await page
+      .locator('#local-checkpoints')
+      .evaluate((element) => element.scrollWidth <= element.clientWidth),
+  ).toBe(true);
   await expect(page.locator('#checkpoint-usage')).toContainText('1 / 5');
   await expect(page.locator('#save')).toBeEnabled();
   await page.locator('#checkpoint-save').click();
