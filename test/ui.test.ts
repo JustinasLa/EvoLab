@@ -1,3 +1,4 @@
+import { checkpointRecord } from '../src/checkpoints';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, captureCommand } from '../src/main';
 import * as model from '../src/model';
@@ -6036,4 +6037,112 @@ describe('internal transport posting failures', () => {
       expect(worker.postMessage.mock.calls).toHaveLength(before);
     },
   );
+});
+
+describe('complete local checkpoint worker integration', () => {
+  const pending = async () => {
+    for (let i = 0; i < 60; i++) await Promise.resolve();
+  };
+  it('captures the complete real-worker Save without a download and restores via the existing validator', async () => {
+    const native = libraryHarness();
+    vi.stubGlobal('indexedDB', native.factory);
+    const harness = realWorker(true);
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    const before = harness.save();
+    click('checkpoint-refresh');
+    await pending();
+    click('checkpoint-save');
+    harness.deliver();
+    await pending();
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    const stored = JSON.parse(native.values.get(1) as string);
+    expect(JSON.parse(stored.world)).toEqual(before);
+    click('step');
+    harness.deliver();
+    expect(harness.save().tick).toBe(before.tick + 1);
+    click('checkpoint-restore');
+    click('checkpoint-confirm');
+    await pending();
+    harness.deliver();
+    expect(harness.save()).toEqual(before);
+    const invalid = JSON.parse(stored.world);
+    invalid.random = 'invalid';
+    native.values.set(1, checkpointRecord('invalid world', JSON.stringify(invalid)));
+    click('checkpoint-refresh');
+    await pending();
+    click('checkpoint-restore');
+    click('checkpoint-confirm');
+    await pending();
+    harness.deliver();
+    expect(harness.save()).toEqual(before);
+    expect(get('notice').textContent).toContain('Not a valid');
+  });
+  it('rejects capture and restore while another lifecycle owns capacity, and cancels stale Save delivery', async () => {
+    const native = libraryHarness();
+    vi.stubGlobal('indexedDB', native.factory);
+    native.values.set(1, checkpointRecord('stored', JSON.stringify(world.save())));
+    click('checkpoint-refresh');
+    await pending();
+    click('save');
+    set('checkpoint-slot', '2', 'change');
+    click('checkpoint-save');
+    expect(get('checkpoint-status').textContent).toContain('not saved');
+    let finish!: (text: string) => void;
+    upload({
+      size: 2,
+      text: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    });
+    set('checkpoint-slot', '1', 'change');
+    click('checkpoint-restore');
+    finish(JSON.stringify(world.save()));
+    await pending();
+    click('checkpoint-confirm');
+    await pending();
+    expect(get('checkpoint-status').textContent).toContain('active world was retained');
+  });
+  it('clears capture ownership after fatal post failures and stale world generation delivery', async () => {
+    const native = libraryHarness();
+    vi.stubGlobal('indexedDB', native.factory);
+    click('checkpoint-refresh');
+    await pending();
+    worker.postMessage.mockImplementationOnce(() => {
+      throw new Error('native transport stopped');
+    });
+    click('checkpoint-save');
+    expect(get('checkpoint-status').textContent).toContain('not saved');
+    const harness = realWorker(true);
+    harness.deliver();
+    click('checkpoint-refresh');
+    await pending();
+    click('checkpoint-save');
+    click('reset');
+    harness.deliver();
+    await pending();
+    expect(native.values.size).toBe(0);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(get('checkpoint-status').textContent).toContain('cancelled');
+  });
+  it('rejects busy lifecycle capture and native post failure without wedging checkpoint controls', async () => {
+    const native = libraryHarness();
+    vi.stubGlobal('indexedDB', native.factory);
+    click('checkpoint-refresh');
+    await pending();
+    click('load');
+    worker.postMessage.mockImplementationOnce(() => {
+      throw new DOMException('failed clone', 'DataCloneError');
+    });
+    click('checkpoint-save');
+    await pending();
+    expect(get('checkpoint-status').textContent).toContain('not saved');
+    click('checkpoint-save');
+    worker.emit({ type: 'error', message: 'World file exceeds 2.5 MB.', fatal: false });
+    await pending();
+    expect(get('checkpoint-status').textContent).toContain('2.5 MB');
+    expect(native.values.size).toBe(0);
+  });
 });

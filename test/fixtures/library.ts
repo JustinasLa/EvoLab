@@ -100,10 +100,10 @@ export function libraryHarness() {
             working.set(key, value);
           }),
         delete: (key: IDBValidKey) => request(() => working.delete(key)),
-        openCursor: () => {
-          const rows = [...working].sort(([left], [right]) =>
-            String(left).localeCompare(String(right)),
-          );
+        openCursor: (key?: IDBValidKey) => {
+          const rows = [...working]
+            .filter(([candidate]) => key === undefined || candidate === key)
+            .sort(([left], [right]) => String(left).localeCompare(String(right)));
           let position = 0;
           const cursor: any = {};
           const deliver = () => {
@@ -141,6 +141,11 @@ export function libraryHarness() {
       return;
     }
     if (faults.upgrade) openRequest.onupgradeneeded?.({ oldVersion: 0 });
+    if (openRequest.transaction.abort.mock.calls.length) {
+      openRequest.error = new DOMException('', 'AbortError');
+      openRequest.onerror?.();
+      return;
+    }
     connection.version = faults.version ?? 1;
     connection.objectStoreNames = {
       length: faults.wrongNames ? 2 : 1,
