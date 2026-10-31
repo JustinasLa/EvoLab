@@ -809,7 +809,7 @@ export async function runFortyControls(options: {
           return candidates.length === 1 && !!candidates[0].terminal;
         },
         { epoch: fence.epoch, id: op.id, type: op.expectedType },
-        { timeout: fence.remaining() },
+        { timeout: fence.remaining(), polling: 1 },
       ),
     );
     await fence.wait(() => handle.dispose());
@@ -867,14 +867,22 @@ export async function runFortyControls(options: {
     expectedType: string,
     admission = false,
     offered?: Operation,
+    preparingTarget = false,
   ) => {
     const op = offered ?? (await begin(role, interaction, expectedType));
     activeOperation = op;
     if (admission) await ready(op);
     await dispatch(op, kind);
     const receipt = await terminal(op);
-    await identity();
-    await checked(op);
+    if (preparingTarget) {
+      fence.check();
+      expect(receipt.command.terminal!.state.target?.status).toBe('running');
+      op.status = 'checked';
+      op.runnerCompletedMs = performance.now() - fence.startedAt;
+    } else {
+      await identity();
+      await checked(op);
+    }
     return { op, receipt };
   };
   const save = async (role: string, interaction: number | null) => {
@@ -1134,8 +1142,15 @@ export async function runFortyControls(options: {
                       // offered/readiness endpoints through preparation.
                       offered = await begin('primary-control', interaction, kind);
                       await ready(offered);
-                      await action('run-to-preparation', interaction, 'run-to-tick', 'run-to');
-                      await poll(() => window.longRun.state?.target?.status === 'running');
+                      await action(
+                        'run-to-preparation',
+                        interaction,
+                        'run-to-tick',
+                        'run-to',
+                        false,
+                        undefined,
+                        true,
+                      );
                     } else if (kind === 'reveal') {
                       await action('hide-preparation', interaction, 'hide', 'display-view');
                       const preparation = await save('reveal-preparation', interaction);

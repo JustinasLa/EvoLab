@@ -407,7 +407,8 @@ async function observeTerrainNative(
               receipt.pageStateBeforePause = document.getElementById('run-state')!.textContent;
               receipt.pausePostedSequence = ++sequence;
               awaitingPause = receipt;
-              document.getElementById('pause')!.click();
+              if (!evidence.playback?.paused) document.getElementById('pause')!.click();
+              else receipt.pauseAcknowledgedSequence = ++sequence;
               evidence.fifoPauses++;
             }, 0);
           }
@@ -1095,7 +1096,10 @@ for (const operation of [
         window.measurementGate.holdLifecycle = true;
       });
       if (operation === 'start') {
-        await page.evaluate(() => document.getElementById('reset')!.click());
+        await page.evaluate(() => {
+          document.getElementById('reset')!.click();
+          document.getElementById('confirm-reset')!.click();
+        });
         reference = new Ecosystem(reference.settings);
       } else if (operation === 'load') {
         reference = new Ecosystem({ ...DEFAULTS, seed: 74, nutrients: 0 }, false);

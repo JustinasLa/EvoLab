@@ -22,6 +22,7 @@ import {
   type TargetRun,
   type TickRate,
   type ControlState,
+  type WorldPresentation,
   type TelemetrySnapshot,
   type ExtinctionSummary,
   type PaintTool,
@@ -131,12 +132,20 @@ export function startWorker(
       status: elapsedMs >= 1000 ? 'measured' : 'warming',
     };
   }
+  let cachedPresentation: WorldPresentation | undefined;
+  let cachedRevision = -1,
+    cachedSelection = -1;
   function state(): ControlState {
+    if (!cachedPresentation || cachedRevision !== revision || cachedSelection !== selected) {
+      cachedPresentation = world!.presentation(selected);
+      cachedRevision = revision;
+      cachedSelection = selected;
+    }
     const organism = world!.organisms.get(selected);
     return {
       replacementId,
       revision,
-      world: world!.presentation(selected),
+      world: structuredClone(cachedPresentation),
       selected: organism ? observedOrganism(organism) : null,
       settings: observedSettings(world!.settings),
       speed,
@@ -249,6 +258,7 @@ export function startWorker(
     responseCommand?: number,
   ): void {
     const fatal = code === 'fatal';
+    cachedPresentation = undefined;
     if (fatal) {
       paused = failed = true;
       if (target?.status === 'running' || target?.status === 'suspended') {
@@ -475,6 +485,7 @@ export function startWorker(
         });
       } else {
         if (!world) throw new Error('No active ecosystem.');
+        const priorInteractive = interactive;
         let mutation = true,
           exactTelemetry = false;
         switch (data.type) {
@@ -793,6 +804,36 @@ export function startWorker(
             interactive ||= data.display && view.visible;
             exactTelemetry = true;
             break;
+          case 'capture-design': {
+            if (
+              !['organism', 'lineage'].includes(data.source) ||
+              !integer(data.sourceId, 1, 1e9) ||
+              !integer(data.captureId, 1, Number.MAX_SAFE_INTEGER)
+            )
+              throw new Error('Invalid design capture source.');
+            const organism =
+              data.source === 'organism'
+                ? world.organisms.get(data.sourceId)
+                : [...world.organisms.values()].find((value) => value.species === data.sourceId);
+            if (!organism)
+              throw new Error(
+                'The design source is no longer alive. Choose a current organism or common body.',
+              );
+            complete({
+              type: 'design-captured',
+              operation: 'capture-design',
+              runId,
+              commandId,
+              captureId: data.captureId,
+              source: data.source,
+              sourceId: data.sourceId,
+              genome: structuredClone(organism.genome),
+              completedTick: world.tick,
+              seed: world.settings.seed,
+              state: state(),
+            });
+            return;
+          }
           case 'save': {
             errorCode = 'save-failed';
             const text = JSON.stringify(world.save()),
@@ -831,6 +872,11 @@ export function startWorker(
             throw new Error('Unknown ecosystem command.');
         }
         effectApplied = true;
+        if (manualResult?.status === 'no-op') {
+          mutation = false;
+          interactive = priorInteractive;
+          exactTelemetry = false;
+        }
         if (mutation) changed();
         if (interactive) displayDirty = true;
         const observation = state();

@@ -646,6 +646,87 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
+describe('explicit full design capture over the bounded native protocol', () => {
+  it.each(['organism', 'lineage'] as const)(
+    'captures the complete detached %s genotype at the response tick without changing the whole world',
+    (source) => {
+      const original: any = legacyV7(new Ecosystem().save());
+      original.organisms[0].genome.sensorMemo = {
+        payload: 'native opaque capture',
+        negativeZero: -0,
+      };
+      original.organisms[0].genome.cells[0].cellMemo = ['retained cell payload'];
+      const reference = Ecosystem.load(JSON.stringify(original));
+      const harness = workerHarness();
+      harness.load(original);
+      harness.send({ type: 'pause' });
+      harness.send({ type: 'inspect', x: 120, y: 78 });
+      const before = harness.saveText(),
+        callbacks = [...harness.tasks];
+      const selected = reference.save().organisms[0];
+      const response = harness.send({
+        type: 'capture-design',
+        source,
+        sourceId: source === 'organism' ? selected.id : selected.species,
+        captureId: 17,
+      });
+      expect(response).toMatchObject({
+        type: 'design-captured',
+        operation: 'capture-design',
+        source,
+        captureId: 17,
+        completedTick: reference.tick,
+        seed: reference.settings.seed,
+      });
+      expect(response.genome).toEqual(selected.genome);
+      expect(JSON.stringify(response.state)).not.toContain('native opaque capture');
+      response.genome.cells[0].type = 8;
+      const next = harness.send({
+        type: 'capture-design',
+        source,
+        sourceId: source === 'organism' ? selected.id : selected.species,
+        captureId: 18,
+      });
+      expect(next.genome).toEqual(selected.genome);
+      expect(harness.saveText()).toBe(before);
+      expect(harness.tasks).toEqual(callbacks);
+      harness.send({ type: 'step' });
+      reference.step();
+      const stepped = harness.send({
+        type: 'capture-design',
+        source,
+        sourceId: source === 'organism' ? selected.id : selected.species,
+        captureId: 19,
+      });
+      expect(stepped.completedTick).toBe(reference.tick);
+      expect(stepped.genome).toEqual(reference.save().organisms[0].genome);
+      expect(harness.save()).toEqual(reference.save());
+    },
+  );
+  it.each([
+    { source: 'unknown', sourceId: 1, captureId: 1 },
+    { source: 'organism', sourceId: 0, captureId: 1 },
+    { source: 'organism', sourceId: 1, captureId: 0 },
+    { source: 'organism', sourceId: 99999, captureId: 1 },
+    { source: 'lineage', sourceId: 99999, captureId: 1 },
+  ])('rejects invalid or vanished full-capture source %j without any world edit', (payload) => {
+    const harness = workerHarness();
+    harness.load(new Ecosystem().save());
+    harness.send({ type: 'pause' });
+    const before = harness.saveText(),
+      tasks = [...harness.tasks];
+    const response = harness.send({ type: 'capture-design', ...payload });
+    expect(response).toMatchObject({
+      type: 'error',
+      operation: 'capture-design',
+      code: 'invalid-command',
+    });
+    expect(response).not.toHaveProperty('fatal');
+    expect(harness.saveText()).toBe(before);
+    expect(harness.tasks).toEqual(tasks);
+  });
+});
+
 describe('bounded long-run transport', () => {
   it('retains independent grid-free source credit while real history advances across multiple recording boundaries', () => {
     const display = vi.spyOn(Ecosystem.prototype, 'display');

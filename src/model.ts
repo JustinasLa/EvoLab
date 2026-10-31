@@ -295,6 +295,7 @@ export interface AcceptedTelemetrySource extends TelemetrySnapshot {
 export type CommandPayload =
   | { type: 'start'; settings: Settings; display: DisplayView; terrain: TerrainRecipe }
   | { type: 'load'; text: string }
+  | { type: 'capture-design'; source: 'organism' | 'lineage'; sourceId: number; captureId: number }
   | { type: 'pause' | 'resume' | 'step' | 'save' }
   | { type: 'snapshot'; display: boolean }
   | { type: 'run-to'; targetTick: number }
@@ -371,6 +372,19 @@ export type WorkerResponse = (
       operation?: string;
     }
   | {
+      type: 'design-captured';
+      operation: 'capture-design';
+      runId: number;
+      commandId: number;
+      captureId: number;
+      source: 'organism' | 'lineage';
+      sourceId: number;
+      genome: Genome;
+      completedTick: number;
+      seed: number;
+      state: ControlState;
+    }
+  | {
       type: 'saved';
       operation?: 'save';
       runId: number;
@@ -425,6 +439,9 @@ export type WorkerResponse = (
       recovery?: RetainedWorldState;
     }
 ) & {
+  source?: 'organism' | 'lineage';
+  sourceId?: number;
+  captureId?: number;
   action?: string;
   recipe?: TerrainRecipe;
   resolvedSeed?: number;
@@ -810,20 +827,22 @@ export function temperature(
 
 export function commandEcho(data: Record<string, any>): Record<string, unknown> {
   const keys =
-    data.type === 'clear-walls'
-      ? ['action']
-      : data.type === 'regenerate-walls'
-        ? ['action', 'recipe', 'resolvedSeed']
-        : data.type === 'refuge-mode'
-          ? ['rulesVersion', 'enabled']
-          : data.type === 'clear-refuges'
-            ? ['rulesVersion']
-            : data.type === 'paint-refuge'
-              ? ['rulesVersion', 'tool', 'units', 'radius', 'x', 'y']
-              : data.type === 'begin-stroke' &&
-                  ['warm', 'cool', 'erase-temperature'].includes(data.tool)
-                ? ['rulesVersion', 'tool', 'units', 'radius']
-                : [];
+    data.type === 'capture-design'
+      ? ['source', 'sourceId', 'captureId']
+      : data.type === 'clear-walls'
+        ? ['action']
+        : data.type === 'regenerate-walls'
+          ? ['action', 'recipe', 'resolvedSeed']
+          : data.type === 'refuge-mode'
+            ? ['rulesVersion', 'enabled']
+            : data.type === 'clear-refuges'
+              ? ['rulesVersion']
+              : data.type === 'paint-refuge'
+                ? ['rulesVersion', 'tool', 'units', 'radius', 'x', 'y']
+                : data.type === 'begin-stroke' &&
+                    ['warm', 'cool', 'erase-temperature'].includes(data.tool)
+                  ? ['rulesVersion', 'tool', 'units', 'radius']
+                  : [];
   return Object.fromEntries(
     keys.filter((key) => Object.hasOwn(data, key)).map((key) => [key, data[key]]),
   );
