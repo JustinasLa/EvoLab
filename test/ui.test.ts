@@ -1002,7 +1002,10 @@ beforeEach(() => {
   const ctx = new Proxy(
     { createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }) },
     {
-      get: (o, p) => (p in o ? o[p as keyof typeof o] : vi.fn()),
+      get: (target, property) => {
+        if (!(property in target)) Reflect.set(target, property, vi.fn());
+        return Reflect.get(target, property);
+      },
       set: (o, p, v) => {
         Reflect.set(o, p, v);
         return true;
@@ -1060,6 +1063,22 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe('ecosystem desk', () => {
+  it('keeps canvas method identities and complete invocation records stable within each fixture', () => {
+    const context = get<HTMLCanvasElement>('world').getContext('2d')!,
+      fillRect = context.fillRect,
+      before = vi.mocked(fillRect).mock.calls.length;
+    expect(context.fillRect).toBe(fillRect);
+    expect(context.clearRect).not.toBe(fillRect);
+    context.fillRect(1, 2, 3, 4);
+    expect(vi.mocked(fillRect).mock.calls).toHaveLength(before + 1);
+    expect(vi.mocked(fillRect).mock.calls.at(-1)).toEqual([1, 2, 3, 4]);
+    context.lineWidth = 3;
+    expect(context.lineWidth).toBe(3);
+    expect(context.createImageData(2, 3).data).toEqual(new Uint8ClampedArray(24));
+    context.fillRect = vi.fn();
+    expect(context.fillRect).not.toBe(fillRect);
+    expect(context.toString).toBe(Object.prototype.toString);
+  });
   it('confirms every user reset with a frozen payload, cancellation focus and no ecological command on cancellation', () => {
     click('ecosystem-tab');
     root.querySelector<HTMLDetailsElement>('.world-settings')!.open = true;
