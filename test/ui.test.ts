@@ -78,6 +78,7 @@ class WorkerStub extends EventTarget {
           : (this.state?.replacementId ?? 1),
       revision: ++this.revision,
       world: {
+        lineage: fixture.lineage ?? world.presentation().lineage,
         stats: frame.stats,
         climate: frame.climate,
         offset: frame.offset,
@@ -157,6 +158,7 @@ class WorkerStub extends EventTarget {
                 state: {
                   ...state,
                   world: {
+                    lineage: world.presentation().lineage,
                     stats: fixture.recovery.frame.stats,
                     climate: fixture.recovery.frame.climate,
                     offset: fixture.recovery.frame.offset,

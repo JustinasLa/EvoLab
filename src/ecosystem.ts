@@ -1161,7 +1161,7 @@ export class Ecosystem {
     this.eventUntil = this.tick + 900;
   }
   presentation(selected = 0): WorldPresentation {
-    const species = new Map<number, Species>();
+    const species = new Map<number, Species & { organismIds: number[] }>();
     let generation = 0,
       food = 0;
     for (let i = 0; i < this.food.length; i++) {
@@ -1171,11 +1171,13 @@ export class Ecosystem {
       const s = species.get(o.species);
       if (s) {
         s.count++;
+        s.organismIds.push(o.id);
         s.generation = Math.max(s.generation, o.generation);
       } else
         species.set(o.species, {
           id: o.species,
           count: 1,
+          organismIds: [o.id],
           generation: o.generation,
           genome: o.genome,
           name: speciesName(o.genome),
@@ -1184,7 +1186,17 @@ export class Ecosystem {
     }
     const organism = this.organisms.get(selected);
     const offset = this.tick < this.eventUntil ? this.eventOffset : 0;
+    const archive = this.lineageSnapshot();
+    for (const summary of archive.summaries)
+      if (summary.foundingGenome) summary.foundingGenome = observedGenome(summary.foundingGenome);
     return {
+      lineage: {
+        archive,
+        current: [...species.values()].map((row) => ({
+          ...row,
+          genome: observedGenome(row.genome),
+        })),
+      },
       terrain: { ...this.terrain },
       thermalRefuges: refugeSummary(this.thermalRefuges),
       anchorTemperature: organism
@@ -1220,7 +1232,10 @@ export class Ecosystem {
         top: [...species.values()]
           .sort((a, b) => b.count - a.count)
           .slice(0, 5)
-          .map((species) => ({ ...species, genome: observedGenome(species.genome) })),
+          .map(({ organismIds: _organismIds, ...row }) => ({
+            ...row,
+            genome: observedGenome(row.genome),
+          })),
       },
     };
   }

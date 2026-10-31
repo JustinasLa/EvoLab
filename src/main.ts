@@ -59,6 +59,7 @@ import {
   type Camera,
 } from './view';
 import { createTelemetryView } from './telemetry-view';
+import { createLineageView } from './lineage-view';
 import { emptyRefuges, refugeTool, refugeSummary, validRefugeBrush } from './refuges';
 import {
   createLibrary,
@@ -2576,6 +2577,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       }
     }
   }
+  const lineageView = createLineageView(root, () => {
+    dirty = true;
+  });
+  let displayedLineage: WorldPresentation['lineage'] | undefined;
   function accept(
     observation: ControlState,
     source?: TelemetrySnapshot,
@@ -2590,6 +2595,11 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     if (!latestState || differentRun || observation.revision > latestState.revision) {
       if (!differentRun && latestState && observation.replacementId !== latestState.replacementId)
         return;
+      lineageView.update(
+        observation.world.lineage,
+        observation.world.stats.tick,
+        observation.replacementId,
+      );
       renderObservation(
         observation.world,
         observation.selected,
@@ -2974,9 +2984,18 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         displayedRevision = pendingFrame.state.revision;
         displayedEpoch = pendingFrame.viewEpoch;
         displayedSelected = pendingFrame.selectedId;
+        displayedLineage = pendingFrame.state.world.lineage;
         pendingFrame = null;
       }
-      draw(canvas, buffer, frame!, camera, thermal, displayedSelected);
+      draw(
+        canvas,
+        buffer,
+        frame!,
+        camera,
+        thermal,
+        displayedSelected,
+        displayedLineage ? lineageView.highlighted(displayedLineage) : undefined,
+      );
       dirty = false;
       freshness();
       if (consumed) {
