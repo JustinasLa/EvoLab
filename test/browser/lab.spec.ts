@@ -5159,7 +5159,17 @@ test('B23-1 opt-in empty field retains the complete original climate trajectory 
   ]);
   const compare = (saved: WorldFile) => {
     while (reference.tick < saved.tick) reference.step();
-    const { thermalRefuges: _field, lineageArchive: _archive, ...retained } = saved;
+    expect(saved.shadeHabitats).toEqual({
+      version: 1,
+      enabled: false,
+      cells: [],
+    });
+    const {
+      thermalRefuges: _field,
+      lineageArchive: _archive,
+      shadeHabitats: _shade,
+      ...retained
+    } = saved;
     expect({
       ...retained,
       organisms: restoreHistoricalWorld(saved).organisms,
