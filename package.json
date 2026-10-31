@@ -17,7 +17,9 @@
     "test:browser": "playwright test",
     "check": "tsc --noEmit",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "test:soak": "vitest run --config vitest.long-run.config.ts test/long-run/soak.spec.ts",
+    "bench:ecosystem": "vitest run --config vitest.long-run.config.ts test/long-run/throughput.spec.ts"
   },
   "dependencies": {
     "@fontsource/dm-mono": "5.3.0"

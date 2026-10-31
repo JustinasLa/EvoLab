@@ -68,6 +68,45 @@ treatment boundaries, equal bounded horizons, extinction, cancellation and
 delayed-import ownership. They verify orchestration against the same ecosystem
 engine, not an independent ecological implementation or a statistical claim.
 
+The separate long-run job runs on every PR and main push, alongside the unchanged
+mandatory checks above:
+
+```sh
+npm run test:soak
+npm run bench:ecosystem
+```
+
+The soak corpus advances seeds 1 and 42 from one founder (42 also retains opaque
+payloads) and seed 123 from a disclosed foodless mouth-only starvation fixture,
+through 100,000 real ticks each. It never rescues or reseeds extinction. Population
+and counters are checked every tick; full anatomy, energy/trait, identity,
+occupancy and retained-history bounds are checked every 1,000 ticks and at
+checkpoint boundaries. Eleven complete Save/reload checkpoints per seed each
+continue 137 ticks against the uninterrupted world, including telemetry boundaries
+and eviction. Receipts retain actual extinction/saturation, population traces,
+complete-state hashes, source hashes, hardware/runtime and measured duration in
+`.scratch/long-run/`; CI uploads them. Finite runs in one runtime do not prove
+infinite stability or cross-runtime identity.
+
+Throughput uses two warmups and five measurements per fixture, with 600 ticks
+each. Empty, initially 64-organism and 1,600-organism fixtures have separate
+population ranges and complete deterministic endpoints. These are direct engine
+measurements with real telemetry and lineage recording; browser/worker scheduling,
+rendering, varied anatomies and hardware can differ. Setup, serialization and
+assertions stay outside timing, and there is no wall-clock pass/fail threshold.
+
+The complete three-seed corpus took 430.22 seconds locally;
+the separate throughput command took 5.46 seconds. This run
+used Node 24.22.1, Linux x64 and an eight-logical-CPU AMD EPYC
+host. Shared-host timings are contextual, not performance guarantees. The
+preceding mandatory hosted job took 827 of its 900 seconds, leaving 73 seconds.
+The complete corpus therefore has its own CI job. Formatting, full production-line
+coverage and build run separately from the complete desktop/mobile browser suite;
+the **Build and test** gate requires both jobs to succeed, including when either
+fails, is cancelled or is skipped. Each workload retains a 15-minute job timeout.
+The complete browser command, four workers, assertion deadlines, latency limits,
+coverage discovery and thresholds remain unchanged.
+
 ## License
 
 Copyright (c) 2026 Justinas Launikonis. Licensed under the [Artistic License 2.0](LICENSE). Third-party dependencies retain their own licenses.
