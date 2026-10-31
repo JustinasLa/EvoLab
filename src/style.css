@@ -963,6 +963,19 @@ input[type='range'] {
 .editor button:hover {
   border-color: var(--accent);
 }
+.design-transforms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0;
+}
+#placement-feedback {
+  font-size: 12px;
+  line-height: 1.5;
+}
+#placement-feedback:empty {
+  display: none;
+}
 .designer-section .primary {
   margin-top: 12px;
 }
