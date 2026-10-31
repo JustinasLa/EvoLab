@@ -5407,16 +5407,20 @@ for (const pauseAt of ['lifecycle-post', 'lifecycle-receipt'] as const) {
     );
     await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
     await page.locator('#world').scrollIntoViewIfNeeded();
-    await page.evaluate(() => window.measurementGate.waitForDrain());
     await expect(page.locator('#refuge-enabled')).toBeChecked();
-    const deliveredBefore = await page.evaluate(() => window.terrainNative.manualDeliveries);
-    await page.evaluate(() => {
+    const armed = await page.evaluate(async () => {
+      await window.measurementGate.waitForDrain();
+      const deliveredBefore = window.terrainNative.manualDeliveries;
+      // Drain, arm and activate in one turn: no view callback can claim the slot between them.
       window.measurementGate.deliveryBlocked = true;
-      // The acknowledged-state helper cannot complete while this result is held.
-      // Activate without scrolling a display-view command ahead of refuge-mode.
       document.getElementById('refuge-enabled')!.click();
+      return { deliveredBefore, pending: [...window.measurementGate.pending] };
     });
+    const deliveredBefore = armed.deliveredBefore;
     try {
+      expect(armed.pending).toEqual([
+        [expect.any(Number), { operation: 'refuge-mode', runId: expect.any(Number) }],
+      ]);
       await expect
         .poll(() =>
           page.evaluate((deliveredBefore) => {
@@ -5462,8 +5466,31 @@ for (const pauseAt of ['lifecycle-post', 'lifecycle-receipt'] as const) {
       expect(final).toEqual(replacement.save());
       expect(final.thermalRefuges.enabled).toBe(true);
       await expect.poll(() => page.evaluate(() => window.measurementGate.pending.size)).toBe(0);
-    } finally {
-      await page.evaluate(() => window.measurementGate.releaseResults());
+    } catch (error) {
+      try {
+        const diagnosis = await page.evaluate(() => ({
+          pending: [...window.measurementGate.pending],
+          counts: window.measurementGate.counts,
+          manual: window.terrainNative.manual,
+          manualDeliveries: window.terrainNative.manualDeliveries,
+          lastManualDelivered: window.terrainNative.lastManualDelivered,
+          errors: window.terrainNative.errors,
+          playback: window.terrainNative.playback,
+          checkbox: {
+            checked: (document.getElementById('refuge-enabled') as HTMLInputElement).checked,
+            disabled: (document.getElementById('refuge-enabled') as HTMLInputElement).disabled,
+          },
+        }));
+        console.error('B23 held manual ownership', pauseAt, JSON.stringify({ armed, diagnosis }));
+      } catch {
+        // Preserve the assertion even when diagnostic collection cannot reach the page.
+      }
+      try {
+        await page.evaluate(() => window.measurementGate.releaseResults());
+      } catch {
+        // Failed cleanup must not replace the original assertion either.
+      }
+      throw error;
     }
     const successful = await page.evaluate(() => window.terrainNative.lifecycle);
     expectReceiptDrivenTerrainPauses(successful);
