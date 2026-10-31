@@ -660,22 +660,16 @@ export async function runFortyControls(options: {
     limitations:
       'Owner-amended offered cadence: four <=30s windows inside <=120s, not original 30s acceptance. Programmatic DOM activation on desktop/Chromium mobile emulation, not human pointer or physical-device evidence. Readiness is polling observation (RAF polling); timestamps share browser performance.now. savedAt is sampled in the browser AFTER completed native stream bytes and includes post-completion sampling/transport overhead; never uses the earlier saved terminal. Runner/evidence/framework times use a separate monotonic clock. Saturated latency has no foreground guarantee. Pause-cleanup full/literal equality is a new strengthening. Historical cancelled CI40454560729/original 30s failures and 188 selected diagnostics remain separate.',
   });
-  const checkpoint = async () => {
+  const checkpoint = async (beforeWrite?: (current: Identity) => void) => {
     fence.check();
-    await snapshotCommands();
+    const current = await snapshotCommands();
+    beforeWrite?.(current);
     const text = JSON.stringify(evidence());
     await fence.wait(() => writeFile(`${evidencePath}.tmp`, text, { signal: fence.abort.signal }));
     await fence.wait(() => rename(`${evidencePath}.tmp`, evidencePath));
     return createHash('sha256').update(text).digest('hex');
   };
-  const identity = async () => {
-    const result = await fence.wait(() =>
-      page.evaluate((epoch) => {
-        const f = window.fortyFixture;
-        f.check(epoch);
-        return f.identity();
-      }, fence.epoch),
-    );
+  const assertIdentity = (result: Identity) => {
     fence.check();
     expect(page.context()).toBe(context);
     expect(page.mainFrame()).toBe(mainFrame);
@@ -688,6 +682,16 @@ export async function runFortyControls(options: {
     if (loadedIdentity) expect(result).toEqual(loadedIdentity);
     return result;
   };
+  const identity = async () =>
+    assertIdentity(
+      await fence.wait(() =>
+        page.evaluate((epoch) => {
+          const f = window.fortyFixture;
+          f.check(epoch);
+          return f.identity();
+        }, fence.epoch),
+      ),
+    );
   const installDeadline = async () => {
     // Browser sample precedes the remaining-duration sample. Installation and
     // transport delays therefore consume allowance rather than extend it.
@@ -766,21 +770,26 @@ export async function runFortyControls(options: {
   };
   const ready = async (op: Operation, selector = '#save') => {
     stage(op, 'readinessStarted');
-    const handle = await fence.wait(() =>
-      page.waitForFunction(
-        ({ epoch, id, selector }) => {
+    // Keep the immediate check and RAF polling in the browser. Returning a
+    // value directly avoids a separate protocol call to dispose a boolean handle.
+    await fence.wait(() =>
+      page.evaluate(
+        async ({ epoch, id, selector }) => {
           const f = window.fortyFixture;
-          f.check(epoch);
-          const enabled = !document.querySelector<HTMLButtonElement>(selector)!.disabled;
-          if (enabled && f.samples[id].readyObservedAt === undefined)
-            f.samples[id].readyObservedAt = performance.now();
-          return enabled;
+          for (;;) {
+            f.check(epoch);
+            const enabled = !document.querySelector<HTMLButtonElement>(selector)!.disabled;
+            if (enabled) {
+              if (f.samples[id].readyObservedAt === undefined)
+                f.samples[id].readyObservedAt = performance.now();
+              return;
+            }
+            await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+          }
         },
         { epoch: fence.epoch, id: op.id, selector },
-        { timeout: fence.remaining() },
       ),
     );
-    await fence.wait(() => handle.dispose());
     stage(op, 'readinessObserved');
   };
   const dispatch = async (op: Operation, kind: string) => {
@@ -879,16 +888,25 @@ export async function runFortyControls(options: {
     op.dispatchAt = result.dispatchAt;
     return result;
   };
-  const checked = async (op: Operation) => {
-    fence.check();
-    op.status = 'checked';
-    op.runnerCompletedMs = performance.now() - fence.startedAt;
-    if (op.window !== null && op.expectedType === 'save')
-      windows[op.window].saves = operations.filter(
-        (entry) =>
-          entry.window === op.window && entry.expectedType === 'save' && entry.status === 'checked',
-      ).length;
-    await checkpoint();
+  const checked = async (op: Operation, verifyIdentity = false) => {
+    await checkpoint((current) => {
+      // Observe identity and the ledger together at the existing checkpoint.
+      // Validate before marking the operation checked or persisting evidence.
+      if (verifyIdentity) {
+        assertIdentity(current);
+        stage(op, 'identityChecked');
+      }
+      fence.check();
+      op.status = 'checked';
+      op.runnerCompletedMs = performance.now() - fence.startedAt;
+      if (op.window !== null && op.expectedType === 'save')
+        windows[op.window].saves = operations.filter(
+          (entry) =>
+            entry.window === op.window &&
+            entry.expectedType === 'save' &&
+            entry.status === 'checked',
+        ).length;
+    });
     stage(op, 'checkedCheckpointComplete');
   };
   const action = async (
@@ -911,9 +929,7 @@ export async function runFortyControls(options: {
       op.status = 'checked';
       op.runnerCompletedMs = performance.now() - fence.startedAt;
     } else {
-      await identity();
-      stage(op, 'identityChecked');
-      await checked(op);
+      await checked(op, true);
     }
     return { op, receipt };
   };
@@ -1001,8 +1017,7 @@ export async function runFortyControls(options: {
           { epoch: fence.epoch, id: op.id },
         ),
       );
-      await identity();
-      await checkpoint();
+      await checkpoint(assertIdentity);
       return { op, world, raw, command: result.command };
     } catch (error) {
       // Retained chunks may be serialized only by the outer failure path, after
@@ -1029,6 +1044,7 @@ export async function runFortyControls(options: {
           // Every checkpoint still crosses the browser fence, even on a cache hit.
           f.check(epoch);
           return {
+            identity: f.identity(),
             revision: f.commandRevision,
             commands:
               f.commandRevision === revision
@@ -1059,6 +1075,7 @@ export async function runFortyControls(options: {
       commandSnapshotTransfers++;
     }
     expect(commands.length).toBeLessThanOrEqual(MAX_COMMANDS);
+    return snapshot.identity;
   };
   const canvas = async () => {
     await fence.wait(() =>
