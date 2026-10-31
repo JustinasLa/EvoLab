@@ -1390,20 +1390,49 @@ test('actual worker matches independent browser ecology and raw on/off bytes acr
   await page.goto('/');
   const file = fixture(64),
     rendered = new Map<number, Buffer>();
-  for (const render of [true, false]) {
-    await load(page, file, render, 4);
-    await page.locator('#target-tick').fill('7802');
-    await page.locator('#run-to-tick').click();
-    await page.waitForFunction(() => window.longRun.state?.target?.status === 'reached');
-    for (const tick of [7802, 7803]) {
-      if (tick === 7803) await page.locator('#step').click();
-      const download = await downloadWorld(page);
-      expect(download.world.tick).toBe(tick);
-      await expectExactDownload(page, file, download);
-      if (render) rendered.set(tick, download.raw);
-      else expect(download.raw.equals(rendered.get(tick)!)).toBe(true);
-      await attachRawSave(testInfo, `runtime-${tick}-${render}`, download.raw);
+  // Both native branches use the same input checkpoint and endpoints. Continue
+  // one independent real engine once; compare every complete download and byte
+  // stream against these expectations without deriving them from worker output.
+  let phase = 'independent-reference';
+  try {
+    const expected = await page.evaluate(async (file) => {
+      const modulePath = '/__reference/engine.js';
+      const { Ecosystem } = await import(modulePath);
+      const reference = Ecosystem.load(JSON.stringify(file));
+      const endpoints: Record<number, string> = {};
+      for (const tick of [7802, 7803]) {
+        while (reference.tick < tick) reference.step();
+        endpoints[tick] = JSON.stringify(reference.save());
+      }
+      return endpoints;
+    }, file);
+    for (const render of [true, false]) {
+      phase = `load render=${render}`;
+      await load(page, file, render, 4);
+      phase = `target7802 render=${render}`;
+      await page.locator('#target-tick').fill('7802');
+      await page.locator('#run-to-tick').click();
+      await page.waitForFunction(() => window.longRun.state?.target?.status === 'reached');
+      for (const tick of [7802, 7803]) {
+        phase = `download tick=${tick} render=${render}`;
+        if (tick === 7803) await page.locator('#step').click();
+        const download = await downloadWorld(page);
+        expect(download.world.tick).toBe(tick);
+        expect(download.world).toEqual(JSON.parse(expected[tick]));
+        expect(download.raw.equals(Buffer.from(expected[tick]))).toBe(true);
+        if (render) rendered.set(tick, download.raw);
+        else expect(download.raw.equals(rendered.get(tick)!)).toBe(true);
+        phase = `attach tick=${tick} render=${render}`;
+        await attachRawSave(testInfo, `runtime-${tick}-${render}`, download.raw);
+      }
     }
+  } catch (error) {
+    try {
+      console.error('raw-ecology-phase', JSON.stringify({ phase, project: testInfo.project.name }));
+    } catch {
+      // Diagnostics must never replace the original native assertion or timeout.
+    }
+    throw error;
   }
 });
 

@@ -488,6 +488,8 @@ type Operation = {
   expectedType: string;
   status: string;
   runnerStartedMs: number;
+  // Runner-clock phase observations; never substitute for browser latency endpoints.
+  runnerStagesMs: Record<string, number>;
   runnerCompletedMs?: number;
   offeredAt?: number;
   readyObservedAt?: number;
@@ -536,7 +538,14 @@ export async function runFortyControls(options: {
     mainFrame = page.mainFrame();
   const operations: Operation[] = [],
     windows: WindowEvidence[] = [],
-    records: object[] = [];
+    records: {
+      kind: string;
+      interaction: number;
+      operationId: string;
+      saveOperationId: string;
+      savedSettleMs: number;
+      [key: string]: unknown;
+    }[] = [];
   const inputLatencies: number[] = [],
     settlingLatencies: number[] = [],
     revealLatencies: number[] = [];
@@ -717,6 +726,9 @@ export async function runFortyControls(options: {
     );
     await fence.wait(() => handle.dispose());
   };
+  const stage = (op: Operation, name: string) => {
+    op.runnerStagesMs[name] = performance.now() - fence.startedAt;
+  };
   const begin = async (role: string, interaction: number | null, expectedType: string) => {
     fence.check();
     if (operations.length >= 180) throw new Error('Bounded operation ledger exhausted.');
@@ -729,11 +741,13 @@ export async function runFortyControls(options: {
       expectedType,
       status: 'pending',
       runnerStartedMs: performance.now() - fence.startedAt,
+      runnerStagesMs: {},
       equalities: [],
     };
     operations.push(op);
     activeOperation = op;
     await checkpoint();
+    stage(op, 'pendingCheckpointComplete');
     op.offeredAt = await fence.wait(() =>
       page.evaluate(
         ({ epoch, id }) => {
@@ -747,9 +761,11 @@ export async function runFortyControls(options: {
         { epoch: fence.epoch, id: op.id },
       ),
     );
+    stage(op, 'offered');
     return op;
   };
   const ready = async (op: Operation, selector = '#save') => {
+    stage(op, 'readinessStarted');
     const handle = await fence.wait(() =>
       page.waitForFunction(
         ({ epoch, id, selector }) => {
@@ -765,8 +781,10 @@ export async function runFortyControls(options: {
       ),
     );
     await fence.wait(() => handle.dispose());
+    stage(op, 'readinessObserved');
   };
   const dispatch = async (op: Operation, kind: string) => {
+    stage(op, 'dispatchStarted');
     await fence.wait(() =>
       page.evaluate(
         ({ epoch, id, kind }) => {
@@ -810,39 +828,38 @@ export async function runFortyControls(options: {
         { epoch: fence.epoch, id: op.id, kind },
       ),
     );
+    stage(op, 'dispatchReturned');
   };
   const terminal = async (op: Operation, includeText = false) => {
-    const handle = await fence.wait(() =>
-      page.waitForFunction(
-        ({ epoch, id, type }) => {
-          const f = window.fortyFixture;
-          f.check(epoch);
-          const candidates = f.commands.filter((c) => c.operationId === id && c.type === type);
-          if (candidates.length > 1) throw new Error('Ambiguous operation command linkage.');
-          return candidates.length === 1 && !!candidates[0].terminal;
-        },
-        { epoch: fence.epoch, id: op.id, type: op.expectedType },
-        { timeout: fence.remaining(), polling: 1 },
-      ),
-    );
-    await fence.wait(() => handle.dispose());
+    stage(op, 'terminalObservationStarted');
+    // Observe and capture the exact receipt in one browser call. The same 1 ms
+    // poll, ambiguity check and epoch/deadline fence remain on every iteration.
     const result = await fence.wait(() =>
       page.evaluate(
-        ({ epoch, id, type, includeText }) => {
+        async ({ epoch, id, type, includeText }) => {
           const f = window.fortyFixture;
-          f.check(epoch);
-          const c = f.commands.filter((c) => c.operationId === id && c.type === type);
-          if (c.length !== 1 || !c[0].terminal) throw new Error('Missing exact terminal.');
-          const { text, ...receipt } = c[0].terminal;
-          return {
-            command: { ...c[0], terminal: { ...receipt, ...(includeText ? { text } : {}) } },
-            ...f.samples[id],
-            identity: f.identity(),
-          };
+          for (;;) {
+            f.check(epoch);
+            const candidates = f.commands.filter((c) => c.operationId === id && c.type === type);
+            if (candidates.length > 1) throw new Error('Ambiguous operation command linkage.');
+            if (candidates.length === 1 && candidates[0].terminal) {
+              const { text, ...receipt } = candidates[0].terminal;
+              return {
+                command: {
+                  ...candidates[0],
+                  terminal: { ...receipt, ...(includeText ? { text } : {}) },
+                },
+                ...f.samples[id],
+                identity: f.identity(),
+              };
+            }
+            await new Promise<void>((resolve) => setTimeout(resolve, 1));
+          }
         },
         { epoch: fence.epoch, id: op.id, type: op.expectedType, includeText },
       ),
     );
+    stage(op, 'terminalCaptured');
     const c = result.command;
     expect(c.workerId).toBe(workerId);
     expect(c.terminal!.commandId).toBe(c.commandId);
@@ -872,6 +889,7 @@ export async function runFortyControls(options: {
           entry.window === op.window && entry.expectedType === 'save' && entry.status === 'checked',
       ).length;
     await checkpoint();
+    stage(op, 'checkedCheckpointComplete');
   };
   const action = async (
     role: string,
@@ -894,6 +912,7 @@ export async function runFortyControls(options: {
       op.runnerCompletedMs = performance.now() - fence.startedAt;
     } else {
       await identity();
+      stage(op, 'identityChecked');
       await checked(op);
     }
     return { op, receipt };
@@ -925,7 +944,9 @@ export async function runFortyControls(options: {
     try {
       await dispatch(op, 'save');
       const download = await fence.wait(() => native);
+      stage(op, 'nativeDownloadObserved');
       stream = await fence.wait(() => download.createReadStream());
+      stage(op, 'nativeStreamOpened');
       if (!stream) throw new Error('Native Save has no stream.');
       fence.streams.add(stream);
       let bytes = 0;
@@ -941,6 +962,7 @@ export async function runFortyControls(options: {
       await fence.wait(read);
       fence.streams.delete(stream);
       op.nativeBytesComplete = true;
+      stage(op, 'nativeBytesComplete');
       const raw = Buffer.concat(chunks);
       // This endpoint follows completion of native bytes. Sampling transport is
       // deliberately included in saved-settle; no earlier saved receipt replaces it.
@@ -950,6 +972,7 @@ export async function runFortyControls(options: {
           return performance.now();
         }, fence.epoch),
       );
+      stage(op, 'browserSavedAtSampled');
       op.rawPath = testInfo.outputPath(`save-${op.id}.json`);
       op.rawBytes = raw.byteLength;
       op.rawSHA256 = createHash('sha256').update(raw).digest('hex');
@@ -1224,6 +1247,7 @@ export async function runFortyControls(options: {
                         { epoch: fence.epoch, inputAt },
                       ),
                     );
+                    stage(control, 'renderedProgressObserved');
                     const primary = await save('primary', interaction);
                     const savedAt = primary.op.savedAt!;
                     if (kind !== 'speed') {
@@ -1432,6 +1456,7 @@ export async function runFortyControls(options: {
             identity: activeOperation.identity,
             interaction: activeOperation.interaction,
             window: activeOperation.window,
+            runnerStagesMs: activeOperation.runnerStagesMs,
           },
           windows,
           records: records.length,
@@ -1441,6 +1466,16 @@ export async function runFortyControls(options: {
             savedSettleMs: distribution(settlingLatencies),
             freshRevealMs: distribution(revealLatencies),
           },
+          settlingPhases: records
+            .filter((record) => record.kind === 'pause' || record.kind === 'cancel-target')
+            .map((record) => ({
+              interaction: record.interaction,
+              savedSettleMs: record.savedSettleMs,
+              controlRunnerStagesMs: operations.find((op) => op.id === record.operationId)
+                ?.runnerStagesMs,
+              saveRunnerStagesMs: operations.find((op) => op.id === record.saveOperationId)
+                ?.runnerStagesMs,
+            })),
           commandSnapshotChecks,
           commandSnapshotTransfers,
         }),
