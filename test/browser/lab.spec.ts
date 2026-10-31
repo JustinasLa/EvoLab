@@ -6129,6 +6129,7 @@ test('D12-3 stale valid preview cannot override worker occupancy and failure mak
   expect(errors).toHaveLength(1);
   expect(errors[0]).toMatchObject({ operation: 'paint', code: 'invalid-command' });
   expect(errors[0].fatal).not.toBe(true);
+});
 
 async function checkpointBytes(
   page: import('@playwright/test').Page,
@@ -6443,5 +6444,4 @@ test('unavailable checkpoint storage leaves explicit download and exact Step ava
   const before = JSON.parse((await downloadPausedWorld(page)).toString());
   await page.locator('#step').click();
   await expect(page.locator('#tick')).toHaveText(`TICK ${(before.tick + 1).toLocaleString()}`);
-
 });
