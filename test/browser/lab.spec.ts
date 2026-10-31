@@ -5133,6 +5133,61 @@ async function refugeProtocol(page: import('@playwright/test').Page, receiptDriv
   });
 }
 
+for (const units of [0, 8, 16])
+  test(`S24 native shade ${units}/16 preserves actual funded birth, complete Save/reload and rejected-import recovery`, async ({
+    page,
+  }) => {
+    await observeTerrainNative(page);
+    await page.goto('/');
+    await terrainNativeFrame(page);
+    const reference = new Ecosystem({ ...DEFAULTS, climate: 0, mutation: 0, nutrients: 0 }, false);
+    const parent = reference.spawn(
+      {
+        cells: [{ x: 0, y: 0, type: 4 }],
+        preference: 0.5,
+        tolerance: 0.2,
+        tempo: 2,
+        behavior: { version: 1, mode: 'legacy' },
+      },
+      120,
+      78,
+    )!;
+    parent.age = 32;
+    parent.energy = 11.99;
+    reference.random.state = 23;
+    reference.changeShadeMode(true);
+    if (units) reference.paintShade({ rulesVersion: 1, tool: 'shade', units, radius: 0 }, 120, 78);
+    expect(await refugeLoad(page, JSON.stringify(reference.save()))).toBe(0);
+    expect(await terrainSave(page, 'shade-before-step.json')).toEqual(reference.save());
+    await page.locator('#step').click();
+    reference.step();
+    const first = await terrainSave(page, 'shade-funded-birth.json');
+    expect(first).toEqual(reference.save());
+    const afterUpkeep = 11.99 - 0.012;
+    const gain = 0.04 * (0.65 + 0.35 * Math.sin(1 / 180)) * ((16 - units) / 16);
+    expect(first.tick).toBe(1);
+    expect(first.births).toBe(units === 0 ? 1 : 0);
+    expect(first.organisms[0].energy).toBe(afterUpkeep + gain - (units === 0 ? 6.5 : 0));
+    expect(first.telemetry.pending.energy.leavesGained).toBe(afterUpkeep + gain - afterUpkeep);
+    expect(first.telemetry.pending.energy.offspringGranted).toBe(units === 0 ? 4.5 : 0);
+    expect(first.food).toEqual([]);
+    expect(first.telemetry.samples).toEqual([]);
+    const resumedTick = await refugeLoad(page, JSON.stringify(first));
+    advance(reference, resumedTick - reference.tick);
+    const resumed = await terrainSave(page, 'shade-reloaded.json');
+    expect(resumed).toEqual(reference.save());
+    const invalid = structuredClone(resumed);
+    invalid.shadeHabitats.cells.push([37439, 17]);
+    await importWorld(page, invalid);
+    await expect(page.locator('#notice')).toContainText('Invalid painted shade cell');
+    const recoveryRun = await page.evaluate(() => window.terrainNative.errors.at(-1).runId);
+    await terrainNativeFrame(page, recoveryRun);
+    expect(await terrainSave(page, 'shade-rejected-import-retained.json')).toEqual(resumed);
+    await page.locator('#step').click();
+    reference.step();
+    expect(await terrainSave(page, 'shade-recovered-step.json')).toEqual(reference.save());
+  });
+
 test('B23-1 opt-in empty field retains the complete original climate trajectory through native Save/reload/Step', async ({
   page,
 }) => {
