@@ -860,7 +860,7 @@ test('native exact targets, suspended cancellation and render-off editing preser
   let renderedSave: Buffer | undefined;
   const capture = async (name: string) => {
     const path = testInfo.outputPath(`${name}.png`);
-    await page.screenshot({ path, fullPage: true });
+    await page.screenshot({ path, fullPage: true, scale: 'css' });
     await testInfo.attach(name, { path, contentType: 'image/png' });
   };
   for (const speed of [1, 4, 12])

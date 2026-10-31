@@ -1758,12 +1758,12 @@ for (const state of ['empty', 'single', 'full-ring', 'legacy', 'extinct-paused']
         if ([360, 390, 640, 1280].includes(width)) {
           await page.locator('#telemetry').scrollIntoViewIfNeeded();
           await testInfo.attach(`${state}-${view}-${width}-screen`, {
-            body: await page.screenshot({ fullPage: true }),
+            body: await page.screenshot({ fullPage: true, scale: 'css' }),
             contentType: 'image/png',
           });
           for (const [position, plot] of (await page.locator('#telemetry figure').all()).entries())
             await testInfo.attach(`${state}-${view}-${width}-plot-${position}`, {
-              body: await plot.screenshot(),
+              body: await plot.screenshot({ scale: 'css' }),
               contentType: 'image/png',
             });
           if (state === 'full-ring' && width === 1280) {
@@ -1777,7 +1777,7 @@ for (const state of ['empty', 'single', 'full-ring', 'legacy', 'extinct-paused']
                 node.scrollTop = top;
               }, offset);
               await testInfo.attach(`${state}-${view}-${width}-sidebar-${offset}`, {
-                body: await sidebar.screenshot(),
+                body: await sidebar.screenshot({ scale: 'css' }),
                 contentType: 'image/png',
               });
             }

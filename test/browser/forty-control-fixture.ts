@@ -566,6 +566,15 @@ export async function runFortyControls(options: {
         .digest('hex'),
     ]),
   );
+  const runtimeCpus = cpus();
+  const runtimeMetadata = {
+    browser: browser.version(),
+    node: process.version,
+    cpu: runtimeCpus[0]?.model,
+    logicalCpus: runtimeCpus.length,
+    platform: platform(),
+    kernel: release(),
+  };
   const evidencePath = testInfo.outputPath('forty-control-evidence.json');
   const onNavigation = (frame: ReturnType<Page['mainFrame']>) => {
     if (frame === mainFrame) {
@@ -592,12 +601,7 @@ export async function runFortyControls(options: {
     sourceHashes,
     population,
     project: testInfo.project.name,
-    browser: browser.version(),
-    node: process.version,
-    cpu: cpus()[0]?.model,
-    logicalCpus: cpus().length,
-    platform: platform(),
-    kernel: release(),
+    ...runtimeMetadata,
     budget: {
       acceptanceMs: TOTAL_MS,
       windowMs: WINDOW_MS,
@@ -650,7 +654,7 @@ export async function runFortyControls(options: {
   const checkpoint = async () => {
     fence.check();
     await snapshotCommands();
-    const text = JSON.stringify(evidence(), null, 2);
+    const text = JSON.stringify(evidence());
     await fence.wait(() => writeFile(`${evidencePath}.tmp`, text, { signal: fence.abort.signal }));
     await fence.wait(() => rename(`${evidencePath}.tmp`, evidencePath));
     return createHash('sha256').update(text).digest('hex');
@@ -1472,7 +1476,7 @@ export async function runFortyControls(options: {
           run: () =>
             writeFile(
               testInfo.outputPath('forty-control-failure.json'),
-              JSON.stringify(evidence(), null, 2),
+              JSON.stringify(evidence()),
             ),
         },
       ],
