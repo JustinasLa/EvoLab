@@ -24,6 +24,8 @@ import {
   reversedPrunedParent,
   readmittedParentOrder,
   reversedReadmittedParent,
+  relatedChildMembership,
+  omittedRelatedChild,
   missingFinalExtinction,
   extinctionOccupancyContradiction,
 } from './fixtures/lineage';
@@ -255,6 +257,57 @@ describe('strict bounded archive candidate validation', () => {
       ]);
     },
   );
+
+  it('C16-OWNER-R2-001 preserves younger living-only child membership while its parent retains founding detail', () => {
+    const { world } = relatedChildMembership(),
+      saved = world.save();
+    expect(saved.lineageArchive.summaries.map((row) => row.id)).toEqual([
+      260,
+      261,
+      ...Array.from({ length: 254 }, (_, offset) => offset + 262),
+    ]);
+    expect(saved.lineageArchive.living.find((row) => row.id === 261)).toMatchObject({
+      origin: 'mutation',
+      parentId: 260,
+    });
+    expect(
+      saved.lineageArchive.events.filter(
+        (event) => event.kind === 'created' && [260, 261].includes(event.id),
+      ),
+    ).toEqual([]);
+    expect(saved.lineageArchive.events.slice(0, 4)).toEqual([
+      extinct(8, 0),
+      extinct(7, 0),
+      extinct(6, 0),
+      extinct(260, 0),
+    ]);
+    const invalid = omittedRelatedChild();
+    expect(invalid).toEqual({
+      ...saved,
+      lineageArchive: {
+        ...saved.lineageArchive,
+        summaries: [
+          invalid.lineageArchive.summaries[0],
+          ...saved.lineageArchive.summaries.filter((row) => row.id !== 261),
+        ],
+      },
+    });
+    expect(invalid.lineageArchive.summaries.slice(0, 2).map((row) => row.id)).toEqual([259, 260]);
+    rejects(invalid);
+    const text = JSON.stringify(saved),
+      restored = Ecosystem.load(text);
+    expect(JSON.stringify(restored.save())).toBe(text);
+    for (const candidate of [world, restored]) candidate.spawn(admissionGenome(), 80, 80);
+    expect(restored.save()).toEqual(world.save());
+    expect(world.lineageSnapshot().summaries.map((row) => row.id)).toEqual([
+      261,
+      ...Array.from({ length: 255 }, (_, offset) => offset + 262),
+    ]);
+    const missingParent = sameTickLineages();
+    missingParent.spawn(admissionGenome(), 40, 40, undefined, missingParent.organisms.get(1));
+    expect(missingParent.lineageSnapshot().summaries.some((row) => row.id === 5)).toBe(false);
+    expect(reload(missingParent).save()).toEqual(missingParent.save());
+  });
 
   it('C16-R3-001 rejects impossible readmission at 255 following admissions and continues retained detail', () => {
     const invalid = impossibleReadmission();

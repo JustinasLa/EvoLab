@@ -1,5 +1,5 @@
 import { Ecosystem } from '../../src/ecosystem';
-import { DEFAULTS, WIDTH, type Genome, type WorldFile } from '../../src/model';
+import { DEFAULTS, WIDTH, type Genome, type WorldFile, type LineageSummary } from '../../src/model';
 import { advance, legacyV5, legacyV7 } from './telemetry';
 
 export const admissionGenome = (): Genome => ({
@@ -112,6 +112,32 @@ export function reversedReadmittedParent(legacy = false): WorldFile {
   [saved.lineageArchive.summaries[0], saved.lineageArchive.summaries[1]] = [
     saved.lineageArchive.summaries[1],
     saved.lineageArchive.summaries[0],
+  ];
+  return saved;
+}
+
+export function relatedChildMembership(): { world: Ecosystem; displaced: LineageSummary } {
+  const world = sameTickLineages(),
+    parent = [...world.organisms.values()].find((organism) => organism.species === 260)!;
+  world.spawn(admissionGenome(), 40, 40, undefined, parent);
+  for (let species = 259; species >= 6; species--)
+    world.kill(
+      [...world.organisms.values()].find((organism) => organism.species === species)!,
+      'manual',
+    );
+  world.kill(parent, 'manual');
+  const displaced = world.lineageSnapshot().summaries.find((row) => row.id === 259)!;
+  for (let admission = 0; admission < 254; admission++)
+    world.kill(world.spawn(admissionGenome(), 80, 80)!, 'manual');
+  return { world, displaced };
+}
+
+export function omittedRelatedChild(): WorldFile {
+  const { world, displaced } = relatedChildMembership(),
+    saved = world.save();
+  saved.lineageArchive.summaries = [
+    displaced,
+    ...saved.lineageArchive.summaries.filter((row) => row.id !== 261),
   ];
   return saved;
 }

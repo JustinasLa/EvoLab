@@ -35,6 +35,8 @@ import {
   reversedPrunedParent,
   readmittedParentOrder,
   reversedReadmittedParent,
+  relatedChildMembership,
+  omittedRelatedChild,
   missingFinalExtinction,
   extinctionOccupancyContradiction,
 } from '../fixtures/lineage';
@@ -2892,6 +2894,7 @@ test('lineage correction rejects provenance, FIFO order and omitted admissions w
     ['pruned-parent-order', reversedPrunedParent()],
     ['extinction-readmitted-parent-order', reversedReadmittedParent()],
     ['legacy-readmitted-parent-order', reversedReadmittedParent(true)],
+    ['omitted-related-child', omittedRelatedChild()],
     ['missing-final-extinction', missingFinalExtinction()],
     ['extinction-occupancy', extinctionOccupancyContradiction()],
   ] as const) {
@@ -3023,6 +3026,56 @@ for (const legacy of [false, true])
       );
     expect(errors).toEqual([]);
   });
+
+test('lineage living-only child membership survives native reload and the next FIFO admission', async ({
+  page,
+}, testInfo) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await observeTelemetry(page);
+  const { world: reference } = relatedChildMembership(),
+    input = Buffer.from(JSON.stringify(reference.save()));
+  expect(
+    reference
+      .lineageSnapshot()
+      .summaries.slice(0, 2)
+      .map((row) => row.id),
+  ).toEqual([260, 261]);
+  await page.goto('/');
+  await requestPause(page);
+  await importTelemetryWorld(page, JSON.parse(input.toString()));
+  const before = await downloadPausedWorld(page);
+  advance(reference, JSON.parse(before.toString()).tick - reference.tick);
+  expect(JSON.parse(before.toString())).toEqual(reference.save());
+  await importTelemetryWorld(page, JSON.parse(before.toString()));
+  advance(reference, (await telemetryFrame(page)).stats.tick - reference.tick);
+  await paintCell(page, 'plant', 80, 80);
+  referenceManualPaint(reference, 'plant', 80, 80, 0, founder(0));
+  await page.getByTitle('Advance one tick while paused').click();
+  await expectPausedWorld(page, reference.tick + 1);
+  reference.step();
+  const continued = await downloadPausedWorld(page);
+  expect(JSON.parse(continued.toString())).toEqual(reference.save());
+  expect(reference.lineageSnapshot().summaries.map((row) => row.id)).toEqual([
+    261,
+    ...Array.from({ length: 255 }, (_, offset) => offset + 262),
+  ]);
+  await importTelemetryWorld(page, JSON.parse(continued.toString()));
+  advance(reference, (await telemetryFrame(page)).stats.tick - reference.tick);
+  await page.getByTitle('Advance one tick while paused').click();
+  await expectPausedWorld(page, reference.tick + 1);
+  reference.step();
+  const reloaded = await downloadPausedWorld(page);
+  expect(JSON.parse(reloaded.toString())).toEqual(reference.save());
+  for (const [suffix, bytes] of [
+    ['input', input],
+    ['before', before],
+    ['continued', continued],
+    ['reload-step', reloaded],
+  ] as const)
+    await recordLineageDownload(testInfo, `lineage-related-child-membership-${suffix}`, bytes);
+  expect(errors).toEqual([]);
+});
 
 for (const legacy of [false, true])
   test(`lineage round2 ${legacy ? 'unknown legacy' : 'known overflow'} membership survives native reload and continuation`, async ({

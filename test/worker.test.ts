@@ -14,6 +14,7 @@ import {
   falsePruningClaim,
   reversedPrunedParent,
   reversedReadmittedParent,
+  omittedRelatedChild,
   missingFinalExtinction,
   extinctionOccupancyContradiction,
 } from './fixtures/lineage';
@@ -2016,6 +2017,7 @@ describe('failed-load retained-world recovery', () => {
       reversedPrunedParent(),
       reversedReadmittedParent(),
       reversedReadmittedParent(true),
+      omittedRelatedChild(),
       missingFinalExtinction(),
       extinctionOccupancyContradiction(),
     ]) {

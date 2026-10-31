@@ -551,12 +551,19 @@ function validateArchive(
     // Keep the last provable position across intervening uncertain admissions.
     previousAdmission = admission;
   }
-  for (const summary of state.summaries) {
-    if (summary.genomeStatus !== 'retained' || summary.parentId === null) continue;
-    const parent = state.summaries.find((row) => row.id === summary.parentId);
-    if (parent?.genomeStatus === 'retained')
+  for (const [id, entry] of facts) {
+    const parentId = entry.row?.parentId ?? entry.created?.parentId;
+    if (parentId === undefined || parentId === null) continue;
+    const summary = state.summaries.find((row) => row.id === id),
+      parent = state.summaries.find((row) => row.id === parentId);
+    if (parent?.genomeStatus === 'retained') {
+      requireArchive(summary?.genomeStatus === 'retained');
       requireArchive(state.summaries.indexOf(parent) < state.summaries.indexOf(summary));
-    else if (parent && finalAdmissions.get(parent.id)!.position !== -2)
+    } else if (
+      summary?.genomeStatus === 'retained' &&
+      parent &&
+      finalAdmissions.get(parent.id)!.position !== -2
+    )
       requireArchive(state.summaries.indexOf(summary) < state.summaries.indexOf(parent));
   }
   const ambiguous = (summary: LineageSummary): boolean =>
