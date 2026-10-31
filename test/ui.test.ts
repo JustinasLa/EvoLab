@@ -4257,6 +4257,28 @@ describe('ecosystem desk', () => {
     expect(get('notice').textContent).toBe('matching wall error');
     bridge.deliver(error.command.commandId);
   });
+  it('preserves existing terrain and world seed drafts when a real import is rejected', async () => {
+    const bridge = ownershipBridge();
+    set('terrain-preset', 'open-field', 'change');
+    click('terrain-follow');
+    set('terrain-seed', '99');
+    set('seed', '123');
+    const before = {
+      preset: get<HTMLSelectElement>('terrain-preset').value,
+      follows: get<HTMLInputElement>('terrain-follow').checked,
+      terrainSeed: get<HTMLInputElement>('terrain-seed').value,
+      seed: get<HTMLInputElement>('seed').value,
+    };
+    await loadText('{}');
+    expect(get('notice').textContent).toContain('Not a valid EvoLab ecosystem');
+    expect({
+      preset: get<HTMLSelectElement>('terrain-preset').value,
+      follows: get<HTMLInputElement>('terrain-follow').checked,
+      terrainSeed: get<HTMLInputElement>('terrain-seed').value,
+      seed: get<HTMLInputElement>('seed').value,
+    }).toEqual(before);
+    expect(bridge.records.size).toBe(0);
+  });
   it('keeps newer terrain drafts through rejected real imports and revokes old wall results across reset', async () => {
     const bridge = ownershipBridge();
     bridge.holdTerminals();

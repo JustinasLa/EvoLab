@@ -83,6 +83,8 @@ declare global {
     terrainNative: {
       frame: Frame | null;
       frameRunId: number | null;
+      frameRevision: number | null;
+      stateRevision: number | null;
       selected: any;
       playback: any;
       lifecycle: {
@@ -306,6 +308,8 @@ async function observeTerrainNative(
     window.terrainNative = {
       frame: null,
       frameRunId: null,
+      frameRevision: null,
+      stateRevision: null,
       selected: null,
       playback: null,
       lifecycle: [],
@@ -379,6 +383,7 @@ async function observeTerrainNative(
           if (data.recovery?.telemetry) source = data.recovery.telemetry;
           const evidence = window.terrainNative;
           if (data.state) {
+            evidence.stateRevision = data.state.revision;
             evidence.selected = data.state.selected;
             evidence.playback = data.state.playback;
           }
@@ -393,6 +398,7 @@ async function observeTerrainNative(
               interventions: source?.interventions,
             };
             evidence.frameRunId = data.runId;
+            evidence.frameRevision = data.state.revision;
             evidence.selected = data.state.selected;
             evidence.playback = data.state.playback;
           }
@@ -462,6 +468,7 @@ async function observeTerrainNative(
 }
 
 async function terrainNativeFrame(page: import('@playwright/test').Page, recoveryRun?: number) {
+  await page.locator('#world').scrollIntoViewIfNeeded();
   await expect
     .poll(() =>
       page.evaluate((recoveryRun) => {
@@ -479,6 +486,7 @@ async function terrainNativeFrame(page: import('@playwright/test').Page, recover
         return (
           !!evidence.frame &&
           evidence.frameRunId === (recoveryRun ?? lifecycle?.runId) &&
+          evidence.frameRevision === evidence.stateRevision &&
           acknowledged &&
           evidence.playback?.paused &&
           document.getElementById('run-state')?.textContent === 'PAUSED'
@@ -700,7 +708,7 @@ test('terrain imports preserve explicit cells and newer drafts while stale nativ
   await page.goto('/');
   const legacy = JSON.parse(readFileSync('test/fixtures/terrain/legacy5-opaque.json', 'utf8'));
   await importTelemetryWorld(page, legacy);
-  await expect(page.locator('#notice')).toContainText('Saved terrain kept');
+  await expect(page.locator('#notice')).toContainText('World restored');
   const explicit = new Ecosystem().save();
   explicit.terrain = { version: 1, preset: 'open-field', seed: 99 };
   explicit.walls = [index(5, 5)];
@@ -866,7 +874,10 @@ test('D22-R1-001 native accepted-cap legacy migration fails outbound nonfatally 
   const before = await terrainNativeFrame(page),
     ownersBefore = await page.evaluate(() => [...window.measurementGate.pending]);
   expect(before.frame).toEqual(terrainExpectedFrame(reference));
-  expect(before.selected).toEqual(reference.save().organisms[0]);
+  expect(before.selected).toEqual(observedOrganism(reference.save().organisms[0]));
+  expect((await refugeFullGenome(page)).genome).toEqual(
+    refugeGraph(reference.save().organisms[0].genome),
+  );
   expect(ownersBefore).toEqual([]);
   let downloads = 0;
   page.on('download', () => downloads++);
@@ -885,7 +896,7 @@ test('D22-R1-001 native accepted-cap legacy migration fails outbound nonfatally 
   await expect(page.locator('#tick')).toHaveText(`TICK ${reference.tick}`);
   const after = await terrainNativeFrame(page);
   expect(after.frame).toEqual(terrainExpectedFrame(reference));
-  expect(after.selected).toEqual(reference.save().organisms[0]);
+  expect(after.selected).toEqual(observedOrganism(reference.save().organisms[0]));
   expect(after.playback.paused).toBe(true);
   expectReceiptDrivenTerrainPauses(await page.evaluate(() => window.terrainNative.lifecycle));
   await testInfo.attach('accepted-cap-native-state.json', {
@@ -1193,8 +1204,7 @@ for (const operation of [
         );
         await page.mouse.up();
       } else if (operation === 'clear-walls' || operation === 'regenerate-walls') {
-        await page.getByText('World settings', { exact: true }).click();
-        await page.locator(`#${operation}`).click();
+        await page.locator(`#${operation}`).evaluate((button: HTMLButtonElement) => button.click());
         reference.changeTerrain(operation === 'clear-walls' ? 'clear' : 'regenerate');
       } else {
         const next = await coordinate(page, 2, 1);
@@ -2911,8 +2921,6 @@ for (const mode of ['processing', 'delivery'] as const) {
           document.getElementById('confirm-reset')!.click();
           for (const id of ['measurements-json', 'measurements-csv', 'save'])
             document.getElementById(id)!.click();
-          if (id === 'reset' && (document.getElementById('reset-dialog') as HTMLDialogElement).open)
-            document.getElementById('confirm-reset')!.click();
           pointer('pointerdown');
           pointer('pointerup');
         }
@@ -5405,6 +5413,7 @@ test('B23-5 authoritative anchor temperature determines real survival, body food
       await terrainSettings(page);
       await page.locator('#climate').fill('1');
       await page.getByRole('button', { name: 'Heatwave', exact: true }).click();
+      await page.locator('#world').scrollIntoViewIfNeeded();
       await expect
         .poll(() =>
           page.evaluate(() => [

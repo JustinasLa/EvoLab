@@ -3,6 +3,15 @@ import { Ecosystem } from '../../src/ecosystem';
 import { DEFAULTS, founder, type Genome, type WorldFile } from '../../src/model';
 import { parseBlueprint, serializeBlueprint } from '../../src/blueprint';
 import { LIBRARY_DATABASE } from '../../src/library';
+import { nativeDownload, nativeSummary, registerNativeEvidence } from './sensory-evidence';
+
+registerNativeEvidence();
+test.afterEach(async ({ page }) => {
+  const native = await nativeSummary(page);
+  expect(native.pending).toEqual([]);
+  expect(native.activeUrls).toEqual([]);
+  expect(native.overflow).toBe(false);
+});
 
 declare global {
   interface Window {
@@ -135,12 +144,7 @@ async function revealSelected(page: Page, selector: string) {
 }
 async function download(page: Page, selector: string) {
   await revealSelected(page, selector);
-  const pending = page.waitForEvent('download');
-  await page.locator(selector).click();
-  const stream = await (await pending).createReadStream();
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream!) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks);
+  return nativeDownload(page, selector);
 }
 
 async function records(page: Page): Promise<string[]> {
@@ -326,20 +330,22 @@ test('a source that genuinely dies before the delayed native read fails without 
   });
   const genome: Genome = { ...founder(0), cells: [{ x: 0, y: 0, type: 3 }] };
   const organism = world.spawn(genome, 120, 78)!;
-  organism.energy = 0.001;
+  organism.energy = 1;
   const file = world.save();
   await loadAndInspect(page, file);
   await page.locator('#blueprint-name').fill('retained after genuine source death');
   await page.evaluate(() => {
     window.designCaptureEvidence.delayPost = true;
-    document.getElementById('pause')!.click();
+    (document.getElementById('target-tick') as HTMLInputElement).value = '1000000';
+    document.getElementById('run-to-tick')!.click();
     document.getElementById('copy-organism')!.click();
   });
   await expect
     .poll(() => page.evaluate(() => !!window.designCaptureEvidence.releasePost))
     .toBe(true);
   await expect(page.locator('#extinction-summary')).toContainText('energy exhaustion');
-  await expect(page.locator('#tick')).toHaveText('TICK 1');
+  const deathTick = await page.evaluate(() => window.designCaptureEvidence.state.world.stats.tick);
+  expect(deathTick).toBeGreaterThan(1);
   await page.evaluate(() => window.designCaptureEvidence.releasePost!());
   await expect(page.locator('#notice')).toContainText('no longer alive');
   const error = await page.evaluate(() => window.designCaptureEvidence.error);
@@ -352,9 +358,8 @@ test('a source that genuinely dies before the delayed native read fails without 
   expect(error.fatal).toBeUndefined();
   await expect(page.locator('#blueprint-name')).toHaveValue('retained after genuine source death');
   await page.locator('#step').click();
-  await expect(page.locator('#tick')).toHaveText('TICK 2');
+  await expect(page.locator('#tick')).toHaveText(`TICK ${deathTick + 1}`);
   const reference = Ecosystem.load(JSON.stringify(file));
-  reference.step();
-  reference.step();
+  while (reference.tick < deathTick + 1) reference.step();
   expect(JSON.parse((await download(page, '#save')).toString())).toEqual(reference.save());
 });

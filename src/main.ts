@@ -1473,10 +1473,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       `${paused ? 'Paused' : 'Empty world running'} · ${summary.cause === 'empty-import' ? 'imported empty world' : 'total extinction'} at tick ${summary.tick.toLocaleString()}. ${cause}${!paused ? ' Pause on extinction is off.' : ''}`,
     );
   }
-  function renderSettings(next: Settings): void {
+  function renderSettings(next: Settings, replaceDraft = true): void {
     const lifecycle = posted?.type === 'start' || posted?.type === 'load';
     const replaceDraftSeed = lifecycle
-      ? posted?.terrainRevision === terrainRevision
+      ? replaceDraft && posted?.terrainRevision === terrainRevision
       : next.seed !== confirmedSettings.seed;
     confirmedSettings = { ...next };
     settingsEdits = {};
@@ -2576,7 +2576,11 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       }
     }
   }
-  function accept(observation: ControlState, source?: TelemetrySnapshot): void {
+  function accept(
+    observation: ControlState,
+    source?: TelemetrySnapshot,
+    replaceDraft = true,
+  ): void {
     if (stopped || establishedRun !== runId) return;
     const differentRun = acceptedRun !== runId;
     if (differentRun) {
@@ -2594,11 +2598,11 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       latestState = observation;
       installRefuges(observation.world.thermalRefuges);
       const recipeRevision =
-        posted && ['start', 'load', 'regenerate-walls'].includes(posted.type)
+        replaceDraft && posted && ['start', 'load', 'regenerate-walls'].includes(posted.type)
           ? (posted.terrainRevision ?? -1)
           : -1;
       installTerrain(observation.world.terrain, recipeRevision);
-      renderSettings(observation.settings);
+      renderSettings(observation.settings, replaceDraft);
       renderPlayback(observation.playback);
       get<HTMLSelectElement>('speed').value = String(pendingSpeed?.value ?? observation.speed);
       const measured = observation.rate;
@@ -2848,7 +2852,12 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
             if (observation.display.epoch >= acknowledgedView.epoch)
               acknowledgedView = { ...observation.display };
             if (acknowledgedView.epoch === desiredView.epoch) text('render-pending', '');
-            accept(observation, source);
+            accept(
+              observation,
+              source,
+              data.type !== 'error' &&
+                !(data.type === 'manual-result' && data.status === 'rejected'),
+            );
             if (
               (data.type === 'error' ||
                 (data.type === 'manual-result' && data.status === 'rejected')) &&

@@ -18,7 +18,7 @@ import {
   type WorldFile,
 } from '../../src/model';
 import { serializeBlueprint } from '../../src/blueprint';
-import { fortyTest, runFortyControls } from './forty-control-fixture';
+import { fortyTest, runFortyControls, sourceProvenance } from './forty-control-fixture';
 
 const referenceAssets = new Map<string, string>();
 let workerAsset: string, styleAsset: string;
@@ -440,8 +440,7 @@ async function load(page: Page, file: WorldFile, render: boolean, speed: number)
 
 function runtime() {
   return {
-    head: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
-    base: '21b3abe2f2ffca909ce09833b4cee3d5aa7742aa',
+    ...sourceProvenance(),
     node: process.version,
     cpu: cpus()[0]?.model,
     platform: platform(),
@@ -1315,109 +1314,112 @@ test('actual worker matches independent browser ecology and raw on/off bytes acr
   }
 });
 
-for (const population of [64, 1600]) {
-  for (const speed of [1, 4, 12])
-    for (const repetition of [0, 1, 2]) {
-      test(`paired advancing transport population=${population} speed=${speed} repetition=${repetition}`, async ({
-        page,
-        browser,
-      }, testInfo) => {
-        await observe(page);
-        await page.goto('/');
-        const file = fixture(population),
-          raw: object[] = [];
-        for (const render of repetition % 2 ? [false, true] : [true, false]) {
-          await load(page, file, render, speed);
-          const start = await page.evaluate(() => {
-            const input = document.querySelector<HTMLInputElement>('#target-tick')!;
-            input.value = String(window.longRun.state!.world.stats.tick + 1000000);
-            const result = {
-              time: performance.now(),
-              tick: window.longRun.state!.world.stats.tick,
-              counters: window.longRun.counters!,
-              frames: window.longRun.frames,
-              metadataBytes: window.longRun.metadataBytes,
-              telemetryJSONBytes: window.longRun.telemetryJSONBytes,
-              saveTextBytes: window.longRun.saveTextBytes,
-            };
-            document.documentElement.dataset.measureStart = String(result.time);
-            document.getElementById('run-to-tick')!.click();
-            return result;
-          });
-          await page.waitForFunction(
-            () =>
-              ['reached', 'extinct', 'cancelled'].includes(
-                window.longRun.state?.target?.status ?? '',
-              ) ||
-              performance.now() - Number(document.documentElement.dataset.measureStart) >= 5100,
-            undefined,
-            { polling: 100 },
-          );
-          const stopped = await page.evaluate(() => {
-            const state = window.longRun.state!;
-            if (state.target?.status === 'running')
-              document.getElementById('cancel-target')!.click();
-            return { time: performance.now(), state };
-          });
-          const download = await downloadWorld(page),
-            saved = download.world,
-            end = await page.evaluate(() => ({
-              time: performance.now(),
-              state: window.longRun.state!,
-              receipt: window.longRun.receipt!,
-              counters: window.longRun.counters!,
-              frames: window.longRun.frames,
-              metadataBytes: window.longRun.metadataBytes,
-              telemetryJSONBytes: window.longRun.telemetryJSONBytes,
-              saveTextBytes: window.longRun.saveTextBytes,
-            }));
-          await expectExactDownload(page, file, download);
-          if (repetition === 0)
-            await attachRawSave(
-              testInfo,
-              `throughput-${population}-${speed}-${render}`,
-              download.raw,
+test.describe(() => {
+  test.describe.configure({ mode: 'parallel' });
+  for (const population of [64, 1600]) {
+    for (const speed of [1, 4, 12])
+      for (const repetition of [0, 1, 2]) {
+        test(`paired advancing transport population=${population} speed=${speed} repetition=${repetition}`, async ({
+          page,
+          browser,
+        }, testInfo) => {
+          await observe(page);
+          await page.goto('/');
+          const file = fixture(population),
+            raw: object[] = [];
+          for (const render of repetition % 2 ? [false, true] : [true, false]) {
+            await load(page, file, render, speed);
+            const start = await page.evaluate(() => {
+              const input = document.querySelector<HTMLInputElement>('#target-tick')!;
+              input.value = String(window.longRun.state!.world.stats.tick + 1000000);
+              const result = {
+                time: performance.now(),
+                tick: window.longRun.state!.world.stats.tick,
+                counters: window.longRun.counters!,
+                frames: window.longRun.frames,
+                metadataBytes: window.longRun.metadataBytes,
+                telemetryJSONBytes: window.longRun.telemetryJSONBytes,
+                saveTextBytes: window.longRun.saveTextBytes,
+              };
+              document.documentElement.dataset.measureStart = String(result.time);
+              document.getElementById('run-to-tick')!.click();
+              return result;
+            });
+            await page.waitForFunction(
+              () =>
+                ['reached', 'extinct', 'cancelled'].includes(
+                  window.longRun.state?.target?.status ?? '',
+                ) ||
+                performance.now() - Number(document.documentElement.dataset.measureStart) >= 5100,
+              undefined,
+              { polling: 100 },
             );
-          expect(end.counters.steps - start.counters.steps).toBe(saved.tick - file.tick);
-          expect(end.counters.maxScheduled).toBe(1);
-          expect(end.counters.maxDisplay).toBeLessThanOrEqual(1);
-          expect(end.counters.maxProgress).toBeLessThanOrEqual(1);
-          const grids = end.counters.gridBuilds - start.counters.gridBuilds;
-          const transferred = end.counters.gridBytes - start.counters.gridBytes;
-          expect(transferred).toBe(grids * 224640);
-          if (!render) {
-            expect(grids).toBe(0);
-            expect(transferred).toBe(0);
+            const stopped = await page.evaluate(() => {
+              const state = window.longRun.state!;
+              if (state.target?.status === 'running')
+                document.getElementById('cancel-target')!.click();
+              return { time: performance.now(), state };
+            });
+            const download = await downloadWorld(page),
+              saved = download.world,
+              end = await page.evaluate(() => ({
+                time: performance.now(),
+                state: window.longRun.state!,
+                receipt: window.longRun.receipt!,
+                counters: window.longRun.counters!,
+                frames: window.longRun.frames,
+                metadataBytes: window.longRun.metadataBytes,
+                telemetryJSONBytes: window.longRun.telemetryJSONBytes,
+                saveTextBytes: window.longRun.saveTextBytes,
+              }));
+            await expectExactDownload(page, file, download);
+            if (repetition === 0)
+              await attachRawSave(
+                testInfo,
+                `throughput-${population}-${speed}-${render}`,
+                download.raw,
+              );
+            expect(end.counters.steps - start.counters.steps).toBe(saved.tick - file.tick);
+            expect(end.counters.maxScheduled).toBe(1);
+            expect(end.counters.maxDisplay).toBeLessThanOrEqual(1);
+            expect(end.counters.maxProgress).toBeLessThanOrEqual(1);
+            const grids = end.counters.gridBuilds - start.counters.gridBuilds;
+            const transferred = end.counters.gridBytes - start.counters.gridBytes;
+            expect(transferred).toBe(grids * 224640);
+            if (!render) {
+              expect(grids).toBe(0);
+              expect(transferred).toBe(0);
+            }
+            raw.push({
+              render,
+              speed,
+              repetition,
+              start,
+              stopped,
+              end,
+              stoppedTick: saved.tick,
+              advancedTicks: saved.tick - file.tick,
+              stopRequestElapsedMs: stopped.time - start.time,
+              elapsedMs: end.time - start.time,
+              actualTicksPerSecond: ((saved.tick - file.tick) * 1000) / (end.time - start.time),
+              grids,
+              transferred,
+              completeSaveSHA256: createHash('sha256').update(download.raw).digest('hex'),
+              rawSaveBytes: download.raw.byteLength,
+            });
           }
-          raw.push({
-            render,
-            speed,
-            repetition,
-            start,
-            stopped,
-            end,
-            stoppedTick: saved.tick,
-            advancedTicks: saved.tick - file.tick,
-            stopRequestElapsedMs: stopped.time - start.time,
-            elapsedMs: end.time - start.time,
-            actualTicksPerSecond: ((saved.tick - file.tick) * 1000) / (end.time - start.time),
-            grids,
-            transferred,
-            completeSaveSHA256: createHash('sha256').update(download.raw).digest('hex'),
-            rawSaveBytes: download.raw.byteLength,
+          await attachEvidence(testInfo, 'paired-advancing-evidence', {
+            ...runtime(),
+            browser: browser.version(),
+            project: testInfo.project.name,
+            population,
+            seed: file.settings.seed,
+            initialSaveSHA256: createHash('sha256').update(JSON.stringify(file)).digest('hex'),
+            raw,
+            limitations:
+              'Instrumented worker wraps actual completed steps, actual display helper and scheduled callbacks without changing engine behavior. Timings include observation wrappers and actual terminal/Save completion; the stop-request timestamp is recorded separately and never shortens the throughput denominator. Metadata/telemetry JSON byte counts estimate serialization, not structured-clone wire size; raw grid buffers and saved UTF8 text bytes are exact. Programmatic native DOM events keep the canvas visible. Full saves are independently recomputed at actual completed ticks. This is local Chromium emulation, not physical-device or hidden-tab certification.',
           });
-        }
-        await attachEvidence(testInfo, 'paired-advancing-evidence', {
-          ...runtime(),
-          browser: browser.version(),
-          project: testInfo.project.name,
-          population,
-          seed: file.settings.seed,
-          initialSaveSHA256: createHash('sha256').update(JSON.stringify(file)).digest('hex'),
-          raw,
-          limitations:
-            'Instrumented worker wraps actual completed steps, actual display helper and scheduled callbacks without changing engine behavior. Timings include observation wrappers and actual terminal/Save completion; the stop-request timestamp is recorded separately and never shortens the throughput denominator. Metadata/telemetry JSON byte counts estimate serialization, not structured-clone wire size; raw grid buffers and saved UTF8 text bytes are exact. Programmatic native DOM events keep the canvas visible. Full saves are independently recomputed at actual completed ticks. This is local Chromium emulation, not physical-device or hidden-tab certification.',
         });
-      });
-    }
-}
+      }
+  }
+});

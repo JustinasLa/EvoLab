@@ -129,7 +129,7 @@ declare global {
   }
 }
 
-function sourceProvenance() {
+export function sourceProvenance() {
   const checkoutHead = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (eventPath) {
