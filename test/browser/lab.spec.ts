@@ -116,6 +116,7 @@ declare global {
       failureMessage: string | null;
       latest: object | null;
       pendingAtArm: number | null;
+      postsAfterArm: { type: string; commandId: number; runId: number }[];
     };
     measurementReadGate: {
       blocked: boolean;
@@ -1085,11 +1086,27 @@ for (const operation of [
               failureMessage: null as string | null,
               latest: null as object | null,
               pendingAtArm: null as number | null,
+              postsAfterArm: [] as Window['publicationFault']['postsAfterArm'],
               arm: () =>
                 new Promise<void>((resolve) => {
                   waiter = resolve;
                   worker.postMessage({ type: '__arm_publication_fault' });
                 }),
+            });
+            worker.postMessage = new Proxy(worker.postMessage, {
+              apply(post, receiver, messages) {
+                const command = messages[0];
+                if (active && Number.isSafeInteger(command.commandId)) {
+                  if (evidence.postsAfterArm.length === 32)
+                    throw new Error('Unbounded fault post evidence');
+                  evidence.postsAfterArm.push({
+                    type: command.type,
+                    commandId: command.commandId,
+                    runId: command.runId,
+                  });
+                }
+                return Reflect.apply(post, receiver, messages);
+              },
             });
             worker.addEventListener('message', ({ data }) => {
               if (data.state) evidence.visible = data.state.display.visible;
@@ -1208,7 +1225,11 @@ for (const operation of [
         await page.locator('#refuge-enabled').click();
         reference.changeRefugeMode(true);
       } else if (operation === 'clear-refuges') {
-        await page.locator('#clear-refuges').click();
+        // Keep the already-drained habitat visible after arming. A native
+        // pointer click can auto-scroll and insert a held display command first.
+        await page
+          .locator('#clear-refuges')
+          .evaluate((button: HTMLButtonElement) => button.click());
         reference.clearRefuges();
       } else if (operation === 'paint-refuge') {
         const next = await coordinate(page, 2, 1);
@@ -1247,6 +1268,13 @@ for (const operation of [
       counts: { ...window.measurementGate.counts },
       pending: [...window.measurementGate.pending],
     }));
+    if (operation === 'clear-refuges') {
+      expect(stopped.postsAfterArm[0]).toEqual({
+        type: 'clear-refuges',
+        commandId: (stopped.latest as { commandId: number }).commandId,
+        runId: (stopped.latest as { runId: number }).runId,
+      });
+    }
     expect(stopped.terminals).toBe(1);
     expect(stopped.failures).toBe(1);
     expect(stopped.failureMessage).toMatch(
