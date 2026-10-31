@@ -132,8 +132,10 @@ describe('native event ownership and transactions', () => {
     native.faults.upgrade = true;
     native.faults.createThrow = true;
     const library = createLibrary({ factory: () => native.factory });
-    await library.open();
+    await expect(library.open()).rejects.toMatchObject({ code: 'storage' });
     expect(native.request.transaction.abort).toHaveBeenCalled();
+    delete native.faults.createThrow;
+    await library.open();
     vi.useFakeTimers();
     native.faults.txStall = true;
     const reading = library.list();
@@ -336,6 +338,14 @@ describe('native event ownership and transactions', () => {
     native.faults.upgrade = true;
     native.deliverOpen();
     expect(native.request.transaction.abort).toHaveBeenCalled();
+    expect(native.connection.close).not.toHaveBeenCalled();
+    expect(library.busy).toBe(false);
+    delete native.faults.upgrade;
+    const retry = library.open();
+    const retryRejected = expect(retry).rejects.toMatchObject({ code: 'pending' });
+    await vi.advanceTimersByTimeAsync(5000);
+    await retryRejected;
+    native.deliverOpen();
     expect(native.connection.close).toHaveBeenCalled();
     expect(library.busy).toBe(false);
     library.dispose();
