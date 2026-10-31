@@ -1411,6 +1411,39 @@ export async function runFortyControls(options: {
     fence.invalidate(error); // Synchronous before any cleanup await.
     status = 'incomplete';
     originalError = describeFailure(error);
+    try {
+      console.error(
+        'forty-control-failure',
+        JSON.stringify({
+          error: originalError,
+          project: testInfo.project.name,
+          population,
+          elapsedMs: performance.now() - fence.startedAt,
+          remainingMs: Math.min(fence.deadline, fence.windowDeadline) - performance.now(),
+          activeOperation: activeOperation && {
+            id: activeOperation.id,
+            role: activeOperation.role,
+            expectedType: activeOperation.expectedType,
+            status: activeOperation.status,
+            identity: activeOperation.identity,
+            interaction: activeOperation.interaction,
+            window: activeOperation.window,
+          },
+          windows,
+          records: records.length,
+          saves: operations.filter((op) => op.expectedType === 'save').length,
+          measured: measured ?? {
+            inputAckMs: distribution(inputLatencies),
+            savedSettleMs: distribution(settlingLatencies),
+            freshRevealMs: distribution(revealLatencies),
+          },
+          commandSnapshotChecks,
+          commandSnapshotTransfers,
+        }),
+      );
+    } catch {
+      // Failure diagnostics must not replace the original acceptance error.
+    }
     if (activeOperation && activeOperation.status !== 'checked') {
       activeOperation.status = 'failed/interrupted';
       activeOperation.error = originalError;

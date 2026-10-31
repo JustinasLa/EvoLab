@@ -36,6 +36,8 @@ jobs:
       - name: Install browser
         run: npx playwright install --with-deps chromium
       - name: Desktop and mobile browser tests
+        env:
+          PLAYWRIGHT_LIST_PRINT_FAILURES_INLINE: '1'
         run: npm run test:browser
       - name: Upload coverage and browser reports
         if: ${{ !cancelled() }}
