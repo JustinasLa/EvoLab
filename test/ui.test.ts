@@ -237,7 +237,9 @@ const world = new Ecosystem(),
   organism = [...world.organisms.values()][0];
 const get = <T extends HTMLElement>(id: string): T => {
   const element = root.ownerDocument.getElementById(id);
-  return element && root.contains(element) ? (element as T) : root.querySelector<T>(`#${id}`)!;
+  return element && element !== root && root.contains(element)
+    ? (element as T)
+    : root.querySelector<T>(`#${id}`)!;
 };
 const click = (id: string) => {
   get(id).click();
