@@ -21,6 +21,7 @@ import {
   founder,
   speciesName,
   validGenome,
+  cloneGenome,
   validSettings,
   type Frame,
   type Genome,
@@ -36,13 +37,21 @@ import {
   type MeasurementFormat,
   type TerrainRecipe,
 } from './model';
-import { draw, genomeSvg, markup, organismHtml, point, viewport, type Camera } from './view';
+import {
+  behaviorStatus,
+  draw,
+  genomeSvg,
+  markup,
+  organismHtml,
+  point,
+  viewport,
+  type Camera,
+} from './view';
 import { createTelemetryView } from './telemetry-view';
 import { emptyRefuges, refugeTool, refugeSummary } from './refuges';
 import {
   createLibrary,
   libraryCandidate,
-  projectGenome,
   LibraryError,
   type LibraryCandidate,
   type LibraryEntry,
@@ -1311,6 +1320,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
     text('preference-value', `${Math.round(blueprint.preference * 40)}°`);
     get<HTMLInputElement>('blueprint-name').value = blueprintName;
     get<HTMLTextAreaElement>('blueprint-description').value = blueprintDescription;
+    text('behavior-status', behaviorStatus(blueprint));
     text(
       'design-note',
       validGenome(blueprint)
@@ -1318,14 +1328,23 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         : 'Use 1–16 cells, connected edge to edge.',
     );
   }
-  function copyDesign(genome: Genome): void {
+  function copyDesign(genome: Genome): boolean {
+    let copied: Genome;
+    try {
+      copied = cloneGenome(genome);
+      serializeBlueprint({ name: speciesName(genome), description: '', genome: copied });
+    } catch (error) {
+      notice((error as Error).message);
+      return false;
+    }
     endStroke();
     invalidateDesign();
-    blueprint = projectGenome(genome);
+    blueprint = copied;
     blueprintName = speciesName(genome);
     blueprintDescription = '';
     editor();
     get<HTMLDetailsElement>('specimen-details').open = false;
+    return true;
   }
   function exportBlueprint(genome: Genome, name: string, description: string): void {
     let content: string;
@@ -1452,12 +1471,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         notice('Draw 1–16 connected cells before painting.');
         return;
       }
-      const genome: Genome = {
-        cells: blueprint.cells.map(({ x, y, type }) => ({ x, y, type })),
-        preference: blueprint.preference,
-        tolerance: blueprint.tolerance,
-        tempo: blueprint.tempo,
-      };
+      const genome = cloneGenome(blueprint);
       if (tool === 'plant') {
         endStroke();
         postTracked('paint', { tool, ...p, radius: brush, genome });
@@ -1999,8 +2013,8 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
   });
   root.addEventListener('click', (event) => {
     if ((event.target as HTMLElement).closest('#copy-organism') && selected) {
-      copyDesign(selected.genome);
-      notice('Anatomy copied. Edit it, then place it in the world.');
+      if (copyDesign(selected.genome))
+        notice('Anatomy copied. Edit it, then place it in the world.');
     }
     if ((event.target as HTMLElement).closest('#export-organism-blueprint') && selected)
       exportBlueprint(selected.genome, speciesName(selected.genome), '');
@@ -2130,8 +2144,7 @@ export function mount(root: HTMLElement, worker: Worker): () => void {
         b.title = 'Copy this lineage into the organism designer';
         b.innerHTML = `${genomeSvg(species.genome, 56)}<span><strong>${species.name} <small>#${species.id}</small></strong><i><b style="width:${(species.count / Math.max(1, s.population)) * 100}%"></b></i></span><em>${species.count}</em>`;
         b.addEventListener('click', () => {
-          copyDesign(species.genome);
-          tab('organism');
+          if (copyDesign(species.genome)) tab('organism');
         });
         list.append(b);
       }

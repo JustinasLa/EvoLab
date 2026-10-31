@@ -4,7 +4,7 @@ export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 8;
+export const WORLD_VERSION = 9;
 export const LINEAGE_SUMMARY_CAPACITY = 256;
 export const LINEAGE_EVENT_CAPACITY = 512;
 export const INTERVENTION_CAPACITY = 128;
@@ -40,16 +40,64 @@ export const COLORS = [
 ];
 export const CELL_NAMES = ['Mouth', 'Leaf', 'Motor', 'Stinger', 'Armor', 'Eye'];
 export type CellType = 3 | 4 | 5 | 6 | 7 | 8;
+export type Reaction = 'ignore' | 'chase' | 'flee';
+export type Behavior =
+  | { version: 1; mode: 'legacy' }
+  | {
+      version: 1;
+      mode: 'evolved';
+      reactions: { food: Reaction; wall: Reaction; harmless: Reaction; dangerous: Reaction };
+    };
+export type LegacyToken =
+  | ['null']
+  | ['boolean', boolean]
+  | ['string', string]
+  | ['number', number | '-0' | '+infinity' | '-infinity']
+  | ['array', number]
+  | ['object', string[]];
+export type LegacyValue = LegacyToken[];
+export type LegacyExtensions = [string, LegacyValue][];
 export interface Cell {
   x: number;
   y: number;
   type: CellType;
+  legacyExtensions?: LegacyExtensions;
 }
 export interface Genome {
   cells: Cell[];
   preference: number;
   tolerance: number;
   tempo: number;
+  behavior: Behavior;
+  legacyExtensions?: LegacyExtensions;
+}
+export interface HistoricalCell {
+  x: number;
+  y: number;
+  type: CellType;
+  [key: string]: unknown;
+}
+export interface HistoricalGenome {
+  cells: HistoricalCell[];
+  preference: number;
+  tolerance: number;
+  tempo: number;
+  [key: string]: unknown;
+}
+export interface HistoricalOrganism {
+  id: number;
+  species: number;
+  x: number;
+  y: number;
+  rotation: number;
+  direction: number;
+  age: number;
+  energy: number;
+  generation: number;
+  children: number;
+  ancestry: number[];
+  genome: HistoricalGenome;
+  [key: string]: unknown;
 }
 export type LineageOrigin = 'founder' | 'mutation' | 'manual' | 'legacy-unknown';
 export interface LivingLineage {
@@ -271,30 +319,41 @@ export interface WorldFile extends WorldEcology {
   telemetry: TelemetryState;
   interventions: InterventionState;
 }
-export interface WorldFileV7 extends WorldEcology {
+export type HistoricalWorldEcology = Omit<WorldEcology, 'organisms'> & {
+  organisms: HistoricalOrganism[];
+};
+export interface WorldFileV8 extends HistoricalWorldEcology {
+  version: 8;
+  lineageArchive: LineageArchiveState;
+  thermalRefuges: RefugeFile;
+  terrain: TerrainRecipe;
+  telemetry: TelemetryState;
+  interventions: InterventionState;
+}
+export interface WorldFileV7 extends HistoricalWorldEcology {
   version: 7;
   thermalRefuges: RefugeFile;
   terrain: TerrainRecipe;
   telemetry: TelemetryState;
   interventions: InterventionState;
 }
-export interface WorldFileV6 extends WorldEcology {
+export interface WorldFileV6 extends HistoricalWorldEcology {
   version: 6;
   terrain: TerrainRecipe;
   telemetry: TelemetryState;
   interventions: InterventionStateV2;
 }
-export interface WorldFileV5 extends WorldEcology {
+export interface WorldFileV5 extends HistoricalWorldEcology {
   version: 5;
   telemetry: TelemetryState;
   interventions: InterventionStateV1;
 }
-export type WorldFileV4 = WorldEcology & { version: 4; telemetry: TelemetryState };
-export type WorldFileV3 = WorldEcology & {
+export type WorldFileV4 = HistoricalWorldEcology & { version: 4; telemetry: TelemetryState };
+export type WorldFileV3 = HistoricalWorldEcology & {
   version: 3;
   telemetry: TelemetryStateV1;
 };
-export type LegacyWorldFile = WorldEcology & {
+export type LegacyWorldFile = HistoricalWorldEcology & {
   version: 2;
 };
 export type PaintTool = 'food' | 'wall' | 'erase';
@@ -470,9 +529,9 @@ export function connected(cells: Cell[]): boolean {
           if (Math.abs(a.x - b.x) + Math.abs(a.y - b.y) === 1) seen.add(`${b.x},${b.y}`);
   return seen.size === cells.length;
 }
-export function validGenome(value: unknown): value is Genome {
+export function validHistoricalGenome(value: unknown): value is HistoricalGenome {
   if (!value || typeof value !== 'object') return false;
-  const g = value as Genome;
+  const g = value as HistoricalGenome;
   return (
     Array.isArray(g.cells) &&
     g.cells.length > 0 &&
@@ -494,6 +553,264 @@ export function validGenome(value: unknown): value is Genome {
     finite(g.tolerance, 0.12, 0.6) &&
     integer(g.tempo, 2, 12)
   );
+}
+export function dataRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object') return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  return Reflect.ownKeys(value).every((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+    return typeof key === 'string' && descriptor.enumerable && Object.hasOwn(descriptor, 'value');
+  });
+}
+export function exactDataRecord(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): value is Record<string, unknown> {
+  return (
+    dataRecord(value) &&
+    required.every((key) => Object.hasOwn(value, key)) &&
+    Object.keys(value).every((key) => required.includes(key) || optional.includes(key))
+  );
+}
+function denseArray(value: unknown): value is unknown[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return false;
+  if (Reflect.ownKeys(value).length !== value.length + 1) return false;
+  for (let offset = 0; offset < value.length; offset++) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(offset));
+    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value')) return false;
+  }
+  return true;
+}
+function validLegacyValue(value: unknown): value is LegacyValue {
+  if (!denseArray(value) || value.length === 0) return false;
+  const remaining = [1];
+  for (let offset = 0; offset < value.length; offset++) {
+    if (remaining.length === 0) return false;
+    const token = value[offset];
+    if (!denseArray(token)) return false;
+    let children = 0;
+    if (token[0] === 'null') {
+      if (token.length !== 1) return false;
+    } else {
+      if (token.length !== 2) return false;
+      const payload = token[1];
+      if (token[0] === 'boolean') {
+        if (typeof payload !== 'boolean') return false;
+      } else if (token[0] === 'string') {
+        if (typeof payload !== 'string') return false;
+      } else if (token[0] === 'number') {
+        if (!(
+          (typeof payload === 'number' && Number.isFinite(payload) && !Object.is(payload, -0)) ||
+          payload === '-0' ||
+          payload === '+infinity' ||
+          payload === '-infinity'
+        ))
+          return false;
+      } else if (token[0] === 'array') {
+        if (
+          typeof payload !== 'number' ||
+          !Number.isSafeInteger(payload) ||
+          payload < 0 ||
+          Object.is(payload, -0)
+        )
+          return false;
+        children = payload;
+      } else if (token[0] === 'object') {
+        if (!validNames(payload)) return false;
+        children = payload.length;
+      } else return false;
+    }
+    if (children > value.length - offset - 1) return false;
+    remaining[remaining.length - 1]--;
+    if (children > 0) remaining.push(children);
+    while (remaining.at(-1) === 0) remaining.pop();
+  }
+  return remaining.length === 0;
+}
+function validExtensions(
+  value: unknown,
+  semanticKeys: readonly string[],
+): value is LegacyExtensions {
+  if (!denseArray(value) || value.length === 0) return false;
+  const names = new Set<string>();
+  for (const entry of value) {
+    if (
+      !denseArray(entry) ||
+      entry.length !== 2 ||
+      typeof entry[0] !== 'string' ||
+      semanticKeys.includes(entry[0]) ||
+      names.has(entry[0]) ||
+      !validLegacyValue(entry[1])
+    )
+      return false;
+    names.add(entry[0]);
+  }
+  return validNames([...names]);
+}
+function validNames(value: unknown): value is string[] {
+  if (
+    !denseArray(value) ||
+    !value.every((name) => typeof name === 'string') ||
+    new Set(value).size !== value.length
+  )
+    return false;
+  return Object.keys(Object.fromEntries(value.map((name) => [name, null]))).every(
+    (name, offset) => name === value[offset],
+  );
+}
+const historicalGenomeKeys = ['cells', 'preference', 'tolerance', 'tempo'];
+const historicalCellKeys = ['x', 'y', 'type'];
+export function validBehavior(value: unknown): value is Behavior {
+  if (!dataRecord(value) || value.version !== 1) return false;
+  if (value.mode === 'legacy') return exactDataRecord(value, ['version', 'mode']);
+  if (!exactDataRecord(value, ['version', 'mode', 'reactions']) || value.mode !== 'evolved')
+    return false;
+  return (
+    exactDataRecord(value.reactions, ['food', 'wall', 'harmless', 'dangerous']) &&
+    Object.values(value.reactions).every(
+      (action) => action === 'ignore' || action === 'chase' || action === 'flee',
+    )
+  );
+}
+export function validGenome(value: unknown): value is Genome {
+  if (
+    !exactDataRecord(value, [...historicalGenomeKeys, 'behavior'], ['legacyExtensions']) ||
+    !validBehavior(value.behavior) ||
+    !denseArray(value.cells)
+  )
+    return false;
+  if (
+    Object.hasOwn(value, 'legacyExtensions') &&
+    !validExtensions(value.legacyExtensions, historicalGenomeKeys)
+  )
+    return false;
+  if (
+    !value.cells.every(
+      (cell) =>
+        exactDataRecord(cell, historicalCellKeys, ['legacyExtensions']) &&
+        (!Object.hasOwn(cell, 'legacyExtensions') ||
+          validExtensions(cell.legacyExtensions, historicalCellKeys)),
+    )
+  )
+    return false;
+  return validHistoricalGenome(value);
+}
+export function cloneGenome(genome: Genome): Genome {
+  if (!validGenome(genome)) throw new Error('Invalid inherited genome.');
+  const copied = structuredClone(genome);
+  return {
+    cells: copied.cells.map((cell) => ({
+      x: cell.x,
+      y: cell.y,
+      type: cell.type,
+      ...(cell.legacyExtensions ? { legacyExtensions: cell.legacyExtensions } : {}),
+    })),
+    preference: copied.preference,
+    tolerance: copied.tolerance,
+    tempo: copied.tempo,
+    behavior: copied.behavior,
+    ...(copied.legacyExtensions ? { legacyExtensions: copied.legacyExtensions } : {}),
+  };
+}
+export function encodeLegacyValue(value: unknown): LegacyValue {
+  const tokens: LegacyValue = [],
+    pending: unknown[] = [value],
+    seen = new Set<object>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === null) tokens.push(['null']);
+    else if (typeof current === 'boolean') tokens.push(['boolean', current]);
+    else if (typeof current === 'string') tokens.push(['string', current]);
+    else if (typeof current === 'number' && !Number.isNaN(current))
+      tokens.push([
+        'number',
+        Object.is(current, -0)
+          ? '-0'
+          : current === Infinity
+            ? '+infinity'
+            : current === -Infinity
+              ? '-infinity'
+              : current,
+      ]);
+    else {
+      if (typeof current !== 'object' || seen.has(current))
+        throw new Error('Invalid historical opaque value.');
+      seen.add(current);
+      if (denseArray(current)) {
+        tokens.push(['array', current.length]);
+        for (let offset = current.length - 1; offset >= 0; offset--) pending.push(current[offset]);
+      } else {
+        if (!dataRecord(current)) throw new Error('Invalid historical opaque value.');
+        const names = Object.keys(current);
+        tokens.push(['object', names]);
+        for (let offset = names.length - 1; offset >= 0; offset--)
+          pending.push(current[names[offset]]);
+      }
+    }
+  }
+  return tokens;
+}
+export function decodeLegacyValue(value: LegacyValue): unknown {
+  if (!validLegacyValue(value)) throw new Error('Invalid historical opaque encoding.');
+  const root: Record<string, unknown> = {},
+    pending: { parent: object; key: string }[] = [{ parent: root, key: 'value' }];
+  for (const token of value) {
+    const target = pending.pop()!;
+    let decoded: unknown;
+    if (token[0] === 'null') decoded = null;
+    else if (token[0] === 'boolean' || token[0] === 'string') decoded = token[1];
+    else if (token[0] === 'number')
+      decoded =
+        token[1] === '-0'
+          ? -0
+          : token[1] === '+infinity'
+            ? Infinity
+            : token[1] === '-infinity'
+              ? -Infinity
+              : token[1];
+    else {
+      decoded = token[0] === 'array' ? [] : {};
+      const names =
+        token[0] === 'array'
+          ? Array.from({ length: token[1] }, (_, offset) => String(offset))
+          : token[1];
+      for (let offset = names.length - 1; offset >= 0; offset--)
+        pending.push({ parent: decoded as object, key: names[offset] });
+    }
+    Object.defineProperty(target.parent, target.key, {
+      value: decoded,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return root.value;
+}
+function historicalExtensions(source: object, known: readonly string[]): LegacyExtensions {
+  return Object.keys(source)
+    .filter((key) => !known.includes(key))
+    .map((key) => [key, encodeLegacyValue((source as Record<string, unknown>)[key])]);
+}
+export function migrateHistoricalGenome(source: HistoricalGenome): Genome {
+  const legacyExtensions = historicalExtensions(source, historicalGenomeKeys);
+  return {
+    cells: source.cells.map((cell) => {
+      const extensions = historicalExtensions(cell, historicalCellKeys);
+      return {
+        x: cell.x,
+        y: cell.y,
+        type: cell.type,
+        ...(extensions.length ? { legacyExtensions: extensions } : {}),
+      };
+    }),
+    preference: source.preference,
+    tolerance: source.tolerance,
+    tempo: source.tempo,
+    behavior: { version: 1, mode: 'legacy' },
+    ...(legacyExtensions.length ? { legacyExtensions } : {}),
+  };
 }
 export const finite = (v: unknown, low: number, high: number): v is number =>
   typeof v === 'number' && Number.isFinite(v) && v >= low && v <= high;
@@ -528,10 +845,11 @@ export function founder(kind: number, preference = 0.5): Genome {
     preference,
     tolerance: 0.3,
     tempo: kind === 2 ? 3 : 5,
+    behavior: { version: 1, mode: 'legacy' },
   };
 }
 export function mutate(source: Genome, random: Random): Genome {
-  const g = structuredClone(source);
+  const g = cloneGenome(source);
   const mode = random.int(3);
   if (mode === 0 && g.cells.length < 16) {
     const c = g.cells[random.int(g.cells.length)];

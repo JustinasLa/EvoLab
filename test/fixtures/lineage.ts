@@ -7,6 +7,7 @@ export const admissionGenome = (): Genome => ({
   preference: 0.5,
   tolerance: 0.3,
   tempo: 2,
+  behavior: { version: 1 as const, mode: 'legacy' as const },
 });
 
 export function sameTickLineages(): Ecosystem {

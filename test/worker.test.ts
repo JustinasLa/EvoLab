@@ -1,7 +1,14 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { startWorker, type Scope } from '../src/worker';
 import { Ecosystem } from '../src/ecosystem';
-import { legacyV3, legacyV4, legacyV5, legacyV6, legacyV7 } from './fixtures/telemetry';
+import {
+  baselineFixtures,
+  syntheticHistoricalWorld,
+  restoreHistoricalWorld,
+  restoreHistoricalOrganism,
+  storedSensoryGenome,
+} from './fixtures/sensory-legacy';
+import { legacyV3, legacyV4, legacyV5, legacyV6, legacyV7, legacyV8 } from './fixtures/telemetry';
 import { DEFAULT_TERRAIN } from '../src/terrain';
 import { readFileSync } from 'node:fs';
 import { acceptedReference, fixtureText, predecessor, identicalRecords } from './fixtures/refuges';
@@ -32,6 +39,7 @@ import {
 } from '../src/model';
 
 const mouth: Genome = {
+  behavior: { version: 1 as const, mode: 'legacy' as const },
   cells: [{ x: 0, y: 0, type: 3 }],
   preference: 0.5,
   tolerance: 0.3,
@@ -172,7 +180,10 @@ describe('frozen raw boundary admission and recovery', () => {
       const before = harness.saveText(),
         queued = harness.tasks.length,
         count = harness.responseCount;
-      identicalRecords(harness.last().selected, reference.save().organisms[0]);
+      identicalRecords(
+        restoreHistoricalOrganism(harness.last().selected),
+        reference.save().organisms[0],
+      );
       harness.send({ type: 'load', runId: 2, text });
       expect(harness.responseCount).toBe(count + 1);
       const error = harness.last('error');
@@ -183,14 +194,20 @@ describe('frozen raw boundary admission and recovery', () => {
       });
       expect(error).not.toHaveProperty('fatal');
       expect(harness.tasks).toHaveLength(queued);
-      identicalRecords(error.recovery.selected, reference.save().organisms[0]);
+      identicalRecords(
+        restoreHistoricalOrganism(error.recovery.selected),
+        reference.save().organisms[0],
+      );
       identicalRecords(error.recovery.settings, reference.save().settings);
       expect(harness.saveText()).toBe(before);
       expect(predecessor(harness.save())).toEqual(JSON.parse(JSON.stringify(reference.save())));
       harness.send({ type: 'step' });
       reference.step();
       expect(predecessor(harness.save())).toEqual(JSON.parse(JSON.stringify(reference.save())));
-      identicalRecords(harness.last().selected, reference.save().organisms[0]);
+      identicalRecords(
+        restoreHistoricalOrganism(harness.last().selected),
+        reference.save().organisms[0],
+      );
     },
   );
   for (const location of ['settings', 'organism', 'genome', 'cell'])
@@ -207,19 +224,37 @@ describe('frozen raw boundary admission and recovery', () => {
         // Lifecycle settings intentionally expose only the four known UI fields.
         const { seed, mutation, nutrients, climate } = reference.save().settings;
         identicalRecords(settings, { seed, mutation, nutrients, climate });
-        identicalRecords(selected, reference.save().organisms[0]);
+        identicalRecords(restoreHistoricalOrganism(selected), reference.save().organisms[0]);
         for (const record of [settings, selected, selected.genome, selected.genome.cells[0]])
           Object.defineProperty(record, '__proto__', {
             value: { changed: true },
             configurable: true,
           });
         harness.send({ type: 'snapshot' });
-        identicalRecords(harness.last().selected, reference.save().organisms[0]);
-        expect(predecessor(harness.save())).toEqual(JSON.parse(JSON.stringify(reference.save())));
+        identicalRecords(
+          restoreHistoricalOrganism(harness.last().selected),
+          reference.save().organisms[0],
+        );
+        expect(predecessor(harness.save())).toEqual({
+          ...JSON.parse(JSON.stringify(reference.save())),
+          organisms:
+            location === 'genome' || location === 'cell'
+              ? reference.save().organisms
+              : JSON.parse(JSON.stringify(reference.save())).organisms,
+        });
         harness.send({ type: 'step' });
         reference.step();
-        identicalRecords(harness.last().selected, reference.save().organisms[0]);
-        expect(predecessor(harness.save())).toEqual(JSON.parse(JSON.stringify(reference.save())));
+        identicalRecords(
+          restoreHistoricalOrganism(harness.last().selected),
+          reference.save().organisms[0],
+        );
+        expect(predecessor(harness.save())).toEqual({
+          ...JSON.parse(JSON.stringify(reference.save())),
+          organisms:
+            location === 'genome' || location === 'cell'
+              ? reference.save().organisms
+              : JSON.parse(JSON.stringify(reference.save())).organisms,
+        });
       });
 });
 
@@ -573,6 +608,60 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe('correlated manual/export worker protocol', () => {
+  it('retains an admitted historical opaque expansion when complete outbound Save exceeds 2.5 MB nonfatally', () => {
+    let retained!: Ecosystem;
+    const frame = Ecosystem.prototype.frame;
+    vi.spyOn(Ecosystem.prototype, 'frame').mockImplementation(function (this: Ecosystem) {
+      retained = this;
+      return frame.call(this);
+    });
+    const original = JSON.parse(baselineFixtures['world5-extras.json']);
+    original.organisms[0].genome.expanding = Array(300000).fill(null);
+    const text = JSON.stringify(original);
+    expect(new TextEncoder().encode(text).length).toBeLessThan(WORLD_MAX_BYTES);
+    const harness = workerHarness();
+    harness.send({ type: 'load', runId: 1, text });
+    expect(harness.last('loaded')).toBeDefined();
+    harness.send({ type: 'pause' });
+    const before = JSON.stringify(retained.save()),
+      genome = JSON.stringify(retained.save().organisms[0].genome);
+    expect(new TextEncoder().encode(before).length).toBeGreaterThan(WORLD_MAX_BYTES);
+    const error = harness.send({ type: 'save' });
+    expect(error).toMatchObject({
+      type: 'error',
+      operation: 'save',
+      message: expect.stringContaining('2.5 MB'),
+    });
+    expect(error).not.toHaveProperty('fatal');
+    expect(JSON.stringify(retained.save())).toBe(before);
+    harness.send({ type: 'step' });
+    expect(retained.tick).toBe(original.tick + 1);
+    expect(JSON.stringify(retained.save().organisms[0].genome)).toBe(genome);
+    expect(harness.last().playback.paused).toBe(true);
+  });
+  it.each(['selected', 'recovery'])(
+    'detaches full passive inherited payload in %s native responses',
+    (boundary) => {
+      const world = new Ecosystem(DEFAULTS, false),
+        source = storedSensoryGenome();
+      world.spawn(source, 30, 30);
+      const original = structuredClone(source),
+        harness = workerHarness();
+      harness.load(world.save());
+      harness.send({ type: 'pause' });
+      harness.send({ type: 'inspect', x: 30, y: 30 });
+      if (boundary === 'recovery') harness.send({ type: 'load', runId: 2, text: '{' });
+      const response = boundary === 'selected' ? harness.last() : harness.last('error').recovery;
+      expect(response.selected.genome).toEqual(original);
+      response.selected.genome.behavior.reactions.food = 'ignore';
+      response.selected.genome.legacyExtensions[0][1].at(-1)[1] = 'response-only';
+      expect(harness.save().organisms[0].genome).toEqual(original);
+      source.cells[0].legacyExtensions = [['source', [['null']]]];
+      source.legacyExtensions = [['changed', [['boolean', false]]]];
+      expect(harness.frame().stats.top[0].genome).toEqual(original);
+      expect(harness.save().organisms[0].genome).toEqual(original);
+    },
+  );
   function protocol(startFunction = startWorker) {
     const harness = workerHarness(startFunction);
     let posting = 0;
@@ -979,17 +1068,13 @@ describe('correlated manual/export worker protocol', () => {
 });
 describe('worker control and persistence', () => {
   it('rejects oversized outbound UTF-8 saves nonfatally without download, truncation or scheduling changes', () => {
-    const original = new Ecosystem().save(),
-      {
-        telemetry: _telemetry,
-        interventions: _interventions,
-        terrain: _terrain,
-        ...ecology
-      } = original;
+    const original = JSON.parse(baselineFixtures['telemetry-populated-tick25-world2.json']);
     const file = {
-      ...ecology,
-      version: 2,
-      organisms: ecology.organisms.map((organism) => ({ ...organism, retainedExtension: '' })),
+      ...original,
+      organisms: original.organisms.map((organism: object) => ({
+        ...organism,
+        retainedExtension: '',
+      })),
     };
     file.organisms[0].retainedExtension = 'x'.repeat(WORLD_MAX_BYTES - JSON.stringify(file).length);
     const text = JSON.stringify(file);
@@ -1137,6 +1222,7 @@ describe('worker control and persistence', () => {
     send({ type: 'save' });
     const before = last().text;
     const genome = {
+      behavior: { version: 1 as const, mode: 'legacy' as const },
       ...founder(2),
       cells: [
         { x: 0, y: 0, type: 3 as const },
@@ -1319,7 +1405,13 @@ describe('worker control and persistence', () => {
         );
         for (let position = 0; position < population; position++)
           reference.spawn(
-            { cells: [{ x: 0, y: 0, type: 7 }], preference: 0.5, tolerance, tempo: 2 },
+            {
+              behavior: { version: 1 as const, mode: 'legacy' as const },
+              cells: [{ x: 0, y: 0, type: 7 }],
+              preference: 0.5,
+              tolerance,
+              tempo: 2,
+            },
             position % WIDTH,
             Math.floor(position / WIDTH),
           );
@@ -1866,7 +1958,7 @@ describe('integrated extinction and telemetry', () => {
     expect(harness.tasks).toHaveLength(0);
   });
 
-  it.each([2, 3, 4, 5, 6, 7, 8])(
+  it.each([2, 3, 4, 5, 6, 7, 8, 9])(
     'migrates/restores v%i then preserves terminal and pending history through an empty save continuation',
     (version) => {
       const harness = workerHarness();
@@ -1878,7 +1970,7 @@ describe('integrated extinction and telemetry', () => {
         terrain: _terrain,
         thermalRefuges: _thermalRefuges,
         ...legacy
-      } = current;
+      } = syntheticHistoricalWorld(current);
       const file =
         version === 2
           ? { ...legacy, version: 2 as const }
@@ -1892,7 +1984,9 @@ describe('integrated extinction and telemetry', () => {
                   ? legacyV6(current)
                   : version === 7
                     ? legacyV7(current)
-                    : current;
+                    : version === 8
+                      ? legacyV8(current)
+                      : current;
       expect(file.version).toBe(version);
       if (file.version === 2) expect(file).not.toHaveProperty('telemetry');
       else {
@@ -1920,23 +2014,25 @@ describe('integrated extinction and telemetry', () => {
         });
       if (file.version >= 4) {
         expect(imported).toEqual(
-          file.version === 8
+          file.version === 9
             ? file
             : file.version >= 5
               ? {
                   ...file,
-                  version: 8,
+                  version: 9,
+                  organisms: imported.organisms,
                   lineageArchive: imported.lineageArchive,
                   terrain: file.version >= 6 ? file.terrain : { ...DEFAULT_TERRAIN },
                   thermalRefuges:
-                    file.version === 7
+                    file.version >= 7
                       ? file.thermalRefuges
                       : { version: 1, enabled: false, cells: [] },
                   interventions: { ...file.interventions, version: 3 },
                 }
               : {
                   ...file,
-                  version: 8,
+                  version: 9,
+                  organisms: imported.organisms,
                   lineageArchive: imported.lineageArchive,
                   terrain: { ...DEFAULT_TERRAIN },
                   thermalRefuges: { version: 1, enabled: false, cells: [] },
@@ -1958,7 +2054,7 @@ describe('integrated extinction and telemetry', () => {
       harness.advance();
       reference.step();
       const terminal = harness.save();
-      expect(terminal.version).toBe(8);
+      expect(terminal.version).toBe(9);
       expect(terminal.telemetry.version).toBe(2);
       expect(terminal.telemetry.samples.at(-1)).toMatchObject({
         fromTick: version === 2 ? 89 : 60,

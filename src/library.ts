@@ -2,9 +2,9 @@ import {
   BLUEPRINT_MAX_BYTES,
   parseBlueprint,
   serializeBlueprint,
-  type BlueprintFileV1,
+  type BlueprintFile,
 } from './blueprint';
-import { integer, type Genome } from './model';
+import { integer, cloneGenome, type Genome } from './model';
 
 export const LIBRARY_DATABASE = 'evolab-organism-library';
 export const LIBRARY_CAPACITY = 100;
@@ -14,7 +14,7 @@ export interface Provenance {
   seed?: number;
 }
 export interface LibraryCandidate {
-  blueprint: BlueprintFileV1;
+  blueprint: BlueprintFile;
   provenance?: Provenance;
 }
 export interface LibraryEntry extends LibraryCandidate {
@@ -88,14 +88,11 @@ function provenanceValid(value: unknown): value is Provenance {
   );
 }
 export function projectGenome(genome: Genome): Genome {
-  if (!Array.isArray(genome.cells) || genome.cells.length < 1 || genome.cells.length > 16)
+  try {
+    return cloneGenome(genome);
+  } catch {
     throw new LibraryError('invalid');
-  return {
-    cells: genome.cells.map((cell) => ({ x: cell.x, y: cell.y, type: cell.type })),
-    preference: genome.preference,
-    tolerance: genome.tolerance,
-    tempo: genome.tempo,
-  };
+  }
 }
 export function libraryCandidate(
   genome: Genome,
@@ -163,7 +160,7 @@ export function classifyRecord(key: unknown, value: unknown): LibraryRow {
     return problem('unsupported', 'Unsupported blueprint format; preserved read-only.');
   if (!integer(declaration.version, 1, Number.MAX_SAFE_INTEGER))
     return problem('unknown', 'Unknown blueprint version; preserved read-only.');
-  if (declaration.version !== 1)
+  if (declaration.version !== 1 && declaration.version !== 2)
     return problem('unsupported', 'Unsupported blueprint version; preserved read-only.');
   let reason = 'Invalid supported record envelope.';
   try {

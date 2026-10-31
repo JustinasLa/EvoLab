@@ -3,6 +3,11 @@ import { Ecosystem } from '../src/ecosystem';
 import { DEFAULTS, founder, type Frame, type WorldFileV3 } from '../src/model';
 import { markup } from '../src/view';
 import { createTelemetryView, eventRate, stressPercent } from '../src/telemetry-view';
+import {
+  baselineFixtures,
+  storedSensoryGenome,
+  syntheticHistoricalWorld,
+} from './fixtures/sensory-legacy';
 import { legacyV3 } from './fixtures/telemetry';
 
 let root: HTMLElement, controller: ReturnType<typeof createTelemetryView>, width: number;
@@ -48,6 +53,63 @@ afterEach(() => {
 });
 
 describe('bounded model-dependent telemetry presentation', () => {
+  it.each([2, 3, 4, 5])(
+    'presents genuine historical world%i without changing complete retained genomes',
+    (version) => {
+      const world = Ecosystem.load(baselineFixtures[`world${version}-extras.json`]);
+      advance(world, 30);
+      const before = world.save();
+      show(world.frame());
+      choose('telemetry-view', 'adaptation');
+      expect(get('telemetry-status').textContent).not.toBe('');
+      expect(world.save()).toEqual(before);
+      for (const living of world.organisms.values())
+        expect(living.genome.behavior).toEqual({ version: 1, mode: 'legacy' });
+      expect(before.organisms.some((living) => living.genome.legacyExtensions?.length)).toBe(true);
+    },
+  );
+  it.each(['bins', 'large-tick', 'observed-evolved', 'observed-legacy'])(
+    'retains independent sensory consumer regression %s',
+    (scenario) => {
+      let world = new Ecosystem({ ...DEFAULTS, climate: 0, nutrients: 0 }, false);
+      if (scenario === 'large-tick') {
+        world = Ecosystem.load(baselineFixtures['telemetry-empty-tick999999870-world2.json']);
+        advance(world, 30);
+        show(world.frame());
+        choose('telemetry-sample', '999999900');
+        expect(get('telemetry-plots').textContent).toContain('999999900');
+      } else if (scenario === 'bins') {
+        for (const [offset, preference] of [0, 0.25, 0.5, 0.75, 1].entries())
+          world.spawn(
+            { ...founder(0), cells: [{ x: 0, y: 0, type: 7 }], preference },
+            20 + offset * 10,
+            30,
+          )!.energy = 100;
+        advance(world, 30);
+        const sample = world.frame().telemetry.samples[0];
+        expect(sample.adaptation?.preferenceBins).toEqual([1, 0, 1, 0, 0, 1, 0, 1, 0, 1]);
+        expect(stressPercent(sample)).toBe(40);
+        show(world.frame());
+        choose('telemetry-view', 'adaptation');
+        expect(root.querySelectorAll('[data-bin]')).toHaveLength(10);
+      } else {
+        const genome = storedSensoryGenome();
+        if (scenario === 'observed-legacy') genome.behavior = { version: 1, mode: 'legacy' };
+        world.spawn(genome, 40, 40)!.energy = 100;
+        const control = Ecosystem.load(JSON.stringify(world.save()));
+        for (let tick = 0; tick < 60; tick++) {
+          world.step();
+          control.step();
+          show(world.frame());
+        }
+        expect(world.save()).toEqual(control.save());
+        expect(world.organisms.size).toBeGreaterThan(0);
+      }
+      const before = world.save();
+      controller.render();
+      expect(world.save()).toEqual(before);
+    },
+  );
   it('renders exact terrain details separately from climate shocks and discloses unknown prior geometry', () => {
     const world = new Ecosystem();
     const cleared = world.changeTerrain('clear');
@@ -240,9 +302,7 @@ describe('bounded model-dependent telemetry presentation', () => {
   });
 
   it('uses actual five-tick coverage, exact rates, stock units, a single endpoint, names and headers', () => {
-    const saved = new Ecosystem().save();
-    const { telemetry: _telemetry, interventions: _log, terrain: _terrain, ...ecology } = saved;
-    const world = Ecosystem.load(JSON.stringify({ ...ecology, version: 2, tick: 25 }));
+    const world = Ecosystem.load(baselineFixtures['telemetry-populated-tick25-world2.json']);
     advance(world, 5);
     const frame = world.frame(),
       sample = frame.telemetry.samples[0];
@@ -294,7 +354,13 @@ describe('bounded model-dependent telemetry presentation', () => {
     const world = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0 }, false);
     for (const preference of [0, 0.25, 0.5, 0.75, 1]) {
       const organism = world.spawn(
-        { cells: [{ x: 0, y: 0, type: 7 }], preference, tolerance: 0.25, tempo: 2 },
+        {
+          behavior: { version: 1 as const, mode: 'legacy' as const },
+          cells: [{ x: 0, y: 0, type: 7 }],
+          preference,
+          tolerance: 0.25,
+          tempo: 2,
+        },
         world.organisms.size * 10,
         10,
       )!;
@@ -397,13 +463,7 @@ describe('bounded model-dependent telemetry presentation', () => {
       },
     );
     controller = createTelemetryView(root);
-    const {
-      telemetry: _telemetry,
-      interventions: _log,
-      terrain: _terrain,
-      ...saved
-    } = new Ecosystem(DEFAULTS, false).save();
-    const world = Ecosystem.load(JSON.stringify({ ...saved, version: 2, tick: 999_999_870 }));
+    const world = Ecosystem.load(baselineFixtures['telemetry-empty-tick999999870-world2.json']);
     advance(world, 90);
     show(world.frame());
     expect(get('telemetry-plots').querySelector('svg')!.textContent).toContain('999999900');
