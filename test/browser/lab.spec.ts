@@ -8,6 +8,7 @@ import {
   index,
   positions,
   Random,
+  observedOrganism,
   type WorldFile,
   type Genome,
   type CellType,
@@ -82,6 +83,7 @@ declare global {
       errors: any[];
       saved: number;
       manual: any | null;
+      fullDesign: any | null;
       pauseOnLifecycle: boolean;
       fifoPauses: number;
     };
@@ -293,6 +295,7 @@ async function observeTerrainNative(
       errors: [],
       saved: 0,
       manual: null,
+      fullDesign: null,
       pauseOnLifecycle: true,
       fifoPauses: 0,
     };
@@ -384,6 +387,7 @@ async function observeTerrainNative(
             }
           }
           if (data.type === 'manual-result') evidence.manual = data;
+          if (data.type === 'design-captured') evidence.fullDesign = data;
           if (data.type === 'saved') evidence.saved++;
           if (data.type === 'error') {
             evidence.errors.push(data);
@@ -4953,16 +4957,17 @@ test('designer, world tools, camera, shortcuts and invalid saves behave in Chrom
 });
 
 async function refugeLoad(page: import('@playwright/test').Page, text: string): Promise<number> {
-  const before = await page.evaluate(() => window.terrainNative.lifecycle.length);
+  const before = await page.evaluate(() => window.terrainNative.lifecycle.at(-1)?.requestId ?? 0);
   await page.locator('#file').setInputFiles({
     name: 'original-refuge-fixture.json',
     mimeType: 'application/json',
     buffer: Buffer.from(text),
   });
   await expect
-    .poll(() => page.evaluate(() => window.terrainNative.lifecycle.length))
+    .poll(() => page.evaluate(() => window.terrainNative.lifecycle.at(-1)?.requestId ?? 0))
     .toBeGreaterThan(before);
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  await page.locator('#world').scrollIntoViewIfNeeded();
   await expect
     .poll(() =>
       page.evaluate(() => {
@@ -5478,47 +5483,63 @@ async function refugeSelected(page: import('@playwright/test').Page) {
   }, refugeGraph.toString());
 }
 
-test('B23-6 complete direct raw families, deepest common native path, current reload and cap failure retain original boundaries', async ({
+async function refugeFullGenome(page: import('@playwright/test').Page) {
+  const previous = await page.evaluate(() => window.terrainNative.fullDesign?.commandId ?? 0);
+  if ((await page.locator('#specimen-details').getAttribute('open')) === null)
+    await page.locator('#specimen-details > summary').click();
+  await page.locator('#copy-organism').click();
+  await expect
+    .poll(() => page.evaluate(() => window.terrainNative.fullDesign?.commandId ?? 0))
+    .toBeGreaterThan(previous);
+  return page.evaluate((encoder) => {
+    const encode = Function(`return (${encoder})`)();
+    const response = window.terrainNative.fullDesign;
+    return {
+      source: response.source,
+      sourceId: response.sourceId,
+      completedTick: response.completedTick,
+      genome: encode(response.genome),
+    };
+  }, refugeGraph.toString());
+}
+
+test('B23-6 raw families retain full Saves and explicit full genomes while routine inspection stays a bounded observation', async ({
   page,
 }) => {
   await observeTerrainNative(page, 'lifecycle-receipt');
   await page.goto('/');
   await terrainNativeFrame(page);
-  const raw = fixtureText('native-depth-direct/inputs/desktop-combined-1087.json'),
-    original = acceptedReference(raw);
-  advance(original, await refugeLoad(page, raw));
-  expect(await refugeSelected(page)).toEqual(refugeGraph(original.save().organisms[0]));
-  const rawChecks = await page.evaluate(() =>
-    [
-      window.terrainNative.selected,
-      window.terrainNative.selected.genome,
-      window.terrainNative.selected.genome.cells[0],
-    ].map((value) => ({
-      positive: Object.is(value.positive, Infinity),
-      negative: Object.is(value.negative, -Infinity),
-      signedZero: Object.is(value.negativeZero, -0),
-      ownProto: Object.hasOwn(value, '__proto__'),
-      ordinary: Object.getPrototypeOf(value) === Object.prototype,
-    })),
+  const raw = fixtureText('native-depth-direct/inputs/desktop-combined-1087.json');
+  const original = acceptedReference(raw);
+  let expected = Ecosystem.load(raw);
+  const tick = await refugeLoad(page, raw);
+  advance(original, tick - original.tick);
+  advance(expected, tick - expected.tick);
+  expect(await refugeSelected(page)).toEqual(
+    refugeGraph(observedOrganism(expected.save().organisms[0])),
   );
-  expect(rawChecks).toEqual(
-    Array.from({ length: 3 }, () => ({
-      positive: true,
-      negative: true,
-      signedZero: true,
-      ownProto: true,
-      ordinary: true,
-    })),
-  );
+  const full = await refugeFullGenome(page);
+  expect(full).toEqual({
+    source: 'organism',
+    sourceId: 1,
+    completedTick: tick,
+    genome: refugeGraph(expected.save().organisms[0].genome),
+  });
   const first = await terrainSave(page, 'direct-deep-first.json');
   expect(predecessor(first)).toEqual(JSON.parse(JSON.stringify(original.save())));
-  const normalized = acceptedReference(JSON.stringify(original.save())),
-    expected = Ecosystem.load(JSON.stringify(original.save()));
-  advance(normalized, await refugeLoad(page, JSON.stringify(first)));
-  advance(expected, normalized.tick);
+  const normalized = acceptedReference(JSON.stringify(original.save()));
+  expected = Ecosystem.load(JSON.stringify(first));
+  const reloadedTick = await refugeLoad(page, JSON.stringify(first));
+  advance(normalized, reloadedTick - normalized.tick);
+  advance(expected, reloadedTick - expected.tick);
   await refugeMode(page, true);
   expected.changeRefugeMode(true);
-  expect(await refugeSelected(page)).toEqual(refugeGraph(normalized.save().organisms[0]));
+  expect(await refugeSelected(page)).toEqual(
+    refugeGraph(observedOrganism(expected.save().organisms[0])),
+  );
+  expect((await refugeFullGenome(page)).genome).toEqual(
+    refugeGraph(expected.save().organisms[0].genome),
+  );
   const second = await terrainSave(page, 'direct-deep-reloaded.json');
   expect(second).toEqual(expected.save());
   await page.locator('#step').click();
@@ -5526,12 +5547,17 @@ test('B23-6 complete direct raw families, deepest common native path, current re
   normalized.step();
   const third = await terrainSave(page, 'direct-deep-step.json');
   expect(third).toEqual(expected.save());
-  expect(third.organisms).toEqual(normalized.save().organisms);
-  const cap = fixtureText('capture-direct/inputs/native-cap-v5.json'),
-    capReference = acceptedReference(cap);
-  advance(capReference, await refugeLoad(page, cap));
+  expect(
+    predecessor({ ...third, interventions: { ...third.interventions, entries: [] } }).organisms,
+  ).toEqual(normalized.save().organisms);
+  const cap = fixtureText('capture-direct/inputs/native-cap-v5.json');
+  const capReference = acceptedReference(cap),
+    capCurrent = Ecosystem.load(cap);
+  const capTick = await refugeLoad(page, cap);
+  advance(capReference, capTick - capReference.tick);
+  advance(capCurrent, capTick - capCurrent.tick);
   const selected = await refugeSelected(page);
-  expect(selected).toEqual(refugeGraph(capReference.save().organisms[0]));
+  expect(selected).toEqual(refugeGraph(observedOrganism(capCurrent.save().organisms[0])));
   let downloads = 0;
   const record = () => downloads++;
   page.on('download', record);
@@ -5549,35 +5575,49 @@ test('B23-6 complete direct raw families, deepest common native path, current re
   expect(await page.evaluate(() => window.terrainNative.errors.at(-1)?.fatal)).toBeUndefined();
   await page.locator('#step').click();
   capReference.step();
-  await expect(page.locator('#tick')).toHaveText(`TICK ${capReference.tick.toLocaleString()}`);
-  expect(await refugeSelected(page)).toEqual(refugeGraph(capReference.save().organisms[0]));
+  capCurrent.step();
+  await expect(page.locator('#tick')).toHaveText(`TICK ${capCurrent.tick.toLocaleString()}`);
+  expect(await refugeSelected(page)).toEqual(
+    refugeGraph(observedOrganism(capCurrent.save().organisms[0])),
+  );
   page.off('download', record);
   await refugeProtocol(page);
   await test.info().attach('raw-depth-cap-boundaries.json', {
     body: JSON.stringify({
-      rawChecks,
       depth: 1087,
+      explicitFullGenotype: full,
+      routineObservationIsProjection: true,
+      completeFirstSaveMatchedPredecessor: true,
       capInputBytes: Buffer.byteLength(cap),
       acceptedReferenceOutputBytes: Buffer.byteLength(JSON.stringify(capReference.save())),
-      nativeOutputBytes: null, // Oversized native output is deliberately not downloaded.
+      nativeOutputBytes: null,
       downloads,
       before,
     }),
     contentType: 'application/json',
   });
-  const previousErrors = await page.evaluate(() => window.terrainNative.errors.length);
-  await page.locator('#file').setInputFiles({
-    name: 'original-adjacent-unsupported-1088.json',
-    mimeType: 'application/json',
-    buffer: Buffer.from(fixtureText('native-depth-direct/inputs/desktop-combined-1088.json')),
-  });
-  await expect
-    .poll(() => page.evaluate(() => window.terrainNative.errors.length))
-    .toBeGreaterThan(previousErrors);
-  await expect(page.locator('#run-state')).toHaveText('STOPPED');
-  await expect(page.locator('#notice')).toContainText('The action completed');
-  await test.info().attach('original-adjacent-native-limitation.json', {
-    body: JSON.stringify(await page.evaluate(() => window.terrainNative.errors.at(-1))),
+  const adjacentRaw = fixtureText('native-depth-direct/inputs/desktop-combined-1088.json');
+  const adjacent = Ecosystem.load(adjacentRaw);
+  const adjacentTick = await refugeLoad(page, adjacentRaw);
+  advance(adjacent, adjacentTick - adjacent.tick);
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  const adjacentFirst = await terrainSave(page, 'original-adjacent-supported-first.json');
+  expect(adjacentFirst).toEqual(JSON.parse(JSON.stringify(adjacent.save())));
+  await page.locator('#step').click();
+  adjacent.step();
+  const adjacentStepped = await terrainSave(page, 'original-adjacent-supported-step.json');
+  expect(adjacentStepped).toEqual(JSON.parse(JSON.stringify(adjacent.save())));
+  expect(await refugeSelected(page)).toEqual(
+    refugeGraph(observedOrganism(adjacent.save().organisms[0])),
+  );
+  await test.info().attach('original-adjacent-native-continuation.json', {
+    body: JSON.stringify({
+      inputBytes: Buffer.byteLength(adjacentRaw),
+      tick: adjacentTick,
+      stepTick: adjacentStepped.tick,
+      routineObservationIsProjection: true,
+      completeSavesCompared: true,
+    }),
     contentType: 'application/json',
   });
 });
