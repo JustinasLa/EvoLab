@@ -1,3 +1,4 @@
+import { shadeTool, validShadeBrush } from './shade';
 import { Ecosystem } from './ecosystem';
 import { DEFAULT_TERRAIN, resolvedTerrainSeed, validTerrain } from './terrain';
 import { serializeMeasurements } from './measurement-export';
@@ -30,6 +31,7 @@ import {
   type WorkerResponse,
   type StrokeTool,
   type RefugeBrush,
+  type ShadeBrush,
 } from './model';
 
 export interface Scope {
@@ -77,7 +79,7 @@ export function startWorker(
   let stroke: {
     id: number;
     tool: StrokeTool;
-    brush?: RefugeBrush;
+    brush?: RefugeBrush | ShadeBrush;
     radius: number;
     sequence: number | null;
     count: number;
@@ -221,7 +223,12 @@ export function startWorker(
           frame,
           selectedId: observation.selected?.id ?? 0,
         },
-        [frame.cells.buffer, frame.ids.buffer, frame.thermalRefuges.units.buffer],
+        [
+          frame.cells.buffer,
+          frame.ids.buffer,
+          frame.thermalRefuges.units.buffer,
+          frame.shadeHabitats.units.buffer,
+        ],
       );
     } catch (error) {
       displayOwner = null;
@@ -587,8 +594,11 @@ export function startWorker(
             if (stroke) throw new Error('A brush stroke is already open.');
             if (
               !integer(data.strokeId, 1, Number.MAX_SAFE_INTEGER) ||
-              (!['food', 'wall', 'erase'].includes(data.tool) && !validRefugeBrush(data)) ||
+              (!['food', 'wall', 'erase'].includes(data.tool) &&
+                !validRefugeBrush(data) &&
+                !validShadeBrush(data)) ||
               (refugeTool(data.tool) && !world.thermalRefuges.enabled) ||
+              (shadeTool(data.tool) && !world.shadeHabitats.enabled) ||
               !integer(data.radius, 0, 8)
             )
               throw new Error('Invalid brush stroke.');
@@ -598,7 +608,7 @@ export function startWorker(
               radius: data.radius,
               sequence: null,
               count: 0,
-              ...(refugeTool(data.tool)
+              ...(refugeTool(data.tool) || shadeTool(data.tool)
                 ? {
                     brush: {
                       rulesVersion: 1 as const,
@@ -709,7 +719,71 @@ export function startWorker(
               stroke.count >= STROKE_COMMAND_CAPACITY
             )
               throw new Error('Rejected closed or exhausted temperature stroke.');
-            const outcome = world.paintRefuge(stroke.brush, data.x, data.y, stroke.sequence);
+            const outcome = world.paintRefuge(
+              stroke.brush as RefugeBrush,
+              data.x,
+              data.y,
+              stroke.sequence,
+            );
+            stroke.count++;
+            if (outcome.rowSequence !== null) stroke.sequence = outcome.rowSequence;
+            manualResult = {
+              status: outcome.rowSequence === null ? 'no-op' : 'applied',
+              ...outcome,
+              rowSequence: outcome.rowSequence,
+            };
+            interactive ||= paused && view.visible;
+            exactTelemetry = paused;
+            break;
+          }
+          case 'shade-mode': {
+            stroke = null;
+            if (data.rulesVersion !== 1 || typeof data.enabled !== 'boolean')
+              throw new Error('Invalid painted shade mode payload.');
+            const sequence = world.changeShadeMode(data.enabled);
+            manualResult = {
+              status: sequence === null ? 'no-op' : 'applied',
+              rowSequence: sequence,
+              ...(data.type === 'shade-mode'
+                ? { nonzeroCells: world.shadeHabitats.nonzeroCells }
+                : {}),
+            };
+            interactive ||= paused && view.visible;
+            exactTelemetry = paused;
+            break;
+          }
+          case 'clear-shade': {
+            stroke = null;
+            if (data.rulesVersion !== 1) throw new Error('Invalid painted shade clear payload.');
+            const outcome = world.clearShade();
+            manualResult = {
+              status: outcome.rowSequence === null ? 'no-op' : 'applied',
+              ...outcome,
+              rowSequence: outcome.rowSequence,
+            };
+            interactive ||= paused && view.visible;
+            exactTelemetry = paused;
+            break;
+          }
+          case 'paint-shade': {
+            if (!validShadeBrush(data as unknown) || !coordinates(data))
+              throw new Error('Invalid painted shade payload.');
+            if (
+              !stroke ||
+              stroke.id !== data.strokeId ||
+              !stroke.brush ||
+              stroke.tool !== data.tool ||
+              stroke.radius !== data.radius ||
+              stroke.brush.units !== data.units ||
+              stroke.count >= STROKE_COMMAND_CAPACITY
+            )
+              throw new Error('Rejected closed or exhausted shade stroke.');
+            const outcome = world.paintShade(
+              stroke.brush as ShadeBrush,
+              data.x,
+              data.y,
+              stroke.sequence,
+            );
             stroke.count++;
             if (outcome.rowSequence !== null) stroke.sequence = outcome.rowSequence;
             manualResult = {

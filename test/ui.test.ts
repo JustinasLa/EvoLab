@@ -6429,6 +6429,200 @@ describe('explicit painted temperature controls and authoritative views', () => 
   });
 });
 
+describe('explicit painted shade controls and authoritative views', () => {
+  it('does not let held earlier mode receipts or frames revert a newer authoritative frame', () => {
+    const bridge = ownershipBridge();
+    bridge.holdTerminals((data) => data.operation === 'shade-mode');
+    click('shade-enabled');
+    const firstId = [...bridge.records.keys()][0];
+    paint(0);
+    const earlierFrame = structuredClone(bridge.latestFrame);
+    expect(get<HTMLInputElement>('shade-enabled').checked).toBe(true);
+    click('shade-enabled');
+    expect(bridge.records.size).toBe(1);
+    bridge.deliver(firstId);
+    const secondId = [...bridge.records.keys()][0];
+    paint(0);
+    expect(bridge.latestFrame.state.revision).toBeGreaterThan(earlierFrame.state.revision);
+    expect(get<HTMLInputElement>('shade-enabled').checked).toBe(false);
+    bridge.emit(earlierFrame);
+    expect(get<HTMLInputElement>('shade-enabled').checked).toBe(false);
+    bridge.deliver(secondId);
+    expect(get<HTMLInputElement>('shade-enabled').checked).toBe(false);
+    expect(bridge.records.size).toBe(0);
+  });
+  it('keeps authoritative mode during pending delivery, rejects wrong echoes and drains the matching owner once', () => {
+    const bridge = ownershipBridge();
+    expect(get<HTMLInputElement>('shade-enabled').checked).toBe(false);
+    bridge.holdTerminals((data) => data.operation === 'shade-mode');
+    click('shade-enabled');
+    const [id, record] = [...bridge.records].find(
+      ([, record]) => record.command.type === 'shade-mode',
+    )!;
+    expect(get('shade-pending').textContent).toContain('Pending');
+    paint(0);
+    expect(get<HTMLInputElement>('shade-enabled').checked).toBe(true);
+    bridge.emit({ ...record.terminal, enabled: false });
+    expect(get('shade-pending').textContent).toContain('Pending');
+    bridge.deliver(id);
+    expect(get('shade-pending').textContent).toBe('');
+    expect(get('notice').textContent).toContain('applied');
+    bridge.holdTerminals(() => false);
+    click('shade-enabled');
+    expect(get<HTMLInputElement>('shade-enabled').checked).toBe(false);
+    bridge.emit(record.terminal);
+    expect(get<HTMLInputElement>('shade-enabled').checked).toBe(false);
+  });
+  it('paints shade independently of invalid designer anatomy and freezes each stroke configuration', () => {
+    const bridge = ownershipBridge();
+    click('shade-enabled');
+    root.querySelector<HTMLButtonElement>('[data-x="4"][data-y="4"]')!.click();
+    set('brush', '1');
+    set('shade-intensity', '12');
+    root.querySelector<HTMLButtonElement>('[data-tool="shade"]')!.click();
+    pointer('pointerdown', 50, 50);
+    pointer('pointermove', 60, 50);
+    set('shade-intensity', '4');
+    pointer('pointermove', 70, 50);
+    pointer('pointerup');
+    const history = bridge.latestFrame.frame.interventions.entries;
+    expect(history.at(-1)).toMatchObject({
+      kind: 'shade-paint',
+      detail: { rulesVersion: 1, units: 12, radius: 1, successfulCommands: 2 },
+    });
+    root.querySelector<HTMLButtonElement>('[data-tool="lighten"]')!.click();
+    pointer('pointerdown');
+    pointer('pointerup');
+    expect(bridge.latestFrame.frame.interventions.entries.at(-1)).toMatchObject({
+      detail: { tool: 'lighten', units: -4 },
+    });
+    root.querySelector<HTMLButtonElement>('[data-tool="erase-shade"]')!.click();
+    expect(get<HTMLInputElement>('shade-intensity').disabled).toBe(true);
+    pointer('pointerdown');
+    pointer('pointerup');
+    expect(bridge.latestFrame.frame.interventions.entries.at(-1)).toMatchObject({
+      detail: { tool: 'erase-shade', units: 0 },
+    });
+    get<HTMLInputElement>('shade-intensity').type = 'number';
+    set('shade-intensity', '33');
+    expect(get('notice').textContent).toContain('whole-number');
+    expect(bridge.records.size).toBe(0);
+  });
+  it('retains inactive stored paint, clears only shade and truthfully distinguishes no-op actions', () => {
+    const bridge = ownershipBridge();
+    click('shade-enabled');
+    root.querySelector<HTMLButtonElement>('[data-tool="shade"]')!.click();
+    pointer('pointerdown');
+    pointer('pointerup');
+    const before = bridge.latestFrame.frame;
+    click('shade-enabled');
+    expect(get('shade-summary').textContent).toContain('Disabled · stored paint');
+    const disabledTool = root.querySelector<HTMLButtonElement>('button[data-tool="shade"]')!;
+    expect(disabledTool.disabled).toBe(true);
+    disabledTool.disabled = false;
+    disabledTool.click();
+    expect(get('notice').textContent).toContain('Enable painted shade');
+    pointer('pointerdown');
+    pointer('pointerup');
+    expect(get('notice').textContent).toContain('disabled');
+    click('clear-shade');
+    expect(get('shade-summary').textContent).toContain('Disabled · empty');
+    expect(bridge.latestFrame.frame.stats).toEqual(before.stats);
+    expect(bridge.latestFrame.frame.cells).toEqual(before.cells);
+    click('clear-shade');
+    expect(get('notice').textContent).toContain('unchanged');
+  });
+  it('restores imported mode and failed-load field atomically without posting draft intensity as settings', async () => {
+    const harness = realWorker();
+    harness.deliver();
+    const candidate = new Ecosystem();
+    candidate.changeShadeMode(true);
+    candidate.paintShade({ rulesVersion: 1, tool: 'shade', radius: 0, units: 12 }, 120, 78);
+    await loadText(JSON.stringify(candidate.save()));
+    harness.deliver();
+    expect(get('notice').textContent).toContain('Imported painted field');
+    set('shade-intensity', '15');
+    const before = harness.save(),
+      calls = worker.postMessage.mock.calls.length;
+    await loadText(
+      JSON.stringify({
+        ...before,
+        shadeShade: { ...before.shadeShade, cells: [[37440, 4]] },
+      }),
+    );
+    harness.deliver();
+    expect(harness.save()).toEqual(before);
+    expect(get<HTMLInputElement>('shade-enabled').checked).toBe(true);
+    expect(get<HTMLInputElement>('shade-intensity').value).toBe('15');
+    expect(
+      worker.postMessage.mock.calls
+        .slice(calls)
+        .map(([command]) => command.type)
+        .filter((type) => type !== 'flow-ack'),
+    ).toEqual(['load']);
+    click('pause');
+    harness.deliver();
+    click('step');
+    harness.deliver();
+    candidate.step();
+    expect(harness.save()).toEqual(candidate.save());
+  });
+  it('bounds shade intents behind one native owner and reserves close without retrying rejected points', () => {
+    const bridge = ownershipBridge();
+    click('shade-enabled');
+    root.querySelector<HTMLButtonElement>('[data-tool="shade"]')!.click();
+    bridge.blockProcessing();
+    pointer('pointerdown');
+    for (let point = 0; point < 32; point++) pointer('pointermove', 50 + point, 50);
+    pointer('pointerup');
+    expect(bridge.records.size).toBe(1);
+    expect(bridge.counts.C).toBe(0);
+    expect(get('notice').textContent).toContain('Partial shade stroke');
+    bridge.processAll();
+    expect(bridge.records.size).toBe(0);
+    expect(bridge.counts.M).toBeLessThanOrEqual(32);
+    expect(bridge.counts.C).toBe(1);
+    const count = bridge.counts.M;
+    expect(get('shade-pending').textContent).toBe('');
+    expect(bridge.counts.M).toBe(count);
+  });
+  it('stops an injected four-command shade UI ceiling without modifying real production limits', async () => {
+    vi.resetModules();
+    vi.doMock('../src/model', async (original) => ({
+      ...(await original<object>()),
+      STROKE_COMMAND_CAPACITY: 4,
+    }));
+    const { mount: boundedMount } = await import('../src/main');
+    vi.doUnmock('../src/model');
+    const bridge = ownershipBridge(boundedMount);
+    click('shade-enabled');
+    root.querySelector<HTMLButtonElement>('[data-tool="shade"]')!.click();
+    pointer('pointerdown');
+    for (let command = 1; command < 4; command++) pointer('pointermove');
+    pointer('pointermove');
+    pointer('pointerup');
+    expect(bridge.counts).toMatchObject({ M: 7, C: 1 });
+    expect(bridge.latestFrame.frame.interventions.entries.at(-1).detail.successfulCommands).toBe(4);
+    expect(bridge.records.size).toBe(0);
+  });
+  it('presents all three distinct manual shade detail kinds without treating them as shocks', () => {
+    const bridge = ownershipBridge();
+    click('shade-enabled');
+    root.querySelector<HTMLButtonElement>('[data-tool="shade"]')!.click();
+    pointer('pointerdown');
+    pointer('pointerup');
+    click('clear-shade');
+    for (const entry of bridge.latestFrame.frame.interventions.entries) {
+      set('telemetry-intervention', String(entry.sequence), 'change');
+      paint(0);
+      const detail = get('telemetry').textContent;
+      expect(detail).toContain('Rules version');
+      if (entry.kind === 'shade-paint') expect(detail).toContain('not a replay');
+      if (entry.kind === 'shade-clear') expect(detail).toContain('Mode unchanged');
+    }
+  });
+});
+
 describe('internal transport posting failures', () => {
   it.each(['Error', 'DataCloneError'])(
     'terminates latest-view posting failure %s without wedging command credit',
