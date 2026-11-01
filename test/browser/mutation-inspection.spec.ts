@@ -75,6 +75,19 @@ for (const channel of [...MUTATION_CHANNELS, 'propensity', 'none'] as const)
     expect(JSON.parse(before.toString())).toEqual(reference.save());
     await page.locator('#ecosystem-tab').click();
     await page.locator('#lineage-heading').click();
+    const selected = reference
+      .lineageSnapshot()
+      .events.find(
+        (event): event is BirthEvent =>
+          event.kind === 'reproduction' &&
+          (channel === 'none'
+            ? event.outcome === 'born-no-op'
+            : event.outcome === 'born-changed' && event.channels.includes(channel)),
+      )!;
+    expect(selected).toBeDefined();
+    await page
+      .locator('#birth-select')
+      .selectOption(`${selected.tick}:${selected.parentOrganismId}`);
     await expect(page.locator('#birth-detail')).toContainText('actual reproductive parent');
     await expect(page.locator('#birth-detail')).toContainText(
       channel === 'none' ? 'No-op mutation' : 'Changed offspring',
