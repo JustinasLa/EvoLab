@@ -149,6 +149,9 @@ describe('retained actual reproductive evidence', () => {
     expect(world.births).toBe(0);
     expect(world.telemetrySnapshot().pending.energy.reproductionSpent).toBe(0);
     expect(Ecosystem.load(JSON.stringify(world.save())).save()).toEqual(world.save());
+    const duplicate = world.save();
+    duplicate.lineageArchive.events.push(structuredClone(events(world)[0]));
+    expect(() => Ecosystem.load(JSON.stringify(duplicate))).toThrow('lineage archive');
     const capped = scene(7, undefined, undefined, true, 0);
     const single = genome();
     single.cells = [{ x: 0, y: 0, type: 7 }];

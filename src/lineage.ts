@@ -439,8 +439,12 @@ function validateArchive(
     }
   }
   const bornIds = new Set<number>();
+  const attemptedParents = new Set<string>();
   for (const event of state.events) {
     if (event.kind !== 'reproduction') continue;
+    const attemptKey = `${event.tick}:${event.parentOrganismId}`;
+    requireArchive(!attemptedParents.has(attemptKey));
+    attemptedParents.add(attemptKey);
     const parent = facts.get(event.id);
     const created = parent?.row?.createdTick ?? parent?.created?.tick;
     const extinct = parent?.row?.extinctTick ?? parent?.extinct?.tick;
