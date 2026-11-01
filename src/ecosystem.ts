@@ -54,6 +54,7 @@ import {
   type Cell,
   type Genome,
   type Organism,
+  type Perception,
   type Settings,
   type WorldFile,
   type Frame,
@@ -660,6 +661,16 @@ export class Ecosystem {
   private readonly recording: boolean;
   private readonly lineageRecording: boolean;
   private lineage = new LineageArchive();
+  private perceptionId = 0;
+  private lastPerception: Perception | null = null;
+  selectPerception(id: number): void {
+    const next = this.organisms.has(id) ? id : 0;
+    if (next !== this.perceptionId) this.lastPerception = null;
+    this.perceptionId = next;
+  }
+  perception(): Perception | null {
+    return structuredClone(this.lastPerception);
+  }
   constructor(
     settings: Settings = DEFAULTS,
     seed = true,
@@ -1106,6 +1117,7 @@ export class Ecosystem {
       this.food[i] = 1;
     }
     const removed = this.organisms.delete(o.id);
+    if (o.id === this.perceptionId) this.selectPerception(0);
     this.deaths++;
     this.lastDeath = { tick: this.tick, cause };
     if (this.recording) this.telemetry.pending.deaths[cause]++;
@@ -1201,9 +1213,23 @@ export class Ecosystem {
         }
       }
       if (o.genome.cells.some((c) => c.type === 5) && o.age % o.genome.tempo === 0) {
+        let perception: Perception | undefined;
         if (o.genome.cells.some((c) => c.type === 8)) {
-          if (o.genome.behavior.version === 2) o.direction = sensoryDirection(o, this);
-          else {
+          if (o.genome.behavior.version === 2) {
+            if (o.id === this.perceptionId)
+              perception = {
+                id: o.id,
+                tick: this.tick,
+                rays: [],
+                chosenEye: null,
+                direction: o.direction,
+                moved: false,
+                finalDirection: o.direction,
+                finalRotation: o.rotation,
+              };
+            o.direction = sensoryDirection(o, this, perception);
+            if (perception) perception.direction = o.direction;
+          } else {
             let best = -Infinity,
               direction = o.direction;
             for (let d = 0; d < 4; d++) {
@@ -1226,9 +1252,16 @@ export class Ecosystem {
           }
         } else if (this.random.next() < 0.12) o.direction = this.random.int(4);
         const [dx, dy] = DIRECTIONS[o.direction];
-        if (!this.move(o, dx, dy)) {
+        const moved = this.move(o, dx, dy);
+        if (!moved) {
           o.direction = this.random.int(4);
           this.move(o, 0, 0, (o.rotation + 1) % 4);
+        }
+        if (perception) {
+          perception.moved = moved;
+          perception.finalDirection = o.direction;
+          perception.finalRotation = o.rotation;
+          this.lastPerception = perception;
         }
         before = o.energy;
         o.energy -= 0.03;

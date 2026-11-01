@@ -1,4 +1,11 @@
-import { WIDTH, index, positions, type Organism } from './model';
+import {
+  WIDTH,
+  index,
+  positions,
+  type Perception,
+  type PerceptionRay,
+  type Organism,
+} from './model';
 
 interface Habitat {
   walls: Uint8Array;
@@ -16,7 +23,7 @@ const categories = ['dangerous', 'wall', 'harmless', 'food'] as const;
 
 // Called only for eligible active, sighted motors. Eyes face with the body,
 // independently of its travel heading. Own cells occlude without a reaction.
-export function sensoryDirection(organism: Organism, habitat: Habitat): number {
+export function sensoryDirection(organism: Organism, habitat: Habitat, trace?: Perception): number {
   const behavior = organism.genome.behavior;
   if (behavior.mode !== 'evolved' || behavior.version !== 2) return organism.direction;
   const origins = positions(organism),
@@ -31,19 +38,30 @@ export function sensoryDirection(organism: Organism, habitat: Habitat): number {
     }[] = [];
   for (const [eye, cell] of organism.genome.cells.entries()) {
     if (cell.type !== 8) continue;
-    const origin = origins[eye];
+    const origin = origins[eye],
+      ray: PerceptionRay | undefined = trace
+        ? { eye, origin, heading, cells: [], stop: 'range', reaction: null }
+        : undefined;
+    if (ray) trace!.rays.push(ray);
     for (let distance = 1; distance <= 5; distance++) {
       const p = index((origin % WIDTH) + dx * distance, Math.floor(origin / WIDTH) + dy * distance),
         occupant = habitat.occupied[p];
+      if (ray) ray.cells.push(p);
       let category: (typeof categories)[number];
       if (habitat.walls[p]) category = 'wall';
-      else if (occupant === organism.id) break;
-      else if (occupant) {
+      else if (occupant === organism.id) {
+        if (ray) ray.stop = 'self';
+        break;
+      } else if (occupant) {
         const seen = habitat.organisms.get(occupant)!;
         category = seen.genome.cells.some((part) => part.type === 6) ? 'dangerous' : 'harmless';
       } else if (habitat.food[p]) category = 'food';
       else continue;
       const reaction = behavior.reactions[category];
+      if (ray) {
+        ray.stop = category;
+        ray.reaction = reaction;
+      }
       if (reaction !== 'ignore')
         candidates.push({
           distance,
@@ -60,5 +78,6 @@ export function sensoryDirection(organism: Organism, habitat: Habitat): number {
       a.distance - b.distance || a.category - b.category || a.eye - b.eye || a.heading - b.heading,
   );
   const chosen = candidates[0];
+  if (trace) trace.chosenEye = chosen?.eye ?? null;
   return chosen ? (chosen.heading + 3 + (chosen.flee ? 2 : 0)) % 4 : organism.direction;
 }

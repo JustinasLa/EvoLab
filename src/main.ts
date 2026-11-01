@@ -3354,6 +3354,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           ? lineageView.highlighted(displayedLineage, displayedLineageReplacement)
           : undefined,
         light,
+        displayedLineageReplacement === latestState?.replacementId &&
+          selected?.id === displayedSelected
+          ? organismView.perception()
+          : null,
       );
       dirty = false;
       freshness();

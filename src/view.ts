@@ -1,3 +1,4 @@
+import { drawPerception } from './perception-view';
 import {
   WIDTH,
   HEIGHT,
@@ -11,6 +12,7 @@ import {
   type WorldPresentation,
   type Genome,
   type Organism,
+  type Perception,
 } from './model';
 import { selectedLeafLight } from './shade';
 import { activeRefugeUnits, localTemperature } from './refuges';
@@ -88,6 +90,7 @@ export function draw(
   ghost?: PlacementGhost,
   highlighted: ReadonlySet<number> = new Set(),
   light = false,
+  perception: Perception | null = null,
 ): void {
   const ctx = canvas.getContext('2d')!,
     b = buffer.getContext('2d')!;
@@ -166,6 +169,7 @@ export function draw(
               v.scale + 2,
             );
       }
+      if (perception) drawPerception(ctx, perception, left, top, v.scale);
       ctx.strokeStyle = '#26313a';
       ctx.lineWidth = 1;
       ctx.strokeRect(left - 0.5, top - 0.5, WIDTH * v.scale + 1, HEIGHT * v.scale + 1);
@@ -328,7 +332,7 @@ export const markup = `
         <div class="terrain-controls"><h3>Terrain</h3><label for="terrain-preset">Draft wall preset</label><select id="terrain-preset"><option value="open-field">Open field</option><option value="porous-ridges" selected>Porous ridges</option><option value="chambered-refuges">Chambered refuges</option></select><label class="terrain-follow"><input id="terrain-follow" type="checkbox" checked>Use world seed</label><label id="terrain-seed-label" for="terrain-seed" hidden>Terrain seed<input id="terrain-seed" type="number" min="0" max="4294967295" step="1" required value="42"></label><figure class="terrain-preview"><canvas id="terrain-preview" width="240" height="156" role="img" aria-labelledby="terrain-preview-caption"></canvas><figcaption id="terrain-preview-caption"></figcaption></figure><p id="terrain-committed" class="muted"></p><p id="terrain-draft-status" role="status"></p><button id="clear-walls" type="button" class="wide">Clear walls</button><p class="muted">Remove all walls; keep life and food.</p><button id="regenerate-walls" type="button" class="wide">Regenerate walls</button><p class="muted">Replaces walls; protects all living cells. Removes food only where new walls cover it. Actual walls may differ from the reset preview.</p></div>
         <button id="reset" class="secondary wide">Reseed world</button></details>
       </div>
-      <div id="organism-panel" class="panel" role="tabpanel" aria-labelledby="organism-tab" hidden><details id="specimen-details" class="specimen-section"><summary tabindex="0">Selected organism</summary><div id="inspector"></div><div class="follow-controls"><button id="follow-organism" type="button" disabled>Follow selected organism</button><button id="release-follow" type="button" disabled>Release follow</button></div><p id="follow-status" role="status"></p><p id="organism-observed"></p><section id="organism-diff" aria-label="Inherited differences"></section></details><section class="designer-section"><div class="section-caption"><h2>Build a body</h2><button id="clear-design" class="quiet">Reset</button></div><button id="new-active-design" type="button" class="secondary">New active design</button><div id="cell-palette" class="cell-palette">${CELL_NAMES.map((name, i) => `<button data-cell="${i + 3}" aria-pressed="${i === 1}" title="${name}: ${cellDescriptions[i]}"><i style="--cell:${COLORS[i + 3]}"></i>${name}</button>`).join('')}</div><p id="cell-description" class="muted">${cellDescriptions[1]}</p><div id="editor" class="editor" aria-label="Organism anatomy editor"></div><p id="behavior-status" class="muted"></p><div id="behavior-controls"></div><p id="design-note" class="muted">Use 1–16 cells, connected edge to edge.</p><label class="slider-label" for="preference">Preferred temperature<output id="preference-value">20°</output></label><input id="preference" type="range" min="0" max="1" step="0.025" value="0.5">
+      <div id="organism-panel" class="panel" role="tabpanel" aria-labelledby="organism-tab" hidden><details id="specimen-details" class="specimen-section"><summary tabindex="0">Selected organism</summary><div id="inspector"></div><div class="follow-controls"><button id="follow-organism" type="button" disabled>Follow selected organism</button><button id="release-follow" type="button" disabled>Release follow</button></div><p id="follow-status" role="status"></p><p id="organism-observed"></p><section aria-label="Last perception"><label class="terrain-follow"><input id="perception-enabled" type="checkbox">Show last perception overlay</label><div id="perception-observation"></div></section><section id="organism-diff" aria-label="Inherited differences"></section></details><section class="designer-section"><div class="section-caption"><h2>Build a body</h2><button id="clear-design" class="quiet">Reset</button></div><button id="new-active-design" type="button" class="secondary">New active design</button><div id="cell-palette" class="cell-palette">${CELL_NAMES.map((name, i) => `<button data-cell="${i + 3}" aria-pressed="${i === 1}" title="${name}: ${cellDescriptions[i]}"><i style="--cell:${COLORS[i + 3]}"></i>${name}</button>`).join('')}</div><p id="cell-description" class="muted">${cellDescriptions[1]}</p><div id="editor" class="editor" aria-label="Organism anatomy editor"></div><p id="behavior-status" class="muted"></p><div id="behavior-controls"></div><p id="design-note" class="muted">Use 1–16 cells, connected edge to edge.</p><label class="slider-label" for="preference">Preferred temperature<output id="preference-value">20°</output></label><input id="preference" type="range" min="0" max="1" step="0.025" value="0.5">
       <div class="blueprint-fields"><label for="blueprint-name">Blueprint name</label><input id="blueprint-name" type="text" maxlength="80" required><label for="blueprint-description">Description</label><textarea id="blueprint-description" maxlength="1000" rows="3"></textarea></div>
       <div class="blueprint-actions"><button id="import-blueprint">Import blueprint</button><button id="export-blueprint">Export blueprint</button></div><input id="blueprint-file" type="file" accept="application/json,.json" hidden><p id="designer-file-status" class="muted" role="status"></p>
       <div class="design-transforms" role="group" aria-label="Transform design"><button id="rotate-design" title="Rotate clockwise (R)">Rotate ↻ (R)</button><button id="mirror-design" title="Mirror horizontally (M)">Mirror ↔ (M)</button></div><p class="muted">Importing edits only this design. Choose Place in world, then click the habitat to create a new organism.</p><button id="plant-design" class="primary wide">Place in world</button></section>

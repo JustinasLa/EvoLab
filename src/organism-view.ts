@@ -1,9 +1,11 @@
+import { perceptionHtml } from './perception-view';
 import {
   CELL_NAMES,
   HEIGHT,
   WIDTH,
   type ControlState,
   type Genome,
+  type Perception,
   type OrganismBaseline,
 } from './model';
 import { genomeSvg, organismHtml, viewport, type Camera } from './view';
@@ -63,6 +65,8 @@ export function createOrganismView(
     'inspector',
     'organism-diff',
     'organism-observed',
+    'perception-observation',
+    'perception-enabled',
   ])
     get(id);
   const summary = get('specimen-details').querySelector<HTMLElement>('summary')!;
@@ -74,6 +78,9 @@ export function createOrganismView(
   };
   const follow = get<HTMLButtonElement>('follow-organism'),
     release = get<HTMLButtonElement>('release-follow');
+  let perception: Perception | null = null;
+  const overlay = get<HTMLInputElement>('perception-enabled');
+  overlay.addEventListener('change', changed);
   let replacement: number | undefined,
     live = 0,
     following = 0,
@@ -113,6 +120,8 @@ export function createOrganismView(
     stop();
     live = 0;
     last = undefined;
+    perception = null;
+    html('perception-observation', perceptionHtml(null, 0));
     html('inspector', organismHtml(null, {} as ControlState['world']));
     text('organism-diff', '');
     text('organism-observed', '');
@@ -125,6 +134,8 @@ export function createOrganismView(
       replacement = state.replacementId;
     }
     const organism = state.selected;
+    perception = organism && state.perception?.id === organism.id ? state.perception : null;
+    html('perception-observation', perceptionHtml(perception, state.world.stats.tick));
     if (organism) {
       if (live !== organism.id) stop();
       live = organism.id;
@@ -199,12 +210,14 @@ export function createOrganismView(
   return {
     update,
     followFrame,
+    perception: () => (overlay.checked ? perception : null),
     release: stop,
     clear,
     dispose() {
       clear();
       follow.removeEventListener('click', start);
       release.removeEventListener('click', stop);
+      overlay.removeEventListener('change', changed);
     },
   };
 }

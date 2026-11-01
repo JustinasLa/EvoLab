@@ -7135,3 +7135,68 @@ describe('separate light display and current leaf observations', () => {
     expect(bridge.latestFrame.frame.stats.tick).toBe(0);
   });
 });
+
+it('draws only an accepted selected actual perception and keeps local overlay controls ecologically neutral', async () => {
+  const bridge = realWorker(true);
+  bridge.deliver();
+  const world = new Ecosystem({ ...DEFAULTS, mutation: 0, climate: 0, nutrients: 0 }, false),
+    source = {
+      ...founder(1),
+      cells: [
+        { x: 0, y: 0, type: 8 },
+        { x: 1, y: 0, type: 5 },
+      ],
+      tempo: 2,
+      behavior: {
+        version: 2,
+        mode: 'evolved',
+        reactions: { food: 'chase', wall: 'flee', harmless: 'ignore', dangerous: 'flee' },
+      },
+    } as model.Genome;
+  const mover = world.spawn(source, 60, 60)!;
+  mover.age = 1;
+  world.food[model.index(60, 57)] = 1;
+  await loadText(JSON.stringify(world.save()));
+  bridge.deliver();
+  click('pause');
+  bridge.deliver();
+  bridge.command({ type: 'inspect', x: 60, y: 60 });
+  bridge.deliver();
+  click('perception-enabled');
+  click('step');
+  bridge.deliver();
+  const painter = vi.spyOn(viewModule, 'draw');
+  paint(0);
+  bridge.deliver();
+  paint(1); // release the held older native frame before drawing the Step frame
+  bridge.deliver();
+  expect(painter.mock.calls.at(-1)![9]).toMatchObject({
+    id: mover.id,
+    tick: 1,
+    chosenEye: 0,
+    direction: 3,
+  });
+  expect(get('perception-observation').textContent).toContain('Last perception at tick 1');
+  const before = bridge.save(),
+    posts = worker.commands.mock.calls.length;
+  click('perception-enabled');
+  paint(1);
+  bridge.deliver();
+  expect(painter.mock.calls.at(-1)![9]).toBeNull();
+  click('perception-enabled');
+  paint(2);
+  bridge.deliver();
+  expect(painter.mock.calls.at(-1)![9]).not.toBeNull();
+  expect(worker.commands.mock.calls).toHaveLength(posts);
+  expect(bridge.save()).toEqual(before);
+  await loadText('{}');
+  bridge.deliver();
+  expect(get('perception-observation').textContent).toContain('Last perception at tick 1');
+  expect(bridge.save()).toEqual(before);
+  await loadText(JSON.stringify(before));
+  bridge.deliver();
+  paint(3);
+  bridge.deliver();
+  expect(get('perception-observation').textContent).toContain('No retained perception');
+  expect(painter.mock.calls.at(-1)![9]).toBeNull();
+});
