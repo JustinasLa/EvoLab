@@ -142,6 +142,7 @@ export function startWorker(
   function state(): ControlState {
     if (!cachedPresentation || cachedRevision !== revision || cachedSelection !== selected) {
       cachedPresentation = world!.presentation(selected, view.lineage === true);
+      if (view.roles) cachedPresentation.roles = world!.roleSnapshot();
       cachedRevision = revision;
       cachedSelection = selected;
     }
@@ -349,7 +350,8 @@ export function startWorker(
       integer(value.epoch, 0, Number.MAX_SAFE_INTEGER) &&
       typeof value.enabled === 'boolean' &&
       typeof value.visible === 'boolean' &&
-      (value.lineage === undefined || value.lineage === true)
+      (value.lineage === undefined || value.lineage === true) &&
+      (value.roles === undefined || value.roles === true)
     );
   }
   const coordinates = (value: any): boolean =>
@@ -442,7 +444,9 @@ export function startWorker(
           enabled: data.display.enabled,
           visible: data.display.visible,
           ...(data.display.lineage ? { lineage: true as const } : {}),
+          ...(data.display.roles ? { roles: true as const } : {}),
         };
+        if (view.roles) world.observeRoles();
         paused = failed = false;
         selected = 0;
         extinction = null;
@@ -482,6 +486,7 @@ export function startWorker(
           return;
         }
         world = restored;
+        if (view.roles) world.observeRoles();
         replacementId = commandId;
         failed = paused = false;
         selected = 0;
@@ -608,7 +613,9 @@ export function startWorker(
               enabled: data.view.enabled,
               visible: data.view.visible,
               ...(data.view.lineage ? { lineage: true as const } : {}),
+              ...(data.view.roles ? { roles: true as const } : {}),
             };
+            if (view.roles) world.observeRoles();
             if (!view.visible) interactive = false;
             resetRate();
             settled = true;

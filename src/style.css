@@ -1545,3 +1545,16 @@ dialog a {
 #event-canvas {
   image-rendering: pixelated;
 }
+.roles-tables {
+  overflow-x: auto;
+}
+.roles-tables table {
+  border-collapse: collapse;
+  margin-block: 1rem;
+}
+.roles-tables th,
+.roles-tables td {
+  padding: 0.35rem;
+  text-align: left;
+  vertical-align: top;
+}
