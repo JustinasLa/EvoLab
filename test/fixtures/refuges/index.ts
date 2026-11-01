@@ -33,7 +33,10 @@ export function fixtureText(name: string): string {
 export const acceptedReference = (text: string): AcceptedEcosystem => AcceptedEcosystem.load(text);
 
 export function predecessor(saved: WorldFile): WorldFileV6 {
+  assert.deepEqual(saved.mutationPolicy, { version: 1, mode: 'legacy' });
+  assert.ok(saved.interventions.entries.every((row) => row.kind !== 'mutation-policy'));
   const {
+    mutationPolicy: _policy,
     shadeHabitats: _shadeHabitats,
     thermalRefuges: _thermalRefuges,
     lineageArchive: _lineageArchive,

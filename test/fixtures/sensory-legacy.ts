@@ -86,7 +86,10 @@ export function restoreHistoricalGenome(genome: Genome): HistoricalGenome {
   return restored;
 }
 function historicalScalars(saved: WorldFile) {
+  assert.deepEqual(saved.mutationPolicy, { version: 1, mode: 'legacy' });
+  assert.ok(saved.interventions.entries.every((row) => row.kind !== 'mutation-policy'));
   const {
+    mutationPolicy: _policy,
     terrain: _terrain,
     thermalRefuges: _refuges,
     shadeHabitats: _shade,

@@ -133,6 +133,7 @@ describe('approved seeded terrain, opaque extension and exact continuation contr
       for (const tick of [0, 30, 90, 330, 1600]) {
         while (world.tick < tick) world.step();
         const {
+          mutationPolicy,
           terrain,
           thermalRefuges,
           shadeHabitats: _shadeHabitats,
@@ -140,6 +141,7 @@ describe('approved seeded terrain, opaque extension and exact continuation contr
           ...snapshot
         } = world.save();
         snapshot.organisms = restoreHistoricalWorld(world.save()).organisms as any;
+        expect(mutationPolicy).toEqual({ version: 1, mode: 'legacy' });
         expect(terrain).toEqual(DEFAULT_TERRAIN);
         expect(thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
         if (seed === 42 && tick === 1600) {
@@ -2755,7 +2757,7 @@ describe('measured thermal adaptation', () => {
         ...ecology(world.save()),
         lineageArchive: saved.lineageArchive,
         interventions: {
-          version: 4,
+          version: 5,
           originTick: tick,
           originKind: 'legacy-import',
           originSettings: { ...world.settings },
@@ -2885,6 +2887,7 @@ describe('telemetry persistence, migration and complete candidate validation', (
           { version: _version, ...expectedEcology } = file,
           {
             version: current,
+            mutationPolicy,
             interventions,
             lineageArchive,
             terrain,
@@ -2892,7 +2895,7 @@ describe('telemetry persistence, migration and complete candidate validation', (
             shadeHabitats,
             ...actualEcology
           } = ecology(world.save());
-        expect(world.save().version).toBe(12);
+        expect(world.save().version).toBe(13);
         expect(thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
         expect(shadeHabitats).toEqual({ version: 1, enabled: false, cells: [] });
         expect(terrain).toEqual(DEFAULT_TERRAIN);
@@ -2901,8 +2904,9 @@ describe('telemetry persistence, migration and complete candidate validation', (
           originTick: tick,
           events: [],
         });
+        expect(mutationPolicy).toEqual({ version: 1, mode: 'legacy' });
         expect(interventions).toEqual({
-          version: 4,
+          version: 5,
           originTick: tick,
           originKind: 'legacy-import',
           originSettings: { ...file.settings },
