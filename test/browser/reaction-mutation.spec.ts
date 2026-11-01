@@ -50,7 +50,7 @@ test('native seeded active births retain real inherited reaction differences and
   const saved: WorldFile = JSON.parse((await nativeDownload(page)).toString('utf8'));
   while (reference.tick < saved.tick) reference.step();
   expect(saved).toEqual(reference.save());
-  expect(saved.version).toBe(13);
+  expect(saved.version).toBe(14);
   expect(saved.births).toBeGreaterThanOrEqual(1);
   const mutation = saved.lineageArchive.summaries.find((summary) => summary.origin === 'mutation')!;
   expect(mutation.parentId).toBe(parent.species);

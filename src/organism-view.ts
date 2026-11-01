@@ -31,6 +31,11 @@ export function genomeDiff(current: Genome, baseline?: OrganismBaseline): string
         `<tr><th scope="row">${key}</th><td>${previous[key]}</td><td>${current[key]}</td><td>${current[key] - previous[key]}</td></tr>`,
     )
     .join('');
+  const propensity = (genome: Genome) =>
+    genome.mutationPropensity === undefined
+      ? 'global (disabled)'
+      : `inherited multiplier ${genome.mutationPropensity}`;
+  const propensityRow = `<tr><th scope="row">mutation propensity</th><td>${propensity(previous)}</td><td>${propensity(current)}</td><td>${previous.mutationPropensity === undefined || current.mutationPropensity === undefined ? 'Mode or multiplier comparison' : current.mutationPropensity - previous.mutationPropensity}</td></tr>`;
   const describe = (genome: Genome) =>
     genome.behavior.mode === 'legacy'
       ? 'legacy'
@@ -41,7 +46,7 @@ export function genomeDiff(current: Genome, baseline?: OrganismBaseline): string
     beforeBehavior === afterBehavior
       ? `Stored behavior unchanged (${afterBehavior}).`
       : `Stored behavior: ${beforeBehavior} → ${afterBehavior}.`;
-  return `<p>Compared with ${baseline.relation === 'parent-lineage' ? 'parent lineage' : 'own lineage'} #${baseline.lineageId} founding genome. This is a retained endpoint comparison, not an individual parent or a sequence of mutations.</p><div class="baseline-preview">${genomeSvg(previous, 72)}<span>Retained founding anatomy</span></div><ul>${(changes.length ? changes : ['Anatomy unchanged (local cell coordinates).']).map((change) => `<li>${change}</li>`).join('')}</ul><table><caption>Inherited traits (exact normalized values; tempo in ticks)</caption><thead><tr><th>Trait</th><th>Baseline</th><th>Selected</th><th>Difference</th></tr></thead><tbody>${traits}</tbody></table><p>${behavior} Both behavior1 modes remain inactive.</p><p>Accepted opaque metadata is outside this observed comparison.</p>`;
+  return `<p>Compared with ${baseline.relation === 'parent-lineage' ? 'parent lineage' : 'own lineage'} #${baseline.lineageId} founding genome. This is a retained endpoint comparison, not an individual parent or a sequence of mutations.</p><div class="baseline-preview">${genomeSvg(previous, 72)}<span>Retained founding anatomy</span></div><ul>${(changes.length ? changes : ['Anatomy unchanged (local cell coordinates).']).map((change) => `<li>${change}</li>`).join('')}</ul><table><caption>Inherited traits (exact normalized values; tempo in ticks)</caption><thead><tr><th>Trait</th><th>Baseline</th><th>Selected</th><th>Difference</th></tr></thead><tbody>${traits}${propensityRow}</tbody></table><p>${behavior} Both behavior1 modes remain inactive.</p><p>Accepted opaque metadata is outside this observed comparison.</p>`;
 }
 
 // Only accepted observations enter this page-owned state. One identity and one

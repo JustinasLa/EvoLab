@@ -3155,7 +3155,7 @@ describe('integrated extinction and telemetry', () => {
     expect(harness.tasks).toHaveLength(0);
   });
 
-  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])(
+  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])(
     'migrates/restores v%i then preserves terminal and pending history through an empty save continuation',
     (version) => {
       const harness = workerHarness();
@@ -3203,7 +3203,9 @@ describe('integrated extinction and telemetry', () => {
                                   version: 12 as const,
                                   interventions: { ...current.interventions, version: 4 },
                                 }
-                              : current;
+                              : version === 13
+                                ? { ...current, version: 13 as const }
+                                : current;
       expect(file.version).toBe(version);
       if (file.version === 2) expect(file).not.toHaveProperty('telemetry');
       else {
@@ -3234,14 +3236,14 @@ describe('integrated extinction and telemetry', () => {
           file.version >= 10
             ? {
                 ...file,
-                version: 13,
+                version: 14,
                 mutationPolicy: { version: 1, mode: 'legacy' },
                 interventions: { ...file.interventions, version: 5 },
               }
             : file.version >= 5
               ? {
                   ...file,
-                  version: 13,
+                  version: 14,
                   mutationPolicy: { version: 1, mode: 'legacy' },
                   shadeHabitats: { version: 1, enabled: false, cells: [] },
                   organisms: imported.organisms,
@@ -3255,7 +3257,7 @@ describe('integrated extinction and telemetry', () => {
                 }
               : {
                   ...file,
-                  version: 13,
+                  version: 14,
                   mutationPolicy: { version: 1, mode: 'legacy' },
                   shadeHabitats: { version: 1, enabled: false, cells: [] },
                   organisms: imported.organisms,
@@ -3280,7 +3282,7 @@ describe('integrated extinction and telemetry', () => {
       harness.advance();
       reference.step();
       const terminal = harness.save();
-      expect(terminal.version).toBe(13);
+      expect(terminal.version).toBe(14);
       expect(terminal.telemetry.version).toBe(2);
       expect(terminal.telemetry.samples.at(-1)).toMatchObject({
         fromTick: version === 2 ? 89 : 60,

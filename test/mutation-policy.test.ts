@@ -265,7 +265,7 @@ describe('bounded opt-in mutation policy', () => {
     const envelope = measurementEnvelope(a.measurements());
     expect(envelope.snapshot.mutationPolicy).toEqual(only('tolerance'));
     expect(envelope.interventions.version).toBe(5);
-    expect(WORLD_VERSION).toBe(13);
+    expect(WORLD_VERSION).toBe(14);
   });
   it('migrates world12 with exact legacy continuity and retained opaque settings, excluding ignored root names', () => {
     const old = new Ecosystem({ ...DEFAULTS, mutation: 0.4 }).save() as any;
