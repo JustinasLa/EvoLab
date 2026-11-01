@@ -24,6 +24,7 @@ lineages spread by surviving and producing descendants.
 - **Mutation controls** — retain legacy birth mutation by default or opt into relative weights for anatomy, climate traits, tempo and active reactions; apply drafts explicitly and save their manual history.
 - **Keep inherited designs** — standalone blueprints preserve complete anatomy, traits and reactions; existing passive designs and ordinary presets retain legacy steering.
 - **Inspect the survivors** — follow population, dominant lineages, anatomy, energy, offspring and recent lineage ancestry.
+- **Measure ecological roles** — open Measured ecological roles to observe actual photosynthesis, food intake and stinger transfers in fixed 300-tick windows, with mixed strategies, bounded lineage/interaction tables and explicit unknown food origins. Session-only evidence resets on world replacement and is not part of world saves or measurement exports.
 - **Explore at your pace** — pan, zoom, pause, single-step, and change simulation speed independently of rendering.
 - **Run deliberately** — choose an exact tick target, pause or cancel it, disable habitat rendering, and observe measured throughput and honest image freshness.
 - **Keep whole worlds** — save and restore terrain, every organism, counters, settings and random-generator state.
