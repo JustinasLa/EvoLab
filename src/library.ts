@@ -160,7 +160,12 @@ export function classifyRecord(key: unknown, value: unknown): LibraryRow {
     return problem('unsupported', 'Unsupported blueprint format; preserved read-only.');
   if (!integer(declaration.version, 1, Number.MAX_SAFE_INTEGER))
     return problem('unknown', 'Unknown blueprint version; preserved read-only.');
-  if (declaration.version !== 1 && declaration.version !== 2 && declaration.version !== 3)
+  if (
+    declaration.version !== 1 &&
+    declaration.version !== 2 &&
+    declaration.version !== 3 &&
+    declaration.version !== 4
+  )
     return problem('unsupported', 'Unsupported blueprint version; preserved read-only.');
   let reason = 'Invalid supported record envelope.';
   try {

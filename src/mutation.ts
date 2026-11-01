@@ -109,3 +109,12 @@ export function mutateWithPolicy(source: Genome, random: Random, policy: Mutatio
   }
   return g;
 }
+
+/** Independent self trial after the ordinary gate/policy, before any placement attempts. */
+export function mutatePropensity(source: Genome, random: Random): Genome {
+  if (source.mutationPropensity === undefined) return source;
+  if (random.next() >= 0.05) return source;
+  const genome = cloneGenome(source);
+  genome.mutationPropensity = clamp(source.mutationPropensity + (random.next() - 0.5) * 0.2, 0, 1);
+  return genome;
+}
