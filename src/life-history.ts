@@ -1,4 +1,4 @@
-import { exactDataRecord, integer, type Genome } from './model';
+import { exactDataRecord, integer, type Genome, type Organism } from './model';
 
 /** Explicit opt-in. Absence permanently retains the historical life-history rules. */
 export interface LifeHistory {
@@ -76,7 +76,7 @@ export const emptyLifeHistoryLog = (originTick: number): LifeHistoryLog => ({
 /** Observations of opted-in bodies only. This observer consumes no random draws. */
 export function recordLifeEvent(
   log: LifeHistoryLog,
-  o: import('./model').Organism,
+  o: Organism,
   tick: number,
   kind: LifeEvent['kind'],
 ): void {
@@ -100,6 +100,7 @@ export function validateLifeHistoryLog(
   tick: number,
   nextId: number,
   nextSpecies: number,
+  organisms?: Iterable<Organism>,
 ): LifeHistoryLog {
   if (
     !exactDataRecord(value, [
@@ -123,6 +124,11 @@ export function validateLifeHistoryLog(
     throw new Error('Invalid life-history observations.');
   let previous = Number(value.originTick);
   const seen = new Set<string>();
+  const living = new Map(Array.from(organisms ?? [], (o) => [o.id, o]));
+  const identities = new Map<
+    number,
+    { lineage: number; traits: LifeHistory; cells: number; dead: boolean }
+  >();
   for (const event of value.events) {
     if (
       !exactDataRecord(event, [
@@ -153,6 +159,29 @@ export function validateLifeHistoryLog(
       seen.has(key)
     )
       throw new Error('Inconsistent life-history outcome.');
+    const id = Number(event.organismId),
+      organism = living.get(id),
+      identity = identities.get(id);
+    if (
+      (organism &&
+        (event.kind !== 'mature' ||
+          organism.species !== event.lineageId ||
+          organism.age < age ||
+          organism.genome.cells.length !== event.cells ||
+          !sameLifeHistory(organism.genome.lifeHistory, event.traits))) ||
+      (identity &&
+        (identity.dead ||
+          identity.lineage !== event.lineageId ||
+          identity.cells !== event.cells ||
+          !sameLifeHistory(identity.traits, event.traits)))
+    )
+      throw new Error('Inconsistent life-history identity.');
+    identities.set(id, {
+      lineage: Number(event.lineageId),
+      traits: event.traits,
+      cells: Number(event.cells),
+      dead: event.kind !== 'mature',
+    });
     seen.add(key);
     previous = Number(event.tick);
   }

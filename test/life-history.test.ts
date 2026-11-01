@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import legacyOracle from './fixtures/life-history-legacy.json';
+import { legacyV7 } from './fixtures/telemetry';
 import { describe, expect, it } from 'vitest';
 import { founder } from '../src/model';
 import {
@@ -404,6 +407,16 @@ describe('life-history schema and inspection', () => {
     world.step();
     const log = world.save().lifeHistoryLog;
     expect(validateLifeHistoryLog(log, world.tick, 100, 100)).toEqual(log);
+    expect(Ecosystem.load(JSON.stringify(world.save())).save()).toEqual(world.save());
+    const forged = world.save();
+    forged.lifeHistoryLog.events[0].kind = 'manual';
+    expect(() => Ecosystem.load(JSON.stringify(forged))).toThrow('life-history identity');
+    const inconsistent = structuredClone(log);
+    inconsistent.events.push({ ...inconsistent.events[0], kind: 'manual', cells: 2 });
+    expect(() => validateLifeHistoryLog(inconsistent, 1, 100, 100)).toThrow(
+      'life-history identity',
+    );
+
     for (const value of [
       null,
       { ...log, version: 2 },
@@ -465,5 +478,44 @@ describe('life-history schema and inspection', () => {
     expect(leftLog).toEqual(emptyLifeHistoryLog(0));
     expect(rightLog).toEqual(emptyLifeHistoryLog(1));
     expect(leftArchive.events.slice(2)).toEqual(rightArchive.events.slice(2));
+  });
+});
+
+describe('legacy life-history continuation oracle', () => {
+  it('matches six pre-change ecological trajectories, including global and inherited mutation gates', () => {
+    for (const { seed, weighted, hash } of legacyOracle.outcomes) {
+      const world = new Ecosystem(
+        { ...DEFAULTS, seed, mutation: 0.4, nutrients: 5, climate: 0.8 },
+        false,
+      );
+      if (weighted) world.changeMutationPolicy(weightedMutation());
+      const genome = founder(0);
+      if (weighted) genome.mutationPropensity = 0.7;
+      const parent = world.spawn(genome, 120, 78)!;
+      parent.age = 32;
+      parent.energy = 80;
+      for (let tick = 0; tick < 120; tick++) world.step();
+      const {
+        version: _version,
+        lineageArchive: _archive,
+        lifeHistoryLog: log,
+        ...ecology
+      } = world.save();
+      expect(createHash('sha256').update(JSON.stringify(ecology)).digest('hex')).toBe(hash);
+      expect(log).toEqual(emptyLifeHistoryLog(0));
+    }
+  });
+  it('retains historical opaque lifeHistory names without interpreting them as an opt-in', () => {
+    const world = new Ecosystem(DEFAULTS);
+    const old = legacyV7(world.save());
+    old.organisms[0].genome.lifeHistory = defaultLifeHistory();
+    const loaded = Ecosystem.load(JSON.stringify(old));
+    const genome = loaded.organisms.values().next().value!.genome;
+    expect(genome.lifeHistory).toBeUndefined();
+    expect(genome.legacyExtensions?.some(([key]) => key === 'lifeHistory')).toBe(true);
+    const restored = Ecosystem.load(JSON.stringify(loaded.save()));
+    loaded.step();
+    restored.step();
+    expect(restored.save()).toEqual(loaded.save());
   });
 });

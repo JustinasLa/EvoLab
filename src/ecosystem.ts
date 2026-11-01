@@ -2030,7 +2030,13 @@ export class Ecosystem {
         : LineageArchive.legacy(world.organisms.values(), f.tick);
     world.lifeHistoryLog =
       f.version === WORLD_VERSION
-        ? validateLifeHistoryLog(f.lifeHistoryLog, f.tick, f.nextId, f.nextSpecies)
+        ? validateLifeHistoryLog(
+            f.lifeHistoryLog,
+            f.tick,
+            f.nextId,
+            f.nextSpecies,
+            world.organisms.values(),
+          )
         : emptyLifeHistoryLog(f.tick);
     return world;
   }
