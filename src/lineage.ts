@@ -410,7 +410,7 @@ function validateArchive(
       requireArchive(
         state.version === 2 &&
           validBirthEvent(event, nextSpecies, nextId) &&
-          integer(event.tick, state.mutationOriginTick!, tick) &&
+          integer(event.tick, state.mutationOriginTick! + 1, tick) &&
           event.tick >= eventTick,
       );
       eventTick = event.tick;
@@ -436,6 +436,25 @@ function validateArchive(
       requireArchive(event.kind === 'extinct' && !entry.extinct && !physical.has(event.id));
       entry.extinct = { kind: 'extinct', id: event.id, tick: event.tick };
       entry.extinctPosition = position;
+    }
+  }
+  const bornIds = new Set<number>();
+  for (const event of state.events) {
+    if (event.kind !== 'reproduction') continue;
+    const parent = facts.get(event.id);
+    const created = parent?.row?.createdTick ?? parent?.created?.tick;
+    const extinct = parent?.row?.extinctTick ?? parent?.extinct?.tick;
+    requireArchive(
+      (created == null || created <= event.tick) && (extinct == null || extinct >= event.tick),
+    );
+    if (event.childOrganismId !== null) {
+      requireArchive(!bornIds.has(event.childOrganismId));
+      bornIds.add(event.childOrganismId);
+      const summary = state.summaries.find((row) => row.id === event.childLineageId);
+      if (summary?.foundingGenome)
+        requireArchive(sameInherited(summary.foundingGenome, event.childGenome!));
+      if (event.childLineageId !== event.id && summary)
+        requireArchive(summary.createdTick === event.tick && summary.parentId === event.id);
     }
   }
   requireArchive(

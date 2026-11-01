@@ -687,6 +687,11 @@ describe('passive inherited sensory data and reversible compatibility', () => {
         for (const summary of normalized.lineageArchive.summaries)
           if (summary.foundingGenome)
             summary.foundingGenome.behavior = { version: 1, mode: 'legacy' };
+        for (const event of normalized.lineageArchive.events)
+          if (event.kind === 'reproduction') {
+            event.parentGenome.behavior = { version: 1, mode: 'legacy' };
+            if (event.childGenome) event.childGenome.behavior = { version: 1, mode: 'legacy' };
+          }
         expect(normalized).toEqual(legacy.save());
       };
       legacy.step();
@@ -2895,7 +2900,7 @@ describe('telemetry persistence, migration and complete candidate validation', (
             shadeHabitats,
             ...actualEcology
           } = ecology(world.save());
-        expect(world.save().version).toBe(14);
+        expect(world.save().version).toBe(15);
         expect(thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
         expect(shadeHabitats).toEqual({ version: 1, enabled: false, cells: [] });
         expect(terrain).toEqual(DEFAULT_TERRAIN);

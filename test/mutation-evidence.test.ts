@@ -104,6 +104,35 @@ describe('retained actual reproductive evidence', () => {
       expect(event.childLineageId).toBe(event.id);
     }
   });
+  it('preserves legacy new-lineage identity even when an actual mutation is a no-op', () => {
+    let found = false;
+    for (let i = 1; i <= 800 && !found; i++) {
+      const world = new Ecosystem({ ...DEFAULTS, mutation: 0.4, climate: 0, nutrients: 0 }, false);
+      const g = genome();
+      g.preference = 0;
+      g.tolerance = 0.12;
+      g.tempo = 2;
+      g.behavior = {
+        version: 1,
+        mode: 'evolved',
+        reactions: { food: 'flee', wall: 'ignore', harmless: 'chase', dangerous: 'ignore' },
+      };
+      const parent = world.spawn(g, 60, 60)!;
+      parent.age = 32;
+      parent.energy = 100;
+      world.random.state = (i * 2654435761) >>> 0;
+      world.step();
+      const event = events(world)[0];
+      if (event.outcome === 'born-no-op') {
+        found = true;
+        expect(event.childLineageId).toBeGreaterThan(parent.species);
+        expect(event.childGenome).toEqual(event.parentGenome);
+        expect(event.channels).not.toContain('reactions');
+        expect(Ecosystem.load(JSON.stringify(world.save())).save()).toEqual(world.save());
+      }
+    }
+    expect(found).toBe(true);
+  });
   it('records failed placement without candidate inheritance or parent payment, and no attempt at population cap', () => {
     const { world, parent } = scene(7);
     world.walls.fill(1);
@@ -165,15 +194,42 @@ describe('retained actual reproductive evidence', () => {
       recordingOriginTick: 0,
     });
     expect(Ecosystem.load(JSON.stringify(world.save())).save()).toEqual(world.save());
-    const old = world.save();
+    const predecessor = scene(7, undefined, undefined, true, 0).world;
+    predecessor.step();
+    const old = predecessor.save();
     old.lineageArchive = historicalArchive(old.lineageArchive);
     const loaded = Ecosystem.load(JSON.stringify({ ...old, version: 14 }));
     expect(events(loaded)).toEqual([]);
-    expect(loaded.lineageSnapshot().mutationOriginTick).toBe(520);
-    expect(retainedBirthExport(loaded.lineageSnapshot(), 520).events).toEqual([]);
+    expect(loaded.lineageSnapshot().mutationOriginTick).toBe(1);
+    expect(retainedBirthExport(loaded.lineageSnapshot(), 1).events).toEqual([]);
     expect(() => Ecosystem.load(JSON.stringify({ ...world.save(), version: 14 }))).toThrow(
       'lineage archive',
     );
+  });
+  it('round-trips signed-zero parents without changing existing lineage semantics', () => {
+    let observed = false;
+    for (let i = 1; i <= 200 && !observed; i++) {
+      const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
+      const g = genome(-0);
+      g.preference = -0;
+      const parent = world.spawn(g, 60, 60)!;
+      parent.age = 32;
+      parent.energy = 100;
+      world.random.state = (i * 2654435761) >>> 0;
+      world.step();
+      const event = events(world)[0];
+      if (
+        event.channels.includes('propensity') &&
+        Object.is(event.childGenome!.mutationPropensity, 0)
+      ) {
+        observed = true;
+        expect(event.childLineageId).toBeGreaterThan(parent.species);
+        expect(event.outcome).toBe('born-no-op');
+        const text = JSON.stringify(world.save());
+        expect(JSON.stringify(Ecosystem.load(text).save())).toBe(text);
+      }
+    }
+    expect(observed).toBe(true);
   });
   it('rejects malformed retained observations before any active world replacement', () => {
     const { world } = scene(7);
@@ -189,6 +245,15 @@ describe('retained actual reproductive evidence', () => {
       (e) => (e.parentGenome.cells[0].extra = 1),
       (e) => (e.parentGenome = null),
       (e) => (e.gate = 'true'),
+      (e) => (e.channels = null),
+      (e) => {
+        e.gate = false;
+        e.channels = ['add'];
+      },
+      (e) => {
+        e.gate = false;
+        e.channels = ['propensity'];
+      },
       (e) => (e.channels = ['bad']),
       (e) => (e.channels = ['add', 'add']),
       (e) => (e.placementAttempts = 0),
@@ -204,6 +269,15 @@ describe('retained actual reproductive evidence', () => {
       change(event);
       expect(() => Ecosystem.load(JSON.stringify(invalid))).toThrow();
       expect(world.save()).toEqual(before);
+    }
+    for (const mutate of [
+      (file: typeof before) =>
+        file.lineageArchive.events.push(structuredClone(file.lineageArchive.events.at(-1)!)),
+      (file: typeof before) => (file.lineageArchive.mutationOriginTick = file.tick + 1),
+    ]) {
+      const invalid = structuredClone(before);
+      mutate(invalid);
+      expect(() => Ecosystem.load(JSON.stringify(invalid))).toThrow('lineage archive');
     }
     const p = genome();
     const c = structuredClone(p);

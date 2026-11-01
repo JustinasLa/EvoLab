@@ -1106,7 +1106,10 @@ describe('bounded observed lineage lifecycle', () => {
           expect(migrated.lineageSnapshot()).toMatchObject({
             originKind: version === 8 ? saved.lineageArchive.originKind : 'legacy-import',
             originTick: version === 8 ? saved.lineageArchive.originTick : tick,
-            events: version === 8 ? saved.lineageArchive.events : [],
+            events:
+              version === 8
+                ? saved.lineageArchive.events.filter((event) => event.kind !== 'reproduction')
+                : [],
           });
           if (populated) {
             expect(migrated.lineageSnapshot().living.map((row) => row.id)).toEqual([5, 6]);
@@ -1246,7 +1249,7 @@ describe('bounded observed lineage lifecycle', () => {
     expect(saved.version).toBe(15);
     expect(saved.nextSpecies).toBe(5);
     expect(saved.lineageArchive).toMatchObject({
-      version: 1,
+      version: 2,
       originKind: 'fresh',
       originTick: 0,
       summariesPruned: false,

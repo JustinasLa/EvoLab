@@ -267,8 +267,8 @@ describe('bounded retained lineage evidence', () => {
       target.focus();
       world.step();
       update(world);
-      expect(get('lineage-results').textContent).toContain('40 matching');
-      expect(get('lineage-results').textContent).toContain('showing 1–40');
+      expect(get('lineage-results').textContent).toContain('39 matching');
+      expect(get('lineage-results').textContent).toContain('showing 1–39');
       expect(target.disabled).toBe(true);
       expect(document.activeElement).toBe(get('lineage-search'));
     });

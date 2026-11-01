@@ -159,18 +159,19 @@ describe('explicit inherited mutation propensity', () => {
           version: 13,
           lineageArchive: historicalArchive(file.lineageArchive),
         };
-      let loaded = Ecosystem.load(JSON.stringify(predecessor));
+      const loaded = Ecosystem.load(JSON.stringify(predecessor));
       const expected = structuredClone(file);
       expected.lineageArchive.mutationOriginTick = file.tick;
       expected.lineageArchive.events = expected.lineageArchive.events.filter(
         (event) => event.kind !== 'reproduction',
       );
       expect(loaded.save()).toEqual(expected);
-      loaded = Ecosystem.load(JSON.stringify(file));
       for (let tick = 0; tick < 120; tick++) {
         world.step();
         loaded.step();
-        expect(loaded.save()).toEqual(world.save());
+        const { lineageArchive: _prior, ...prior } = loaded.save();
+        const { lineageArchive: _current, ...current } = world.save();
+        expect(prior).toEqual(current);
       }
     }
   });

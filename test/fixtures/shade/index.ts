@@ -1,3 +1,4 @@
+import { historicalArchive } from '../telemetry';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -38,6 +39,7 @@ export function projectWorld9(saved: WorldFile): WorldFileV9 {
   return {
     ...retained,
     version: 9,
+    lineageArchive: historicalArchive(saved.lineageArchive),
     interventions: { ...retained.interventions, version: 3 } as WorldFileV9['interventions'],
   };
 }
