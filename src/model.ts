@@ -1,3 +1,4 @@
+import type { BirthEvent } from './mutation-evidence';
 import type { MutationPolicy } from './mutation';
 export const WIDTH = 240;
 export const HEIGHT = 156;
@@ -5,7 +6,7 @@ export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 14;
+export const WORLD_VERSION = 15;
 export const LINEAGE_SUMMARY_CAPACITY = 256;
 export const LINEAGE_EVENT_CAPACITY = 512;
 export const INTERVENTION_CAPACITY = 128;
@@ -145,9 +146,11 @@ export type LineageEvent =
       origin: Exclude<LineageOrigin, 'legacy-unknown'>;
       parentId: number | null;
     }
-  | { kind: 'extinct'; id: number; tick: number };
+  | { kind: 'extinct'; id: number; tick: number }
+  | BirthEvent;
 export interface LineageArchiveState {
-  version: 1;
+  version: 1 | 2;
+  mutationOriginTick?: number;
   originKind: 'fresh' | 'legacy-import';
   originTick: number;
   summariesPruned: boolean;
@@ -652,6 +655,9 @@ export interface WorldFile extends WorldEcology {
 export type HistoricalWorldEcology = Omit<WorldEcology, 'organisms'> & {
   organisms: HistoricalOrganism[];
 };
+export interface WorldFileV14 extends Omit<WorldFile, 'version'> {
+  version: 14;
+}
 export interface WorldFileV13 extends Omit<WorldFile, 'version'> {
   version: 13;
 }
@@ -1256,10 +1262,15 @@ export function founder(kind: number, preference = 0.5): Genome {
     behavior: { version: 1, mode: 'legacy' },
   };
 }
-export function mutate(source: Genome, random: Random): Genome {
+export function mutate(
+  source: Genome,
+  random: Random,
+  observe?: (channel: string) => void,
+): Genome {
   const g = cloneGenome(source);
   const mode = random.int(3);
   if (mode === 0 && g.cells.length < 16) {
+    observe?.('add');
     const c = g.cells[random.int(g.cells.length)];
     const [dx, dy] = [
       [1, 0],
@@ -1275,14 +1286,20 @@ export function mutate(source: Genome, random: Random): Genome {
     )
       g.cells.push(next);
   } else if (mode === 1 && g.cells.length > 1) {
+    observe?.('remove');
     const remove = random.int(g.cells.length);
     const rest = g.cells.filter((_, i) => i !== remove);
     if (connected(rest)) g.cells = rest;
-  } else g.cells[random.int(g.cells.length)].type = (3 + random.int(6)) as CellType;
+  } else {
+    observe?.('change');
+    g.cells[random.int(g.cells.length)].type = (3 + random.int(6)) as CellType;
+  }
+  for (const channel of ['preference', 'tolerance', 'tempo']) observe?.(channel);
   g.preference = clamp(g.preference + (random.next() - 0.5) * 0.18, 0, 1);
   g.tolerance = clamp(g.tolerance + (random.next() - 0.5) * 0.06, 0.12, 0.6);
   g.tempo = clamp(g.tempo + random.int(3) - 1, 2, 12);
   if (g.behavior.version === 2 && g.behavior.mode === 'evolved') {
+    observe?.('reactions');
     const reactions = g.behavior.reactions,
       category = (['food', 'wall', 'harmless', 'dangerous'] as const)[random.int(4)],
       alternatives = (['ignore', 'chase', 'flee'] as const).filter(

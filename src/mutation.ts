@@ -57,8 +57,13 @@ export const sameMutationPolicy = (left: MutationPolicy, right: MutationPolicy):
       MUTATION_CHANNELS.every((key) => left.weights[key] === right.weights[key])));
 
 /** Called only after the existing birth mutation gate. No retries or cross-channel fallback. */
-export function mutateWithPolicy(source: Genome, random: Random, policy: MutationPolicy): Genome {
-  if (policy.mode === 'legacy') return mutate(source, random);
+export function mutateWithPolicy(
+  source: Genome,
+  random: Random,
+  policy: MutationPolicy,
+  observe?: (channel: string) => void,
+): Genome {
+  if (policy.mode === 'legacy') return mutate(source, random, observe);
   const eligible = MUTATION_CHANNELS.filter(
     (key) => key !== 'reactions' || source.behavior.version === 2,
   );
@@ -67,6 +72,7 @@ export function mutateWithPolicy(source: Genome, random: Random, policy: Mutatio
   if (total === 0) return g;
   let target = random.next() * total;
   const channel = eligible.find((key) => (target -= policy.weights[key]) < 0)!;
+  observe?.(channel);
   if (channel === 'add') {
     if (g.cells.length < 16) {
       const cell = g.cells[random.int(g.cells.length)],
@@ -111,9 +117,14 @@ export function mutateWithPolicy(source: Genome, random: Random, policy: Mutatio
 }
 
 /** Independent self trial after the ordinary gate/policy, before any placement attempts. */
-export function mutatePropensity(source: Genome, random: Random): Genome {
+export function mutatePropensity(
+  source: Genome,
+  random: Random,
+  observe?: (channel: string) => void,
+): Genome {
   if (source.mutationPropensity === undefined) return source;
   if (random.next() >= 0.05) return source;
+  observe?.('propensity');
   const genome = cloneGenome(source);
   genome.mutationPropensity = clamp(source.mutationPropensity + (random.next() - 0.5) * 0.2, 0, 1);
   return genome;

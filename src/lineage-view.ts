@@ -388,7 +388,7 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
       for (const event of data.archive.events) {
         const entry = fact(event.id);
         if (event.kind === 'created') entry.created = event;
-        else entry.extinct = event;
+        else if (event.kind === 'extinct') entry.extinct = event;
       }
       for (const entry of [...facts.values()]) {
         const id = parent(entry);
