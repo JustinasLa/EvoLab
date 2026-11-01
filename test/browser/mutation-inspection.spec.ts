@@ -58,13 +58,11 @@ for (const channel of [...MUTATION_CHANNELS, 'propensity', 'none'] as const)
     await page.goto('/');
     await expect(page.locator('#population')).not.toHaveText('—');
     await page.locator('#pause').click();
-    await page
-      .locator('#file')
-      .setInputFiles({
-        name: 'pair.json',
-        mimeType: 'application/json',
-        buffer: Buffer.from(JSON.stringify(input)),
-      });
+    await page.locator('#file').setInputFiles({
+      name: 'pair.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify(input)),
+    });
     await expect(page.locator('#notice')).toContainText('World restored');
     if ((await page.locator('#run-state').textContent()) === 'LIVE')
       await page.locator('#pause').click();
@@ -102,3 +100,74 @@ for (const channel of [...MUTATION_CHANNELS, 'propensity', 'none'] as const)
       contentType: 'application/json',
     });
   });
+
+test('native migration and shared-ring eviction disclose unknown birth evidence in downloads', async ({
+  page,
+}, info) => {
+  await page.goto('/');
+  await expect(page.locator('#population')).not.toHaveText('—');
+  await page.locator('#pause').click();
+  await page.locator('#ecosystem-tab').click();
+  await page.locator('#lineage-heading').click();
+  const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
+  const parent = world.spawn(
+    {
+      cells: [{ x: 0, y: 0, type: 7 }],
+      preference: 0.5,
+      tolerance: 0.3,
+      tempo: 5,
+      behavior: { version: 1, mode: 'legacy' },
+    },
+    60,
+    60,
+  )!;
+  for (let i = 0; i < 520; i++) {
+    parent.age = 32;
+    parent.energy = 100;
+    world.step();
+    for (const organism of [...world.organisms.values()])
+      if (organism !== parent) world.kill(organism, 'manual');
+  }
+  const pruned = world.save();
+  const legacy = new Ecosystem(
+    { ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 },
+    false,
+  ).save();
+  legacy.lineageArchive.version = 1;
+  delete legacy.lineageArchive.mutationOriginTick;
+  for (const [name, file] of [
+    ['pruned', pruned],
+    ['legacy', { ...legacy, version: 14 }],
+  ] as const) {
+    await page.locator('#file').setInputFiles({
+      name: `${name}.json`,
+      mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify(file)),
+    });
+    await expect(page.locator('#notice')).toContainText('World restored');
+    if ((await page.locator('#run-state').textContent()) === 'LIVE')
+      await page.locator('#pause').click();
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    await expect(page.locator('#birth-retention')).toContainText(
+      name === 'pruned' ? 'Events evicted through tick' : 'earlier births are unknown',
+    );
+    if (name === 'legacy')
+      await expect(page.locator('#birth-detail')).toContainText(
+        'No retained reproductive attempts',
+      );
+    const before = await nativeDownload(page),
+      actual = JSON.parse(before.toString()) as WorldFile;
+    const pending = page.waitForEvent('download');
+    await page.locator('#birth-export').click();
+    const download = await pending;
+    const bytes = await readFile((await download.path())!);
+    expect(JSON.parse(bytes.toString())).toEqual(
+      retainedBirthExport(actual.lineageArchive, actual.tick),
+    );
+    expect(await nativeDownload(page)).toEqual(before);
+    await info.attach(`${name}-retention-window.json`, {
+      body: bytes,
+      contentType: 'application/json',
+    });
+  }
+});

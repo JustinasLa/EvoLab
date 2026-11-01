@@ -40,6 +40,18 @@ beforeEach(() => {
 afterEach(() => view.dispose());
 
 describe('bounded retained lineage evidence', () => {
+  it('rejects a held birth export activation across replacement without exporting the new world', () => {
+    const world = fresh();
+    update(world);
+    const button = get<HTMLButtonElement>('birth-export');
+    button.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    update(world, 2);
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 });
+    button.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+  });
+
   it('handles controls before data and an empty archive without fabricated events', () => {
     search('');
     view.reveal();
