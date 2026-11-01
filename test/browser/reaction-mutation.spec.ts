@@ -30,7 +30,11 @@ test('native seeded active births retain real inherited reaction differences and
   parent.age = 32;
   parent.energy = 40;
   reference.random.state = 7;
-  const fixture = JSON.stringify({ ...reference.save(), version: 11 });
+  const fixture = JSON.stringify({
+    ...reference.save(),
+    version: 11,
+    interventions: { ...reference.save().interventions, version: 4 },
+  });
   await page.goto('/');
   await expect(page.locator('#population')).not.toHaveText('—');
   await page.locator('#file').setInputFiles({
