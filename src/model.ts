@@ -4,7 +4,7 @@ export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 10;
+export const WORLD_VERSION = 11;
 export const LINEAGE_SUMMARY_CAPACITY = 256;
 export const LINEAGE_EVENT_CAPACITY = 512;
 export const INTERVENTION_CAPACITY = 128;
@@ -44,7 +44,7 @@ export type Reaction = 'ignore' | 'chase' | 'flee';
 export type Behavior =
   | { version: 1; mode: 'legacy' }
   | {
-      version: 1;
+      version: 1 | 2;
       mode: 'evolved';
       reactions: { food: Reaction; wall: Reaction; harmless: Reaction; dangerous: Reaction };
     };
@@ -623,6 +623,9 @@ export interface WorldFile extends WorldEcology {
 export type HistoricalWorldEcology = Omit<WorldEcology, 'organisms'> & {
   organisms: HistoricalOrganism[];
 };
+export interface WorldFileV10 extends Omit<WorldFile, 'version'> {
+  version: 10;
+}
 export interface WorldFileV9 extends WorldEcology {
   version: 9;
   lineageArchive: LineageArchiveState;
@@ -999,9 +1002,10 @@ function validNames(value: unknown): value is string[] {
 }
 const historicalGenomeKeys = ['cells', 'preference', 'tolerance', 'tempo'];
 const historicalCellKeys = ['x', 'y', 'type'];
-export function validBehavior(value: unknown): value is Behavior {
-  if (!dataRecord(value) || value.version !== 1) return false;
-  if (value.mode === 'legacy') return exactDataRecord(value, ['version', 'mode']);
+export function validBehavior(value: unknown, active = true): value is Behavior {
+  if (!dataRecord(value) || (value.version !== 1 && !(active && value.version === 2))) return false;
+  if (value.mode === 'legacy')
+    return value.version === 1 && exactDataRecord(value, ['version', 'mode']);
   if (!exactDataRecord(value, ['version', 'mode', 'reactions']) || value.mode !== 'evolved')
     return false;
   return (
@@ -1011,10 +1015,10 @@ export function validBehavior(value: unknown): value is Behavior {
     )
   );
 }
-export function validGenome(value: unknown): value is Genome {
+export function validGenome(value: unknown, active = true): value is Genome {
   if (
     !exactDataRecord(value, [...historicalGenomeKeys, 'behavior'], ['legacyExtensions']) ||
-    !validBehavior(value.behavior) ||
+    !validBehavior(value.behavior, active) ||
     !denseArray(value.cells)
   )
     return false;
