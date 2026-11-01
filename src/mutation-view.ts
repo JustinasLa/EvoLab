@@ -37,7 +37,10 @@ export function mountMutationControls(root: HTMLElement, apply: (policy: Mutatio
     return validMutationPolicy(policy) ? policy : null;
   }
   function render() {
-    for (const input of inputs) input.disabled = mode.value !== 'weighted';
+    for (const input of inputs) {
+      const disabled = mode.value !== 'weighted';
+      if (input.disabled !== disabled) input.disabled = disabled;
+    }
     const candidate = draft();
     const message = busy
       ? 'Waiting for worker confirmation.'
@@ -62,16 +65,16 @@ export function mountMutationControls(root: HTMLElement, apply: (policy: Mutatio
   button.addEventListener('click', submit);
   return {
     update(policy: MutationPolicy, replacementId: number) {
-      if (replacement !== replacementId || !sameMutationPolicy(confirmed, policy)) {
-        confirmed = structuredClone(policy);
-        replacement = replacementId;
-        mode.value = policy.mode;
-        const weights = policy.mode === 'weighted' ? policy.weights : weightedMutation().weights;
-        for (const [i, key] of MUTATION_CHANNELS.entries()) inputs[i].value = String(weights[key]);
-      }
+      if (replacement === replacementId && sameMutationPolicy(confirmed, policy)) return;
+      confirmed = structuredClone(policy);
+      replacement = replacementId;
+      mode.value = policy.mode;
+      const weights = policy.mode === 'weighted' ? policy.weights : weightedMutation().weights;
+      for (const [i, key] of MUTATION_CHANNELS.entries()) inputs[i].value = String(weights[key]);
       render();
     },
     setBusy(value: boolean) {
+      if (busy === value) return;
       busy = value;
       fields.disabled = value;
       render();

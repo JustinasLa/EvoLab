@@ -36,6 +36,18 @@ describe('mutation controls draft and confirmed ownership', () => {
     const before = world.save();
     view.update(world.mutationPolicy, 1);
     expect(add.value).toBe('0');
+    const mutations = new MutationObserver(() => {});
+    mutations.observe(root, {
+      subtree: true,
+      attributes: true,
+      childList: true,
+      characterData: true,
+    });
+    view.update(world.mutationPolicy, 1);
+    view.setBusy(false);
+    add.dispatchEvent(new Event('input'));
+    expect(mutations.takeRecords()).toEqual([]);
+    mutations.disconnect();
     expect(world.save()).toEqual(before);
     mode.value = 'invalid';
     mode.dispatchEvent(new Event('change'));
