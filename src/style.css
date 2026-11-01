@@ -819,7 +819,8 @@ input[type='range'] {
 .events [data-shock='heat'] svg {
   color: #edae57;
 }
-.world-settings summary {
+.world-settings summary,
+#mutation-controls summary {
   color: #c3cfc2;
   font-size: 15px;
 }

@@ -4336,6 +4336,7 @@ describe('ecosystem desk', () => {
   });
   it('confirms every user reset with a frozen payload, cancellation focus and no ecological command on cancellation', () => {
     click('ecosystem-tab');
+    expect(root.querySelectorAll('.world-settings')).toHaveLength(1);
     root.querySelector<HTMLDetailsElement>('.world-settings')!.open = true;
     const before = worker.postMessage.mock.calls.length;
     get('reset').click();
