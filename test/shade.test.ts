@@ -765,7 +765,7 @@ describe('S24-08 native/historical genomes, histories and complete opaque state'
     expect(world.save()).toEqual(saved);
   });
 
-  for (const version of [9, 10, 11])
+  for (const version of [9, 10, 11, 12])
     for (const target of ['living', 'extinct'] as const)
       for (const defect of ['behavior-version', 'reaction', 'carrier'] as const)
         it(`keeps strict native validation v${version} ${target} ${defect}`, () => {
@@ -777,7 +777,7 @@ describe('S24-08 native/historical genomes, histories and complete opaque state'
               ? saved.organisms[0].genome
               : saved.lineageArchive.summaries.find((row: any) => row.extinctTick !== null)
                   .foundingGenome;
-          if (defect === 'behavior-version') genome.behavior.version = version === 11 ? 3 : 2;
+          if (defect === 'behavior-version') genome.behavior.version = version >= 11 ? 3 : 2;
           else if (defect === 'reaction') genome.behavior.reactions.food = 'win';
           else genome.legacyExtensions = [['__proto__', [['number', 'invalid']]]];
           const before = world.save();
