@@ -56,6 +56,7 @@ import {
 } from './model';
 import {
   behaviorStatus,
+  reactionEditor,
   draw,
   genomeSvg,
   markup,
@@ -1774,6 +1775,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     get<HTMLInputElement>('blueprint-name').value = blueprintName;
     get<HTMLTextAreaElement>('blueprint-description').value = blueprintDescription;
     text('behavior-status', behaviorStatus(blueprint));
+    get('behavior-controls').innerHTML = reactionEditor(blueprint);
     text(
       'design-note',
       validGenome(blueprint)
@@ -2339,6 +2341,38 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     blueprintName = BLUEPRINT_DEFAULT_NAME;
     blueprintDescription = '';
     editor();
+  });
+  get('new-active-design').addEventListener('click', () => {
+    endStroke();
+    invalidateDesign();
+    blueprint = founder(1);
+    blueprint.behavior = {
+      version: 2,
+      mode: 'evolved',
+      reactions: { food: 'chase', wall: 'flee', harmless: 'ignore', dangerous: 'flee' },
+    };
+    blueprintName = BLUEPRINT_DEFAULT_NAME;
+    blueprintDescription = '';
+    editor();
+  });
+  get('behavior-controls').addEventListener('change', (event) => {
+    const select = (event.target as HTMLElement).closest<HTMLSelectElement>(
+      'select[data-reaction]',
+    );
+    if (!select || blueprint.behavior.version !== 2) return;
+    const category = select.dataset.reaction,
+      reaction = select.value;
+    if (
+      (category !== 'food' &&
+        category !== 'wall' &&
+        category !== 'harmless' &&
+        category !== 'dangerous') ||
+      (reaction !== 'ignore' && reaction !== 'chase' && reaction !== 'flee')
+    )
+      return;
+    endStroke();
+    invalidateDesign();
+    blueprint.behavior.reactions[category] = reaction;
   });
   get('blueprint-name').addEventListener('input', () => {
     invalidateDesign();

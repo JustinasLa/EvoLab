@@ -1466,3 +1466,37 @@ dialog a {
   text-align: left;
   margin-block: 12px;
 }
+
+#new-active-design {
+  width: 100%;
+  margin-bottom: 12px;
+}
+#reaction-editor {
+  min-width: 0;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.reaction-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.reaction-grid label {
+  min-width: 0;
+  font-size: 11px;
+}
+.reaction-grid select {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  margin-top: 6px;
+  padding: 6px;
+  color: var(--text);
+  background: var(--page);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+}
