@@ -1,4 +1,5 @@
 import { Ecosystem } from './ecosystem';
+import { EXPERIMENT_INTERVENTIONS, validExperimentIntervention } from './experiment-interventions';
 import { finite, integer, LIMIT, WORLD_VERSION, WORLD_MAX_BYTES } from './model';
 import {
   COMPARISON_MAX_TICKS,
@@ -25,7 +26,7 @@ function comparison(text: string, input: ComparisonPlan, expected?: ExperimentRe
   if (
     !input ||
     Object.keys(input).sort().join(',') !== 'horizonTick,intervention,treatmentTick' ||
-    !['none', 'heat', 'cold'].includes(input.intervention) ||
+    !validExperimentIntervention(input.intervention) ||
     !integer(input.horizonTick, 1, 1e9) ||
     !integer(input.treatmentTick, 0, input.horizonTick - 1)
   )
@@ -45,7 +46,7 @@ function comparison(text: string, input: ComparisonPlan, expected?: ExperimentRe
     throw new Error(
       'Comparison requires 1–3600 ticks and a treatment boundary before its horizon.',
     );
-  if (plan.intervention !== 'none') {
+  if (plan.intervention === 'heat' || plan.intervention === 'cold') {
     treatment.requireInterventionCapacity();
     if (
       treatment.eventUntil === plan.treatmentTick + 900 &&
@@ -89,18 +90,8 @@ function comparison(text: string, input: ComparisonPlan, expected?: ExperimentRe
         count < COMPARISON_BATCH_TICKS && control.tick < plan.horizonTick;
         count++
       ) {
-        if (treatment.tick === plan.treatmentTick && plan.intervention !== 'none') {
-          const before = { offset: treatment.eventOffset, until: treatment.eventUntil };
-          treatment.shock(plan.intervention);
-          treatment.appendIntervention({
-            kind: 'shock',
-            detail: {
-              kind: plan.intervention,
-              before,
-              after: { offset: treatment.eventOffset, until: treatment.eventUntil },
-            },
-          });
-        }
+        if (treatment.tick === plan.treatmentTick)
+          EXPERIMENT_INTERVENTIONS[plan.intervention].apply(treatment);
         for (const [position, world] of worlds.entries()) {
           world.step();
           if (!world.organisms.size && !branches[position].extinction)
