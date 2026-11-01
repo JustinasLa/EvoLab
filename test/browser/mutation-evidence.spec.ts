@@ -60,6 +60,17 @@ for (const blocked of [false, true])
       expect(actual.births).toBe(0);
       expect(actual.telemetry.pending.energy.reproductionSpent).toBe(0);
     } else expect(event.childGenome).toEqual(parent.genome);
+    await page.locator('#ecosystem-tab').click();
+    await page.locator('#lineage-heading').click();
+    await expect(page.locator('#birth-detail')).toContainText(
+      blocked ? 'Failed placement' : 'Clone birth',
+    );
+    await expect(page.locator('#birth-detail svg')).toHaveCount(blocked ? 1 : 2);
+    if (blocked)
+      await expect(page.locator('#birth-detail')).toContainText(
+        'No child genome or inherited delta exists',
+      );
+    expect(await saved(page)).toEqual(actual);
     const invalid = structuredClone(actual);
     invalid.lineageArchive.events.find((e) => e.kind === 'reproduction')!.tick = actual.tick + 1;
     await page.locator('#file').setInputFiles({
