@@ -1349,6 +1349,7 @@ export class Ecosystem {
     }
     return {
       ...(lineage ? { lineage } : {}),
+      ...(organism ? { selectedBaseline: this.lineage.baseline(organism.species) } : {}),
       terrain: { ...this.terrain },
       thermalRefuges: refugeSummary(this.thermalRefuges),
       anchorTemperature: organism
