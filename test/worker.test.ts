@@ -3587,3 +3587,55 @@ it('keeps active worlds bounded by native yielding, exact Step, stale-run reject
   expect(harness.tasks.length).toBeLessThanOrEqual(1);
   harness.dispose();
 });
+
+describe('actual selected perception through the worker protocol', () => {
+  it.each([1, 4, 12])(
+    'keeps exact Pause/Step and bounded selection with rendering off at speed %s',
+    (speed) => {
+      const world = new Ecosystem({ ...DEFAULTS, mutation: 0.4, climate: 0, nutrients: 0 }, false),
+        source = {
+          ...mouth,
+          cells: [
+            { x: 0, y: 0, type: 8 },
+            { x: 1, y: 0, type: 5 },
+          ],
+          behavior: {
+            version: 2,
+            mode: 'evolved',
+            reactions: { food: 'chase', wall: 'flee', harmless: 'ignore', dangerous: 'flee' },
+          },
+        } as Genome;
+      const mover = world.spawn(source, 60, 60)!;
+      mover.age = 1;
+      mover.direction = 0;
+      world.food[index(60, 57)] = 1;
+      const harness = workerHarness();
+      harness.send({ type: 'load', runId: 1, text: JSON.stringify(world.save()) });
+      harness.send({ type: 'pause' });
+      harness.send({ type: 'speed', value: speed });
+      harness.send({ type: 'display-view', view: { epoch: 1, enabled: false, visible: true } });
+      harness.send({ type: 'inspect', x: 60, y: 60 });
+      world.selectPerception(mover.id);
+      expect(harness.state().perception).toBeNull();
+      harness.send({ type: 'step' });
+      world.step();
+      expect(harness.save()).toEqual(world.save());
+      expect(harness.state().perception).toEqual(world.perception());
+      const trace = world.perception();
+      harness.state().perception.rays[0].cells.length = 0;
+      harness.send({ type: 'snapshot', display: false });
+      expect(harness.state().perception).toEqual(trace);
+      harness.send({ type: 'load', runId: 2, text: '{}' });
+      expect(harness.state().perception).toEqual(trace);
+      expect(harness.save()).toEqual(world.save());
+      harness.send({ type: 'inspect', x: 100, y: 100 });
+      expect(harness.state().perception).toBeNull();
+      harness.send({ type: 'load', runId: 3, text: JSON.stringify(world.save()) });
+      expect(harness.state().perception).toBeNull();
+      harness.send({ type: 'inspect', runId: 2, x: mover.x, y: mover.y });
+      expect(harness.state().perception).toBeNull();
+      expect(harness.save()).toEqual(world.save());
+      harness.dispose();
+    },
+  );
+});

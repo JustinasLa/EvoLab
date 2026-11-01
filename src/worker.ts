@@ -149,6 +149,7 @@ export function startWorker(
       revision,
       world: structuredClone(cachedPresentation),
       selected: organism ? observedOrganism(organism) : null,
+      perception: world!.perception(),
       settings: observedSettings(world!.settings),
       speed,
       playback: {
@@ -798,6 +799,7 @@ export function startWorker(
           case 'inspect':
             if (!coordinates(data)) throw new Error('Invalid inspection coordinates.');
             selected = world.occupied[index(data.x, data.y)];
+            world.selectPerception(selected);
             interactive ||= paused && view.visible;
             exactTelemetry = paused;
             break;

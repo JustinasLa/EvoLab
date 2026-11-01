@@ -20,6 +20,7 @@ lineages spread by surviving and producing descendants.
 - **Painted shade habitats** — explicitly enable bounded Shade, Lighten and Erase dabs that scale real leaf energy and food production together; inspect current leaf light separately from temperature and chart measured energy gains and costs.
 - **Design your own life** — draw connected organisms, choose their preferred temperature, and place them directly in the ecosystem.
 - **Directional eye reactions** — start a new active design with inherited chase, flee or ignore responses to food, walls and organisms; forward sight respects body rotation, occlusion and real movement costs.
+- **Inspect inherited sight** — active reactions can mutate at birth; inspect the selected organism’s actual last rays, occlusions and chosen direction with its observation tick.
 - **Keep inherited designs** — standalone blueprints preserve complete anatomy, traits and reactions; existing passive designs and ordinary presets retain legacy steering.
 - **Inspect the survivors** — follow population, dominant lineages, anatomy, energy, offspring and recent lineage ancestry.
 - **Explore at your pace** — pan, zoom, pause, single-step, and change simulation speed independently of rendering.
@@ -54,7 +55,10 @@ reversible preservation of opaque genome and cell data. Version-1 reaction table
 are tested as permanently passive metadata. Explicit active designs have separate
 real-engine scenes for occlusion, deterministic ties, food acquisition, funded
 reproduction, threat retreat and movement costs, plus complete blueprint/world
-round trips and native designer, keyboard and local-library checks.
+round trips and native designer, keyboard and local-library checks. Active birth
+mutation tests cover bounded reaction transitions and real inherited differences;
+selected-perception tests compare exact engine continuations with observation,
+rendering and selection changes, including death and rejected imports.
 
 Playwright exercises the built application in desktop and mobile Chromium,
 including real workers, population changes, inspection, organism design, painting,

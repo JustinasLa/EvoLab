@@ -41,6 +41,25 @@ export const COLORS = [
 export const CELL_NAMES = ['Mouth', 'Leaf', 'Motor', 'Stinger', 'Armor', 'Eye'];
 export type CellType = 3 | 4 | 5 | 6 | 7 | 8;
 export type Reaction = 'ignore' | 'chase' | 'flee';
+export type PerceptionCategory = 'food' | 'wall' | 'harmless' | 'dangerous';
+export interface PerceptionRay {
+  eye: number;
+  origin: number;
+  heading: number;
+  cells: number[];
+  stop: PerceptionCategory | 'self' | 'range';
+  reaction: Reaction | null;
+}
+export interface Perception {
+  id: number;
+  tick: number;
+  rays: PerceptionRay[];
+  chosenEye: number | null;
+  direction: number;
+  moved: boolean;
+  finalDirection: number;
+  finalRotation: number;
+}
 export type Behavior =
   | { version: 1; mode: 'legacy' }
   | {
@@ -375,6 +394,7 @@ export interface ControlState {
   revision: number;
   world: WorldPresentation;
   selected: Organism | null;
+  perception: Perception | null;
   settings: Settings;
   speed: Speed;
   playback: PlaybackState;
