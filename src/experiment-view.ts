@@ -1,4 +1,5 @@
 import { renderComparisonReport, type ComparisonMetric } from './experiment-report';
+import { mountBatches } from './batch-view';
 import { integer } from './model';
 import {
   COMPARISON_MAX_TICKS,
@@ -69,6 +70,7 @@ export function mountComparisons(
   };
   const start = (): void => {
     if (!alive || capture || worker) return;
+    batches.invalidate();
     clear();
     const duration = Number(get<HTMLInputElement>('duration').value),
       delay = Number(get<HTMLInputElement>('delay').value),
@@ -186,6 +188,7 @@ export function mountComparisons(
     const file = input.files?.[0];
     input.value = '';
     if (!alive || !file || reading) return;
+    batches.invalidate();
     clear();
     reading = true;
     const owner = generation,
@@ -209,6 +212,14 @@ export function mountComparisons(
   };
   input.addEventListener('change', readRecipe);
   listeners.push(() => input.removeEventListener('change', readRecipe));
+  const batches = mountBatches(
+    get('status').closest('details') ?? get('status'),
+    hooks.context,
+    () => {
+      clear();
+      status('Comparison cleared: an independent batch started.');
+    },
+  );
   return {
     saved(text: string, completedTick: number): void {
       if (!alive || !capture) return;
@@ -234,10 +245,12 @@ export function mountComparisons(
       if (capture) failed(message);
     },
     invalidate(): void {
+      batches.invalidate();
       if (capture || worker || result || reading)
         failed('Comparison cleared: the sandbox lifecycle changed.');
     },
     dispose(): void {
+      batches.dispose();
       clear();
       alive = false;
       for (const cleanup of listeners) cleanup();

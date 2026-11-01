@@ -28,6 +28,7 @@ lineages spread by surviving and producing descendants.
 - **Run deliberately** — choose an exact tick target, pause or cancel it, disable habitat rendering, and observe measured throughput and honest image freshness.
 - **Keep whole worlds** — save and restore terrain, every organism, counters, settings and random-generator state.
 - **Compare checkpoint climates** — fork one complete world into isolated control and heatwave/cold-snap branches, apply treatment at an exact tick, compare tick-aligned population, births/deaths, traits and stress on shared axes, and export/replay bounded recipes without editing the sandbox.
+- **Compare independent seeds** — run bounded single-founder batches with explicit burn-in, paired climate/shade/mutation presets, per-seed outcomes and empirical paired differences; export complete plans and checkpoints, replay completed evidence, and disclose failures, cancellation and extinction without counting replays as new replicates.
 
 EvoLab uses an original cellular simulation and interface. It is artificial life,
 not a calibrated biological model.
