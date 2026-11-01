@@ -87,6 +87,9 @@ it('navigates retained bookmarks with native controls and seeks only inside an i
 });
 it('preserves selection through updates and discloses pruned events and replay evidence', () => {
   const snapshot = recorder().snapshot();
+  snapshot.events[0].tick = 20;
+  view.update(snapshot);
+  expect(get<HTMLSelectElement>('select').options[0].textContent).toContain('Tick 20');
   get<HTMLSelectElement>('select').value = '2';
   get('select').dispatchEvent(new Event('change'));
   view.update(snapshot);

@@ -160,7 +160,10 @@ export function mountEvents(
         ? `Recording since tick ${next.originTick}; observed tick ${next.tick}. ${next.evicted} journal entries and ${next.evidenceEvicted} checkpoint pairs evicted. ${next.problem}`
         : 'Recording off; no earlier history retained.';
       const selected = select.value;
-      const signature = next?.events.map((event) => `${event.id}:${event.replay}`).join(',') ?? '';
+      const signature =
+        next?.events
+          .map((event) => `${event.id}:${event.tick}:${event.kind}:${event.replay}`)
+          .join(',') ?? '';
       if (select.dataset.signature !== signature) {
         select.dataset.signature = signature;
         select.replaceChildren(

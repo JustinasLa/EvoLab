@@ -2697,7 +2697,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     context: () => `${generation}:${runId}:${worldRequest}`,
     record: (enabled) => !lifecycleBusy() && send({ type: 'event-recording', enabled }),
     request: (eventId) =>
-      !lifecycleBusy() && !hasOwner('event-replay') && send({ type: 'event-replay', eventId }),
+      !lifecycleBusy() &&
+      !hasOwner('event-recording') &&
+      !hasOwner('event-replay') &&
+      send({ type: 'event-replay', eventId }),
   });
   const checkpoints = mountCheckpoints(root, {
     context: () => `${generation}:${runId}:${worldRequest}`,

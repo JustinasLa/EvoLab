@@ -3,6 +3,7 @@ import { Ecosystem } from '../../src/ecosystem';
 import { EventRecorder, completeCheckpoint } from '../../src/event-journal';
 import { DEFAULTS, founder } from '../../src/model';
 import { EVENT_CAPACITY } from '../../src/event-model';
+import { receipt } from './support';
 
 it('measures opt-in recording cost and preserves complete trajectories over bounded long runs', () => {
   const receipts = [];
@@ -41,5 +42,5 @@ it('measures opt-in recording cost and preserves complete trajectories over boun
       completeEndpointsEqual: true,
     });
   }
-  console.log('EVENT_RECORDING_THROUGHPUT', JSON.stringify(receipts));
+  receipt('event-recording-throughput', receipts);
 });

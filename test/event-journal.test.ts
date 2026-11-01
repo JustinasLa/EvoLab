@@ -262,3 +262,48 @@ it('records in the authoritative worker without RNG changes and clears on reject
   ).toBeUndefined();
   dispose();
 });
+
+it('replays the exact ordered effects of edits from a fresh sealed boundary, including rejected placement RNG', () => {
+  const world = fixture();
+  const organism = [...world.organisms.values()][0];
+  organism.energy = 10;
+  organism.age = 900;
+  const messages: any[] = [];
+  const scope: Scope = { onmessage: null, postMessage: (data) => messages.push(data) };
+  const dispose = startWorker(
+    scope,
+    () => 0,
+    () => 0,
+  );
+  let commandId = 0;
+  const send = (data: any) =>
+    scope.onmessage!({ data: { runId: 0, commandId: ++commandId, ...data } } as MessageEvent);
+  send({ type: 'load', text: completeCheckpoint(world) });
+  send({ type: 'pause' });
+  send({ type: 'event-recording', enabled: true });
+  send({ type: 'step' });
+  send({ type: 'settings', settings: { nutrients: 0.02 } });
+  send({ type: 'shock', kind: 'heat' });
+  send({ type: 'paint', tool: 'plant', x: 40, y: 40, radius: 0, genome: founder(0) });
+  expect(messages.at(-1)).toMatchObject({
+    type: 'error',
+    message: expect.stringContaining('Placement blocked'),
+  });
+  send({ type: 'begin-stroke', strokeId: 1, tool: 'food', radius: 0 });
+  send({ type: 'paint', strokeId: 1, tool: 'food', x: 5, y: 5, radius: 0, genome: founder(0) });
+  send({ type: 'end-stroke', strokeId: 1 });
+  send({ type: 'save' });
+  const boundary = messages.at(-1).text;
+  for (let tick = 1; tick < 76; tick++) send({ type: 'step' });
+  send({ type: 'save' });
+  const originalEndpoint = messages.at(-1).text;
+  send({ type: 'event-replay', eventId: 3 });
+  const evidence = messages.at(-1).evidence;
+  expect(evidence.checkpoint).toBe(boundary);
+  expect(evidence.endpoint).toBe(originalEndpoint);
+  expect(evidence.sourceTick).toBe(1);
+  const isolated = replay(evidence, 40);
+  while (isolated.tasks.length) isolated.tasks.shift()!();
+  expect(isolated.messages.at(-1)).toMatchObject({ type: 'complete', tick: 40, verified: true });
+  dispose();
+});
