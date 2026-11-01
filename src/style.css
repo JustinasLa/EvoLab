@@ -1500,3 +1500,29 @@ dialog a {
   border-radius: var(--radius);
   font: inherit;
 }
+
+.mutation-weights {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+}
+.mutation-weights label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  align-items: center;
+  gap: 8px;
+}
+.mutation-weights input {
+  min-width: 0;
+  width: 100%;
+  min-height: 44px;
+}
+#mutation-fields {
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+}
+#mutation-apply {
+  width: 100%;
+}

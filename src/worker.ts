@@ -633,6 +633,17 @@ export function startWorker(
             if (stroke?.id === data.strokeId) stroke = null;
             mutation = false;
             break;
+          case 'mutation-policy': {
+            stroke = null;
+            const sequence = world.changeMutationPolicy(data.policy);
+            manualResult = {
+              status: sequence === null ? 'no-op' : 'applied',
+              rowSequence: sequence,
+            };
+            interactive ||= paused && view.visible;
+            exactTelemetry = paused;
+            break;
+          }
           case 'settings': {
             stroke = null;
             const sequence = world.changeSettings(data.settings);

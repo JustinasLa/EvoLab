@@ -1,3 +1,5 @@
+import { mountMutationControls } from './mutation-view';
+import { validMutationPolicy } from './mutation';
 import { emptyShade, shadeTool, shadeSummary, validShadeBrush } from './shade';
 import { createOrganismView } from './organism-view';
 import { mountCheckpoints } from './checkpoint-view';
@@ -158,6 +160,9 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
     case 'pause-on-extinction':
       if (typeof data.value !== 'boolean') throw new Error('Invalid extinction preference.');
       return { type: 'pause-on-extinction', value: data.value };
+    case 'mutation-policy':
+      if (!validMutationPolicy(data.policy)) throw new Error('Invalid mutation policy.');
+      return { type: 'mutation-policy', policy: structuredClone(data.policy) };
     case 'settings': {
       if (
         !data.settings ||
@@ -1040,6 +1045,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     updateCapture();
   }
   type TargetTicket = { wireId: number | null };
+  const mutationControls = mountMutationControls(root, (policy) => {
+    endStroke();
+    postTracked('mutation-policy', { policy });
+  });
   type Entry = {
     ticket: number;
     payload: CommandPayload;
@@ -1127,6 +1136,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         'begin-stroke',
         'paint',
         'settings',
+        'mutation-policy',
         'shock',
         'clear-walls',
         'regenerate-walls',
@@ -1144,6 +1154,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           'begin-stroke',
           'paint',
           'settings',
+          'mutation-policy',
           'shock',
           'clear-walls',
           'regenerate-walls',
@@ -1164,6 +1175,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       saveBlocked = unavailable || hasOwner('save') || !!downloads.save,
       state = Number(exportBlocked) + Number(saveBlocked) * 2;
     const manualBlocked = unavailable || manualCount() >= MANUAL_CAPACITY;
+    mutationControls.setBusy(manualBlocked || hasOwner('mutation-policy'));
     for (const action of [
       'clear-walls',
       'regenerate-walls',
@@ -2913,6 +2925,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       latestState = observation;
       installRefuges(observation.world.thermalRefuges);
       installShade(observation.world.shadeHabitats);
+      mutationControls.update(observation.world.mutationPolicy, observation.replacementId);
       const recipeRevision =
         replaceDraft && posted && ['start', 'load', 'regenerate-walls'].includes(posted.type)
           ? (posted.terrainRevision ?? -1)
@@ -3065,6 +3078,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
                       'end-stroke',
                       'paint',
                       'settings',
+                      'mutation-policy',
                       'shock',
                       'clear-walls',
                       'regenerate-walls',
@@ -3443,6 +3457,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     telemetry.dispose();
     lineageView.dispose();
     organismView.dispose();
+    mutationControls.dispose();
     cancelAnimationFrame(animation);
     terminate();
     window.removeEventListener('keydown', keyboard);

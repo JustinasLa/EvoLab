@@ -361,6 +361,7 @@ export interface LineagePresentation {
   current: (Species & { organismIds: number[] })[];
 }
 export type WorldPresentation = Pick<Frame, 'stats' | 'climate' | 'offset' | 'terrain'> & {
+  mutationPolicy: MutationPolicy;
   lineage?: LineagePresentation;
   selectedBaseline?: OrganismBaseline;
   thermalRefuges: RefugeSummary;
@@ -424,6 +425,7 @@ export type CommandPayload =
   | { type: 'speed'; value: Speed }
   | { type: 'pause-on-extinction'; value: boolean }
   | { type: 'display-view'; view: DisplayView }
+  | { type: 'mutation-policy'; policy: MutationPolicy }
   | { type: 'settings'; settings: Partial<Pick<Settings, 'mutation' | 'nutrients' | 'climate'>> }
   | { type: 'inspect'; x: number; y: number }
   | {
@@ -861,6 +863,7 @@ export interface MeasurementSource {
 }
 export type MeasurementFormat = 'csv' | 'json';
 export type ManualOperation =
+  | 'mutation-policy'
   | 'begin-stroke'
   | 'paint'
   | 'settings'
