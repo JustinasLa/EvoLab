@@ -1501,3 +1501,28 @@ it('projects a detached selected founding baseline without changing the complete
     status: 'legacy-unknown',
   });
 });
+
+it('uses parent lineage founding evidence and reports pruned baselines without inventing genomes', async () => {
+  const { LineageArchive } = await import('../src/lineage');
+  const world = empty();
+  world.changeTerrain('clear');
+  const parent = world.spawn(genome(), 10, 10)!;
+  const child = { ...parent, species: 2, id: 2, genome: { ...genome(), preference: 0.6 } };
+  const archive = new LineageArchive();
+  archive.birth(parent, 0, 'manual', null);
+  archive.birth(child, 1, 'mutation', parent.species);
+  expect(archive.baseline(child.species)).toEqual({
+    lineageId: parent.species,
+    relation: 'parent-lineage',
+    genome: parent.genome,
+    status: 'retained',
+  });
+  for (let species = 3; species <= 258; species++)
+    archive.birth({ ...child, species, id: species }, 2, 'manual', null);
+  expect(archive.baseline(child.species)).toEqual({
+    lineageId: parent.species,
+    relation: 'parent-lineage',
+    genome: null,
+    status: 'pruned',
+  });
+});

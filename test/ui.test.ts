@@ -4627,7 +4627,7 @@ describe('ecosystem desk', () => {
     for (let i = 0; i < 14; i++) emit(sample, organism);
     click('pause');
     emit(sample, null);
-    expect(get('inspector').textContent).toContain('Click any organism');
+    expect(get('organism-observed').textContent).toContain('Stale');
     const quiet = new Ecosystem(DEFAULTS, false).frame();
     for (let i = 0; i < 12; i++) emit(quiet);
     expect(get('lineages').textContent).toContain('quiet');
@@ -5511,7 +5511,7 @@ describe('authoritative playback presentation', () => {
           'empty-import': 'Original extinction cause unavailable',
         }[cause],
       );
-      expect(get('inspector').textContent).toContain('Click any organism');
+      expect(get('organism-observed').textContent).toContain('Stale');
       expect(get('lineages').textContent).toContain('quiet');
       const summary = get('extinction-summary').textContent;
       worker.postMessage.mockImplementation((data) => {
@@ -5829,7 +5829,7 @@ describe('display-only retained-world races', () => {
           expect(get('inspector').textContent).toContain('Organism 1');
           expect(get('extinction-summary').hidden).toBe(true);
         } else {
-          expect(get('inspector').textContent).toContain('Click any organism');
+          expect(get('organism-observed').textContent).toContain('Stale');
           expect(get('lineages').textContent).toContain('quiet');
           expect(get('extinction-summary').textContent).toContain('tick 72');
           expect(get('extinction-summary').textContent).toContain('age limit');
@@ -6651,4 +6651,91 @@ describe('complete local checkpoint worker integration', () => {
     expect(get('checkpoint-status').textContent).toContain('2.5 MB');
     expect(native.values.size).toBe(0);
   });
+});
+
+it('keeps follow, wrapped highlights and differences read-only through paused real-worker death, stale frames and replacement', async () => {
+  const bridge = realWorker(true);
+  bridge.deliver();
+  click('pause');
+  bridge.deliver();
+  const organism = bridge.save().organisms[0];
+  bridge.command({ type: 'inspect', x: organism.x, y: organism.y });
+  bridge.deliver();
+  paint(0);
+  bridge.deliver();
+  const before = bridge.save(),
+    commands = worker.commands.mock.calls.length;
+  expect(get('organism-diff').textContent).toContain('own lineage');
+  const painter = vi.spyOn(viewModule, 'draw');
+  click('follow-organism');
+  paint(1);
+  bridge.deliver();
+  expect(painter.mock.calls.at(-1)![3].wrapped).toBe(true);
+  expect(get('follow-status').textContent).toContain(`Following organism ${organism.id}`);
+  click('release-follow');
+  click('follow-organism');
+  paint(2);
+  bridge.deliver();
+  expect(worker.commands.mock.calls).toHaveLength(commands);
+  expect(bridge.save()).toEqual(before);
+  click('zoom-in');
+  expect(get('follow-status').textContent).toContain('off');
+  click('follow-organism');
+  paint(3);
+  bridge.deliver();
+  click('fit');
+  expect(get('follow-status').textContent).toContain('off');
+  click('follow-organism');
+  paint(4);
+  bridge.deliver();
+  root.querySelector<HTMLButtonElement>('[data-tool="pan"]')!.click();
+  pointer('pointerdown', 100, 100);
+  expect(get('follow-status').textContent).toContain('off');
+  window.dispatchEvent(new Event('pointerup'));
+  expect(bridge.save()).toEqual(before);
+  click('follow-organism');
+  paint(5);
+  bridge.deliver();
+  // An authoritative rejected import keeps the same world and identity.
+  await loadText('{}');
+  bridge.deliver();
+  expect(get('follow-status').textContent).toContain(`Following organism ${organism.id}`);
+  expect(bridge.save()).toEqual(before);
+  paint(6);
+  bridge.deliver();
+  // Hold an actual native frame lease while a later death control is accepted.
+  click('refresh-habitat');
+  const position = bridge.outbox.findIndex((data) => data.type === 'frame');
+  expect(position).toBeGreaterThanOrEqual(0);
+  const old = bridge.outbox.splice(position, 1)[0];
+  bridge.deliver();
+  root.querySelector<HTMLButtonElement>('[data-tool="erase"]')!.click();
+  const transform = viewport(get('world'), painter.mock.calls.at(-1)![3]);
+  pointer(
+    'pointerdown',
+    transform.left + (organism.x + 0.5) * transform.scale,
+    transform.top + (organism.y + 0.5) * transform.scale,
+  );
+  window.dispatchEvent(new Event('pointerup'));
+  bridge.deliver();
+  paint(8);
+  bridge.deliver();
+  expect(get('organism-observed').textContent).toContain('Stale');
+  expect(get('inspector').textContent).toContain(`Organism ${organism.id}`);
+  expect(get<HTMLButtonElement>('follow-organism').disabled).toBe(true);
+  const after = bridge.save();
+  worker.onmessage!({ data: old } as MessageEvent);
+  paint(9);
+  bridge.deliver();
+  expect(get('organism-observed').textContent).toContain('Stale');
+  expect(painter.mock.calls.at(-1)![5]).toBe(0);
+  expect(bridge.save()).toEqual(after);
+  await loadText(JSON.stringify(before));
+  bridge.deliver();
+  expect(get('organism-observed').textContent).toBe('');
+  expect(get('organism-diff').textContent).toBe('');
+  expect(get('follow-status').textContent).toContain('off');
+  click('reset');
+  bridge.deliver();
+  expect(get('inspector').textContent).toContain('Click any organism');
 });

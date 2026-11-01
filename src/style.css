@@ -1364,3 +1364,28 @@ dialog a {
   width: 100%;
   min-width: 0;
 }
+
+.follow-controls {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+#organism-diff {
+  overflow-wrap: anywhere;
+}
+#organism-diff table {
+  width: 100%;
+  font-size: 11px;
+  table-layout: fixed;
+}
+#organism-diff th,
+#organism-diff td {
+  overflow-wrap: anywhere;
+  text-align: left;
+  padding: 3px;
+}
+.baseline-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

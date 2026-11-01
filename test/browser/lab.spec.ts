@@ -7149,3 +7149,157 @@ test('unavailable checkpoint storage leaves explicit download and exact Step ava
   await page.locator('#step').click();
   await expect(page.locator('#tick')).toHaveText(`TICK ${(before.tick + 1).toLocaleString()}`);
 });
+
+for (const axis of ['horizontal', 'vertical'] as const) {
+  test(`organism follow crosses the ${axis} seam in the native worker, releases to manual camera and retains stale death evidence`, async ({
+    page,
+  }) => {
+    const reference = placementWorld();
+    reference.changeSettings({ climate: 0, mutation: 0, nutrients: 0 });
+    const genome: Genome = { ...founder(2), cells: [{ x: 0, y: 0, type: 5 }], tempo: 2 };
+    const organism = reference.spawn(
+      genome,
+      axis === 'horizontal' ? 239 : 120,
+      axis === 'vertical' ? 155 : 78,
+    )!;
+    organism.direction = axis === 'horizontal' ? 0 : 1;
+    organism.age = 1;
+    reference.random.state = 42; // first real unsighted trial keeps the stored heading
+    organism.energy = 0.12; // survive the seam step, then die naturally without reproduction
+    await page.addInitScript(() => {
+      const evidence = ((window as any).followCanvas = { outlines: [] as number[][] });
+      const fill = CanvasRenderingContext2D.prototype.fillRect;
+      CanvasRenderingContext2D.prototype.fillRect = function (x, y, width, height) {
+        if (this.canvas.id === 'world' && x === 0 && y === 0) evidence.outlines = [];
+        return fill.call(this, x, y, width, height);
+      };
+      const stroke = CanvasRenderingContext2D.prototype.strokeRect;
+      CanvasRenderingContext2D.prototype.strokeRect = function (x, y, width, height) {
+        if (this.canvas.id === 'world' && this.strokeStyle === '#ffffff')
+          evidence.outlines.push([x, y, width, height]);
+        return stroke.call(this, x, y, width, height);
+      };
+    });
+    await loadPlacementWorld(page, reference);
+    await page.locator('[data-tool="inspect"]').click();
+    const at = await placementCoordinate(page, organism.x, organism.y);
+    await page.locator('#world').click({
+      position: {
+        x: at.x - (await page.locator('#world').boundingBox())!.x,
+        y: at.y - (await page.locator('#world').boundingBox())!.y,
+      },
+    });
+    await expect(page.locator('#inspector')).toContainText(`Organism ${organism.id}`);
+    await expect(page.locator('#organism-diff')).toContainText('own lineage');
+    const before = await downloadWorld(page);
+    await page.locator('#follow-organism').click();
+    await expect(page.locator('#release-follow')).toBeFocused();
+    const centered = async () => {
+      await page.locator('#world').scrollIntoViewIfNeeded();
+      await expect
+        .poll(() =>
+          page.locator('#world').evaluate((canvas) => {
+            const c = canvas as HTMLCanvasElement;
+            return (window as any).followCanvas.outlines.some(
+              ([x, y, w, h]: number[]) =>
+                Math.abs(x + w / 2 - c.clientWidth / 2) < 0.01 &&
+                Math.abs(y + h / 2 - c.clientHeight / 2) < 0.01,
+            );
+          }),
+        )
+        .toBe(true);
+    };
+    await centered();
+    expect(await downloadWorld(page)).toEqual(before);
+    reference.step();
+    expect(axis === 'horizontal' ? organism.x : organism.y).toBe(0);
+    await page.locator('#step').click();
+    await expect(page.locator('#tick')).toHaveText('TICK 1');
+    await terrainNativeFrame(page);
+    await centered();
+    expect(JSON.parse((await downloadWorld(page)).toString())).toEqual(reference.save());
+    await page.locator('#release-follow').click();
+    await expect(page.locator('#follow-organism')).toBeFocused();
+    await page.locator('#follow-organism').click();
+    await page.locator('#zoom-in').click();
+    await expect(page.locator('#follow-status')).toHaveText('Camera follow off.');
+    await page.locator('#follow-organism').click();
+    await page.locator('#fit').click();
+    await expect(page.locator('#follow-status')).toHaveText('Camera follow off.');
+    await page.locator('#follow-organism').click();
+    await centered();
+    await page.locator('#release-follow').focus();
+    // Real energy exhaustion, with a separate native Step for each logical tick.
+    while (reference.organisms.has(organism.id)) {
+      reference.step();
+      await page.locator('#step').click();
+      await expect(page.locator('#tick')).toHaveText(`TICK ${reference.tick}`);
+    }
+    await expect(page.locator('#organism-observed')).toContainText(
+      `Stale — organism ${organism.id}`,
+    );
+    await expect(page.locator('#inspector')).toContainText(`Organism ${organism.id}`);
+    await expect(page.locator('#follow-organism')).toBeDisabled();
+    await expect(page.locator('#follow-status')).toHaveText('Camera follow off.');
+    expect(JSON.parse((await downloadWorld(page)).toString())).toEqual(reference.save());
+    await page
+      .locator('#file')
+      .setInputFiles({ name: 'replace.json', mimeType: 'application/json', buffer: before });
+    await expect(page.locator('#organism-observed')).toBeEmpty();
+    await expect(page.locator('#organism-diff')).toBeEmpty();
+    await expect(page.locator('#inspector')).toContainText('Click any organism');
+    await expect(page.locator('#follow-organism')).toBeDisabled();
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true);
+  });
+}
+
+test('selected inherited differences use retained parent-lineage endpoints and disclose legacy missing evidence', async ({
+  page,
+}) => {
+  const reference = placementWorld();
+  const parent = reference.spawn({ ...founder(0), cells: [{ x: 0, y: 0, type: 3 }] }, 40, 40)!;
+  const genome: Genome = {
+    ...parent.genome,
+    preference: 0.75,
+    tempo: 9,
+    cells: [
+      { x: 0, y: 0, type: 7 },
+      { x: 1, y: 0, type: 8 },
+    ],
+  };
+  const child = reference.spawn(genome, 100, 80, undefined, parent)!;
+  await loadPlacementWorld(page, reference);
+  const inspect = async () => {
+    await page.locator('[data-tool="inspect"]').click();
+    const at = await placementCoordinate(page, child.x, child.y);
+    await page.mouse.click(at.x, at.y);
+    await expect(page.locator('#inspector')).toContainText(`Organism ${child.id}`);
+  };
+  await inspect();
+  const before = await downloadWorld(page);
+  await expect(page.locator('#organism-diff')).toContainText(
+    `parent lineage #${parent.species} founding genome`,
+  );
+  await expect(page.locator('#organism-diff')).toContainText('(0,0): Mouth → Armor');
+  await expect(page.locator('#organism-diff')).toContainText('Added Eye at (1,0)');
+  await expect(page.locator('#organism-diff tbody tr').first()).toHaveText('preference0.50.750.25');
+  await page.locator('#follow-organism').click();
+  await page.locator('#release-follow').click();
+  expect(await downloadWorld(page)).toEqual(before);
+  const legacy = JSON.stringify(legacyV7(reference.save()));
+  await page.locator('#file').setInputFiles({
+    name: 'legacy.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(legacy),
+  });
+  await terrainNativeFrame(page);
+  await page.locator('#fit').click();
+  await inspect();
+  await expect(page.locator('#organism-diff')).toContainText(
+    'Baseline unavailable (legacy-unknown)',
+  );
+  await expect(page.locator('#organism-diff')).toContainText('No mutation history inferred');
+  expect(JSON.parse((await downloadWorld(page)).toString())).toEqual(Ecosystem.load(legacy).save());
+});

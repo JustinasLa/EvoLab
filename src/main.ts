@@ -1,3 +1,4 @@
+import { createOrganismView } from './organism-view';
 import { mountCheckpoints } from './checkpoint-view';
 import { mountComparisons } from './experiment-view';
 import './style.css';
@@ -55,7 +56,6 @@ import {
   draw,
   genomeSvg,
   markup,
-  organismHtml,
   point,
   placementGhost,
   transformDesign,
@@ -283,6 +283,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   const canvas = get<HTMLCanvasElement>('world'),
     buffer = document.createElement('canvas');
   const camera: Camera = { zoom: 1, x: 0, y: 0 };
+  const organismView = createOrganismView(root, canvas, camera, () => {
+    dirty = true;
+  });
   let hover: { x: number; y: number } | undefined,
     touchAnchor: { x: number; y: number } | undefined;
   function clearPlacement(): void {
@@ -1851,6 +1854,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     send(payload, revision);
   }
   function setZoom(next: number, anchorX?: number, anchorY?: number): void {
+    organismView.release();
     const old = viewport(canvas, camera),
       zoom = clamp(next, 0.5, 10),
       factor = zoom / camera.zoom;
@@ -1866,6 +1870,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       p = point(canvas, camera, event.clientX - rect.left, event.clientY - rect.top);
     if (!p) return;
     if (tool === 'inspect') {
+      organismView.clear();
       captureIntent = null;
       updateCapture();
       get<HTMLDetailsElement>('specimen-details').open = true;
@@ -1967,6 +1972,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         return;
       }
     }
+    if (tool === 'pan') organismView.release();
     ownerPointer = event.pointerId;
     dragging = true;
     lastX = event.clientX;
@@ -2030,7 +2036,8 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     { passive: false },
   );
   const fit = (): void => {
-    Object.assign(camera, { zoom: 1, x: 0, y: 0 });
+    organismView.release();
+    Object.assign(camera, { zoom: 1, x: 0, y: 0, wrapped: false });
     dirty = true;
   };
   canvas.addEventListener('dblclick', () => {
@@ -2632,7 +2639,6 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     selection: Organism | null,
     displayOnly = false,
   ): void {
-    const previousSelection = selected?.id;
     const previousPopulation = latestState?.world.stats.population;
     selected = selection;
     if (!stopped) acceptedObservationRun = runId;
@@ -2651,16 +2657,6 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     text('world-count', `${s.population} organism${s.population === 1 ? '' : 's'} · ${lineages}`);
     text('season', s.season);
     text('weather', s.event);
-    if (
-      displayOnly ||
-      paused ||
-      (s.population
-        ? updates % 4 === 1
-        : previousPopulation !== 0 || latestState?.world.stats.tick !== s.tick) ||
-      previousSelection !== selected?.id
-    )
-      get('inspector').innerHTML =
-        `${organismHtml(selected, next)}<p class="muted">Observed at tick ${s.tick}.</p>`;
     if (
       displayOnly ||
       (!s.population && previousPopulation !== 0) ||
@@ -2720,6 +2716,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   });
   let displayedLineage: WorldPresentation['lineage'];
   let displayedLineageReplacement = 0;
+  let displayedObservation: ControlState | undefined;
   get('lineage-explorer').addEventListener('toggle', () => {
     if (get<HTMLDetailsElement>('lineage-explorer').open) {
       changeView(desiredView.enabled, desiredView.visible, true);
@@ -2746,6 +2743,13 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           observation.world.stats.tick,
           observation.replacementId,
         );
+      organismView.update(
+        observation,
+        differentRun ||
+          observation.playback.paused ||
+          updates % 4 === 0 ||
+          selected?.id !== observation.selected?.id,
+      );
       renderObservation(
         observation.world,
         observation.selected,
@@ -3144,10 +3148,12 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         displayedRevision = pendingFrame.state.revision;
         displayedEpoch = pendingFrame.viewEpoch;
         displayedSelected = pendingFrame.selectedId;
+        displayedObservation = pendingFrame.state;
         displayedLineage = pendingFrame.state.world.lineage;
         displayedLineageReplacement = pendingFrame.state.replacementId;
         pendingFrame = null;
       }
+      if (displayedObservation) organismView.followFrame(displayedObservation);
       const anchor =
         tool === 'plant'
           ? (touchAnchor ?? (hover ? point(canvas, camera, hover.x, hover.y) : null))
@@ -3170,7 +3176,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         frame!,
         camera,
         thermal,
-        displayedSelected,
+        displayedLineageReplacement === latestState?.replacementId &&
+          selected?.id === displayedSelected
+          ? displayedSelected
+          : 0,
         ghost,
         displayedLineage
           ? lineageView.highlighted(displayedLineage, displayedLineageReplacement)
@@ -3233,6 +3242,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     pendingFrame = null;
     heldDisplay = null;
     latestState = undefined;
+    displayedObservation = undefined;
     latestTelemetry = null;
     viewIntent = null;
     targetTicket = undefined;
@@ -3258,6 +3268,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     librarySnapshot = { count: 0, rows: [] };
     telemetry.dispose();
     lineageView.dispose();
+    organismView.dispose();
     cancelAnimationFrame(animation);
     terminate();
     window.removeEventListener('keydown', keyboard);

@@ -14,6 +14,7 @@ import {
 } from './model';
 import { activeRefugeUnits, localTemperature } from './refuges';
 export interface Camera {
+  wrapped?: boolean;
   zoom: number;
   x: number;
   y: number;
@@ -46,6 +47,8 @@ export function point(
   const view = viewport(canvas, camera),
     cx = Math.floor((x - view.left) / view.scale),
     cy = Math.floor((y - view.top) / view.scale);
+  if (camera.wrapped)
+    return { x: ((cx % WIDTH) + WIDTH) % WIDTH, y: ((cy % HEIGHT) + HEIGHT) % HEIGHT };
   return cx >= 0 && cx < WIDTH && cy >= 0 && cy < HEIGHT ? { x: cx, y: cy } : null;
 }
 export function transformDesign(genome: Genome, action: 'rotate' | 'mirror'): Genome {
@@ -126,30 +129,44 @@ export function draw(
   }
   b.putImageData(pixels, 0, 0);
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(buffer, v.left, v.top, WIDTH * v.scale, HEIGHT * v.scale);
-  if (selected || highlighted.size) {
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 1.2;
-    for (let i = 0; i < frame.ids.length; i++)
-      if ((selected && frame.ids[i] === selected) || highlighted.has(frame.ids[i]))
-        ctx.strokeRect(
-          v.left + (i % WIDTH) * v.scale - 1,
-          v.top + Math.floor(i / WIDTH) * v.scale - 1,
-          v.scale + 2,
-          v.scale + 2,
-        );
-  }
-  ctx.strokeStyle = '#26313a';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(v.left - 0.5, v.top - 0.5, WIDTH * v.scale + 1, HEIGHT * v.scale + 1);
-  if (ghost) {
-    ctx.fillStyle = ghost.blocked ? '#ed708580' : '#66db8b80';
-    ctx.strokeStyle = ghost.blocked ? '#ed7085' : '#66db8b';
-    for (const i of ghost.positions) {
-      const x = v.left + (i % WIDTH) * v.scale,
-        y = v.top + Math.floor(i / WIDTH) * v.scale;
-      ctx.fillRect(x, y, v.scale, v.scale);
-      ctx.strokeRect(x, y, v.scale, v.scale);
+  const tileWidth = WIDTH * v.scale,
+    tileHeight = HEIGHT * v.scale;
+  const columns = camera.wrapped
+    ? [Math.floor(-v.left / tileWidth), Math.ceil((v.width - v.left) / tileWidth)]
+    : [0, 1];
+  const rows = camera.wrapped
+    ? [Math.floor(-v.top / tileHeight), Math.ceil((v.height - v.top) / tileHeight)]
+    : [0, 1];
+  for (let row = rows[0]; row < rows[1]; row++) {
+    for (let column = columns[0]; column < columns[1]; column++) {
+      const left = v.left + column * tileWidth,
+        top = v.top + row * tileHeight;
+      ctx.drawImage(buffer, left, top, tileWidth, tileHeight);
+      if (selected || highlighted.size) {
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.2;
+        for (let i = 0; i < frame.ids.length; i++)
+          if ((selected && frame.ids[i] === selected) || highlighted.has(frame.ids[i]))
+            ctx.strokeRect(
+              left + (i % WIDTH) * v.scale - 1,
+              top + Math.floor(i / WIDTH) * v.scale - 1,
+              v.scale + 2,
+              v.scale + 2,
+            );
+      }
+      ctx.strokeStyle = '#26313a';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(left - 0.5, top - 0.5, WIDTH * v.scale + 1, HEIGHT * v.scale + 1);
+      if (ghost) {
+        ctx.fillStyle = ghost.blocked ? '#ed708580' : '#66db8b80';
+        ctx.strokeStyle = ghost.blocked ? '#ed7085' : '#66db8b';
+        for (const i of ghost.positions) {
+          const x = left + (i % WIDTH) * v.scale,
+            y = top + Math.floor(i / WIDTH) * v.scale;
+          ctx.fillRect(x, y, v.scale, v.scale);
+          ctx.strokeRect(x, y, v.scale, v.scale);
+        }
+      }
     }
   }
 }
@@ -273,7 +290,7 @@ export const markup = `
         <div class="terrain-controls"><h3>Terrain</h3><label for="terrain-preset">Draft wall preset</label><select id="terrain-preset"><option value="open-field">Open field</option><option value="porous-ridges" selected>Porous ridges</option><option value="chambered-refuges">Chambered refuges</option></select><label class="terrain-follow"><input id="terrain-follow" type="checkbox" checked>Use world seed</label><label id="terrain-seed-label" for="terrain-seed" hidden>Terrain seed<input id="terrain-seed" type="number" min="0" max="4294967295" step="1" required value="42"></label><figure class="terrain-preview"><canvas id="terrain-preview" width="240" height="156" role="img" aria-labelledby="terrain-preview-caption"></canvas><figcaption id="terrain-preview-caption"></figcaption></figure><p id="terrain-committed" class="muted"></p><p id="terrain-draft-status" role="status"></p><button id="clear-walls" type="button" class="wide">Clear walls</button><p class="muted">Remove all walls; keep life and food.</p><button id="regenerate-walls" type="button" class="wide">Regenerate walls</button><p class="muted">Replaces walls; protects all living cells. Removes food only where new walls cover it. Actual walls may differ from the reset preview.</p></div>
         <button id="reset" class="secondary wide">Reseed world</button></details>
       </div>
-      <div id="organism-panel" class="panel" role="tabpanel" aria-labelledby="organism-tab" hidden><details id="specimen-details" class="specimen-section"><summary>Selected organism</summary><div id="inspector"></div></details><section class="designer-section"><div class="section-caption"><h2>Build a body</h2><button id="clear-design" class="quiet">Reset</button></div><div id="cell-palette" class="cell-palette">${CELL_NAMES.map((name, i) => `<button data-cell="${i + 3}" aria-pressed="${i === 1}" title="${name}: ${cellDescriptions[i]}"><i style="--cell:${COLORS[i + 3]}"></i>${name}</button>`).join('')}</div><p id="cell-description" class="muted">${cellDescriptions[1]}</p><div id="editor" class="editor" aria-label="Organism anatomy editor"></div><p id="behavior-status" class="muted"></p><p id="design-note" class="muted">Use 1–16 cells, connected edge to edge.</p><label class="slider-label" for="preference">Preferred temperature<output id="preference-value">20°</output></label><input id="preference" type="range" min="0" max="1" step="0.025" value="0.5">
+      <div id="organism-panel" class="panel" role="tabpanel" aria-labelledby="organism-tab" hidden><details id="specimen-details" class="specimen-section"><summary tabindex="0">Selected organism</summary><div id="inspector"></div><div class="follow-controls"><button id="follow-organism" type="button" disabled>Follow selected organism</button><button id="release-follow" type="button" disabled>Release follow</button></div><p id="follow-status" role="status"></p><p id="organism-observed"></p><section id="organism-diff" aria-label="Inherited differences"></section></details><section class="designer-section"><div class="section-caption"><h2>Build a body</h2><button id="clear-design" class="quiet">Reset</button></div><div id="cell-palette" class="cell-palette">${CELL_NAMES.map((name, i) => `<button data-cell="${i + 3}" aria-pressed="${i === 1}" title="${name}: ${cellDescriptions[i]}"><i style="--cell:${COLORS[i + 3]}"></i>${name}</button>`).join('')}</div><p id="cell-description" class="muted">${cellDescriptions[1]}</p><div id="editor" class="editor" aria-label="Organism anatomy editor"></div><p id="behavior-status" class="muted"></p><p id="design-note" class="muted">Use 1–16 cells, connected edge to edge.</p><label class="slider-label" for="preference">Preferred temperature<output id="preference-value">20°</output></label><input id="preference" type="range" min="0" max="1" step="0.025" value="0.5">
       <div class="blueprint-fields"><label for="blueprint-name">Blueprint name</label><input id="blueprint-name" type="text" maxlength="80" required><label for="blueprint-description">Description</label><textarea id="blueprint-description" maxlength="1000" rows="3"></textarea></div>
       <div class="blueprint-actions"><button id="import-blueprint">Import blueprint</button><button id="export-blueprint">Export blueprint</button></div><input id="blueprint-file" type="file" accept="application/json,.json" hidden><p id="designer-file-status" class="muted" role="status"></p>
       <div class="design-transforms" role="group" aria-label="Transform design"><button id="rotate-design" title="Rotate clockwise (R)">Rotate ↻ (R)</button><button id="mirror-design" title="Mirror horizontally (M)">Mirror ↔ (M)</button></div><p class="muted">Importing edits only this design. Choose Place in world, then click the habitat to create a new organism.</p><button id="plant-design" class="primary wide">Place in world</button></section>
