@@ -4920,6 +4920,103 @@ describe('standalone blueprint files', () => {
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
   });
 
+  it.each(['legacy', 'stored'])(
+    'creates a fresh active design without activating %s data or changing the paused world',
+    async (mode) => {
+      const bridge = realWorker();
+      bridge.deliver();
+      click('pause');
+      bridge.advance();
+      bridge.deliver();
+      const source = mode === 'stored' ? storedSensoryGenome() : founder(2);
+      await importDraft(
+        serializeBlueprint({ name: 'Retained', description: 'old metadata', genome: source }),
+      );
+      const before = bridge.save(),
+        old = structuredClone(source);
+      expect(root.querySelector('#reaction-editor')).toBeNull();
+      click('new-active-design');
+      const active = await exported();
+      expect(active.genome).toEqual({
+        ...founder(1),
+        behavior: {
+          version: 2,
+          mode: 'evolved',
+          reactions: { food: 'chase', wall: 'flee', harmless: 'ignore', dangerous: 'flee' },
+        },
+      });
+      expect(active.name).toBe('Untitled organism');
+      expect(active.description).toBe('');
+      expect(get('behavior-status').textContent).toContain('Active reactions');
+      expect(root.querySelectorAll('[data-reaction]')).toHaveLength(4);
+      expect(source).toEqual(old);
+      expect(bridge.save()).toEqual(before);
+      expect(get('run-state').textContent).toBe('PAUSED');
+      click('clear-design');
+      expect((await exported()).genome).toEqual(founder(0));
+      expect(root.querySelector('#reaction-editor')).toBeNull();
+    },
+  );
+
+  it('edits all inherited active reactions with stable native controls and complete detached placement', async () => {
+    const bridge = realWorker();
+    bridge.deliver();
+    click('pause');
+    bridge.advance();
+    bridge.deliver();
+    const source = storedSensoryGenome();
+    if (source.behavior.mode === 'evolved') source.behavior.version = 2;
+    await importDraft(
+      serializeBlueprint({
+        name: 'Active retained',
+        description: 'exact metadata',
+        genome: source,
+      }),
+    );
+    const before = bridge.save();
+    const edited = structuredClone(source);
+    for (const category of ['food', 'wall', 'harmless', 'dangerous'] as const) {
+      const select = get<HTMLSelectElement>(`reaction-${category}`);
+      select.focus();
+      for (const reaction of ['ignore', 'chase', 'flee'] as const) {
+        select.value = reaction;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        if (edited.behavior.mode === 'evolved') edited.behavior.reactions[category] = reaction;
+        expect((await exported()).genome).toEqual(edited);
+        expect(get(`reaction-${category}`)).toBe(select);
+        expect(document.activeElement).toBe(select);
+      }
+    }
+    const controls = get('behavior-controls');
+    controls.dispatchEvent(new Event('change', { bubbles: true }));
+    const forged = document.createElement('select');
+    controls.append(forged);
+    forged.dataset.reaction = 'unknown';
+    forged.innerHTML = '<option value="chase">Chase</option>';
+    forged.dispatchEvent(new Event('change', { bubbles: true }));
+    forged.dataset.reaction = 'food';
+    forged.innerHTML = '<option value="attack">Attack</option>';
+    forged.dispatchEvent(new Event('change', { bubbles: true }));
+    expect((await exported()).genome).toEqual(edited);
+    expect(bridge.save()).toEqual(before);
+    click('plant-design');
+    pointer('pointerdown');
+    window.dispatchEvent(new Event('pointerup'));
+    bridge.deliver();
+    const planted = bridge.save();
+    expect(planted.organisms.at(-1)!.genome).toEqual(edited);
+    expect(planted.births).toBe(before.births);
+    click('new-active-design');
+    expect(bridge.save()).toEqual(planted);
+    click('clear-design');
+    const passiveForged = document.createElement('select');
+    passiveForged.dataset.reaction = 'food';
+    passiveForged.innerHTML = '<option value="flee">Flee</option>';
+    get('behavior-controls').append(passiveForged);
+    passiveForged.dispatchEvent(new Event('change', { bubbles: true }));
+    expect((await exported()).genome).toEqual(founder(0));
+  });
+
   it.each(['pointer-plant', 'inspector-capture'])(
     'detaches complete evolved and opaque data through real %s',
     async (boundary) => {
@@ -5316,6 +5413,8 @@ describe('standalone blueprint files', () => {
     'name',
     'description',
     'reset-design',
+    'active-design',
+    'reaction',
     'rotate',
     'mirror',
     'copy',
@@ -5327,6 +5426,7 @@ describe('standalone blueprint files', () => {
     'dispose',
   ])('ignores a delayed result and error after %s', async (action) => {
     emit(sample, organism);
+    if (action === 'reaction') click('new-active-design');
     let finish!: (value: string) => void, reject!: (reason: unknown) => void;
     const change = async () => {
       if (action === 'cell')
@@ -5335,6 +5435,12 @@ describe('standalone blueprint files', () => {
       if (action === 'name') set('blueprint-name', 'edited');
       if (action === 'description') set('blueprint-description', 'edited');
       if (action === 'reset-design') click('clear-design');
+      if (action === 'active-design') click('new-active-design');
+      if (action === 'reaction') {
+        const control = get<HTMLSelectElement>('reaction-food');
+        control.value = 'flee';
+        control.dispatchEvent(new Event('change', { bubbles: true }));
+      }
       if (action === 'rotate') click('rotate-design');
       if (action === 'mirror') click('mirror-design');
       if (action === 'copy') click('copy-organism');
