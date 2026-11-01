@@ -1,4 +1,4 @@
-import { createComparison } from './experiments';
+import { createComparison, createRecipeComparison } from './experiments';
 import type { ComparisonResponse } from './experiment-model';
 
 export interface ComparisonScope {
@@ -53,10 +53,13 @@ export function startComparisonWorker(
     if (!alive || !data) return;
     if (data.type === 'cancel') dispose();
     else if (data.type === 'ack') progressPending = false;
-    else if (data.type === 'start' && !started) {
+    else if ((data.type === 'start' || data.type === 'replay') && !started) {
       started = true;
       try {
-        runner = createComparison(data.text, data.plan);
+        runner =
+          data.type === 'replay'
+            ? createRecipeComparison(data.text)
+            : createComparison(data.text, data.plan);
         scheduled = defer(tick);
       } catch (error) {
         fail(error);
