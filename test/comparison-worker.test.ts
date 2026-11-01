@@ -70,6 +70,32 @@ describe('bounded comparison worker', () => {
     expect(test.cancel).toHaveBeenCalledTimes(1);
     reference.dispose();
   });
+  it('validates and reproduces recipes entirely in the worker and rejects tampered receipts', () => {
+    const original = createComparison(text(), plan);
+    while (original.advance(() => 0).tick < plan.horizonTick) {}
+    const result = original.result();
+    original.dispose();
+    const replay = harness();
+    replay.send({ type: 'replay', text: result.recipe });
+    while (replay.tasks.length) replay.tasks.shift()!();
+    expect(replay.messages.at(-1)).toEqual({
+      type: 'complete',
+      result: { ...result, reproduced: true },
+    });
+    const invalid = harness();
+    invalid.send({ type: 'replay', text: '{}' });
+    expect(invalid.messages[0]).toMatchObject({ type: 'error' });
+    expect(invalid.tasks).toHaveLength(0);
+    const changed = JSON.parse(result.recipe);
+    changed.control.samples[0].meanPreference = 0.99;
+    const altered = harness();
+    altered.send({ type: 'replay', text: JSON.stringify(changed) });
+    while (altered.tasks.length) altered.tasks.shift()!();
+    expect(altered.messages.at(-1)).toMatchObject({
+      type: 'error',
+      message: expect.stringContaining('differs'),
+    });
+  });
   it('acknowledges compact progress, ignores unrelated input and cancels queued/late work', () => {
     const test = harness();
     const receive = test.scope.onmessage!;

@@ -145,17 +145,18 @@ function comparison(text: string, input: ComparisonPlan, expected?: ExperimentRe
         control: receipt(branches[0]),
         treatment: receipt(branches[1]),
       };
+      const recorded = expected;
       if (
-        expected &&
+        recorded &&
         !(['control', 'treatment'] as const).every(
           (branch) =>
             recipe[branch].samples.every((sample, i) =>
               Object.entries(sample).every(
-                ([key, value]) => value === expected[branch].samples[i][key as keyof typeof sample],
+                ([key, value]) => value === recorded[branch].samples[i][key as keyof typeof sample],
               ),
             ) &&
-            recipe[branch].extinction?.tick === expected[branch].extinction?.tick &&
-            recipe[branch].extinction?.cause === expected[branch].extinction?.cause,
+            recipe[branch].extinction?.tick === recorded[branch].extinction?.tick &&
+            recipe[branch].extinction?.cause === recorded[branch].extinction?.cause,
         )
       )
         throw new Error(
