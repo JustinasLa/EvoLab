@@ -3154,7 +3154,7 @@ describe('integrated extinction and telemetry', () => {
     expect(harness.tasks).toHaveLength(0);
   });
 
-  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10])(
+  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 11])(
     'migrates/restores v%i then preserves terminal and pending history through an empty save continuation',
     (version) => {
       const harness = workerHarness();
@@ -3184,7 +3184,9 @@ describe('integrated extinction and telemetry', () => {
                       ? legacyV8(current)
                       : version === 9
                         ? legacyV9(current)
-                        : current;
+                        : version === 10
+                          ? { ...current, version: 10 as const }
+                          : current;
       expect(file.version).toBe(version);
       if (file.version === 2) expect(file).not.toHaveProperty('telemetry');
       else {
@@ -3212,12 +3214,12 @@ describe('integrated extinction and telemetry', () => {
         });
       if (file.version >= 4) {
         expect(imported).toEqual(
-          file.version === 10
-            ? file
+          file.version >= 10
+            ? { ...file, version: 11 }
             : file.version >= 5
               ? {
                   ...file,
-                  version: 10,
+                  version: 11,
                   shadeHabitats: { version: 1, enabled: false, cells: [] },
                   organisms: imported.organisms,
                   lineageArchive: imported.lineageArchive,
@@ -3230,7 +3232,7 @@ describe('integrated extinction and telemetry', () => {
                 }
               : {
                   ...file,
-                  version: 10,
+                  version: 11,
                   shadeHabitats: { version: 1, enabled: false, cells: [] },
                   organisms: imported.organisms,
                   lineageArchive: imported.lineageArchive,
@@ -3254,7 +3256,7 @@ describe('integrated extinction and telemetry', () => {
       harness.advance();
       reference.step();
       const terminal = harness.save();
-      expect(terminal.version).toBe(10);
+      expect(terminal.version).toBe(11);
       expect(terminal.telemetry.version).toBe(2);
       expect(terminal.telemetry.samples.at(-1)).toMatchObject({
         fromTick: version === 2 ? 89 : 60,
@@ -3534,4 +3536,52 @@ describe('failed-load retained-world recovery', () => {
       runId: 5,
     });
   });
+});
+
+it('keeps active worlds bounded by native yielding, exact Step, stale-run rejection and complete failure recovery', () => {
+  const world = new Ecosystem({ ...DEFAULTS, climate: 0, nutrients: 0, mutation: 0 }, false);
+  const active: Genome = {
+    ...mouth,
+    cells: [
+      { x: 0, y: 0, type: 8 },
+      { x: 1, y: 0, type: 5 },
+    ],
+    behavior: {
+      version: 2,
+      mode: 'evolved',
+      reactions: { food: 'chase', wall: 'flee', harmless: 'ignore', dangerous: 'flee' },
+    },
+  };
+  const placed = world.spawn(active, 60, 60)!;
+  placed.age = 1;
+  world.food[index(60, 57)] = 1;
+  const extinct = world.spawn(active, 10, 10)!;
+  world.kill(extinct, 'manual');
+  const harness = workerHarness();
+  harness.load(world.save());
+  harness.send({ type: 'pause' });
+  for (const speed of [1, 4, 12]) {
+    harness.send({ type: 'speed', value: speed });
+    harness.send({ type: 'step' });
+    world.step();
+    expect(harness.save()).toEqual(world.save());
+  }
+  const before = harness.saveText(),
+    candidate = JSON.parse(before);
+  // A complete retained founding genome is validated, including its last action.
+  candidate.lineageArchive.summaries.at(-1).foundingGenome.behavior.reactions.dangerous = 'attack';
+  harness.send({ type: 'load', runId: 2, text: JSON.stringify(candidate) });
+  expect(harness.last('error').message).toContain('lineage archive');
+  expect(harness.saveText()).toBe(before);
+  harness.send({ type: 'step', runId: 1 });
+  expect(harness.last('error').code).toBe('stale-run');
+  expect(harness.saveText()).toBe(before);
+  const retained = Ecosystem.load(before);
+  harness.send({ type: 'step', runId: 2 });
+  retained.step();
+  expect(harness.save()).toEqual(retained.save());
+  harness.send({ type: 'pause' });
+  harness.send({ type: 'pause' });
+  expect(harness.tasks.length).toBeLessThanOrEqual(1);
+  harness.dispose();
 });

@@ -193,6 +193,8 @@ export function genomeSvg(genome: Genome, size = 52): string {
   return `<svg width="${size}" height="${size}" viewBox="${left - (side - width) / 2} ${top - (side - height) / 2} ${side} ${side}" shape-rendering="crispEdges" aria-hidden="true">${genome.cells.map((c) => `<rect x="${c.x}" y="${c.y}" width=".88" height=".88" fill="${COLORS[c.type]}"/>`).join('')}</svg>`;
 }
 export function behaviorStatus(genome: Genome): string {
+  if (genome.behavior.version === 2)
+    return 'Active reactions — eyes steer with inherited chase, flee or ignore rules.';
   return genome.behavior.mode === 'evolved'
     ? 'Stored reactions — inactive; steering uses legacy rules.'
     : 'Legacy behavior — steering uses legacy rules.';

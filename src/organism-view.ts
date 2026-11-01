@@ -32,7 +32,7 @@ export function genomeDiff(current: Genome, baseline?: OrganismBaseline): string
   const describe = (genome: Genome) =>
     genome.behavior.mode === 'legacy'
       ? 'legacy'
-      : `evolved: food ${genome.behavior.reactions.food}, wall ${genome.behavior.reactions.wall}, harmless ${genome.behavior.reactions.harmless}, dangerous ${genome.behavior.reactions.dangerous}`;
+      : `${genome.behavior.version === 2 ? 'active2' : 'evolved'}: food ${genome.behavior.reactions.food}, wall ${genome.behavior.reactions.wall}, harmless ${genome.behavior.reactions.harmless}, dangerous ${genome.behavior.reactions.dangerous}`;
   const beforeBehavior = describe(previous),
     afterBehavior = describe(current);
   const behavior =

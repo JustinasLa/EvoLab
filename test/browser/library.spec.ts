@@ -1671,7 +1671,7 @@ test('native overlapping two-page cap, full-string CAS and repair eligibility ra
     revision: 0,
     blueprint: serializeBlueprint(candidate().blueprint),
   });
-  const futureBlueprint = JSON.stringify({ ...candidate().blueprint, version: 3, extra: true });
+  const futureBlueprint = JSON.stringify({ ...candidate().blueprint, version: 4, extra: true });
   const replacements = [
     JSON.stringify({ recordVersion: 2, extra: true }),
     JSON.stringify({ recordVersion: 1, revision: 1, blueprint: futureBlueprint }),
@@ -1951,7 +1951,7 @@ test('composed library operations preserve complete world9 archive and measureme
   await page.locator('[data-shock="heat"]').click();
   const before = await pausedSave(page);
   const world = JSON.parse(before.toString()) as WorldFile;
-  expect(world.version).toBe(10);
+  expect(world.version).toBe(11);
   expect(world.lineageArchive.summaries.length).toBeGreaterThan(0);
   expect(world.telemetry.version).toBe(2);
   expect(world.interventions.version).toBe(4);

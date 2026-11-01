@@ -175,7 +175,7 @@ test('B1 genuine blueprint1 migrates passively through complete native exports a
   );
   expect(blueprint).toEqual({
     ...old,
-    version: 2,
+    version: 3,
     genome: { ...old.genome, behavior: { version: 1, mode: 'legacy' } },
   });
   await plant(page, reference, blueprint.genome, 220, 140);
@@ -504,4 +504,105 @@ test('B6 read-only inactive disclosure fits four widths and observation/camera/k
   await clean(page, info, 3);
   await attachWorld(info, 'B6-complete-layout-evidence.json', layouts);
   expect(layouts.map((layout) => layout.fits)).toEqual([true, true, true, true]);
+});
+
+test('C1 active rays use the native worker with exact paused continuation at every speed', async ({
+  page,
+}, info) => {
+  const setup = new Ecosystem(
+    { ...DEFAULTS, seed: 42, nutrients: 0, mutation: 0, climate: 0 },
+    false,
+  );
+  const source: Genome = {
+    cells: [
+      { x: 0, y: 0, type: 8 },
+      { x: 1, y: 0, type: 5 },
+      { x: 1, y: -1, type: 3 },
+    ],
+    preference: 0.5,
+    tolerance: 0.2,
+    tempo: 2,
+    behavior: {
+      version: 2,
+      mode: 'evolved',
+      reactions: { food: 'chase', wall: 'flee', harmless: 'ignore', dangerous: 'flee' },
+    },
+  };
+  const parent = setup.spawn(source, 60, 60)!;
+  parent.age = 28;
+  parent.energy = 17.95;
+  parent.direction = 0;
+  setup.food[58 * 240 + 60] = 1;
+  const fixture = JSON.stringify(setup.save());
+  await page.goto('/');
+  await pauseReady(page);
+  for (const speed of [1, 4, 12]) {
+    await page.locator('#speed').selectOption(String(speed));
+    const tick = await importPaused(page, fixture),
+      reference = Ecosystem.load(fixture);
+    advance(reference, tick);
+    expect(rawWorld(await nativeDownload(page))).toEqual(reference.save());
+    await page.locator('#step').click();
+    await expect(page.locator('#tick')).toHaveText(`TICK ${(tick + 1).toLocaleString('en-US')}`);
+    reference.step();
+    expect(rawWorld(await nativeDownload(page))).toEqual(reference.save());
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    await attachWorld(info, `C1-active-speed${speed}.json`, reference.save());
+  }
+  await clean(page, info, 6);
+});
+
+test('C2 explicit active import/placement and complete failed-import recovery retain the native world', async ({
+  page,
+}, info) => {
+  const reference = await emptyHabitat(page),
+    source: Genome = {
+      ...founder(1),
+      cells: [
+        { x: 0, y: 0, type: 8 },
+        { x: 1, y: 0, type: 5 },
+      ],
+      behavior: {
+        version: 2,
+        mode: 'evolved',
+        reactions: { food: 'chase', wall: 'flee', harmless: 'ignore', dangerous: 'flee' },
+      },
+    };
+  const active = serializeBlueprint({
+    name: 'Active design',
+    description: 'Explicit opt-in',
+    genome: source,
+  });
+  await importBlueprint(page, active);
+  await expect(page.locator('#behavior-status')).toContainText('Active reactions');
+  expect(
+    parseBlueprint((await nativeDownload(page, '#export-blueprint')).toString('utf8')).genome,
+  ).toEqual(source);
+  await plant(page, reference, source, 220, 140);
+  const before = await nativeDownload(page);
+  expect(rawWorld(before)).toEqual(reference.save());
+  const old = JSON.parse(active);
+  old.version = 2;
+  await page.locator('#blueprint-file').setInputFiles({
+    name: 'old-active.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(old)),
+  });
+  await expect(page.locator('#notice')).toContainText('Blueprint needs');
+  await expect(page.locator('#behavior-status')).toContainText('Active reactions');
+  const candidate = JSON.parse(before.toString('utf8'));
+  candidate.lineageArchive.summaries.at(-1).foundingGenome.behavior.reactions.dangerous = 'attack';
+  await page.locator('#file').setInputFiles({
+    name: 'bad-active.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(candidate)),
+  });
+  await expect(page.locator('#notice')).toContainText('lineage archive');
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  expect(await nativeDownload(page)).toEqual(before);
+  await page.locator('#step').click();
+  reference.step();
+  await expect(page.locator('#tick')).toHaveText('TICK 1');
+  expect(rawWorld(await nativeDownload(page))).toEqual(reference.save());
+  await clean(page, info, 4);
 });

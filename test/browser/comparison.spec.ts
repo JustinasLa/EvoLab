@@ -340,7 +340,7 @@ test('native recipes export the complete source and actual observations, replay 
   expect(recipe.control.samples).toEqual(first.control.samples);
   expect(recipe.treatment.samples).toEqual(first.treatment.samples);
   expect(recipe.plan).toEqual(first.plan);
-  expect(recipe.rules).toEqual({ id: 'evolab-drift-cellular', version: 3, worldVersion: 10 });
+  expect(recipe.rules).toEqual({ id: 'evolab-drift-cellular', version: 4, worldVersion: 11 });
   const metric = page.locator('#comparison-metric');
   for (const name of [
     'population',
@@ -395,7 +395,7 @@ test('native recipe validation rejects changed observations, invalid retained st
       'checkpoint',
       (recipe) => {
         const world = JSON.parse(recipe.checkpoint);
-        world.organisms[0].genome.behavior.version = 2;
+        world.organisms[0].genome.behavior.version = 3;
         recipe.checkpoint = JSON.stringify(world);
       },
     ],

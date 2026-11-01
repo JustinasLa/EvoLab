@@ -145,3 +145,24 @@ it('retains only the dead individual last observed summary, clears on replacemen
   expect(f.get('specimen-details').querySelector('summary')).toBe(document.activeElement);
   f.view.dispose();
 });
+
+it('distinguishes active2 from otherwise identical permanently passive stored reactions', () => {
+  const { organism, get, view, state } = fixture();
+  const reactions = { food: 'chase', wall: 'flee', harmless: 'ignore', dangerous: 'flee' } as const;
+  const previous = {
+    ...founder(1),
+    behavior: { version: 1 as const, mode: 'evolved' as const, reactions },
+  };
+  organism.genome = { ...previous, behavior: { version: 2, mode: 'evolved', reactions } };
+  const baseline = {
+    genome: previous,
+    status: 'retained' as const,
+    relation: 'own-lineage' as const,
+    lineageId: organism.species,
+  };
+  expect(genomeDiff(organism.genome, baseline)).toContain('evolved: food chase');
+  expect(genomeDiff(organism.genome, baseline)).toContain('active2: food chase');
+  view.update(state(1));
+  expect(get('inspector').textContent).toContain('Active reactions');
+  view.dispose();
+});

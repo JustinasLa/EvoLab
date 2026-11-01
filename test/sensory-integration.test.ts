@@ -50,7 +50,7 @@ describe('world9 passive sensory composition with accepted world8 archives', () 
   });
 
   it.each(['living', 'extinct founding'] as const)(
-    'rejects unsupported active behavior2 in a %s genome without changing passive continuation',
+    'rejects unsupported future behavior3 in a %s genome without changing passive continuation',
     (boundary) => {
       const world = new Ecosystem(undefined, false);
       const placed = world.spawn(storedSensoryGenome(), 20, 20)!;
@@ -61,7 +61,7 @@ describe('world9 passive sensory composition with accepted world8 archives', () 
           boundary === 'living'
             ? candidate.organisms[0].genome
             : candidate.lineageArchive.summaries[0].foundingGenome!;
-      genome.behavior.version = 2 as any;
+      genome.behavior.version = 3 as any;
       expect(validGenome(genome)).toBe(false);
       expect(() => cloneGenome(genome)).toThrow('Invalid inherited genome');
       const blueprint = JSON.parse(

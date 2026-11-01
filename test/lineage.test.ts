@@ -1242,7 +1242,7 @@ describe('bounded observed lineage lifecycle', () => {
   it('records the genuine founder and detached ordered founding fields without extensions', () => {
     const world = new Ecosystem();
     const saved = world.save();
-    expect(saved.version).toBe(10);
+    expect(saved.version).toBe(11);
     expect(saved.nextSpecies).toBe(5);
     expect(saved.lineageArchive).toMatchObject({
       version: 1,

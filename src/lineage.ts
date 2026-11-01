@@ -72,6 +72,7 @@ function inherited(genome: Genome): Genome {
 }
 export function sameInherited(first: Genome, second: Genome): boolean {
   return (
+    first.behavior.version === second.behavior.version &&
     first.behavior.mode === second.behavior.mode &&
     (first.behavior.mode !== 'evolved' ||
       second.behavior.mode !== 'evolved' ||
@@ -224,8 +225,9 @@ export class LineageArchive {
     tick: number,
     nextSpecies: number,
     historical = false,
+    active = true,
   ): LineageArchive {
-    const state = validateArchive(value, organisms, tick, nextSpecies, historical);
+    const state = validateArchive(value, organisms, tick, nextSpecies, historical, active);
     const archive = new LineageArchive(state.originKind, state.originTick);
     archive.living = new Map(state.living.map((row) => [row.id, row]));
     archive.summaries = new Map(state.summaries.map((row) => [row.id, row]));
@@ -254,6 +256,7 @@ function validateArchive(
   tick: number,
   nextSpecies: number,
   historical: boolean,
+  active: boolean,
 ): LineageArchiveState {
   requireArchive(exact(value, archiveKeys));
   const state = structuredClone(value) as unknown as LineageArchiveState;
@@ -346,7 +349,7 @@ function validateArchive(
             ? exact(row.foundingGenome, ['cells', 'preference', 'tolerance', 'tempo']) &&
               validHistoricalGenome(row.foundingGenome) &&
               row.foundingGenome.cells.every((cell) => exact(cell, ['x', 'y', 'type']))
-            : validGenome(row.foundingGenome)),
+            : validGenome(row.foundingGenome, active)),
       );
       const group = physical.get(row.id);
       if (historical)

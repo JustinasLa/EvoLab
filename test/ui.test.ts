@@ -3211,7 +3211,7 @@ describe('explicit bounded local library', () => {
     root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
     harness.deliver();
     const before = harness.save();
-    expect(before.version).toBe(10);
+    expect(before.version).toBe(11);
     expect(before.lineageArchive.summaries.length).toBeGreaterThan(0);
     expect(before.telemetry.version).toBe(2);
     expect(before.interventions.version).toBe(4);
@@ -5074,7 +5074,7 @@ describe('standalone blueprint files', () => {
     emit(sample, organism);
     expect(await exported('export-organism-blueprint')).toEqual({
       format: 'evolab-organism-blueprint',
-      version: 2,
+      version: 3,
       name: 'Bloom',
       description: '',
       genome: organism.genome,
@@ -5178,7 +5178,7 @@ describe('standalone blueprint files', () => {
       '{',
       '{}',
       'null',
-      JSON.stringify({ ...JSON.parse(serializeBlueprint(fixture())), version: 3 }),
+      JSON.stringify({ ...JSON.parse(serializeBlueprint(fixture())), version: 4 }),
       JSON.stringify({
         ...JSON.parse(serializeBlueprint(fixture())),
         genome: {

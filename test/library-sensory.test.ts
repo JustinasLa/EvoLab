@@ -26,7 +26,7 @@ describe('independent blueprint versions in local collection records', () => {
     const entry = (await library.list()).rows[0] as LibraryEntry;
     expect(entry.kind).toBe('valid');
     expect(entry.blueprint).toEqual(parseBlueprint(baselineFixtures['blueprint1.json']));
-    expect(entry.blueprint.version).toBe(2);
+    expect(entry.blueprint.version).toBe(3);
     expect(entry.token).toBe(token);
     expect(await library.read(entry)).toEqual(entry);
     expect(native.values.get(first)).toBe(token);
@@ -36,7 +36,7 @@ describe('independent blueprint versions in local collection records', () => {
     expect(native.values.get(first)).toBe(token);
     const duplicate = classifyRecord(second, native.values.get(second)) as LibraryEntry;
     expect(duplicate.blueprint).toEqual(entry.blueprint);
-    expect(JSON.parse(JSON.parse(duplicate.token).blueprint).version).toBe(2);
+    expect(JSON.parse(JSON.parse(duplicate.token).blueprint).version).toBe(3);
     native.values.set(first, token + ' ');
     await expect(library.read(entry)).rejects.toMatchObject({ code: 'conflict' });
     expect(native.values.get(first)).toBe(token + ' ');
@@ -82,7 +82,7 @@ describe('independent blueprint versions in local collection records', () => {
     const envelope = JSON.parse(encodeRecord(candidate, 1));
     const future = JSON.stringify({
       ...envelope,
-      blueprint: JSON.stringify({ ...candidate.blueprint, version: 3 }),
+      blueprint: JSON.stringify({ ...candidate.blueprint, version: 4 }),
     });
     native.values.set(first, future);
     const library = createLibrary({ factory: () => native.factory });
