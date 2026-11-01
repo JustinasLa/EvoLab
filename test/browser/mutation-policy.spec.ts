@@ -12,13 +12,11 @@ registerNativeEvidence();
 const saved = async (page: Page): Promise<WorldFile> =>
   JSON.parse((await nativeDownload(page)).toString('utf8'));
 async function load(page: Page, file: WorldFile) {
-  await page
-    .locator('#file')
-    .setInputFiles({
-      name: 'policy-world.json',
-      mimeType: 'application/json',
-      buffer: Buffer.from(JSON.stringify(file)),
-    });
+  await page.locator('#file').setInputFiles({
+    name: 'policy-world.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(file)),
+  });
   await expect(page.locator('#notice')).toContainText('World restored');
   if ((await page.locator('#run-state').textContent()) === 'LIVE')
     await page.locator('#pause').click();
@@ -101,13 +99,11 @@ for (const channel of ['preference', 'reactions'] as const)
     const bad = structuredClone(birth);
     if (bad.mutationPolicy.mode !== 'weighted') throw new Error('test policy');
     bad.mutationPolicy.weights.add = -1;
-    await page
-      .locator('#file')
-      .setInputFiles({
-        name: 'invalid-policy.json',
-        mimeType: 'application/json',
-        buffer: Buffer.from(JSON.stringify(bad)),
-      });
+    await page.locator('#file').setInputFiles({
+      name: 'invalid-policy.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify(bad)),
+    });
     await expect(page.locator('#notice')).toContainText('Invalid mutation policy');
     expect(await saved(page)).toEqual(birth);
     await page.locator('#step').click();
