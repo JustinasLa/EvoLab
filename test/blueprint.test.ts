@@ -21,7 +21,7 @@ const allTypes = (): Genome => ({
 });
 const envelope = (genome = allTypes()) => ({
   format: 'evolab-organism-blueprint',
-  version: 4,
+  version: 5,
   name: BLUEPRINT_DEFAULT_NAME,
   description: '',
   genome,
@@ -143,7 +143,7 @@ describe('standalone blueprint schema', () => {
     expect(() => parseBlueprint(JSON.stringify(value))).toThrow('standalone'),
   );
 
-  it.each([undefined, '1', 0, -1, 1.5, 5, null, true])(
+  it.each([undefined, '1', 0, -1, 1.5, 6, null, true])(
     'rejects unsupported version %j',
     (version) => {
       const value = { ...envelope(), version };

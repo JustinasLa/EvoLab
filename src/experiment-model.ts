@@ -6,7 +6,7 @@ export const COMPARISON_MAX_SAMPLES = 121;
 export const COMPARISON_BATCH_TICKS = 12;
 // A checkpoint string can expand sixfold when escaped in the outer JSON.
 export const RECIPE_MAX_BYTES = WORLD_MAX_BYTES * 6 + 200_000;
-export const EXPERIMENT_RULES_VERSION = 7;
+export const EXPERIMENT_RULES_VERSION = 8;
 export interface ComparisonPlan {
   intervention: 'none' | 'heat' | 'cold';
   treatmentTick: number;

@@ -1,13 +1,14 @@
 import type { BirthEvent } from './mutation-evidence';
 import type { MutationPolicy } from './mutation';
 import type { EventJournal, EventReplay } from './event-model';
+import { validController, type NeuralController } from './neural';
 export const WIDTH = 240;
 export const HEIGHT = 156;
 export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 15;
+export const WORLD_VERSION = 16;
 export const LINEAGE_SUMMARY_CAPACITY = 256;
 export const LINEAGE_EVENT_CAPACITY = 512;
 export const INTERVENTION_CAPACITY = 128;
@@ -86,6 +87,7 @@ export interface Cell {
   legacyExtensions?: LegacyExtensions;
 }
 export interface Genome {
+  controller?: NeuralController;
   cells: Cell[];
   preference: number;
   tolerance: number;
@@ -162,6 +164,7 @@ export interface LineageArchiveState {
   events: LineageEvent[];
 }
 export interface Organism {
+  neuralBlocked?: boolean;
   id: number;
   species: number;
   x: number;
@@ -614,6 +617,7 @@ export function observedGenome(genome: Genome): Genome {
     tolerance: genome.tolerance,
     tempo: genome.tempo,
     behavior: structuredClone(genome.behavior),
+    ...(genome.controller ? { controller: structuredClone(genome.controller) } : {}),
     ...(genome.mutationPropensity === undefined
       ? {}
       : { mutationPropensity: genome.mutationPropensity }),
@@ -641,6 +645,7 @@ export function observedOrganism(organism: Organism): Organism {
     children: organism.children,
     ancestry: Array.from(organism.ancestry),
     genome: observedGenome(organism.genome),
+    ...(organism.genome.controller ? { neuralBlocked: organism.neuralBlocked } : {}),
   };
 }
 export interface WorldEcology {
@@ -672,6 +677,9 @@ export type HistoricalWorldEcology = Omit<WorldEcology, 'organisms'> & {
 };
 export interface WorldFileV14 extends Omit<WorldFile, 'version'> {
   version: 14;
+}
+export interface WorldFileV15 extends Omit<WorldFile, 'version'> {
+  version: 15;
 }
 export interface WorldFileV13 extends Omit<WorldFile, 'version'> {
   version: 13;
@@ -994,7 +1002,7 @@ export function exactDataRecord(
     Object.keys(value).every((key) => required.includes(key) || optional.includes(key))
   );
 }
-function denseArray(value: unknown): value is unknown[] {
+export function denseArray(value: unknown): value is unknown[] {
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return false;
   if (Reflect.ownKeys(value).length !== value.length + 1) return false;
   for (let offset = 0; offset < value.length; offset++) {
@@ -1095,14 +1103,24 @@ export function validBehavior(value: unknown, active = true): value is Behavior 
     )
   );
 }
-export function validGenome(value: unknown, active = true, propensity = true): value is Genome {
+export function validGenome(
+  value: unknown,
+  active = true,
+  propensity = true,
+  neural = true,
+): value is Genome {
   if (
     !exactDataRecord(
       value,
       [...historicalGenomeKeys, 'behavior'],
-      propensity ? ['legacyExtensions', 'mutationPropensity'] : ['legacyExtensions'],
+      [
+        'legacyExtensions',
+        ...(propensity ? ['mutationPropensity'] : []),
+        ...(neural ? ['controller'] : []),
+      ],
     ) ||
     !validBehavior(value.behavior, active) ||
+    (Object.hasOwn(value, 'controller') && !validController(value.controller)) ||
     (Object.hasOwn(value, 'mutationPropensity') && !finite(value.mutationPropensity, 0, 1)) ||
     !denseArray(value.cells)
   )
@@ -1137,6 +1155,7 @@ export function cloneGenome(genome: Genome): Genome {
     tolerance: copied.tolerance,
     tempo: copied.tempo,
     behavior: copied.behavior,
+    ...(copied.controller ? { controller: copied.controller } : {}),
     ...(copied.mutationPropensity === undefined
       ? {}
       : { mutationPropensity: copied.mutationPropensity }),

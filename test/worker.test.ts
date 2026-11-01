@@ -1,5 +1,6 @@
 import { roleScene } from './fixtures/roles';
 import { historicalArchive } from './fixtures/telemetry';
+import { newController } from '../src/neural';
 import { weightedMutation } from '../src/mutation';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { createHash } from 'node:crypto';
@@ -3202,7 +3203,7 @@ describe('integrated extinction and telemetry', () => {
     expect(harness.tasks).toHaveLength(0);
   });
 
-  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])(
+  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])(
     'migrates/restores v%i then preserves terminal and pending history through an empty save continuation',
     (version) => {
       const harness = workerHarness();
@@ -3254,7 +3255,9 @@ describe('integrated extinction and telemetry', () => {
                                 ? { ...current, version: 13 as const }
                                 : version === 14
                                   ? { ...current, version: 14 as const }
-                                  : current;
+                                  : version === 15
+                                    ? { ...current, version: 15 as const }
+                                    : current;
       if (version >= 8 && version < 15 && 'lineageArchive' in file)
         file.lineageArchive = historicalArchive(file.lineageArchive);
       expect(file.version).toBe(version);
@@ -3287,12 +3290,12 @@ describe('integrated extinction and telemetry', () => {
           file.version >= 10
             ? {
                 ...file,
-                version: 15,
+                version: 16,
                 lineageArchive: {
                   ...file.lineageArchive,
                   version: 2,
                   mutationOriginTick:
-                    version === 15 ? file.lineageArchive.mutationOriginTick : file.tick,
+                    version >= 15 ? file.lineageArchive.mutationOriginTick : file.tick,
                 },
                 mutationPolicy: { version: 1, mode: 'legacy' },
                 interventions: { ...file.interventions, version: 5 },
@@ -3300,7 +3303,7 @@ describe('integrated extinction and telemetry', () => {
             : file.version >= 5
               ? {
                   ...file,
-                  version: 15,
+                  version: 16,
                   mutationPolicy: { version: 1, mode: 'legacy' },
                   shadeHabitats: { version: 1, enabled: false, cells: [] },
                   organisms: imported.organisms,
@@ -3314,7 +3317,7 @@ describe('integrated extinction and telemetry', () => {
                 }
               : {
                   ...file,
-                  version: 15,
+                  version: 16,
                   mutationPolicy: { version: 1, mode: 'legacy' },
                   shadeHabitats: { version: 1, enabled: false, cells: [] },
                   organisms: imported.organisms,
@@ -3339,7 +3342,7 @@ describe('integrated extinction and telemetry', () => {
       harness.advance();
       reference.step();
       const terminal = harness.save();
-      expect(terminal.version).toBe(15);
+      expect(terminal.version).toBe(16);
       expect(terminal.telemetry.version).toBe(2);
       expect(terminal.telemetry.samples.at(-1)).toMatchObject({
         fromTick: version === 2 ? 89 : 60,
@@ -3619,6 +3622,51 @@ describe('failed-load retained-world recovery', () => {
       runId: 5,
     });
   });
+});
+
+it('keeps neural organisms deterministic through yielding, paused edits, exact Step and stale-run rejection', () => {
+  const world = new Ecosystem({ ...DEFAULTS, climate: 0, nutrients: 0, mutation: 0 }, false);
+  const genome = founder(0);
+  genome.controller = newController();
+  const organism = world.spawn(genome, 60, 60)!;
+  const harness = workerHarness();
+  harness.load(world.save());
+  harness.send({ type: 'pause' });
+  for (const speed of [1, 4, 12]) {
+    harness.send({ type: 'speed', value: speed });
+    harness.send({ type: 'step' });
+    world.step();
+    expect(harness.save()).toEqual(world.save());
+  }
+  harness.send({ type: 'paint', tool: 'food', radius: 0, x: 10, y: 10, genome });
+  manualPaint(world, 'food', 10, 10, 0, genome);
+  expect(harness.save()).toEqual(world.save());
+  harness.send({ type: 'resume' });
+  harness.send({ type: 'resume' });
+  expect(harness.tasks).toHaveLength(1);
+  harness.advance();
+  const advanced = harness.save().tick;
+  expect(advanced - world.tick).toBe(12);
+  while (world.tick < advanced) world.step();
+  expect(harness.save()).toEqual(world.save());
+  expect(harness.tasks).toHaveLength(1);
+  harness.send({ type: 'pause' });
+  const retained = harness.saveText(),
+    malformed = JSON.parse(retained);
+  malformed.organisms[0].genome.controller.biases[7] = 100;
+  harness.send({ type: 'load', runId: 2, text: JSON.stringify(malformed) });
+  expect(harness.last('error').code).toBe('load-failed');
+  expect(harness.saveText()).toBe(retained);
+  harness.send({ type: 'step', runId: 1 });
+  expect(harness.last('error').code).toBe('stale-run');
+  expect(harness.saveText()).toBe(retained);
+  harness.send({ type: 'step' });
+  world.step();
+  expect(harness.save()).toEqual(world.save());
+  expect(
+    harness.save().organisms.find((entry) => entry.id === organism.id)!.genome.controller,
+  ).toEqual(genome.controller);
+  harness.dispose();
 });
 
 it('keeps active worlds bounded by native yielding, exact Step, stale-run rejection and complete failure recovery', () => {

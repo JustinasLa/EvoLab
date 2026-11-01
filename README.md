@@ -22,6 +22,7 @@ lineages spread by surviving and producing descendants.
 - **Painted shade habitats** — explicitly enable bounded Shade, Lighten and Erase dabs that scale real leaf energy and food production together; inspect current leaf light separately from temperature and chart measured energy gains and costs.
 - **Design your own life** — draw connected organisms, choose their preferred temperature, and place them directly in the ecosystem.
 - **Directional eye reactions** — start a new active design with inherited chase, flee or ignore responses to food, walls and organisms; forward sight respects body rotation, occlusion and real movement costs.
+- **Optional neural controllers** — explicitly enable a small inherited network in the designer; real forward sight, energy and blocked-action feedback drive resting, movement or turning, with evaluation and action energy costs. Existing organisms retain their steering rules.
 - **Inspect inherited sight** — active reactions can mutate at birth; inspect the selected organism’s actual last rays, occlusions and chosen direction with its observation tick.
 - **Mutation controls** — retain legacy birth mutation by default or opt into relative weights for anatomy, climate traits, tempo and active reactions; apply drafts explicitly and save their manual history.
 - **Keep inherited designs** — standalone blueprints preserve complete anatomy, traits and reactions; existing passive designs and ordinary presets retain legacy steering.
@@ -34,19 +35,6 @@ lineages spread by surviving and producing descendants.
 
 EvoLab uses an original cellular simulation and interface. It is artificial life,
 not a calibrated biological model.
-
-### Neural controller contract (in development)
-
-An explicitly enabled, inherited version-1 feed-forward controller uses six inputs,
-four hidden neurons and four outputs (40 weights and eight biases, each in −4…4).
-Inputs are the nearest actually visible food, wall, harmless and dangerous organism
-signals, normalized internal energy, and the previous blocked-action flag. Eyes
-retain the existing five-cell forward, occluded view; absent eyes provide no sight.
-Clamped linear activations choose rest, forward, left or right in that tie order.
-Each tempo-triggered evaluation costs 0.02 energy, including without eyes or motors;
-motor translation and quarter-turn attempts cost 0.03, including blocked attempts.
-Rest adds no action charge. No global information, learning, or population rescue
-is introduced. Ordinary organisms retain their existing behavior and random draws.
 
 ## Tests and coverage
 
@@ -76,6 +64,14 @@ round trips and native designer, keyboard and local-library checks. Active birth
 mutation tests cover bounded reaction transitions and real inherited differences;
 selected-perception tests compare exact engine continuations with observation,
 rendering and selection changes, including death and rejected imports.
+
+Neural fixtures check bounded 6–4–4 controllers, detached birth mutation, real
+energy and reproduction tradeoffs, strict world/blueprint/library persistence,
+and exact worker controls. The reaction perception overlay does not trace neural
+decisions; neural activity inspection is separate follow-up work. Run
+`npm run bench:neural` for contextual populated-world throughput and deterministic
+checkpoint continuation receipts in `.scratch/long-run/`, without timing thresholds
+or claims of universal neural superiority.
 
 Playwright exercises the built application in desktop and mobile Chromium,
 including real workers, population changes, inspection, organism design, painting,
