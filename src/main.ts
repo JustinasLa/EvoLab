@@ -1786,6 +1786,16 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     text('preference-value', `${Math.round(blueprint.preference * 40)}°`);
     get<HTMLInputElement>('blueprint-name').value = blueprintName;
     get<HTMLTextAreaElement>('blueprint-description').value = blueprintDescription;
+    get<HTMLInputElement>('inherited-mutation').checked =
+      blueprint.mutationPropensity !== undefined;
+    get<HTMLInputElement>('propensity').disabled = blueprint.mutationPropensity === undefined;
+    get<HTMLInputElement>('propensity').value = String(blueprint.mutationPropensity ?? 1);
+    text(
+      'propensity-value',
+      blueprint.mutationPropensity === undefined
+        ? 'Global rate'
+        : String(blueprint.mutationPropensity),
+    );
     text('behavior-status', behaviorStatus(blueprint));
     get('behavior-controls').innerHTML = reactionEditor(blueprint);
     text(
@@ -2271,6 +2281,20 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     endStroke();
     brush = Number(get<HTMLInputElement>('brush').value);
     text('brush-value', `${brush} cells`);
+  });
+  get('inherited-mutation').addEventListener('change', () => {
+    endStroke();
+    invalidateDesign();
+    if (get<HTMLInputElement>('inherited-mutation').checked) blueprint.mutationPropensity = 1;
+    else delete blueprint.mutationPropensity;
+    editor();
+  });
+  get('propensity').addEventListener('input', () => {
+    if (blueprint.mutationPropensity === undefined) return;
+    endStroke();
+    invalidateDesign();
+    blueprint.mutationPropensity = Number(get<HTMLInputElement>('propensity').value);
+    text('propensity-value', String(blueprint.mutationPropensity));
   });
   get('preference').addEventListener('input', () => {
     endStroke();

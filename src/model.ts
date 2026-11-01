@@ -5,7 +5,7 @@ export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 13;
+export const WORLD_VERSION = 14;
 export const LINEAGE_SUMMARY_CAPACITY = 256;
 export const LINEAGE_EVENT_CAPACITY = 512;
 export const INTERVENTION_CAPACITY = 128;
@@ -89,6 +89,8 @@ export interface Genome {
   tolerance: number;
   tempo: number;
   behavior: Behavior;
+  /** Absent: global gate; present: inherited multiplier of the global upper bound. */
+  mutationPropensity?: number;
   legacyExtensions?: LegacyExtensions;
 }
 export interface HistoricalCell {
@@ -594,6 +596,9 @@ export function observedGenome(genome: Genome): Genome {
     tolerance: genome.tolerance,
     tempo: genome.tempo,
     behavior: structuredClone(genome.behavior),
+    ...(genome.mutationPropensity === undefined
+      ? {}
+      : { mutationPropensity: genome.mutationPropensity }),
   };
 }
 export function observedSettings(settings: Settings): Settings {
@@ -647,6 +652,9 @@ export interface WorldFile extends WorldEcology {
 export type HistoricalWorldEcology = Omit<WorldEcology, 'organisms'> & {
   organisms: HistoricalOrganism[];
 };
+export interface WorldFileV13 extends Omit<WorldFile, 'version'> {
+  version: 13;
+}
 export interface WorldFileV12 extends Omit<
   WorldFile,
   'version' | 'mutationPolicy' | 'interventions'
@@ -1066,10 +1074,15 @@ export function validBehavior(value: unknown, active = true): value is Behavior 
     )
   );
 }
-export function validGenome(value: unknown, active = true): value is Genome {
+export function validGenome(value: unknown, active = true, propensity = true): value is Genome {
   if (
-    !exactDataRecord(value, [...historicalGenomeKeys, 'behavior'], ['legacyExtensions']) ||
+    !exactDataRecord(
+      value,
+      [...historicalGenomeKeys, 'behavior'],
+      propensity ? ['legacyExtensions', 'mutationPropensity'] : ['legacyExtensions'],
+    ) ||
     !validBehavior(value.behavior, active) ||
+    (Object.hasOwn(value, 'mutationPropensity') && !finite(value.mutationPropensity, 0, 1)) ||
     !denseArray(value.cells)
   )
     return false;
@@ -1103,6 +1116,9 @@ export function cloneGenome(genome: Genome): Genome {
     tolerance: copied.tolerance,
     tempo: copied.tempo,
     behavior: copied.behavior,
+    ...(copied.mutationPropensity === undefined
+      ? {}
+      : { mutationPropensity: copied.mutationPropensity }),
     ...(copied.legacyExtensions ? { legacyExtensions: copied.legacyExtensions } : {}),
   };
 }

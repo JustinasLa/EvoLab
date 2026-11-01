@@ -162,7 +162,7 @@ describe('active-only birth reaction mutation', () => {
         interventions: { ...current.interventions, version: 4 },
       };
     const migrated = Ecosystem.load(JSON.stringify(predecessor));
-    expect(WORLD_VERSION).toBe(13);
+    expect(WORLD_VERSION).toBe(14);
     expect(migrated.save()).toEqual(current);
     world.step();
     migrated.step();

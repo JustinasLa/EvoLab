@@ -3213,7 +3213,7 @@ describe('explicit bounded local library', () => {
     root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
     harness.deliver();
     const before = harness.save();
-    expect(before.version).toBe(13);
+    expect(before.version).toBe(14);
     expect(before.lineageArchive.summaries.length).toBeGreaterThan(0);
     expect(before.telemetry.version).toBe(2);
     expect(before.interventions.version).toBe(5);
@@ -4923,6 +4923,46 @@ describe('standalone blueprint files', () => {
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
   });
 
+  it('edits explicit propensity without world commands, retains exact imported values, and cancels stale designer reads', async () => {
+    const bridge = realWorker();
+    bridge.deliver();
+    click('pause');
+    bridge.advance();
+    bridge.deliver();
+    const before = bridge.save();
+    expect(get<HTMLInputElement>('inherited-mutation').checked).toBe(false);
+    expect(get<HTMLInputElement>('propensity').disabled).toBe(true);
+    get('propensity').dispatchEvent(new Event('input'));
+    expect((await exported()).genome).not.toHaveProperty('mutationPropensity');
+    click('inherited-mutation');
+    expect(get<HTMLInputElement>('propensity').disabled).toBe(false);
+    expect((await exported()).genome.mutationPropensity).toBe(1);
+    get<HTMLInputElement>('propensity').value = '0';
+    get('propensity').dispatchEvent(new Event('input'));
+    expect(get('propensity-value').textContent).toBe('0');
+    expect((await exported()).genome.mutationPropensity).toBe(0);
+    expect(bridge.save()).toEqual(before);
+    const enabled = {
+      ...fixture(),
+      genome: { ...fixture().genome, mutationPropensity: 0.1234567890123456 },
+    };
+    await importDraft(serializeBlueprint(enabled));
+    expect(get<HTMLInputElement>('inherited-mutation').checked).toBe(true);
+    expect(get('propensity-value').textContent).toBe('0.1234567890123456');
+    expect((await exported()).genome).toEqual(enabled.genome);
+    let resolve!: (text: string) => void;
+    uploadBlueprint({ size: 20, text: () => new Promise((r) => (resolve = r)) });
+    click('inherited-mutation');
+    resolve(serializeBlueprint(enabled));
+    await flush();
+    expect((await exported()).genome).not.toHaveProperty('mutationPropensity');
+    expect(get('propensity-value').textContent).toBe('Global rate');
+    expect(bridge.save()).toEqual(before);
+    click('inherited-mutation');
+    click('clear-design');
+    expect((await exported()).genome).not.toHaveProperty('mutationPropensity');
+  });
+
   it.each(['legacy', 'stored'])(
     'creates a fresh active design without activating %s data or changing the paused world',
     async (mode) => {
@@ -5174,7 +5214,7 @@ describe('standalone blueprint files', () => {
     emit(sample, organism);
     expect(await exported('export-organism-blueprint')).toEqual({
       format: 'evolab-organism-blueprint',
-      version: 3,
+      version: 4,
       name: 'Bloom',
       description: '',
       genome: organism.genome,
@@ -5278,7 +5318,7 @@ describe('standalone blueprint files', () => {
       '{',
       '{}',
       'null',
-      JSON.stringify({ ...JSON.parse(serializeBlueprint(fixture())), version: 4 }),
+      JSON.stringify({ ...JSON.parse(serializeBlueprint(fixture())), version: 5 }),
       JSON.stringify({
         ...JSON.parse(serializeBlueprint(fixture())),
         genome: {
