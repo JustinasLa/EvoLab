@@ -1373,16 +1373,20 @@ dialog a {
   gap: 6px;
   flex-wrap: wrap;
 }
-#organism-diff {
+#organism-diff,
+#birth-evidence {
   overflow-wrap: anywhere;
 }
-#organism-diff table {
+#organism-diff table,
+#birth-detail table {
   width: 100%;
   font-size: 11px;
   table-layout: fixed;
 }
 #organism-diff th,
-#organism-diff td {
+#organism-diff td,
+#birth-detail th,
+#birth-detail td {
   overflow-wrap: anywhere;
   text-align: left;
   padding: 3px;
@@ -1526,4 +1530,10 @@ dialog a {
 }
 #mutation-apply {
   width: 100%;
+}
+
+#birth-select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }

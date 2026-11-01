@@ -10,7 +10,11 @@ import {
 } from './model';
 import { genomeSvg, organismHtml, viewport, type Camera } from './view';
 
-export function genomeDiff(current: Genome, baseline?: OrganismBaseline): string {
+export function genomeDiff(
+  current: Genome,
+  baseline?: OrganismBaseline,
+  comparison: 'founding' | 'direct-parent' = 'founding',
+): string {
   if (!baseline?.genome)
     return `<p>Baseline unavailable (${baseline?.status ?? 'unknown / pruned'}). No mutation history inferred.</p>`;
   const previous = baseline.genome;
@@ -46,7 +50,11 @@ export function genomeDiff(current: Genome, baseline?: OrganismBaseline): string
     beforeBehavior === afterBehavior
       ? `Stored behavior unchanged (${afterBehavior}).`
       : `Stored behavior: ${beforeBehavior} → ${afterBehavior}.`;
-  return `<p>Compared with ${baseline.relation === 'parent-lineage' ? 'parent lineage' : 'own lineage'} #${baseline.lineageId} founding genome. This is a retained endpoint comparison, not an individual parent or a sequence of mutations.</p><div class="baseline-preview">${genomeSvg(previous, 72)}<span>Retained founding anatomy</span></div><ul>${(changes.length ? changes : ['Anatomy unchanged (local cell coordinates).']).map((change) => `<li>${change}</li>`).join('')}</ul><table><caption>Inherited traits (exact normalized values; tempo in ticks)</caption><thead><tr><th>Trait</th><th>Baseline</th><th>Selected</th><th>Difference</th></tr></thead><tbody>${traits}${propensityRow}</tbody></table><p>${behavior} Both behavior1 modes remain inactive.</p><p>Accepted opaque metadata is outside this observed comparison.</p>`;
+  const direct = comparison === 'direct-parent';
+  const origin = direct
+    ? `Compared with the actual reproductive parent in lineage #${baseline.lineageId}. This retained pair describes this birth only.`
+    : `Compared with ${baseline.relation === 'parent-lineage' ? 'parent lineage' : 'own lineage'} #${baseline.lineageId} founding genome. This is a retained endpoint comparison, not an individual parent or a sequence of mutations.`;
+  return `<p>${origin}</p><div class="baseline-preview">${genomeSvg(previous, 72)}<span>${direct ? 'Actual parent anatomy' : 'Retained founding anatomy'}</span></div><ul>${(changes.length ? changes : ['Anatomy unchanged (local cell coordinates).']).map((change) => `<li>${change}</li>`).join('')}</ul><table><caption>Inherited traits (exact normalized values; tempo in ticks)</caption><thead><tr><th>Trait</th><th>${direct ? 'Parent' : 'Baseline'}</th><th>${direct ? 'Child' : 'Selected'}</th><th>Difference</th></tr></thead><tbody>${traits}${propensityRow}</tbody></table><p>${behavior} Both behavior1 modes remain inactive.</p><p>Accepted opaque metadata is outside this observed comparison.</p>`;
 }
 
 // Only accepted observations enter this page-owned state. One identity and one

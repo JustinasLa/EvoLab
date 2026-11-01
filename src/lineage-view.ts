@@ -1,3 +1,4 @@
+import { createBirthView } from './birth-view';
 import {
   LINEAGE_SUMMARY_CAPACITY,
   LINEAGE_EVENT_CAPACITY,
@@ -62,6 +63,7 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
   const get = <T extends HTMLElement>(id: string): T => root.querySelector<T>(`#${id}`)!;
   const search = get<HTMLInputElement>('lineage-search');
   const rows = get('lineage-rows');
+  const births = createBirthView(root);
   const detail = get('lineage-detail');
   const panel = get('ecosystem-panel');
   const explorer = get<HTMLDetailsElement>('lineage-explorer');
@@ -374,6 +376,7 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
         selected = undefined;
         page = 0;
       }
+      births.update(value.archive, at, replacementId);
       replacement = replacementId;
       data = value;
       tick = at;
@@ -397,8 +400,12 @@ export function createLineageView(root: HTMLElement, changed: () => void) {
       render();
       changed();
     },
-    reveal: render,
+    reveal(): void {
+      render();
+      births.reveal();
+    },
     dispose(): void {
+      births.dispose();
       clearTimeout(refreshTimer);
       pressed.clear();
       deferred = false;
