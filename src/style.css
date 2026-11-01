@@ -1389,3 +1389,78 @@ dialog a {
   align-items: center;
   gap: 8px;
 }
+
+#comparisons {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+#comparisons label {
+  display: block;
+  margin-block: 12px 6px;
+}
+#comparisons input:not([hidden]),
+#comparisons select {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+}
+#comparisons p {
+  font-size: 13px;
+  line-height: 1.5;
+}
+#comparison-results svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 16px;
+  background: #181f1d;
+}
+#comparison-results svg text {
+  fill: #e2e8df;
+  font:
+    12px Arial,
+    sans-serif;
+}
+.comparison-axis {
+  fill: none;
+  stroke: #9eac96;
+}
+.comparison-control {
+  fill: #bde879;
+  stroke: #bde879;
+}
+.comparison-treatment {
+  fill: #9bd8ff;
+  stroke: #9bd8ff;
+}
+.comparison-line {
+  fill: none;
+  stroke-width: 1.5;
+}
+.comparison-treatment.comparison-line {
+  stroke-dasharray: 5 3;
+}
+#comparison-results table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+#comparison-results th,
+#comparison-results td {
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+#comparison-results caption {
+  text-align: left;
+  margin-block: 12px;
+}

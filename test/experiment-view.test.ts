@@ -3,6 +3,7 @@ import { mountComparisons } from '../src/experiment-view';
 import { createComparison } from '../src/experiments';
 import { Ecosystem } from '../src/ecosystem';
 import { DEFAULTS } from '../src/model';
+import { RECIPE_MAX_BYTES } from '../src/experiment-model';
 import { markup } from '../src/view';
 
 let root: HTMLElement, context: string;
@@ -201,6 +202,100 @@ describe('comparison presentation ownership', () => {
     click('start');
     view.saved(text(), 0);
     expect(get('status').textContent).toContain('Could not start');
+  });
+  it('switches shared-axis metrics and exports a recipe only after complete results', () => {
+    click('recipe');
+    get('metric').dispatchEvent(new Event('change'));
+    click('start');
+    view.saved(text(), 0);
+    expect(get<HTMLButtonElement>('recipe').disabled).toBe(true);
+    emit(completed());
+    set('metric', 'meanPreference');
+    get('metric').dispatchEvent(new Event('change'));
+    expect(get('results').textContent).toContain('Undefined (extinct)');
+    expect(get('results').querySelector('svg')?.getAttribute('aria-label')).toContain(
+      'shared axes',
+    );
+    click('recipe');
+    const blob = vi.mocked(URL.createObjectURL).mock.calls[0][0] as Blob;
+    expect(blob.type).toBe('application/json');
+    expect(blob.size).toBe(new Blob([completed().result.recipe]).size);
+  });
+  it('reads a bounded recipe, replaces the comparison alone and guards delayed reads/cancellation', async () => {
+    const input = get<HTMLInputElement>('file');
+    const importFile = (file?: { size: number; text: () => Promise<string> }) => {
+      Object.defineProperty(input, 'files', { configurable: true, value: file ? [file] : [] });
+      input.dispatchEvent(new Event('change'));
+    };
+    const picker = vi.spyOn(input, 'click');
+    click('import');
+    expect(picker).toHaveBeenCalled();
+    importFile();
+    const recipe = completed().result.recipe;
+    importFile({ size: recipe.length, text: async () => recipe });
+    await Promise.resolve();
+    expect(capture).not.toHaveBeenCalled();
+    expect(endpoint.postMessage).toHaveBeenLastCalledWith({ type: 'replay', text: recipe });
+    emit({ type: 'complete', result: { ...completed().result, reproduced: true } });
+    expect(get('status').textContent).toContain('Recipe reproduced');
+    let resolve!: (s: string) => void;
+    importFile({ size: 1, text: () => new Promise((r) => (resolve = r)) });
+    importFile({ size: 1, text: async () => 'ignored concurrent read' });
+    expect(get('results').childElementCount).toBe(0);
+    click('cancel');
+    click('start');
+    resolve(recipe);
+    await Promise.resolve();
+    expect(endpoint.postMessage).toHaveBeenCalledTimes(1);
+    view.saved(text(), 0);
+    emit(completed());
+    importFile({ size: 1, text: () => new Promise((r) => (resolve = r)) });
+    context = '2';
+    resolve(recipe);
+    await Promise.resolve();
+    expect(get('results').childElementCount).toBe(0);
+    view.invalidate();
+    expect(get('status').textContent).toContain('Reading');
+    // Actual lifecycle invalidation arrives before the read settles.
+    importFile({ size: 1, text: () => new Promise((r) => (resolve = r)) });
+    view.invalidate();
+    resolve(recipe);
+    await Promise.resolve();
+    expect(get('status').textContent).toContain('lifecycle changed');
+    importFile({ size: 1, text: () => new Promise((r) => (resolve = r)) });
+    view.dispose();
+    resolve(recipe);
+    await Promise.resolve();
+    importFile({ size: 1, text: async () => recipe });
+    expect(endpoint.onmessage).toBeNull();
+  });
+  it('handles oversized/rejected/failed recipe reads without capturing or replacing sandbox state', async () => {
+    const input = get<HTMLInputElement>('file');
+    async function read(file: any) {
+      Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+      input.dispatchEvent(new Event('change'));
+      await Promise.resolve();
+    }
+    await read({ size: RECIPE_MAX_BYTES + 1, text: vi.fn() });
+    expect(get('status').textContent).toContain('exceeds');
+    await read({
+      size: 1,
+      text: async () => {
+        throw new Error('disk');
+      },
+    });
+    expect(get('status').textContent).toContain('disk');
+    await read({
+      size: 1,
+      text: async () => {
+        throw null;
+      },
+    });
+    expect(get('status').textContent).toContain('Could not read');
+    await read({ size: 2, text: async () => '{}' });
+    emit({ type: 'error', message: 'Invalid recipe' });
+    expect(get<HTMLButtonElement>('recipe').disabled).toBe(true);
+    expect(capture).not.toHaveBeenCalled();
   });
   it('constructs the native module worker through the default isolated entrypoint', () => {
     view.dispose();
