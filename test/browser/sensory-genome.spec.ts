@@ -583,24 +583,20 @@ test('C2 explicit active import/placement and complete failed-import recovery re
   expect(rawWorld(before)).toEqual(reference.save());
   const old = JSON.parse(active);
   old.version = 2;
-  await page
-    .locator('#blueprint-file')
-    .setInputFiles({
-      name: 'old-active.json',
-      mimeType: 'application/json',
-      buffer: Buffer.from(JSON.stringify(old)),
-    });
+  await page.locator('#blueprint-file').setInputFiles({
+    name: 'old-active.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(old)),
+  });
   await expect(page.locator('#notice')).toContainText('Blueprint needs');
   await expect(page.locator('#behavior-status')).toContainText('Active reactions');
   const candidate = JSON.parse(before.toString('utf8'));
   candidate.lineageArchive.summaries.at(-1).foundingGenome.behavior.reactions.dangerous = 'attack';
-  await page
-    .locator('#file')
-    .setInputFiles({
-      name: 'bad-active.json',
-      mimeType: 'application/json',
-      buffer: Buffer.from(JSON.stringify(candidate)),
-    });
+  await page.locator('#file').setInputFiles({
+    name: 'bad-active.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(candidate)),
+  });
   await expect(page.locator('#notice')).toContainText('lineage archive');
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
   expect(await nativeDownload(page)).toEqual(before);
