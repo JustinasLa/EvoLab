@@ -1479,3 +1479,25 @@ describe('bounded observed lineage lifecycle', () => {
     },
   );
 });
+
+it('projects a detached selected founding baseline without changing the complete world', () => {
+  const world = empty();
+  world.changeTerrain('clear');
+  const parent = world.spawn(genome(), 10, 10)!;
+  const before = world.save();
+  const baseline = world.presentation(parent.id).selectedBaseline!;
+  expect(baseline).toEqual({
+    lineageId: parent.species,
+    relation: 'own-lineage',
+    genome: parent.genome,
+    status: 'retained',
+  });
+  baseline.genome!.cells[0].type = 3;
+  expect(world.save()).toEqual(before);
+  expect(world.presentation().selectedBaseline).toBeUndefined();
+  const legacy = Ecosystem.load(JSON.stringify(legacyV7(before)));
+  expect(legacy.presentation(parent.id).selectedBaseline).toMatchObject({
+    genome: null,
+    status: 'legacy-unknown',
+  });
+});

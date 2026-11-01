@@ -9,6 +9,8 @@ import {
   type HistoricalGenome,
   type Genome,
   type Organism,
+  type OrganismBaseline,
+  observedGenome,
   type LivingLineage,
   type LineageOrigin,
   type LineageSummary,
@@ -99,6 +101,17 @@ export class LineageArchive {
     private readonly originKind: LineageArchiveState['originKind'] = 'fresh',
     private readonly originTick = 0,
   ) {}
+  baseline(species: number): OrganismBaseline {
+    const parent = this.living.get(species)?.parentId;
+    const lineageId = parent ?? species;
+    const summary = this.summaries.get(lineageId);
+    return {
+      lineageId,
+      relation: parent == null ? 'own-lineage' : 'parent-lineage',
+      genome: summary?.foundingGenome ? observedGenome(summary.foundingGenome) : null,
+      status: summary?.genomeStatus ?? 'pruned',
+    };
+  }
   private admit(summary: LineageSummary): void {
     if (this.summaries.size === LINEAGE_SUMMARY_CAPACITY) {
       this.summaries.delete(this.summaries.keys().next().value!);
