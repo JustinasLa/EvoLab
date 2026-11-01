@@ -18,7 +18,9 @@ export function createBirthView(root: HTMLElement) {
     detail = get('birth-detail'),
     status = get('birth-retention'),
     download = get<HTMLButtonElement>('birth-export'),
-    exported = get('birth-export-status');
+    exported = get('birth-export-status'),
+    panel = get('ecosystem-panel'),
+    explorer = get<HTMLDetailsElement>('lineage-explorer');
   let archive: LineageArchiveState | undefined,
     tick = 0,
     replacement: number | undefined,
@@ -35,17 +37,13 @@ export function createBirthView(root: HTMLElement) {
     download.disabled = !archive;
   }
   function render() {
-    if (
-      !archive ||
-      get('ecosystem-panel').hidden ||
-      !get<HTMLDetailsElement>('lineage-explorer').open
-    )
-      return;
+    if (!archive || panel.hidden || !explorer.open) return;
     const events = archive.events.filter(
         (entry): entry is BirthEvent => entry.kind === 'reproduction',
       ),
       event = events.find((entry) => key(entry) === selected);
-    status.textContent = `Observed at tick ${tick}. ${events.length} retained reproductive attempts in the shared ${archive.events.length}/512 event ring. Recording begins after tick ${archive.mutationOriginTick}; earlier births are unknown / not recorded. ${archive.eventsPruned ? `Events evicted through tick ${archive.eventsEvictedThroughTick}; that tick may be partial. Missing events are unknown / pruned.` : 'No event eviction recorded since recording began.'} Population-cap prevention is outside reproductive attempts. Attempted channels may leave values unchanged; outcomes are not fitness or adaptive progress.`;
+    const statusText = `Observed at tick ${tick}. ${events.length} retained reproductive attempts in the shared ${archive.events.length}/512 event ring. Recording begins after tick ${archive.mutationOriginTick}; earlier births are unknown / not recorded. ${archive.eventsPruned ? `Events evicted through tick ${archive.eventsEvictedThroughTick}; that tick may be partial. Missing events are unknown / pruned.` : 'No event eviction recorded since recording began.'} Population-cap prevention is outside reproductive attempts. Attempted channels may leave values unchanged; outcomes are not fitness or adaptive progress.`;
+    if (status.textContent !== statusText) status.textContent = statusText;
     const choices = events
       .slice()
       .reverse()
@@ -59,7 +57,7 @@ export function createBirthView(root: HTMLElement) {
       select.innerHTML = nextOptions;
       options = nextOptions;
     }
-    select.value = selected ?? '';
+    if (select.value !== (selected ?? '')) select.value = selected ?? '';
     select.disabled = events.length === 0 && !selected;
     const nextHtml = event
       ? `<h4>${outcomes[event.outcome]}</h4><p>Tick ${event.tick}: parent organism #${event.parentOrganismId}, lineage #${event.id}. Ordinary mutation gate ${event.gate ? 'passed' : 'did not pass'}. Attempted channels: ${event.channels.join(', ') || 'none'}. Placement attempts: ${event.placementAttempts}.</p>${event.childGenome ? `<p>Admitted child organism #${event.childOrganismId}, lineage #${event.childLineageId}. Lineage identity follows the existing mutation rules; a numeric no-op can still have a distinct lineage.</p><div class="baseline-preview">${genomeSvg(event.childGenome, 72)}<span>Born child anatomy</span></div>${genomeDiff(event.childGenome, { genome: event.parentGenome, lineageId: event.id, relation: 'parent-lineage', status: 'retained' }, 'direct-parent')}` : `<div class="baseline-preview">${genomeSvg(event.parentGenome, 72)}<span>Actual parent anatomy</span></div><p>No child genome or inherited delta exists. Failed candidate anatomies are not inherited evidence. No birth, child grant or parent reproductive payment occurred.</p>`}`
