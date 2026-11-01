@@ -2817,7 +2817,7 @@ test('D9-A10 native file reads stay single-owner through cancellation, reset and
     contentType: 'application/json',
   });
 });
-for (const version of [2, 3, 4, 5, 6, 7, 8, 9, 10] as const) {
+for (const version of [2, 3, 4, 5, 6, 7, 8, 9, 10, 11] as const) {
   test(`measurement bytes preserve synthetic historical/current world${version} migration,180 samples and truthful manual windows`, async ({
     page,
   }) => {
@@ -2857,7 +2857,9 @@ for (const version of [2, 3, 4, 5, 6, 7, 8, 9, 10] as const) {
                     ? legacyV8(current)
                     : version === 9
                       ? legacyV9(current)
-                      : current;
+                      : version === 10
+                        ? { ...current, version: 10 as const }
+                        : current;
     expect(candidate.version).toBe(version);
     expect('interventions' in candidate).toBe(version >= 5);
     expect('terrain' in candidate).toBe(version >= 6);
@@ -3632,7 +3634,7 @@ test('standalone inspector and designer downloads round-trip full traits before 
   ]);
   expect(inspector.file).toMatchObject({
     format: 'evolab-organism-blueprint',
-    version: 2,
+    version: 3,
     description: '',
   });
   await page.locator('#blueprint-file').setInputFiles({
@@ -3839,7 +3841,7 @@ test.describe('blueprint file rejection and cancellation', () => {
     await expect(page.locator('#world')).toHaveAttribute('data-tool', 'plant');
     expect((await downloadBlueprint(page)).file).toEqual({
       format: 'evolab-organism-blueprint',
-      version: 2,
+      version: 3,
       ...payload,
     });
     await expect(page.locator('#run-state')).toHaveText('PAUSED');
