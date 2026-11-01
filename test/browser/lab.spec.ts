@@ -6512,8 +6512,8 @@ test.describe('retained lineage explorer', () => {
       await expect(page.locator('#lineage-observed')).toHaveText(
         `Observed at tick ${reference.tick}.`,
       );
-      await expect(page.locator('#lineage-results')).toContainText('40 matching');
-      await expect(page.locator('#lineage-results')).toContainText('showing 1–40');
+      await expect(page.locator('#lineage-results')).toContainText('39 matching');
+      await expect(page.locator('#lineage-results')).toContainText('showing 1–39');
       await expect(target).toBeDisabled();
       await expect(page.locator('#lineage-search')).toBeFocused();
       await page.keyboard.press('Space');

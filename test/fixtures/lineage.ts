@@ -212,7 +212,7 @@ export function relationshipEviction() {
   return { world, parent, extinct, retained };
 }
 
-/** Three funded births prune one of exactly 41 extinct identities from the event ring. */
+/** Three funded births and their observations prune two of 41 extinct identities. */
 export function paginationEviction() {
   const world = new Ecosystem(
     { ...DEFAULTS, seed: 0, mutation: 0.4, climate: 0, nutrients: 0 },
