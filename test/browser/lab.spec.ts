@@ -7181,7 +7181,7 @@ for (const axis of ['horizontal', 'vertical'] as const) {
       };
     });
     await loadPlacementWorld(page, reference);
-    await page.locator('[data-tool="inspect"]').click();
+    await page.locator('button[data-tool="inspect"]').click();
     const at = await placementCoordinate(page, organism.x, organism.y);
     await page.locator('#world').click({
       position: {
@@ -7272,7 +7272,7 @@ test('selected inherited differences use retained parent-lineage endpoints and d
   const child = reference.spawn(genome, 100, 80, undefined, parent)!;
   await loadPlacementWorld(page, reference);
   const inspect = async () => {
-    await page.locator('[data-tool="inspect"]').click();
+    await page.locator('button[data-tool="inspect"]').click();
     const at = await placementCoordinate(page, child.x, child.y);
     await page.mouse.click(at.x, at.y);
     await expect(page.locator('#inspector')).toContainText(`Organism ${child.id}`);
