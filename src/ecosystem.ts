@@ -650,8 +650,7 @@ export class Ecosystem {
   private recordEnergy(field: keyof EnergyLedger, amount: number): void {
     if (this.recording) this.telemetry.pending.energy[field] += amount;
   }
-  private observe(): void {
-    if (!this.recording || this.tick % TELEMETRY_INTERVAL_TICKS !== 0) return;
+  populationObservation() {
     const view = new DataView(new ArrayBuffer(8)),
       preferenceBins: PreferenceBins = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       cellCounts: TelemetrySample['cellCounts'] = [0, 0, 0, 0, 0, 0];
@@ -679,15 +678,21 @@ export class Ecosystem {
         stressedOrganisms++;
       for (const cell of genome.cells) cellCounts[cell.type - 3]++;
     }
+    return {
+      cellCounts,
+      meanPreference: traitMean(preference, this.organisms.size, 0, 1, view),
+      meanTolerance: traitMean(tolerance, this.organisms.size, 0.12, 0.6, view),
+      adaptation: { preferenceBins, stressedOrganisms },
+    };
+  }
+  private observe(): void {
+    if (!this.recording || this.tick % TELEMETRY_INTERVAL_TICKS !== 0) return;
     const sample: TelemetrySample = {
       ...this.telemetry.pending,
       tick: this.tick,
       population: this.organisms.size,
       food: this.food.reduce((total, value) => total + (value ? 1 : 0), 0),
-      cellCounts,
-      meanPreference: traitMean(preference, this.organisms.size, 0, 1, view),
-      meanTolerance: traitMean(tolerance, this.organisms.size, 0.12, 0.6, view),
-      adaptation: { preferenceBins, stressedOrganisms },
+      ...this.populationObservation(),
     };
     if (this.telemetry.samples.length === TELEMETRY_CAPACITY) this.telemetry.samples.shift();
     this.telemetry.samples.push(sample);

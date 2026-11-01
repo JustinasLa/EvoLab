@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Ecosystem } from '../src/ecosystem';
-import { createComparison } from '../src/experiments';
+import { comparisonRuntime, createComparison, createRecipeComparison } from '../src/experiments';
 import { DEFAULTS, WORLD_MAX_BYTES, encodeLegacyValue } from '../src/model';
-import { COMPARISON_MAX_SAMPLES, type ComparisonPlan } from '../src/experiment-model';
+import {
+  COMPARISON_MAX_SAMPLES,
+  RECIPE_MAX_BYTES,
+  type ComparisonPlan,
+} from '../src/experiment-model';
 import { storedSensoryGenome } from './fixtures/sensory-legacy';
 
 function source() {
@@ -167,6 +171,168 @@ describe('isolated complete checkpoint comparisons', () => {
     });
     while (runner.advance(() => 0).tick < 30) {}
     expect(() => runner.result()).toThrow('exceeds 2.5 MB');
+    runner.dispose();
+  });
+});
+
+afterEach(() => vi.unstubAllGlobals());
+function finishRunner(runner: ReturnType<typeof createComparison>) {
+  let progress;
+  do {
+    progress = runner.advance(() => 0);
+  } while (progress.tick < progress.horizonTick);
+  const result = runner.result();
+  runner.dispose();
+  return result;
+}
+describe('measured paired recipes', () => {
+  it('observes exact traits and real post-tick stress without modifying RNG or telemetry', () => {
+    const text = source(),
+      plan = { intervention: 'heat', treatmentTick: 2, horizonTick: 33 } as const;
+    const result = finish(text, plan);
+    const world = Ecosystem.load(text),
+      before = world.save();
+    const observation = world.populationObservation();
+    expect(world.save()).toEqual(before);
+    expect(result.control.samples[0]).toMatchObject({
+      meanPreference: observation.meanPreference,
+      meanTolerance: observation.meanTolerance,
+      stressedFraction: observation.adaptation.stressedOrganisms / world.organisms.size,
+    });
+    while (world.tick < 33) world.step();
+    const last = world.populationObservation();
+    expect(result.control.samples.at(-1)).toMatchObject({
+      meanPreference: last.meanPreference,
+      meanTolerance: last.meanTolerance,
+      stressedFraction: last.adaptation.stressedOrganisms / world.organisms.size,
+    });
+    expect(JSON.parse(result.control.state)).toEqual(world.save());
+    const recipe = JSON.parse(result.recipe);
+    expect(recipe).toMatchObject({
+      checkpoint: text,
+      sourceTick: 2,
+      seed: 2019,
+      plan,
+      rules: { version: 3, worldVersion: 10 },
+      runtime: comparisonRuntime(),
+    });
+    const replay = finishRunner(createRecipeComparison(result.recipe));
+    expect(replay).toEqual({ ...result, reproduced: true });
+    const reordered = JSON.parse(result.recipe);
+    reordered.control.samples = reordered.control.samples.map((s: any) =>
+      Object.fromEntries(Object.entries(s).reverse()),
+    );
+    expect(finishRunner(createRecipeComparison(JSON.stringify(reordered)))).toEqual(replay);
+  });
+  it('preserves empty/terminal outcomes and rejects altered but superficially valid measurements on replay', () => {
+    const world = new Ecosystem(DEFAULTS, false);
+    world.spawn({ ...storedSensoryGenome(), cells: [{ x: 0, y: 0, type: 3 }] }, 1, 1)!.energy =
+      0.001;
+    const result = finish(JSON.stringify(world.save()), {
+      intervention: 'cold',
+      treatmentTick: 0,
+      horizonTick: 31,
+    });
+    expect(result.control.samples.at(-1)).toMatchObject({
+      population: 0,
+      meanPreference: null,
+      meanTolerance: null,
+      stressedFraction: null,
+    });
+    expect(finishRunner(createRecipeComparison(result.recipe)).control).toEqual(result.control);
+    const altered = JSON.parse(result.recipe);
+    altered.control.samples[0].meanPreference = 0.99;
+    expect(() => finishRunner(createRecipeComparison(JSON.stringify(altered)))).toThrow(
+      'replay differs',
+    );
+    const empty = finish(JSON.stringify(new Ecosystem(DEFAULTS, false).save()), {
+      intervention: 'none',
+      treatmentTick: 0,
+      horizonTick: 3600,
+    });
+    expect(finishRunner(createRecipeComparison(empty.recipe))).toEqual({
+      ...empty,
+      reproduced: true,
+    });
+  });
+  it('validates every envelope, observation, extinction, runtime and full checkpoint before starting', () => {
+    const result = finish(source(), { intervention: 'none', treatmentTick: 2, horizonTick: 33 });
+    const edits: ((r: any) => void)[] = [
+      (r) => (r.extra = true),
+      (r) => (r.version = 2),
+      (r) => r.rules.version++,
+      (r) => r.rules.worldVersion++,
+      (r) => (r.runtime = 'another runtime'),
+      (r) => (r.checkpoint = '{}'),
+      (r) => r.seed++,
+      (r) => r.sourceTick++,
+      (r) => (r.plan.extra = true),
+      (r) => (r.plan.intervention = 'invalid'),
+      (r) => (r.plan.horizonTick = 2),
+      (r) => (r.control.extra = true),
+      (r) => r.control.samples.pop(),
+      (r) => r.control.samples.push(r.control.samples[0]),
+      (r) => r.control.samples[0].tick++,
+      (r) => (r.control.samples[0].extra = true),
+      (r) => (r.control.samples[0].population = 1601),
+      (r) => (r.control.samples[0].births = -1),
+      (r) => (r.control.samples[1].deaths = -1),
+      (r) => (r.control.samples[0].meanPreference = null),
+      (r) => (r.control.samples[0].meanTolerance = 0.1),
+      (r) => (r.control.samples[0].stressedFraction = 2),
+      (r) => (r.control.extinction = { tick: 1, cause: 'age' }),
+      (r) => (r.control.extinction = { tick: null, cause: 'initially empty checkpoint' }),
+      (r) => (r.control.extinction = { tick: 3, cause: 'energy' }),
+      (r) => (r.control.extinction = { tick: 3, cause: 'manual' }),
+      (r) => {
+        const w = JSON.parse(r.checkpoint);
+        w.organisms[0].genome.behavior.version = 2;
+        r.checkpoint = JSON.stringify(w);
+      },
+      (r) => {
+        const w = JSON.parse(r.checkpoint);
+        w.lineageArchive.summaries[0].foundingGenome.preference = 2;
+        r.checkpoint = JSON.stringify(w);
+      },
+    ];
+    for (const edit of edits) {
+      const recipe = JSON.parse(result.recipe);
+      edit(recipe);
+      expect(() => createRecipeComparison(JSON.stringify(recipe))).toThrow();
+    }
+    for (const text of [
+      'null',
+      '[]',
+      '{',
+      'x'.repeat(RECIPE_MAX_BYTES + 1),
+      'é'.repeat(RECIPE_MAX_BYTES / 2 + 1),
+    ])
+      expect(() => createRecipeComparison(text)).toThrow();
+    expect(() => createRecipeComparison(null as unknown as string)).toThrow();
+    const empty = JSON.parse(
+      finish(JSON.stringify(new Ecosystem(DEFAULTS, false).save()), {
+        intervention: 'none',
+        treatmentTick: 0,
+        horizonTick: 1,
+      }).recipe,
+    );
+    empty.control.samples[0].stressedFraction = 0;
+    expect(() => createRecipeComparison(JSON.stringify(empty))).toThrow('observation');
+    empty.control.samples[0].stressedFraction = null;
+    empty.control.extinction = null;
+    expect(() => createRecipeComparison(JSON.stringify(empty))).toThrow('extinction');
+  });
+  it('bounds outbound recipes and records non-browser runtime explicitly', () => {
+    vi.stubGlobal('navigator', undefined);
+    expect(comparisonRuntime()).toBe('non-browser ECMAScript');
+    const runner = createComparison(source(), {
+      intervention: 'none',
+      treatmentTick: 2,
+      horizonTick: 3,
+    });
+    runner.advance(() => 0);
+    vi.stubGlobal('navigator', { userAgent: 'x'.repeat(RECIPE_MAX_BYTES) });
+    expect(() => runner.result()).toThrow('recipe exceeds');
     runner.dispose();
   });
 });
