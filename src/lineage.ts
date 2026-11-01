@@ -1,3 +1,4 @@
+import { birthObservation, validBirthEvent, type BirthEvent } from './mutation-evidence';
 import {
   LIMIT,
   LINEAGE_SUMMARY_CAPACITY,
@@ -96,13 +97,19 @@ export class LineageArchive {
   private living = new Map<number, LivingLineage>();
   private summaries = new Map<number, LineageSummary>();
   private events: LineageEvent[] = [];
+  private mutationOriginTick: number;
+  reproduction(event: Omit<BirthEvent, 'kind' | 'outcome'>): void {
+    this.append(birthObservation(event));
+  }
   private summariesPruned = false;
   private eventsPruned = false;
   private eventsEvictedThroughTick: number | null = null;
   constructor(
     private readonly originKind: LineageArchiveState['originKind'] = 'fresh',
     private readonly originTick = 0,
-  ) {}
+  ) {
+    this.mutationOriginTick = originTick;
+  }
   baseline(species: number): OrganismBaseline {
     const parent = this.living.get(species)?.parentId;
     const lineageId = parent ?? species;
@@ -181,7 +188,8 @@ export class LineageArchive {
   }
   snapshot(): LineageArchiveState {
     return structuredClone({
-      version: 1,
+      version: 2,
+      mutationOriginTick: this.mutationOriginTick,
       originKind: this.originKind,
       originTick: this.originTick,
       summariesPruned: this.summariesPruned,
@@ -228,6 +236,8 @@ export class LineageArchive {
     historical = false,
     active = true,
     propensity = true,
+    modern = true,
+    nextId = 1e9,
   ): LineageArchive {
     const state = validateArchive(
       value,
@@ -237,11 +247,14 @@ export class LineageArchive {
       historical,
       active,
       propensity,
+      modern,
+      nextId,
     );
     const archive = new LineageArchive(state.originKind, state.originTick);
     archive.living = new Map(state.living.map((row) => [row.id, row]));
     archive.summaries = new Map(state.summaries.map((row) => [row.id, row]));
     archive.events = state.events;
+    archive.mutationOriginTick = state.mutationOriginTick!;
     archive.summariesPruned = state.summariesPruned;
     archive.eventsPruned = state.eventsPruned;
     archive.eventsEvictedThroughTick = state.eventsEvictedThroughTick;
@@ -268,11 +281,19 @@ function validateArchive(
   historical: boolean,
   active: boolean,
   propensity: boolean,
+  modern: boolean,
+  nextId: number,
 ): LineageArchiveState {
-  requireArchive(exact(value, archiveKeys));
+  const version = (value as LineageArchiveState | null)?.version;
+  requireArchive(
+    exact(value, version === 2 && modern ? [...archiveKeys, 'mutationOriginTick'] : archiveKeys),
+  );
   const state = structuredClone(value) as unknown as LineageArchiveState;
   requireArchive(
-    state.version === 1 &&
+    ((!modern && state.version === 1) ||
+      (modern &&
+        state.version === 2 &&
+        integer(state.mutationOriginTick, state.originTick, tick))) &&
       (state.originKind === 'fresh' || state.originKind === 'legacy-import') &&
       integer(state.originTick, 0, tick) &&
       (state.originKind !== 'fresh' || state.originTick === 0) &&
@@ -385,6 +406,16 @@ function validateArchive(
   }
   let eventTick = state.originTick;
   for (const [position, event] of state.events.entries()) {
+    if (event?.kind === 'reproduction') {
+      requireArchive(
+        state.version === 2 &&
+          validBirthEvent(event, nextSpecies, nextId) &&
+          integer(event.tick, state.mutationOriginTick! + 1, tick) &&
+          event.tick >= eventTick,
+      );
+      eventTick = event.tick;
+      continue;
+    }
     requireArchive(exact(event, event?.kind === 'created' ? createdKeys : extinctKeys));
     requireArchive(
       integer(event.id, 1, nextSpecies - 1) && validDate(event.tick) && event.tick >= eventTick,
@@ -405,6 +436,29 @@ function validateArchive(
       requireArchive(event.kind === 'extinct' && !entry.extinct && !physical.has(event.id));
       entry.extinct = { kind: 'extinct', id: event.id, tick: event.tick };
       entry.extinctPosition = position;
+    }
+  }
+  const bornIds = new Set<number>();
+  const attemptedParents = new Set<string>();
+  for (const event of state.events) {
+    if (event.kind !== 'reproduction') continue;
+    const attemptKey = `${event.tick}:${event.parentOrganismId}`;
+    requireArchive(!attemptedParents.has(attemptKey));
+    attemptedParents.add(attemptKey);
+    const parent = facts.get(event.id);
+    const created = parent?.row?.createdTick ?? parent?.created?.tick;
+    const extinct = parent?.row?.extinctTick ?? parent?.extinct?.tick;
+    requireArchive(
+      (created == null || created <= event.tick) && (extinct == null || extinct >= event.tick),
+    );
+    if (event.childOrganismId !== null) {
+      requireArchive(!bornIds.has(event.childOrganismId));
+      bornIds.add(event.childOrganismId);
+      const summary = state.summaries.find((row) => row.id === event.childLineageId);
+      if (summary?.foundingGenome)
+        requireArchive(sameInherited(summary.foundingGenome, event.childGenome!));
+      if (event.childLineageId !== event.id && summary)
+        requireArchive(summary.createdTick === event.tick && summary.parentId === event.id);
     }
   }
   requireArchive(
@@ -493,6 +547,7 @@ function validateArchive(
   const presenceBound = new Map<number, number>();
   let possibleAdmissions = 0;
   for (const event of state.events) {
+    if (event.kind === 'reproduction') continue;
     if (event.kind === 'created') {
       possibleAdmissions++;
       earliestEviction.set(event.id, possibleAdmissions + LINEAGE_SUMMARY_CAPACITY);
@@ -647,7 +702,8 @@ function validateArchive(
     requireArchive(required + Math.max(0, unexplainedPresence.size - available) <= available);
   }
   return {
-    version: 1,
+    version: 2,
+    mutationOriginTick: state.version === 2 ? state.mutationOriginTick! : tick,
     originKind: state.originKind,
     originTick: state.originTick,
     summariesPruned: state.summariesPruned,

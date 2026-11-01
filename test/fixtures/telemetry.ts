@@ -136,7 +136,7 @@ export function legacyV7(saved: WorldFile): WorldFileV7 {
 }
 
 export function legacyV8(saved: WorldFile): WorldFileV8 {
-  const archive = structuredClone(saved.lineageArchive);
+  const archive = historicalArchive(saved.lineageArchive);
   for (const row of archive.summaries) {
     if (row.foundingGenome) {
       assert.deepEqual(row.foundingGenome.behavior, { version: 1, mode: 'legacy' });
@@ -159,11 +159,24 @@ export function legacyV9(saved: WorldFile): WorldFileV9 {
   assert.ok(retained.interventions.entries.every((row) => !row.kind.startsWith('shade-')));
   return {
     ...retained,
+    lineageArchive: historicalArchive(saved.lineageArchive),
     version: 9,
     interventions: {
       ...retained.interventions,
       version: 3,
       entries: retained.interventions.entries as WorldFileV9['interventions']['entries'],
     },
+  };
+}
+
+/** Explicit predecessor fixture: historical envelopes never contained birth observations. */
+export function historicalArchive(
+  source: WorldFile['lineageArchive'],
+): WorldFile['lineageArchive'] {
+  const { mutationOriginTick: _origin, ...archive } = structuredClone(source);
+  return {
+    ...archive,
+    version: 1,
+    events: archive.events.filter((event) => event.kind !== 'reproduction'),
   };
 }

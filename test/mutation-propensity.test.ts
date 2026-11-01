@@ -18,7 +18,7 @@ import {
 } from '../src/mutation';
 import { genomeDiff } from '../src/organism-view';
 import { organismHtml } from '../src/view';
-import { legacyV7 } from './fixtures/telemetry';
+import { historicalArchive, legacyV7 } from './fixtures/telemetry';
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
 
 function source(value?: number): Genome {
@@ -154,13 +154,24 @@ describe('explicit inherited mutation propensity', () => {
     for (const policy of [legacyMutation(), weightedMutation()]) {
       const { world } = birth(7, undefined, 0.4, policy);
       const file = world.save(),
-        predecessor = { ...file, version: 13 };
-      let loaded = Ecosystem.load(JSON.stringify(predecessor));
-      expect(loaded.save()).toEqual(file);
+        predecessor = {
+          ...file,
+          version: 13,
+          lineageArchive: historicalArchive(file.lineageArchive),
+        };
+      const loaded = Ecosystem.load(JSON.stringify(predecessor));
+      const expected = structuredClone(file);
+      expected.lineageArchive.mutationOriginTick = file.tick;
+      expected.lineageArchive.events = expected.lineageArchive.events.filter(
+        (event) => event.kind !== 'reproduction',
+      );
+      expect(loaded.save()).toEqual(expected);
       for (let tick = 0; tick < 120; tick++) {
         world.step();
         loaded.step();
-        expect(loaded.save()).toEqual(world.save());
+        const { lineageArchive: _prior, ...prior } = loaded.save();
+        const { lineageArchive: _current, ...current } = world.save();
+        expect(prior).toEqual(current);
       }
     }
   });
@@ -234,7 +245,11 @@ describe('explicit inherited mutation propensity', () => {
     ]);
     const complete = loaded.save();
     expect(Ecosystem.load(JSON.stringify(complete)).save()).toEqual(complete);
-    const native = { ...oldWorld.save(), version: 13 };
+    const native = {
+      ...oldWorld.save(),
+      version: 13,
+      lineageArchive: historicalArchive(oldWorld.save().lineageArchive),
+    };
     const migrated = Ecosystem.load(JSON.stringify(native));
     expect(migrated.save()).toEqual(oldWorld.save());
     expect(migrated.save().organisms[0].genome.legacyExtensions).toEqual(source().legacyExtensions);

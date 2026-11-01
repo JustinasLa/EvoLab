@@ -1,3 +1,4 @@
+import { historicalArchive } from '../fixtures/telemetry';
 import { expect, test } from '@playwright/test';
 import { Ecosystem } from '../../src/ecosystem';
 import { DEFAULTS, type Genome, type WorldFile } from '../../src/model';
@@ -33,6 +34,7 @@ test('native seeded active births retain real inherited reaction differences and
   const fixture = JSON.stringify({
     ...reference.save(),
     version: 11,
+    lineageArchive: historicalArchive(reference.save().lineageArchive),
     interventions: { ...reference.save().interventions, version: 4 },
   });
   await page.goto('/');
@@ -50,7 +52,7 @@ test('native seeded active births retain real inherited reaction differences and
   const saved: WorldFile = JSON.parse((await nativeDownload(page)).toString('utf8'));
   while (reference.tick < saved.tick) reference.step();
   expect(saved).toEqual(reference.save());
-  expect(saved.version).toBe(14);
+  expect(saved.version).toBe(15);
   expect(saved.births).toBeGreaterThanOrEqual(1);
   const mutation = saved.lineageArchive.summaries.find((summary) => summary.origin === 'mutation')!;
   expect(mutation.parentId).toBe(parent.species);

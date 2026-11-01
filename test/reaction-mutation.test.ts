@@ -1,3 +1,4 @@
+import { historicalArchive } from './fixtures/telemetry';
 import { describe, expect, it } from 'vitest';
 import { Ecosystem } from '../src/ecosystem';
 import {
@@ -128,7 +129,15 @@ describe('active-only birth reaction mutation', () => {
     expect(after.births).toBe(0);
     expect(after.nextId).toBe(before.nextId);
     expect(after.nextSpecies).toBe(before.nextSpecies);
-    expect(after.lineageArchive).toEqual(before.lineageArchive);
+    expect({
+      ...after.lineageArchive,
+      events: after.lineageArchive.events.filter((event) => event.kind !== 'reproduction'),
+    }).toEqual(before.lineageArchive);
+    expect(after.lineageArchive.events.at(-1)).toMatchObject({
+      kind: 'reproduction',
+      outcome: 'failed-placement',
+      childGenome: null,
+    });
     expect(parent.children).toBe(0);
     expect(parent.energy).toBeCloseTo(40 - 0.012, 12);
     expect(after.telemetry.pending.energy.offspringGranted).toBe(0);
@@ -159,10 +168,11 @@ describe('active-only birth reaction mutation', () => {
       predecessor = {
         ...current,
         version: 11,
+        lineageArchive: historicalArchive(current.lineageArchive),
         interventions: { ...current.interventions, version: 4 },
       };
     const migrated = Ecosystem.load(JSON.stringify(predecessor));
-    expect(WORLD_VERSION).toBe(14);
+    expect(WORLD_VERSION).toBe(15);
     expect(migrated.save()).toEqual(current);
     world.step();
     migrated.step();

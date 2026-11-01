@@ -1,3 +1,4 @@
+import { historicalArchive } from './telemetry';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -25,7 +26,7 @@ export function main8Fixture(name: string): string {
 export function restoreMain8(saved: WorldFile) {
   assert.deepEqual(saved.mutationPolicy, { version: 1, mode: 'legacy' });
   assert.ok(saved.interventions.entries.every((row) => row.kind !== 'mutation-policy'));
-  const archive = structuredClone(saved.lineageArchive);
+  const archive = historicalArchive(saved.lineageArchive);
   for (const row of archive.summaries)
     if (row.foundingGenome) {
       const genome = restoreHistoricalGenome(row.foundingGenome);

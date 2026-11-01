@@ -182,7 +182,7 @@ describe('bounded retained measurement codec', () => {
         version: 8,
         rules: { version: 7 },
         snapshot: {
-          worldVersion: 14,
+          worldVersion: 15,
           shadeHabitats: {
             version: 1,
             enabled,
@@ -228,7 +228,7 @@ describe('bounded retained measurement codec', () => {
         envelope = measurementEnvelope(source);
       const serialized = serializeMeasurements(source, format);
       expect(serialized.byteLength).toBe(new TextEncoder().encode(serialized.text).length);
-      expect(envelope.snapshot.worldVersion).toBe(14);
+      expect(envelope.snapshot.worldVersion).toBe(15);
       expect(envelope).toMatchObject({
         version: 8,
         rules: { version: 7 },
@@ -279,7 +279,7 @@ describe('bounded retained measurement codec', () => {
         version: 8,
         rules: { version: 7 },
         snapshot: {
-          worldVersion: 14,
+          worldVersion: 15,
           thermalRefuges: {
             version: 1,
             enabled,
@@ -327,7 +327,7 @@ describe('bounded retained measurement codec', () => {
       envelope = measurementEnvelope(source);
     expect(envelope.version).toBe(8);
     expect(envelope.rules.version).toBe(7);
-    expect(envelope.snapshot.worldVersion).toBe(14);
+    expect(envelope.snapshot.worldVersion).toBe(15);
     expect(envelope.snapshot.terrain).toEqual(world.terrain);
     expect(envelope.snapshot.settings).toEqual(DEFAULTS);
     expect(envelope.negativeZeroPaths).toContain('/snapshot/terrain/seed');

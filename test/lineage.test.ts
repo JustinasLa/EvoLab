@@ -111,7 +111,8 @@ function evidence(events: LineageEvent[], rows: LineageSummary[] = [], watermark
     }));
   saved.nextId = saved.organisms.length + 1;
   saved.lineageArchive = {
-    version: 1,
+    version: 2,
+    mutationOriginTick: 0,
     originKind: 'fresh',
     originTick: 0,
     summariesPruned: true,
@@ -928,7 +929,7 @@ describe('archive field and genotype validation', () => {
     for (const change of [
       (file: any) => (file.lineageArchive = null),
       (file: any) => (file.lineageArchive = []),
-      (file: any) => (file.lineageArchive.version = 2),
+      (file: any) => (file.lineageArchive.version = 3),
       (file: any) => (file.lineageArchive.originKind = 'invented'),
       (file: any) => (file.lineageArchive.originTick = 1),
       (file: any) => (file.lineageArchive.summariesPruned = 1),
@@ -1105,7 +1106,10 @@ describe('bounded observed lineage lifecycle', () => {
           expect(migrated.lineageSnapshot()).toMatchObject({
             originKind: version === 8 ? saved.lineageArchive.originKind : 'legacy-import',
             originTick: version === 8 ? saved.lineageArchive.originTick : tick,
-            events: version === 8 ? saved.lineageArchive.events : [],
+            events:
+              version === 8
+                ? saved.lineageArchive.events.filter((event) => event.kind !== 'reproduction')
+                : [],
           });
           if (populated) {
             expect(migrated.lineageSnapshot().living.map((row) => row.id)).toEqual([5, 6]);
@@ -1242,10 +1246,10 @@ describe('bounded observed lineage lifecycle', () => {
   it('records the genuine founder and detached ordered founding fields without extensions', () => {
     const world = new Ecosystem();
     const saved = world.save();
-    expect(saved.version).toBe(14);
+    expect(saved.version).toBe(15);
     expect(saved.nextSpecies).toBe(5);
     expect(saved.lineageArchive).toMatchObject({
-      version: 1,
+      version: 2,
       originKind: 'fresh',
       originTick: 0,
       summariesPruned: false,

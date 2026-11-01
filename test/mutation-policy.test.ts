@@ -1,3 +1,4 @@
+import { historicalArchive } from './fixtures/telemetry';
 import { describe, expect, it } from 'vitest';
 import { Ecosystem } from '../src/ecosystem';
 import {
@@ -233,7 +234,16 @@ describe('bounded opt-in mutation policy', () => {
     world.step();
     expect(world.births).toBe(0);
     expect(world.nextId).toBe(2);
-    expect(world.lineageSnapshot()).toEqual(before);
+    const observed = world.lineageSnapshot();
+    expect({
+      ...observed,
+      events: observed.events.filter((event) => event.kind !== 'reproduction'),
+    }).toEqual(before);
+    expect(observed.events.at(-1)).toMatchObject({
+      kind: 'reproduction',
+      outcome: 'failed-placement',
+      childGenome: null,
+    });
     expect(parent.energy).toBeLessThan(energy);
     expect(world.telemetrySnapshot().pending.energy.reproductionSpent).toBe(0);
   });
@@ -265,11 +275,12 @@ describe('bounded opt-in mutation policy', () => {
     const envelope = measurementEnvelope(a.measurements());
     expect(envelope.snapshot.mutationPolicy).toEqual(only('tolerance'));
     expect(envelope.interventions.version).toBe(5);
-    expect(WORLD_VERSION).toBe(14);
+    expect(WORLD_VERSION).toBe(15);
   });
   it('migrates world12 with exact legacy continuity and retained opaque settings, excluding ignored root names', () => {
     const old = new Ecosystem({ ...DEFAULTS, mutation: 0.4 }).save() as any;
     old.version = 12;
+    old.lineageArchive = historicalArchive(old.lineageArchive);
     old.interventions.version = 4;
     old.mutationPolicy = { unowned: 'ignored' };
     old.settings.mutationPolicy = { unowned: 'retained' };

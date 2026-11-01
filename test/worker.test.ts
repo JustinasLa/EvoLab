@@ -1,3 +1,4 @@
+import { historicalArchive } from './fixtures/telemetry';
 import { weightedMutation } from '../src/mutation';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { createHash } from 'node:crypto';
@@ -3155,7 +3156,7 @@ describe('integrated extinction and telemetry', () => {
     expect(harness.tasks).toHaveLength(0);
   });
 
-  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])(
+  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])(
     'migrates/restores v%i then preserves terminal and pending history through an empty save continuation',
     (version) => {
       const harness = workerHarness();
@@ -3205,7 +3206,11 @@ describe('integrated extinction and telemetry', () => {
                                 }
                               : version === 13
                                 ? { ...current, version: 13 as const }
-                                : current;
+                                : version === 14
+                                  ? { ...current, version: 14 as const }
+                                  : current;
+      if (version >= 8 && version < 15 && 'lineageArchive' in file)
+        file.lineageArchive = historicalArchive(file.lineageArchive);
       expect(file.version).toBe(version);
       if (file.version === 2) expect(file).not.toHaveProperty('telemetry');
       else {
@@ -3236,14 +3241,20 @@ describe('integrated extinction and telemetry', () => {
           file.version >= 10
             ? {
                 ...file,
-                version: 14,
+                version: 15,
+                lineageArchive: {
+                  ...file.lineageArchive,
+                  version: 2,
+                  mutationOriginTick:
+                    version === 15 ? file.lineageArchive.mutationOriginTick : file.tick,
+                },
                 mutationPolicy: { version: 1, mode: 'legacy' },
                 interventions: { ...file.interventions, version: 5 },
               }
             : file.version >= 5
               ? {
                   ...file,
-                  version: 14,
+                  version: 15,
                   mutationPolicy: { version: 1, mode: 'legacy' },
                   shadeHabitats: { version: 1, enabled: false, cells: [] },
                   organisms: imported.organisms,
@@ -3257,7 +3268,7 @@ describe('integrated extinction and telemetry', () => {
                 }
               : {
                   ...file,
-                  version: 14,
+                  version: 15,
                   mutationPolicy: { version: 1, mode: 'legacy' },
                   shadeHabitats: { version: 1, enabled: false, cells: [] },
                   organisms: imported.organisms,
@@ -3282,7 +3293,7 @@ describe('integrated extinction and telemetry', () => {
       harness.advance();
       reference.step();
       const terminal = harness.save();
-      expect(terminal.version).toBe(14);
+      expect(terminal.version).toBe(15);
       expect(terminal.telemetry.version).toBe(2);
       expect(terminal.telemetry.samples.at(-1)).toMatchObject({
         fromTick: version === 2 ? 89 : 60,

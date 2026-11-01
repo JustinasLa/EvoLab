@@ -1951,7 +1951,7 @@ test('composed library operations preserve complete world9 archive and measureme
   await page.locator('[data-shock="heat"]').click();
   const before = await pausedSave(page);
   const world = JSON.parse(before.toString()) as WorldFile;
-  expect(world.version).toBe(14);
+  expect(world.version).toBe(15);
   expect(world.lineageArchive.summaries.length).toBeGreaterThan(0);
   expect(world.telemetry.version).toBe(2);
   expect(world.interventions.version).toBe(5);
