@@ -48,3 +48,113 @@ export function lifeRules(genome: Pick<Genome, 'cells'> & { lifeHistory?: LifeHi
     grant,
   };
 }
+
+export const LIFE_EVENT_CAPACITY = 128;
+export interface LifeEvent {
+  tick: number;
+  organismId: number;
+  lineageId: number;
+  kind: 'mature' | import('./model').DeathCause;
+  age: number;
+  cells: number;
+  traits: LifeHistory;
+}
+export interface LifeHistoryLog {
+  version: 1;
+  originTick: number;
+  maintenanceSpent: number;
+  eventsPruned: boolean;
+  events: LifeEvent[];
+}
+export const emptyLifeHistoryLog = (originTick: number): LifeHistoryLog => ({
+  version: 1,
+  originTick,
+  maintenanceSpent: 0,
+  eventsPruned: false,
+  events: [],
+});
+/** Observations of opted-in bodies only. This observer consumes no random draws. */
+export function recordLifeEvent(
+  log: LifeHistoryLog,
+  o: import('./model').Organism,
+  tick: number,
+  kind: LifeEvent['kind'],
+): void {
+  if (!o.genome.lifeHistory) return;
+  log.events.push({
+    tick,
+    organismId: o.id,
+    lineageId: o.species,
+    kind,
+    age: o.age,
+    cells: o.genome.cells.length,
+    traits: { ...o.genome.lifeHistory },
+  });
+  if (log.events.length > LIFE_EVENT_CAPACITY) {
+    log.events.shift();
+    log.eventsPruned = true;
+  }
+}
+export function validateLifeHistoryLog(
+  value: unknown,
+  tick: number,
+  nextId: number,
+  nextSpecies: number,
+): LifeHistoryLog {
+  if (
+    !exactDataRecord(value, [
+      'version',
+      'originTick',
+      'maintenanceSpent',
+      'eventsPruned',
+      'events',
+    ]) ||
+    value.version !== 1 ||
+    !integer(value.originTick, 0, tick) ||
+    typeof value.maintenanceSpent !== 'number' ||
+    !Number.isFinite(value.maintenanceSpent) ||
+    value.maintenanceSpent < 0 ||
+    value.maintenanceSpent > (tick - Number(value.originTick)) * 1600 * 0.128 + 1e-6 ||
+    typeof value.eventsPruned !== 'boolean' ||
+    !Array.isArray(value.events) ||
+    value.events.length > LIFE_EVENT_CAPACITY ||
+    (value.eventsPruned && value.events.length !== LIFE_EVENT_CAPACITY)
+  )
+    throw new Error('Invalid life-history observations.');
+  let previous = Number(value.originTick);
+  const seen = new Set<string>();
+  for (const event of value.events) {
+    if (
+      !exactDataRecord(event, [
+        'tick',
+        'organismId',
+        'lineageId',
+        'kind',
+        'age',
+        'cells',
+        'traits',
+      ]) ||
+      !integer(event.tick, previous, tick) ||
+      !integer(event.organismId, 1, nextId - 1) ||
+      !integer(event.lineageId, 1, nextSpecies - 1) ||
+      !integer(event.age, 0, 100000) ||
+      !integer(event.cells, 1, 16) ||
+      !validLifeHistory(event.traits) ||
+      !['mature', 'age', 'energy', 'manual'].includes(String(event.kind))
+    )
+      throw new Error('Invalid life-history event.');
+    const age = Number(event.age),
+      maturity = 15 + 15 * event.traits.maturity,
+      limit = 900 + Number(event.cells) * 75 + event.traits.maintenance * 300,
+      key = `${event.organismId}:${event.kind === 'mature' ? 'mature' : 'death'}`;
+    if (
+      (event.kind === 'mature' && age !== maturity + 1) ||
+      (event.kind === 'age' && age <= limit) ||
+      seen.has(key)
+    )
+      throw new Error('Inconsistent life-history outcome.');
+    seen.add(key);
+    previous = Number(event.tick);
+  }
+  return structuredClone(value) as unknown as LifeHistoryLog;
+}

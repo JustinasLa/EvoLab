@@ -22,7 +22,7 @@ export interface BlueprintFileV1 {
 }
 export interface BlueprintFile {
   format: 'evolab-organism-blueprint';
-  version: 4;
+  version: 5;
   name: string;
   description: string;
   genome: Genome;
@@ -44,8 +44,14 @@ function exactKeys(value: unknown, keys: object): value is Record<string, unknow
 function validate(value: unknown): BlueprintFile {
   if (!exactKeys(value, rootKeys) || value.format !== 'evolab-organism-blueprint')
     throw new Error('Choose a standalone EvoLab organism blueprint.');
-  if (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4)
-    throw new Error('Unsupported blueprint version. Expected version 1, 2, 3 or 4.');
+  if (
+    value.version !== 1 &&
+    value.version !== 2 &&
+    value.version !== 3 &&
+    value.version !== 4 &&
+    value.version !== 5
+  )
+    throw new Error('Unsupported blueprint version. Expected version 1, 2, 3, 4 or 5.');
   if (
     typeof value.name !== 'string' ||
     !value.name.trim() ||
@@ -61,12 +67,12 @@ function validate(value: unknown): BlueprintFile {
         Array.isArray(genome.cells) &&
         genome.cells.every((cell) => exactKeys(cell, cellKeys)) &&
         validHistoricalGenome(genome)
-      : validGenome(genome, value.version >= 3, value.version === 4))
+      : validGenome(genome, value.version >= 3, value.version >= 4, value.version >= 5))
   )
     throw new Error('Blueprint needs 1–16 connected cells and valid temperature and tempo traits.');
   return {
     format: 'evolab-organism-blueprint',
-    version: 4,
+    version: 5,
     name: value.name,
     description: value.description,
     genome:
@@ -93,7 +99,7 @@ export function serializeBlueprint(
 ): string {
   const blueprint = validate({
     format: 'evolab-organism-blueprint',
-    version: 4,
+    version: 5,
     name: input.name,
     description: input.description,
     genome: input.genome,

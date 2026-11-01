@@ -94,7 +94,7 @@ describe('bounded local record classification', () => {
       JSON.stringify({ recordVersion: 2, extra: true }),
       JSON.stringify({
         ...supported,
-        blueprint: JSON.stringify({ ...blueprint, version: 5, extra: true }),
+        blueprint: JSON.stringify({ ...blueprint, version: 6, extra: true }),
       }),
       JSON.stringify({
         ...supported,
@@ -218,7 +218,7 @@ describe('native event ownership and transactions', () => {
       JSON.stringify({ recordVersion: 2, extra: true }),
       JSON.stringify({
         ...raw,
-        blueprint: JSON.stringify({ ...blueprint, version: 5, extra: true }),
+        blueprint: JSON.stringify({ ...blueprint, version: 6, extra: true }),
       }),
       JSON.stringify({ ...raw, revision: -1 }),
       '{}',

@@ -1,3 +1,5 @@
+import { LIFE_TRAITS, defaultLifeHistory, lifeRules } from './life-history';
+import { lifeLogHtml } from './life-history-view';
 import { mountMutationControls } from './mutation-view';
 import { validMutationPolicy } from './mutation';
 import { emptyShade, shadeTool, shadeSummary, validShadeBrush } from './shade';
@@ -1805,6 +1807,22 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         ? 'Global rate'
         : String(blueprint.mutationPropensity),
     );
+    get<HTMLInputElement>('inherited-life-history').checked = !!blueprint.lifeHistory;
+    for (const key of LIFE_TRAITS) {
+      get<HTMLInputElement>(`life-${key}`).disabled = !blueprint.lifeHistory;
+      get<HTMLInputElement>(`life-${key}`).value = String(
+        blueprint.lifeHistory?.[key] ?? defaultLifeHistory()[key],
+      );
+      text(
+        `life-${key}-value`,
+        blueprint.lifeHistory ? String(blueprint.lifeHistory[key]) : 'Disabled',
+      );
+    }
+    const life = lifeRules(blueprint);
+    text(
+      'life-design-rules',
+      `Maturity >${life.maturity}; cadence ${life.cadence}; age limit ${life.ageLimit}; extra upkeep ${life.maintenance}/tick; energy threshold >${life.threshold}; same-size child grant ${life.grant(blueprint.cells.length)} plus overhead ${life.overhead}. All birth energy is parent-funded.`,
+    );
     text('behavior-status', behaviorStatus(blueprint));
     get('behavior-controls').innerHTML = reactionEditor(blueprint);
     text(
@@ -2291,6 +2309,22 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     brush = Number(get<HTMLInputElement>('brush').value);
     text('brush-value', `${brush} cells`);
   });
+  get('inherited-life-history').addEventListener('change', () => {
+    endStroke();
+    invalidateDesign();
+    if (get<HTMLInputElement>('inherited-life-history').checked)
+      blueprint.lifeHistory = defaultLifeHistory();
+    else delete blueprint.lifeHistory;
+    editor();
+  });
+  for (const key of LIFE_TRAITS)
+    get(`life-${key}`).addEventListener('input', () => {
+      if (!blueprint.lifeHistory) return;
+      endStroke();
+      invalidateDesign();
+      blueprint.lifeHistory[key] = Number(get<HTMLInputElement>(`life-${key}`).value);
+      editor();
+    });
   get('inherited-mutation').addEventListener('change', () => {
     endStroke();
     invalidateDesign();
@@ -2947,6 +2981,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           observation.replacementId,
         );
       rolesView.update(observation.world.roles);
+      get('life-history-outcomes').innerHTML = lifeLogHtml(observation.world.lifeHistory);
       organismView.update(
         observation,
         differentRun ||
