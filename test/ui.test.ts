@@ -1,3 +1,4 @@
+import { emptyShade, shadeSummary, selectedLeafLight } from '../src/shade';
 import { checkpointRecord } from '../src/checkpoints';
 import { createComparison } from '../src/experiments';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -86,6 +87,11 @@ class WorkerStub extends EventTarget {
         offset: frame.offset,
         terrain: frame.terrain ?? DEFAULT_TERRAIN,
         thermalRefuges: refugeSummary(frame.thermalRefuges ?? emptyRefuges()),
+        shadeHabitats: shadeSummary(frame.shadeHabitats ?? emptyShade()),
+        selectedLeafLight: selectedLeafLight(
+          frame.shadeHabitats ?? emptyShade(),
+          fixture.selected ?? null,
+        ),
         anchorTemperature: fixture.selected
           ? localTemperature(
               fixture.selected.x,
@@ -143,6 +149,7 @@ class WorkerStub extends EventTarget {
           cells: frame.cells,
           ids: frame.ids,
           thermalRefuges: frame.thermalRefuges ?? emptyRefuges(),
+          shadeHabitats: frame.shadeHabitats ?? emptyShade(),
         },
         selectedId: state.selected?.id ?? 0,
       };
@@ -166,6 +173,8 @@ class WorkerStub extends EventTarget {
                     offset: fixture.recovery.frame.offset,
                     terrain: fixture.recovery.frame.terrain,
                     thermalRefuges: refugeSummary(fixture.recovery.frame.thermalRefuges),
+                    shadeHabitats: shadeSummary(fixture.recovery.frame.shadeHabitats),
+                    selectedLeafLight: null,
                     anchorTemperature: null,
                     anchorRefugeUnits: 0,
                   },
@@ -1793,6 +1802,18 @@ describe('owned command admission and real-worker interleavings', () => {
       { type: 'shock', kind: 'rain' },
       { type: 'capture-design', source: 'unsupported', sourceId: 1, captureId: 1 },
       { type: 'refuge-mode', rulesVersion: 2, enabled: true },
+      { type: 'shade-mode', rulesVersion: 2, enabled: true },
+      { type: 'clear-shade', rulesVersion: 2 },
+      {
+        type: 'paint-shade',
+        rulesVersion: 1,
+        tool: 'shade',
+        units: 17,
+        radius: 0,
+        x: 0,
+        y: 0,
+        strokeId: 1,
+      },
       {
         type: 'paint-refuge',
         rulesVersion: 1,
@@ -2721,11 +2742,11 @@ describe('actual grid-free telemetry transport composition', () => {
       expect(draws.mock.calls.at(-1)![2]).toEqual(latest.frame);
       expect(harness.save()).toEqual(before);
       expect(harness.tasks).toEqual([queued]);
-      expect(harness.gridTransfers()).toBe(6);
+      expect(harness.gridTransfers()).toBe(8);
       harness.advance();
       harness.deliver();
       paint(0);
-      expect(harness.gridTransfers()).toBe(6);
+      expect(harness.gridTransfers()).toBe(8);
       expect(draws).toHaveBeenCalledTimes(2);
     },
   );
@@ -6491,14 +6512,14 @@ describe('explicit painted shade controls and authoritative views', () => {
       detail: { rulesVersion: 1, units: 12, radius: 1, successfulCommands: 2 },
     });
     root.querySelector<HTMLButtonElement>('[data-tool="lighten"]')!.click();
-    pointer('pointerdown');
+    pointer('pointerdown', 50, 50);
     pointer('pointerup');
     expect(bridge.latestFrame.frame.interventions.entries.at(-1)).toMatchObject({
       detail: { tool: 'lighten', units: -4 },
     });
     root.querySelector<HTMLButtonElement>('[data-tool="erase-shade"]')!.click();
     expect(get<HTMLInputElement>('shade-intensity').disabled).toBe(true);
-    pointer('pointerdown');
+    pointer('pointerdown', 50, 50);
     pointer('pointerup');
     expect(bridge.latestFrame.frame.interventions.entries.at(-1)).toMatchObject({
       detail: { tool: 'erase-shade', units: 0 },
@@ -6512,7 +6533,7 @@ describe('explicit painted shade controls and authoritative views', () => {
     const bridge = ownershipBridge();
     click('shade-enabled');
     root.querySelector<HTMLButtonElement>('[data-tool="shade"]')!.click();
-    pointer('pointerdown');
+    pointer('pointerdown', 50, 50);
     pointer('pointerup');
     const before = bridge.latestFrame.frame;
     click('shade-enabled');
@@ -6522,7 +6543,7 @@ describe('explicit painted shade controls and authoritative views', () => {
     disabledTool.disabled = false;
     disabledTool.click();
     expect(get('notice').textContent).toContain('Enable painted shade');
-    pointer('pointerdown');
+    pointer('pointerdown', 50, 50);
     pointer('pointerup');
     expect(get('notice').textContent).toContain('disabled');
     click('clear-shade');
@@ -6547,7 +6568,7 @@ describe('explicit painted shade controls and authoritative views', () => {
     await loadText(
       JSON.stringify({
         ...before,
-        shadeShade: { ...before.shadeShade, cells: [[37440, 4]] },
+        shadeHabitats: { ...before.shadeHabitats, cells: [[37440, 4]] },
       }),
     );
     harness.deliver();
@@ -6572,7 +6593,7 @@ describe('explicit painted shade controls and authoritative views', () => {
     click('shade-enabled');
     root.querySelector<HTMLButtonElement>('[data-tool="shade"]')!.click();
     bridge.blockProcessing();
-    pointer('pointerdown');
+    pointer('pointerdown', 50, 50);
     for (let point = 0; point < 32; point++) pointer('pointermove', 50 + point, 50);
     pointer('pointerup');
     expect(bridge.records.size).toBe(1);
@@ -6597,7 +6618,7 @@ describe('explicit painted shade controls and authoritative views', () => {
     const bridge = ownershipBridge(boundedMount);
     click('shade-enabled');
     root.querySelector<HTMLButtonElement>('[data-tool="shade"]')!.click();
-    pointer('pointerdown');
+    pointer('pointerdown', 50, 50);
     for (let command = 1; command < 4; command++) pointer('pointermove');
     pointer('pointermove');
     pointer('pointerup');
@@ -6609,7 +6630,7 @@ describe('explicit painted shade controls and authoritative views', () => {
     const bridge = ownershipBridge();
     click('shade-enabled');
     root.querySelector<HTMLButtonElement>('[data-tool="shade"]')!.click();
-    pointer('pointerdown');
+    pointer('pointerdown', 50, 50);
     pointer('pointerup');
     click('clear-shade');
     for (const entry of bridge.latestFrame.frame.interventions.entries) {
@@ -6932,4 +6953,79 @@ it('keeps follow, wrapped highlights and differences read-only through paused re
   click('reset');
   bridge.deliver();
   expect(get('inspector').textContent).toContain('Click any organism');
+});
+
+describe('separate light display and current leaf observations', () => {
+  it('shows active transmission independently of temperature and retains functional colors', () => {
+    const candidate = new Ecosystem({ ...DEFAULTS, climate: 0 }, false);
+    const organism = candidate.spawn(
+      {
+        cells: [
+          { x: 0, y: 0, type: 4 },
+          { x: 1, y: 0, type: 4 },
+        ],
+        preference: 0.5,
+        tolerance: 0.2,
+        tempo: 2,
+        behavior: { version: 1, mode: 'legacy' },
+      },
+      120,
+      78,
+    )!;
+    candidate.changeShadeMode(true);
+    candidate.paintShade({ rulesVersion: 1, tool: 'shade', radius: 0, units: 16 }, 120, 78);
+    candidate.paintShade({ rulesVersion: 1, tool: 'shade', radius: 0, units: 8 }, 0, 0);
+    const before = JSON.stringify(candidate.save());
+    expect(organismHtml(organism, candidate.presentation(organism.id))).toContain(
+      'mean 0.5 transmission; range 0/16..16/16 across 2 leaves',
+    );
+    expect(organismHtml(organism, candidate.frame())).toContain('mean 0.5 transmission');
+    const canvas = get<HTMLCanvasElement>('world'),
+      buffer = document.createElement('canvas');
+    const put = vi.fn();
+    buffer.getContext('2d')!.putImageData = put;
+    const frame = candidate.frame();
+    draw(canvas, buffer, frame, { zoom: 1, x: 0, y: 0 }, false, 0, undefined, undefined, true);
+    const pixels = put.mock.calls.at(-1)![0].data;
+    expect(Array.from(pixels.slice(0, 3))).toEqual([49, 53, 46]);
+    expect(Array.from(pixels.slice(4, 7))).toEqual([89, 90, 70]);
+    const leaf = (78 * 240 + 120) * 4;
+    expect(Array.from(pixels.slice(leaf, leaf + 3))).toEqual([102, 219, 139]);
+    expect(JSON.stringify(candidate.save())).toBe(before);
+    candidate.changeShadeMode(false);
+    expect(organismHtml(organism, candidate.presentation(organism.id))).toContain(
+      'mean 1 transmission',
+    );
+    draw(
+      canvas,
+      buffer,
+      candidate.frame(),
+      { zoom: 1, x: 0, y: 0 },
+      false,
+      0,
+      undefined,
+      undefined,
+      true,
+    );
+    expect(Array.from(put.mock.calls.at(-1)![0].data.slice(0, 3))).toEqual([89, 90, 70]);
+    organism.genome.cells = [{ x: 0, y: 0, type: 7 }];
+    expect(organismHtml(organism, candidate.presentation(organism.id))).toContain('no leaf cells');
+  });
+  it('toggles mutually exclusive backgrounds while paused without ecological commands', () => {
+    const bridge = ownershipBridge();
+    paint(0);
+    const calls = bridge.counts.M;
+    click('light');
+    expect(get('light').getAttribute('aria-pressed')).toBe('true');
+    paint(0);
+    click('thermal');
+    expect(get('light').getAttribute('aria-pressed')).toBe('false');
+    expect(get('thermal').getAttribute('aria-pressed')).toBe('true');
+    click('light');
+    expect(get('thermal').getAttribute('aria-pressed')).toBe('false');
+    click('light');
+    expect(get('light').getAttribute('aria-pressed')).toBe('false');
+    expect(bridge.counts.M).toBe(calls);
+    expect(bridge.latestFrame.frame.stats.tick).toBe(0);
+  });
 });

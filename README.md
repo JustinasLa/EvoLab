@@ -17,6 +17,7 @@ lineages spread by surviving and producing descendants.
 - **Shape the habitat** — manually paint food, build barriers, erase patches, and introduce heatwaves or cold snaps.
 - **Seeded terrain** — preview Open field, Porous ridges or Chambered refuges; confirm a one-founder reset or explicitly clear/regenerate walls while protecting life and disclosing food removal.
 - **Painted temperature refuges** — explicitly enable experimental warm/cool dabs that alter real climate upkeep and photosynthesis; keep inactive paint, erase temperature separately, and save bounded fields with manual provenance.
+- **Painted shade habitats** — explicitly enable bounded Shade, Lighten and Erase dabs that scale real leaf energy and food production together; inspect current leaf light separately from temperature and chart measured energy gains and costs.
 - **Design your own life** — draw connected organisms, choose their preferred temperature, and place them directly in the ecosystem.
 - **Keep inherited designs** — standalone blueprints preserve complete anatomy, traits and stored reactions; reaction metadata is inactive and all steering still uses legacy rules.
 - **Inspect the survivors** — follow population, dominant lineages, anatomy, energy, offspring and recent lineage ancestry.

@@ -723,9 +723,11 @@ describe('painted shade native protocol', () => {
         ...outcome,
       });
       expect(harness.save()).toEqual(reference.save());
-      expect(Object.prototype.toString.call(harness.last().frame.thermalShade.units)).toBe(
+      expect(Object.prototype.toString.call(harness.last().frame.shadeHabitats.units)).toBe(
         '[object Uint8Array]',
       );
+      harness.last().frame.shadeHabitats.units.fill(16);
+      expect(harness.save()).toEqual(reference.save());
       harness.send('end-stroke', { strokeId: 8 });
       harness.send('step');
       reference.step();
@@ -1237,6 +1239,10 @@ describe('bounded long-run transport', () => {
         climate: reference.climate,
         offset: reference.offset,
         terrain: reference.terrain,
+        shadeHabitats: {
+          ...reference.shadeHabitats,
+          units: frame.shadeHabitats.units.constructor.from(reference.shadeHabitats.units),
+        },
         thermalRefuges: {
           ...reference.thermalRefuges,
           units: frame.thermalRefuges.units.constructor.from(reference.thermalRefuges.units),
@@ -1244,11 +1250,11 @@ describe('bounded long-run transport', () => {
       });
       expect(harness.tasks).toEqual([queued]);
       expect(harness.saveText()).toBe(JSON.stringify(expected.save()));
-      expect(harness.transferStats).toEqual({ batches: 2, buffers: 6, duplicates: 0, detached: 6 });
+      expect(harness.transferStats).toEqual({ batches: 2, buffers: 8, duplicates: 0, detached: 8 });
       acknowledge(owner.sequence);
       acknowledge(harness.last('frame').sequence);
       harness.advance();
-      expect(harness.transferStats.buffers).toBe(6);
+      expect(harness.transferStats.buffers).toBe(8);
       expect(harness.tasks).toHaveLength(1);
     },
   );

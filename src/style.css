@@ -639,11 +639,13 @@ h2 {
 #telemetry th {
   font-weight: normal;
 }
-.refuge-section {
+.refuge-section,
+.shade-section {
   padding-block: 16px;
   border-top: 1px solid var(--border);
 }
-.refuge-section h3 {
+.refuge-section h3,
+.shade-section h3 {
   line-height: 1.5;
 }
 .refuge-tools {

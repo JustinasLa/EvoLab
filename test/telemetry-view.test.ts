@@ -639,3 +639,41 @@ describe('bounded model-dependent telemetry presentation', () => {
     expect(disconnect).toHaveBeenCalled();
   });
 });
+
+describe('measured energy flows from actual shaded ecology', () => {
+  it('plots and lists exact recorded gains and costs without reconstructing shade loss', () => {
+    const world = new Ecosystem({ ...DEFAULTS, climate: 0, nutrients: 0, mutation: 0 }, false);
+    world.spawn(
+      {
+        cells: [{ x: 0, y: 0, type: 4 }],
+        preference: 0.5,
+        tolerance: 0.2,
+        tempo: 2,
+        behavior: { version: 1, mode: 'legacy' },
+      },
+      120,
+      78,
+    );
+    world.changeShadeMode(true);
+    world.paintShade({ rulesVersion: 1, tool: 'shade', radius: 0, units: 8 }, 120, 78);
+    advance(world, 60);
+    const before = JSON.stringify(world.save());
+    show(world.frame());
+    choose('telemetry-view', 'energy');
+    expect(get('telemetry-plots').textContent).toContain('Measured interval energy flows');
+    const sample = world.save().telemetry.samples.at(-1)!;
+    const rows = get('telemetry-details').textContent;
+    expect(rows).toContain(String(sample.energy.leavesGained));
+    expect(rows).toContain(String(sample.energy.upkeepSpent));
+    expect(rows).toContain('already included in combined upkeep');
+    expect(rows).toContain('not reconstructed shade loss');
+    const markers = root.querySelectorAll('[data-tick="60"][data-value]');
+    expect([...markers].map((x) => Number(x.getAttribute('data-value')))).toContain(
+      sample.energy.leavesGained,
+    );
+    expect([...markers].map((x) => Number(x.getAttribute('data-value')))).toContain(
+      sample.energy.upkeepSpent,
+    );
+    expect(JSON.stringify(world.save())).toBe(before);
+  });
+});
