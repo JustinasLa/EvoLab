@@ -9,7 +9,7 @@ import {
   type InterventionEntry,
 } from './model';
 
-type View = 'population' | 'food' | 'adaptation';
+type View = 'population' | 'food' | 'adaptation' | 'energy';
 export type TelemetryViewInput =
   | { status: 'unavailable' }
   | { status: 'pending'; commandId: number }
@@ -554,6 +554,39 @@ export function createTelemetryView(root: HTMLElement) {
         element(
           'p',
           'Death reasons are terminal conditions. Energy exhaustion does not prove predation. Placements are not reproductive births. Pending events are not completed samples.',
+        ),
+      );
+    } else if (view === 'energy') {
+      const flows = [
+        ['Leaf gain', 'leavesGained'],
+        ['Mouth gain', 'mouthsGained'],
+        ['Combined upkeep spent', 'upkeepSpent'],
+        ['Movement spent', 'movementSpent'],
+        ['Parent-funded reproduction spent', 'reproductionSpent'],
+      ] as const;
+      timeline(
+        'Measured interval energy flows',
+        'Energy per recorded interval',
+        flows.map(([name, field], style) => ({
+          name,
+          color: ['#bde879', '#75d8c2', '#eeaa70', '#9fa8ff', '#ef94bd'][style],
+          style,
+          value: (sample: TelemetrySample) => sample.energy[field],
+        })),
+        samples,
+        selected,
+        width,
+      );
+      for (const [name, field] of flows)
+        rows.push([`${name} over this interval`, String(selected.energy[field])]);
+      rows.push([
+        'Climate upkeep (already included in combined upkeep)',
+        String(selected.energy.climateUpkeepSpent),
+      ]);
+      details.append(
+        element(
+          'p',
+          'Actual energy changes, not reconstructed shade loss or a causal comparison. Light and temperature both affect photosynthesis; mode and current leaf exposure do not establish past exposure. Costs are positive spending. Parent-funded offspring grants are not environmental intake. Sting transfers, placement and residual energy at death mean this is not a closed energy budget.',
         ),
       );
     } else if (view === 'food') {

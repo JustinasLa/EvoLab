@@ -1,3 +1,4 @@
+import { emptyShade, shadeTool, shadeSummary, validShadeBrush } from './shade';
 import { createOrganismView } from './organism-view';
 import { mountCheckpoints } from './checkpoint-view';
 import { mountComparisons } from './experiment-view';
@@ -46,6 +47,8 @@ import {
   type PaintTool,
   type StrokeTool,
   type RefugeBrush,
+  type ShadeBrush,
+  type ShadeSummary,
   type RefugeSummary,
   type TrackedOperation,
   type MeasurementFormat,
@@ -195,13 +198,17 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
     case 'begin-stroke':
       if (
         !integer(data.strokeId, 1, Number.MAX_SAFE_INTEGER) ||
-        (!['food', 'wall', 'erase'].includes(data.tool) && !validRefugeBrush(data)) ||
+        (!['food', 'wall', 'erase'].includes(data.tool) &&
+          !validRefugeBrush(data) &&
+          !validShadeBrush(data)) ||
         !integer(data.radius, 0, 8)
       )
         throw new Error('Invalid brush stroke.');
       return {
         type: 'begin-stroke',
-        ...(refugeTool(data.tool) ? { rulesVersion: 1 as const, units: data.units } : {}),
+        ...(refugeTool(data.tool) || shadeTool(data.tool)
+          ? { rulesVersion: 1 as const, units: data.units }
+          : {}),
         strokeId: data.strokeId,
         tool: data.tool,
         radius: data.radius,
@@ -223,6 +230,27 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
         throw new Error('Invalid painted temperature payload.');
       return {
         type: 'paint-refuge',
+        rulesVersion: 1,
+        tool: data.tool,
+        units: data.units,
+        radius: data.radius,
+        strokeId: data.strokeId,
+        x: data.x,
+        y: data.y,
+      };
+    case 'shade-mode':
+      if (data.rulesVersion !== 1 || typeof data.enabled !== 'boolean')
+        throw new Error('Invalid painted shade mode payload.');
+      return { type: 'shade-mode', rulesVersion: 1, enabled: data.enabled };
+    case 'clear-shade':
+      if (data.rulesVersion !== 1) throw new Error('Invalid painted shade clear payload.');
+      return { type: 'clear-shade', rulesVersion: 1 };
+    case 'paint-shade':
+      coordinates();
+      if (!validShadeBrush(data as unknown) || !integer(data.strokeId, 1, Number.MAX_SAFE_INTEGER))
+        throw new Error('Invalid painted shade payload.');
+      return {
+        type: 'paint-shade',
         rulesVersion: 1,
         tool: data.tool,
         units: data.units,
@@ -263,6 +291,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   );
   const get = <T extends HTMLElement>(id: string): T =>
     (controls.get(id) as T | undefined) ?? root.querySelector<T>(`#${id}`)!;
+  const shadeButtons = [...root.querySelectorAll<HTMLButtonElement>('[data-shade-tool]')];
   const refugeButtons = [...root.querySelectorAll<HTMLButtonElement>('[data-refuge-tool]')];
   const captureButton = document.createElement('button');
   captureButton.id = 'capture-selected';
@@ -312,8 +341,11 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     paused = false,
     stopped = false,
     thermal = false,
+    light = false,
     tool: Tool = 'pan',
     brush = 2;
+  let shadeIntensity = 4,
+    confirmedShade = shadeSummary(emptyShade());
   let refugeIntensity = 4,
     confirmedRefuges = refugeSummary(emptyRefuges()),
     settledRefugeId = 0;
@@ -1078,7 +1110,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     tool: StrokeTool;
     radius: number;
     count: number;
-    brush?: RefugeBrush;
+    brush?: RefugeBrush | ShadeBrush;
   } | null = null;
   let ownerPointer: number | null = null;
   let availabilityState = -1;
@@ -1100,6 +1132,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         'refuge-mode',
         'paint-refuge',
         'clear-refuges',
+        'shade-mode',
+        'paint-shade',
+        'clear-shade',
       ].includes(entry.payload.type),
     ).length +
     Number(
@@ -1114,6 +1149,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           'refuge-mode',
           'paint-refuge',
           'clear-refuges',
+          'shade-mode',
+          'paint-shade',
+          'clear-shade',
         ].includes(posted.type),
     );
   const hasOwner = (type: CommandPayload['type']): boolean =>
@@ -1125,7 +1163,14 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       saveBlocked = unavailable || hasOwner('save') || !!downloads.save,
       state = Number(exportBlocked) + Number(saveBlocked) * 2;
     const manualBlocked = unavailable || manualCount() >= MANUAL_CAPACITY;
-    for (const action of ['clear-walls', 'regenerate-walls', 'refuge-enabled', 'clear-refuges']) {
+    for (const action of [
+      'clear-walls',
+      'regenerate-walls',
+      'refuge-enabled',
+      'clear-refuges',
+      'shade-enabled',
+      'clear-shade',
+    ]) {
       const control = get<HTMLButtonElement | HTMLInputElement>(action);
       if (control.disabled !== manualBlocked) control.disabled = manualBlocked;
     }
@@ -1136,6 +1181,16 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     text(
       'refuge-pending',
       hasOwner('refuge-mode') || hasOwner('clear-refuges') || hasOwner('paint-refuge')
+        ? 'Pending worker confirmation; earlier admitted dabs may still complete.'
+        : '',
+    );
+    for (const button of shadeButtons) {
+      const disabled = manualBlocked || !confirmedShade.enabled;
+      if (button.disabled !== disabled) button.disabled = disabled;
+    }
+    text(
+      'shade-pending',
+      hasOwner('shade-mode') || hasOwner('clear-shade') || hasOwner('paint-shade')
         ? 'Pending worker confirmation; earlier admitted dabs may still complete.'
         : '',
     );
@@ -1653,6 +1708,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   };
   function choose(next: Tool): void {
     endStroke();
+    if (shadeTool(next) && !confirmedShade.enabled) {
+      notice('Enable painted shade habitats before painting.');
+      return;
+    }
     if (refugeTool(next) && !confirmedRefuges.enabled) {
       notice('Enable painted temperature refuges before painting.');
       return;
@@ -1671,8 +1730,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       .forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === tool)));
     canvas.dataset.tool = tool;
     get<HTMLInputElement>('refuge-intensity').disabled = tool === 'erase-temperature';
+    get<HTMLInputElement>('shade-intensity').disabled = tool === 'erase-shade';
     if (tool === 'plant') tab('organism');
-    const painting = ['food', 'wall', 'erase'].includes(tool) || refugeTool(tool);
+    const painting =
+      ['food', 'wall', 'erase'].includes(tool) || refugeTool(tool) || shadeTool(tool);
     get('brush-control').hidden = !painting;
     get('tool-hint').hidden = painting;
     text(
@@ -1685,6 +1746,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         erase: 'Erase life and terrain.',
         plant:
           'Preview, then click to place. Touch: tap an anchor, then tap it again. Escape cancels.',
+        shade: 'Reduce leaf light with each admitted dab.',
+        lighten: 'Restore leaf light with each admitted dab.',
+        'erase-shade': 'Erase painted shade only.',
         warm: 'Add warmth with each admitted dab.',
         cool: 'Subtract warmth with each admitted dab.',
         'erase-temperature': 'Erase painted temperature only.',
@@ -1805,7 +1869,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     };
     text(
       'reset-payload',
-      `World seed ${seed} · ${TERRAIN_LABELS[terrain.preset]} · terrain seed ${resolvedTerrainSeed(terrain, seed)} · generator ${terrain.version}. This displayed payload is frozen; later draft edits require reopening.`,
+      `World seed ${seed} · ${TERRAIN_LABELS[terrain.preset]} · terrain seed ${resolvedTerrainSeed(terrain, seed)} · generator ${terrain.version}. Resets temperature and shade to disabled/empty. This displayed payload is frozen; later draft edits require reopening.`,
     );
     get<HTMLDialogElement>('reset-dialog').showModal();
     get('cancel-reset').focus();
@@ -1877,15 +1941,19 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       send({ type: 'inspect', ...p });
       tab('organism');
     } else if (tool !== 'pan') {
-      if (refugeTool(tool)) {
+      if (refugeTool(tool) || shadeTool(tool)) {
         const stroke = localStroke!;
         if (
           stroke.count >= STROKE_COMMAND_CAPACITY ||
-          !postTracked('paint-refuge', { ...stroke.brush, ...p, strokeId: stroke.id })
+          !postTracked(shadeTool(tool) ? 'paint-shade' : 'paint-refuge', {
+            ...stroke.brush,
+            ...p,
+            strokeId: stroke.id,
+          })
         ) {
           endStroke();
           notice(
-            'Partial temperature stroke stopped. Earlier admitted dabs may still complete; start a fresh gesture.',
+            `Partial ${shadeTool(tool) ? 'shade' : 'temperature'} stroke stopped. Earlier admitted dabs may still complete; start a fresh gesture.`,
           );
         } else {
           stroke.count++;
@@ -1939,7 +2007,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       return;
     }
     if (
-      (['food', 'wall', 'erase'].includes(tool) || refugeTool(tool)) &&
+      (['food', 'wall', 'erase'].includes(tool) || refugeTool(tool) || shadeTool(tool)) &&
       (closeLease ||
         manualCount() > MANUAL_CAPACITY - 2 ||
         pending.filter((entry) => !entry.reserved).length > 27 ||
@@ -1949,21 +2017,32 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       notice('Brush capacity busy. A fresh pointer press is required after earlier work drains.');
       return;
     }
+    if (shadeTool(tool) && !confirmedShade.enabled) {
+      notice('Painted shade habitats are disabled.');
+      return;
+    }
     if (refugeTool(tool) && !confirmedRefuges.enabled) {
       notice('Painted temperature refuges are disabled.');
       return;
     }
-    if (['food', 'wall', 'erase'].includes(tool) || refugeTool(tool)) {
+    if (['food', 'wall', 'erase'].includes(tool) || refugeTool(tool) || shadeTool(tool)) {
       const id = ++strokeId;
       closeLease = { strokeId: id, beginPosted: false, posted: false };
-      const frozenBrush = refugeTool(tool)
+      const frozenBrush = shadeTool(tool)
         ? {
             rulesVersion: 1 as const,
             tool,
             radius: brush,
-            units: tool === 'warm' ? refugeIntensity : tool === 'cool' ? -refugeIntensity : 0,
+            units: tool === 'shade' ? shadeIntensity : tool === 'lighten' ? -shadeIntensity : 0,
           }
-        : undefined;
+        : refugeTool(tool)
+          ? {
+              rulesVersion: 1 as const,
+              tool,
+              radius: brush,
+              units: tool === 'warm' ? refugeIntensity : tool === 'cool' ? -refugeIntensity : 0,
+            }
+          : undefined;
       localStroke = { id, tool: tool as StrokeTool, radius: brush, count: 0, brush: frozenBrush };
       if (!postTracked('begin-stroke', { strokeId: id, tool, radius: brush, ...frozenBrush })) {
         if (closeLease?.beginPosted) endStroke();
@@ -2102,8 +2181,20 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   get('cancel-target').addEventListener('click', () => {
     send({ type: 'cancel-target', targetId: targetTicket?.wireId ?? latestState?.target?.id ?? 1 });
   });
+  get('light').addEventListener('click', () => {
+    light = !light;
+    if (light) thermal = false;
+    get('thermal').setAttribute('aria-pressed', String(thermal));
+    text('thermal', thermal ? 'Hide temperature' : 'Show temperature');
+    get('light').setAttribute('aria-pressed', String(light));
+    text('light', light ? 'Hide light' : 'Show light');
+    dirty = true;
+  });
   get('thermal').addEventListener('click', () => {
     thermal = !thermal;
+    if (thermal) light = false;
+    get('light').setAttribute('aria-pressed', String(light));
+    text('light', light ? 'Hide light' : 'Show light');
     get('thermal').setAttribute('aria-pressed', String(thermal));
     text('thermal', thermal ? 'Hide temperature' : 'Show temperature');
     dirty = true;
@@ -2127,6 +2218,26 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     }
     refugeIntensity = value;
     text('refuge-intensity-value', `${value} units`);
+  });
+  get('shade-enabled').addEventListener('change', () => {
+    const enabled = get<HTMLInputElement>('shade-enabled').checked;
+    get<HTMLInputElement>('shade-enabled').checked = confirmedShade.enabled;
+    endStroke();
+    postTracked('shade-mode', { rulesVersion: 1, enabled });
+  });
+  get('clear-shade').addEventListener('click', () => {
+    endStroke();
+    postTracked('clear-shade', { rulesVersion: 1 });
+  });
+  get('shade-intensity').addEventListener('input', () => {
+    endStroke();
+    const value = Number(get<HTMLInputElement>('shade-intensity').value);
+    if (!integer(value, 1, 16)) {
+      notice('Choose a whole-number shade intensity from 1 to 16.');
+      return;
+    }
+    shadeIntensity = value;
+    text('shade-intensity-value', `${value} units`);
   });
   for (const id of ['mutation', 'nutrients', 'climate'] as const)
     get(id).addEventListener('input', () => {
@@ -2624,6 +2735,16 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     dirty = true;
   };
   window.addEventListener('resize', resize);
+  function installShade(summary: ShadeSummary): void {
+    confirmedShade = { ...summary };
+    const control = get<HTMLInputElement>('shade-enabled');
+    if (control.checked !== summary.enabled) control.checked = summary.enabled;
+    text(
+      'shade-summary',
+      `${summary.enabled ? (summary.nonzeroCells ? 'Enabled · painted' : 'Enabled · empty') : summary.nonzeroCells ? 'Disabled · stored paint' : 'Disabled · empty'} · ${summary.nonzeroCells}/4096 nonzero cells · stored light ${summary.minimumStoredLightUnits}/16..16/16 · rules 1`,
+    );
+    availability();
+  }
   function installRefuges(summary: RefugeSummary): void {
     confirmedRefuges = { ...summary };
     const control = get<HTMLInputElement>('refuge-enabled');
@@ -2757,6 +2878,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       );
       latestState = observation;
       installRefuges(observation.world.thermalRefuges);
+      installShade(observation.world.shadeHabitats);
       const recipeRevision =
         replaceDraft && posted && ['start', 'load', 'regenerate-walls'].includes(posted.type)
           ? (posted.terrainRevision ?? -1)
@@ -2915,6 +3037,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
                       'refuge-mode',
                       'paint-refuge',
                       'clear-refuges',
+                      'shade-mode',
+                      'paint-shade',
+                      'clear-shade',
                     ].includes(completion.type)
                   ? 'manual-result'
                   : completion.type === 'load'
@@ -3069,6 +3194,16 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
               ? 'Painted temperature unchanged; no manual entry recorded.'
               : 'Painted temperature action applied; consequences begin on the next ecological tick.',
           );
+        else if (
+          data.type === 'manual-result' &&
+          ['shade-mode', 'paint-shade', 'clear-shade'].includes(completion.type) &&
+          data.status !== 'rejected'
+        )
+          notice(
+            data.status === 'no-op'
+              ? 'Painted shade unchanged; no manual entry recorded.'
+              : 'Painted shade action applied; consequences begin on the next ecological tick.',
+          );
         else if (data.type === 'manual-result' && data.status === 'rejected')
           notice('Worker rejected this manual action; no successful effect recorded.');
       }
@@ -3184,6 +3319,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         displayedLineage
           ? lineageView.highlighted(displayedLineage, displayedLineageReplacement)
           : undefined,
+        light,
       );
       dirty = false;
       freshness();

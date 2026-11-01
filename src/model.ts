@@ -198,7 +198,7 @@ export interface SelectedLeafLight {
   sumLightUnits: number;
 }
 export type RefugeTool = 'warm' | 'cool' | 'erase-temperature';
-export type Tool = 'inspect' | 'pan' | 'food' | 'wall' | 'erase' | 'plant' | RefugeTool;
+export type Tool = 'inspect' | 'pan' | 'food' | 'wall' | 'erase' | 'plant' | RefugeTool | ShadeTool;
 export interface RefugePlane {
   version: 1;
   enabled: boolean;
@@ -250,6 +250,7 @@ export interface Stats {
 export interface Frame {
   terrain: TerrainRecipe;
   thermalRefuges: RefugePlane;
+  shadeHabitats: ShadePlane;
   cells: Uint8Array;
   ids: Int32Array;
   stats: Stats;
@@ -343,6 +344,8 @@ export type WorldPresentation = Pick<Frame, 'stats' | 'climate' | 'offset' | 'te
   lineage?: LineagePresentation;
   selectedBaseline?: OrganismBaseline;
   thermalRefuges: RefugeSummary;
+  shadeHabitats: ShadeSummary;
+  selectedLeafLight: SelectedLeafLight | null;
   anchorTemperature: number | null;
   anchorRefugeUnits: number;
 };
@@ -416,6 +419,9 @@ export type CommandPayload =
   | ({ type: 'paint-refuge'; x: number; y: number; strokeId: number } & RefugeBrush)
   | { type: 'refuge-mode'; rulesVersion: 1; enabled: boolean }
   | { type: 'clear-refuges'; rulesVersion: 1 }
+  | ({ type: 'paint-shade'; x: number; y: number; strokeId: number } & ShadeBrush)
+  | { type: 'shade-mode'; rulesVersion: 1; enabled: boolean }
+  | { type: 'clear-shade'; rulesVersion: 1 }
   | { type: 'shock'; kind: 'cold' | 'heat' }
   | {
       type: 'begin-stroke';
@@ -660,7 +666,7 @@ export type LegacyWorldFile = HistoricalWorldEcology & {
   version: 2;
 };
 export type PaintTool = 'food' | 'wall' | 'erase';
-export type StrokeTool = PaintTool | RefugeTool;
+export type StrokeTool = PaintTool | RefugeTool | ShadeTool;
 export type SettingKey = 'mutation' | 'nutrients' | 'climate';
 export type SettingsPatch = Partial<Pick<Settings, SettingKey>>;
 export interface Coordinate {
@@ -813,7 +819,10 @@ export type ManualOperation =
   | 'regenerate-walls'
   | 'refuge-mode'
   | 'paint-refuge'
-  | 'clear-refuges';
+  | 'clear-refuges'
+  | 'shade-mode'
+  | 'paint-shade'
+  | 'clear-shade';
 export type TrackedOperation = ManualOperation | 'export-measurements' | 'save' | 'start' | 'load';
 export const knownSettings = ({ seed, mutation, nutrients, climate }: Settings): Settings => ({
   seed,
@@ -1235,14 +1244,21 @@ export function commandEcho(data: Record<string, any>): Record<string, unknown> 
         ? ['action']
         : data.type === 'regenerate-walls'
           ? ['action', 'recipe', 'resolvedSeed']
-          : data.type === 'refuge-mode'
+          : ['refuge-mode', 'shade-mode'].includes(data.type)
             ? ['rulesVersion', 'enabled']
-            : data.type === 'clear-refuges'
+            : ['clear-refuges', 'clear-shade'].includes(data.type)
               ? ['rulesVersion']
-              : data.type === 'paint-refuge'
+              : ['paint-refuge', 'paint-shade'].includes(data.type)
                 ? ['rulesVersion', 'tool', 'units', 'radius', 'x', 'y']
                 : data.type === 'begin-stroke' &&
-                    ['warm', 'cool', 'erase-temperature'].includes(data.tool)
+                    [
+                      'warm',
+                      'cool',
+                      'erase-temperature',
+                      'shade',
+                      'lighten',
+                      'erase-shade',
+                    ].includes(data.tool)
                   ? ['rulesVersion', 'tool', 'units', 'radius']
                   : [];
   return Object.fromEntries(

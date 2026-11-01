@@ -572,7 +572,7 @@ describe('painted temperature native protocol', () => {
       harness.send('clear-refuges', { rulesVersion: 1 });
       reference.clearRefuges();
       expect(harness.save()).toEqual(reference.save());
-      expect(harness.transferStats.buffers).toBe(harness.transferStats.batches * 3);
+      expect(harness.transferStats.buffers).toBe(harness.transferStats.batches * 4);
       expect(harness.transferStats.duplicates).toBe(0);
     },
   );
@@ -666,6 +666,177 @@ describe('painted temperature native protocol', () => {
       } else {
         harness.send(operation, { rulesVersion: 1 });
         reference.clearRefuges();
+      }
+      expect(harness.last('error')).toMatchObject({ fatal: true });
+      expect(harness.last('error').message).toContain('The action completed');
+      expect(harness.last('error')).not.toHaveProperty('operation');
+      expect(harness.save()).toEqual(reference.save());
+    },
+  );
+});
+describe('painted shade native protocol', () => {
+  function shadeHarness() {
+    const harness = workerHarness();
+    let commandId = 0;
+    const send = (type: string, payload: object = {}, runId = 1) => {
+      const manual = [
+        'shade-mode',
+        'paint-shade',
+        'clear-shade',
+        'begin-stroke',
+        'end-stroke',
+      ].includes(type);
+      const message = {
+        type,
+        runId,
+        ...payload,
+        commandId: ++commandId,
+        ...(type === 'start' ? { display: { epoch: 0, enabled: true, visible: true } } : {}),
+      };
+      harness.scope.onmessage!({ data: message } as MessageEvent);
+      return message;
+    };
+    const save = () => {
+      send('save');
+      return JSON.parse(harness.last('saved').text) as WorldFile;
+    };
+    send('start', { settings: DEFAULTS });
+    send('pause');
+    return { ...harness, send, save };
+  }
+  const brush = { rulesVersion: 1 as const, tool: 'shade' as const, radius: 1, units: 4 };
+  it.each([1, 4, 12])(
+    'keeps paused edits, exact Step and one running callback at cadence %i',
+    (speed) => {
+      const harness = shadeHarness(),
+        reference = new Ecosystem();
+      harness.send('speed', { value: speed });
+      harness.send('shade-mode', { rulesVersion: 1, enabled: true });
+      reference.changeShadeMode(true);
+      harness.send('begin-stroke', { ...brush, strokeId: 8 });
+      const command = harness.send('paint-shade', { ...brush, strokeId: 8, x: 0, y: 0 });
+      const outcome = reference.paintShade(brush, 0, 0);
+      expect(harness.last('manual-result')).toMatchObject({
+        ...command,
+        type: 'manual-result',
+        status: 'applied',
+        ...outcome,
+      });
+      expect(harness.save()).toEqual(reference.save());
+      expect(Object.prototype.toString.call(harness.last().frame.shadeHabitats.units)).toBe(
+        '[object Uint8Array]',
+      );
+      harness.last().frame.shadeHabitats.units.fill(16);
+      expect(harness.save()).toEqual(reference.save());
+      harness.send('end-stroke', { strokeId: 8 });
+      harness.send('step');
+      reference.step();
+      expect(harness.save()).toEqual(reference.save());
+      harness.send('resume');
+      harness.advance();
+      advanceReference(reference, speed);
+      harness.send('pause');
+      expect(harness.save()).toEqual(reference.save());
+      expect(harness.tasks).toHaveLength(1);
+      harness.send('shade-mode', { rulesVersion: 1, enabled: false });
+      reference.changeShadeMode(false);
+      harness.send('clear-shade', { rulesVersion: 1 });
+      reference.clearShade();
+      expect(harness.save()).toEqual(reference.save());
+      expect(harness.transferStats.buffers).toBe(harness.transferStats.batches * 4);
+      expect(harness.transferStats.duplicates).toBe(0);
+    },
+  );
+  function advanceReference(world: Ecosystem, ticks: number) {
+    for (let tick = 0; tick < ticks; tick++) world.step();
+  }
+  it('rejects malformed, mismatched, stale, duplicate and closed commands with exact echoes and no changes', () => {
+    const harness = shadeHarness();
+    const before = harness.save();
+    harness.send('paint-shade', { ...brush, strokeId: 8, x: 0, y: 0 });
+    expect(harness.last('error').message).toContain('closed');
+    expect(harness.save()).toEqual(before);
+    harness.send('shade-mode', { rulesVersion: 2, enabled: true });
+    expect(harness.last('error').operation).toBe('shade-mode');
+    harness.send('clear-shade', { rulesVersion: 2 });
+    expect(harness.last('error').operation).toBe('clear-shade');
+    harness.send('shade-mode', { rulesVersion: 1, enabled: true });
+    harness.send('begin-stroke', { ...brush, strokeId: 8 });
+    for (const payload of [
+      { ...brush, units: 8 },
+      { ...brush, tool: 'lighten', units: -4 },
+      { ...brush, radius: 0 },
+      { ...brush, rulesVersion: 2 },
+      { ...brush, x: 240 },
+    ]) {
+      const state = harness.save();
+      harness.send('paint-shade', { x: 0, y: 0, strokeId: 8, ...payload });
+      expect(harness.last('error').operation).toBe('paint-shade');
+      expect(harness.save()).toEqual(state);
+    }
+    const command = harness.send('paint-shade', { ...brush, strokeId: 8, x: 0, y: 0 });
+    const applied = harness.save();
+    harness.scope.onmessage!({ data: command } as MessageEvent);
+    expect(harness.save()).toEqual(applied);
+    harness.send('paint-shade', { ...brush, strokeId: 8, x: 0, y: 0 }, 0);
+    expect(harness.save()).toEqual(applied);
+    harness.send('shade-mode', { rulesVersion: 1, enabled: false });
+    const disabled = harness.save();
+    harness.send('paint-shade', { ...brush, strokeId: 8, x: 0, y: 0 });
+    expect(harness.save()).toEqual(disabled);
+  });
+  it('counts all 4096 valid dabs including saturation no-ops and reserves no row for the 4097th rejection', () => {
+    const harness = shadeHarness();
+    harness.send('shade-mode', { rulesVersion: 1, enabled: true });
+    const config = { ...brush, radius: 0, units: 16, strokeId: 9 };
+    harness.send('begin-stroke', config);
+    for (let dab = 0; dab < 4096; dab++) harness.send('paint-shade', { ...config, x: 0, y: 0 });
+    expect(harness.last('manual-result')).toMatchObject({
+      status: 'no-op',
+      rowSequence: null,
+      nonzeroCells: 1,
+    });
+    const before = harness.save();
+    harness.send('paint-shade', { ...config, x: 1, y: 0 });
+    expect(harness.last('error').message).toContain('exhausted');
+    expect(harness.save()).toEqual(before);
+    expect(before.interventions.entries.at(-1)).toMatchObject({
+      detail: { successfulCommands: 1, changedBrushCells: 1 },
+    });
+  });
+  it.each(['shade-mode', 'paint-shade', 'clear-shade'])(
+    'reports truthful applied-before-terminal-publication failure for %s',
+    (operation) => {
+      const harness = shadeHarness(),
+        reference = new Ecosystem();
+      if (operation !== 'shade-mode') {
+        harness.send('shade-mode', { rulesVersion: 1, enabled: true });
+        reference.changeShadeMode(true);
+      }
+      if (operation === 'clear-shade') {
+        harness.send('begin-stroke', { ...brush, strokeId: 8 });
+        harness.send('paint-shade', { ...brush, strokeId: 8, x: 0, y: 0 });
+        reference.paintShade(brush, 0, 0);
+      }
+      if (operation === 'paint-shade') harness.send('begin-stroke', { ...brush, strokeId: 8 });
+      const publish = harness.scope.postMessage;
+      let thrown = false;
+      harness.scope.postMessage = (data, transfer) => {
+        if (!thrown && data.operation === operation) {
+          thrown = true;
+          throw new Error('terminal publication failed');
+        }
+        publish(data, transfer);
+      };
+      if (operation === 'shade-mode') {
+        harness.send(operation, { rulesVersion: 1, enabled: true });
+        reference.changeShadeMode(true);
+      } else if (operation === 'paint-shade') {
+        harness.send(operation, { ...brush, strokeId: 8, x: 0, y: 0 });
+        reference.paintShade(brush, 0, 0);
+      } else {
+        harness.send(operation, { rulesVersion: 1 });
+        reference.clearShade();
       }
       expect(harness.last('error')).toMatchObject({ fatal: true });
       expect(harness.last('error').message).toContain('The action completed');
@@ -1068,6 +1239,10 @@ describe('bounded long-run transport', () => {
         climate: reference.climate,
         offset: reference.offset,
         terrain: reference.terrain,
+        shadeHabitats: {
+          ...reference.shadeHabitats,
+          units: frame.shadeHabitats.units.constructor.from(reference.shadeHabitats.units),
+        },
         thermalRefuges: {
           ...reference.thermalRefuges,
           units: frame.thermalRefuges.units.constructor.from(reference.thermalRefuges.units),
@@ -1075,11 +1250,11 @@ describe('bounded long-run transport', () => {
       });
       expect(harness.tasks).toEqual([queued]);
       expect(harness.saveText()).toBe(JSON.stringify(expected.save()));
-      expect(harness.transferStats).toEqual({ batches: 2, buffers: 6, duplicates: 0, detached: 6 });
+      expect(harness.transferStats).toEqual({ batches: 2, buffers: 8, duplicates: 0, detached: 8 });
       acknowledge(owner.sequence);
       acknowledge(harness.last('frame').sequence);
       harness.advance();
-      expect(harness.transferStats.buffers).toBe(6);
+      expect(harness.transferStats.buffers).toBe(8);
       expect(harness.tasks).toHaveLength(1);
     },
   );
@@ -1216,11 +1391,14 @@ describe('bounded long-run transport', () => {
   it.each(
     ['settings', 'organism', 'genome', 'cell', 'all'].flatMap((surface) =>
       ([1, 4, 12] as const).flatMap((speed) =>
-        Array.from({ length: 5 }, (_, window) => ({
+        // Keep every batch of the same 120-tick corpus while bounding each
+        // case's full-payload serialization under the unchanged 5s deadline.
+        // Twelve is a multiple of every supported speed.
+        Array.from({ length: 10 }, (_, window) => ({
           surface,
           speed,
-          from: window * 24,
-          through: (window + 1) * 24,
+          from: window * 12,
+          through: (window + 1) * 12,
         })),
       ),
     ),
@@ -3239,7 +3417,7 @@ describe('failed-load retained-world recovery', () => {
     for (let repeat = 0; repeat < 2; repeat++)
       harness.send({ type: 'load', runId: 3 + repeat, text: 'not json' });
     expect(harness.transferStats.batches).toBeGreaterThan(0);
-    expect(harness.transferStats.buffers).toBe(harness.transferStats.batches * 3);
+    expect(harness.transferStats.buffers).toBe(harness.transferStats.batches * 4);
     expect(harness.transferStats.duplicates).toBe(0);
     expect(harness.transferStats.detached).toBe(harness.transferStats.buffers);
     expect(harness.save()).toEqual(before);

@@ -5,6 +5,7 @@ import {
   shadeDab,
   validShadeBrush,
   shadeSummary,
+  selectedLeafLight,
 } from './shade';
 import { DEFAULT_TERRAIN, generateTerrain, sameTerrain, validTerrain } from './terrain';
 import {
@@ -1357,6 +1358,8 @@ export class Ecosystem {
       ...(organism ? { selectedBaseline: this.lineage.baseline(organism.species) } : {}),
       terrain: { ...this.terrain },
       thermalRefuges: refugeSummary(this.thermalRefuges),
+      shadeHabitats: shadeSummary(this.shadeHabitats),
+      selectedLeafLight: selectedLeafLight(this.shadeHabitats, organism ?? null),
       anchorTemperature: organism
         ? localTemperature(
             organism.x,
@@ -1422,6 +1425,11 @@ export class Ecosystem {
         version: 1,
         enabled: this.thermalRefuges.enabled,
         units: this.thermalRefuges.units.slice(),
+      },
+      shadeHabitats: {
+        version: 1,
+        enabled: this.shadeHabitats.enabled,
+        units: this.shadeHabitats.units.slice(),
       },
     };
   }

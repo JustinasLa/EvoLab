@@ -526,6 +526,7 @@ async function terrainNativeFrame(page: import('@playwright/test').Page, recover
         cells: Array.from(frame.cells),
         ids: Array.from(frame.ids),
         thermalRefuges: { ...frame.thermalRefuges, units: Array.from(frame.thermalRefuges.units) },
+        shadeHabitats: { ...frame.shadeHabitats, units: Array.from(frame.shadeHabitats.units) },
       },
       selected: evidence.selected,
       playback: evidence.playback,
@@ -557,6 +558,7 @@ function terrainExpectedFrame(world: Ecosystem) {
     cells: Array.from(frame.cells),
     ids: Array.from(frame.ids),
     thermalRefuges: { ...frame.thermalRefuges, units: Array.from(frame.thermalRefuges.units) },
+    shadeHabitats: { ...frame.shadeHabitats, units: Array.from(frame.shadeHabitats.units) },
   };
 }
 
@@ -5179,7 +5181,7 @@ async function refugeMode(page: import('@playwright/test').Page, enabled: boolea
 
 async function refugePaint(
   page: import('@playwright/test').Page,
-  tool: 'warm' | 'cool' | 'erase-temperature',
+  tool: 'warm' | 'cool' | 'erase-temperature' | 'shade' | 'lighten' | 'erase-shade',
   x: number,
   y: number,
   zoom = 1,
@@ -5261,9 +5263,28 @@ for (const units of [0, 8, 16])
     parent.age = 32;
     parent.energy = 11.99;
     reference.random.state = 23;
-    reference.changeShadeMode(true);
-    if (units) reference.paintShade({ rulesVersion: 1, tool: 'shade', units, radius: 0 }, 120, 78);
     expect(await refugeLoad(page, JSON.stringify(reference.save()))).toBe(0);
+    await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+    await expect(page.locator('#shade-enabled')).not.toBeChecked();
+    await page.locator('#shade-enabled').click();
+    await expect(page.locator('#shade-enabled')).toBeChecked();
+    reference.changeShadeMode(true);
+    if (units) {
+      await page.locator('#brush').evaluate((input: HTMLInputElement) => {
+        input.value = '0';
+        input.dispatchEvent(new Event('input'));
+      });
+      await page.locator('#shade-intensity').evaluate((input: HTMLInputElement, units) => {
+        input.value = String(units);
+        input.dispatchEvent(new Event('input'));
+      }, units);
+      await refugePaint(page, 'shade', 120, 78);
+      reference.paintShade({ rulesVersion: 1, tool: 'shade', units, radius: 0 }, 120, 78);
+    }
+    await paintCell(page, 'inspect', 120, 78);
+    await expect(page.locator('#inspector')).toContainText(
+      `mean ${(16 - units) / 16} transmission`,
+    );
     expect(await terrainSave(page, 'shade-before-step.json')).toEqual(reference.save());
     await page.locator('#step').click();
     reference.step();
@@ -7302,4 +7323,87 @@ test('selected inherited differences use retained parent-lineage endpoints and d
   );
   await expect(page.locator('#organism-diff')).toContainText('No mutation history inferred');
   expect(JSON.parse((await downloadWorld(page)).toString())).toEqual(Ecosystem.load(legacy).save());
+});
+
+test('S24 native editor keeps temperature independent, retains OFF paint and clears only shade', async ({
+  page,
+}) => {
+  await observeTerrainNative(page);
+  await page.goto('/');
+  await terrainNativeFrame(page);
+  const reference = new Ecosystem({ ...DEFAULTS, climate: 0 });
+  reference.changeRefugeMode(true);
+  reference.paintRefuge({ rulesVersion: 1, tool: 'warm', units: 4, radius: 0 }, 120, 78);
+  await refugeLoad(page, JSON.stringify(reference.save()));
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  await page.locator('#shade-enabled').click();
+  await expect(page.locator('#shade-enabled')).toBeChecked();
+  reference.changeShadeMode(true);
+  await page.locator('#brush').evaluate((input: HTMLInputElement) => {
+    input.value = '0';
+    input.dispatchEvent(new Event('input'));
+  });
+  await refugePaint(page, 'shade', 120, 78);
+  reference.paintShade({ rulesVersion: 1, tool: 'shade', units: 4, radius: 0 }, 120, 78);
+  expect(await terrainSave(page, 'shade-manual-independent.json')).toEqual(reference.save());
+  await page.locator('#light').click();
+  await expect(page.locator('#light')).toHaveAttribute('aria-pressed', 'true');
+  await page.locator('#thermal').click();
+  await expect(page.locator('#light')).toHaveAttribute('aria-pressed', 'false');
+  await page.locator('#light').click();
+  await expect(page.locator('#thermal')).toHaveAttribute('aria-pressed', 'false');
+  await page.locator('#shade-enabled').click();
+  await expect(page.locator('#shade-summary')).toContainText('Disabled · stored paint');
+  reference.changeShadeMode(false);
+  expect(await terrainSave(page, 'shade-disabled-stored.json')).toEqual(reference.save());
+  await page.locator('#clear-shade').click();
+  await expect(page.locator('#shade-summary')).toContainText('Disabled · empty');
+  reference.clearShade();
+  expect(await terrainSave(page, 'shade-only-clear.json')).toEqual(reference.save());
+  await page.locator('#shade-enabled').click();
+  await expect(page.locator('#shade-enabled')).toBeChecked();
+  reference.changeShadeMode(true);
+  await refugePaint(page, 'shade', 120, 78);
+  reference.paintShade({ rulesVersion: 1, tool: 'shade', units: 4, radius: 0 }, 120, 78);
+  await refugePaint(page, 'lighten', 120, 78);
+  reference.paintShade({ rulesVersion: 1, tool: 'lighten', units: -4, radius: 0 }, 120, 78);
+  await refugePaint(page, 'shade', 120, 78);
+  reference.paintShade({ rulesVersion: 1, tool: 'shade', units: 4, radius: 0 }, 120, 78);
+  await refugePaint(page, 'erase-shade', 120, 78);
+  reference.paintShade({ rulesVersion: 1, tool: 'erase-shade', units: 0, radius: 0 }, 120, 78);
+  expect(await terrainSave(page, 'shade-lighten-erase.json')).toEqual(reference.save());
+});
+
+test('S24 recorded actual shaded leaf energy is accessible as exact interval telemetry', async ({
+  page,
+}) => {
+  await observeTerrainNative(page);
+  await page.goto('/');
+  await terrainNativeFrame(page);
+  const reference = new Ecosystem({ ...DEFAULTS, climate: 0, mutation: 0, nutrients: 0 }, false);
+  reference.spawn(
+    {
+      cells: [{ x: 0, y: 0, type: 4 }],
+      preference: 0.5,
+      tolerance: 0.2,
+      tempo: 2,
+      behavior: { version: 1, mode: 'legacy' },
+    },
+    120,
+    78,
+  );
+  reference.changeShadeMode(true);
+  reference.paintShade({ rulesVersion: 1, tool: 'shade', units: 8, radius: 0 }, 120, 78);
+  advance(reference, 60);
+  await refugeLoad(page, JSON.stringify(reference.save()));
+  await page.getByRole('tab', { name: 'Ecosystem', exact: true }).click();
+  await page.locator('#telemetry-view').selectOption('energy');
+  await expect(page.locator('#telemetry-plots')).toContainText('Measured interval energy flows');
+  const sample = reference.save().telemetry.samples.at(-1)!;
+  await expect(page.locator('#telemetry-details')).toContainText(
+    String(sample.energy.leavesGained),
+  );
+  await expect(page.locator('#telemetry-details')).toContainText(String(sample.energy.upkeepSpent));
+  await expect(page.locator('#telemetry-details')).toContainText('not reconstructed shade loss');
+  expect(await terrainSave(page, 'shade-measured-energy-unchanged.json')).toEqual(reference.save());
 });
