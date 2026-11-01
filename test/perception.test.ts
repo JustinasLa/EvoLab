@@ -29,6 +29,33 @@ function scene(parts = cells, x = 60, y = 60, rotation = 0) {
 }
 
 describe('selected actual perception ownership', () => {
+  it.each(['legacy', 'evolved'] as const)(
+    'keeps behavior1 %s permanently outside active diagnostics with exact ecological continuation',
+    (mode) => {
+      const source = genome();
+      source.behavior =
+        mode === 'legacy'
+          ? { version: 1, mode: 'legacy' }
+          : {
+              version: 1,
+              mode: 'evolved',
+              reactions: { food: 'flee', wall: 'chase', harmless: 'flee', dangerous: 'chase' },
+            };
+      const world = new Ecosystem({ ...DEFAULTS, climate: 0, nutrients: 0, mutation: 0.4 }, false),
+        organism = world.spawn(source, 60, 60)!;
+      organism.energy = 100;
+      world.food[index(60, 57)] = 1;
+      const control = Ecosystem.load(JSON.stringify(world.save()));
+      world.selectPerception(organism.id);
+      for (let tick = 0; tick < 120; tick++) {
+        world.step();
+        control.step();
+        expect(world.perception()).toBeNull();
+        if (tick % 30 === 29) expect(world.save()).toEqual(control.save());
+      }
+    },
+  );
+
   it.each(['food', 'wall', 'harmless', 'dangerous', 'self', 'range'] as const)(
     'records first %s occlusion and actual reaction without resensing',
     (kind) => {
