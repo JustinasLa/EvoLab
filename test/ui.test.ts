@@ -5042,6 +5042,44 @@ describe('standalone blueprint files', () => {
     expect(bridge.save()).toEqual(before);
   });
 
+  it('edits inherited dormancy without changing a paused world and invalidates pending design reads', async () => {
+    const bridge = realWorker();
+    bridge.deliver();
+    click('pause');
+    bridge.advance();
+    bridge.deliver();
+    const before = bridge.save();
+    expect(get<HTMLInputElement>('dormancy-enabled').checked).toBe(false);
+    get('dormancy-capacity').dispatchEvent(new Event('input'));
+    expect((await exported()).genome.dormancy).toBeUndefined();
+    click('dormancy-enabled');
+    expect(get<HTMLInputElement>('dormancy-capacity').disabled).toBe(false);
+    for (const [field, value] of [
+      ['capacity', 32],
+      ['enterStress', 0.2],
+      ['wakeStress', 0.03],
+      ['enterEnergy', 4],
+      ['wakeEnergy', 12],
+    ] as const) {
+      get<HTMLInputElement>(`dormancy-${field}`).value = String(value);
+      get(`dormancy-${field}`).dispatchEvent(new Event('input'));
+      expect((await exported()).genome.dormancy![field]).toBe(value);
+    }
+    const enabled = await exported();
+    let resolve!: (value: string) => void;
+    uploadBlueprint({ size: 20, text: () => new Promise((done) => (resolve = done)) });
+    click('dormancy-enabled');
+    resolve(serializeBlueprint(enabled));
+    await flush();
+    expect((await exported()).genome.dormancy).toBeUndefined();
+    expect(get<HTMLInputElement>('dormancy-capacity').disabled).toBe(true);
+    await importDraft(serializeBlueprint(enabled));
+    expect((await exported()).genome.dormancy).toEqual(enabled.genome.dormancy);
+    expect(bridge.save()).toEqual(before);
+    click('clear-design');
+    expect((await exported()).genome.dormancy).toBeUndefined();
+  });
+
   it('edits explicit propensity without world commands, retains exact imported values, and cancels stale designer reads', async () => {
     const bridge = realWorker();
     bridge.deliver();

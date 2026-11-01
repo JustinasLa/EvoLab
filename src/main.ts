@@ -1,5 +1,6 @@
 import { mountMutationControls } from './mutation-view';
 import { newController } from './neural';
+import { DEFAULT_DORMANCY } from './dormancy';
 import { validMutationPolicy } from './mutation';
 import { emptyShade, shadeTool, shadeSummary, validShadeBrush } from './shade';
 import { createOrganismView } from './organism-view';
@@ -1808,6 +1809,18 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     get<HTMLTextAreaElement>('blueprint-description').value = blueprintDescription;
     get<HTMLInputElement>('inherited-mutation').checked =
       blueprint.mutationPropensity !== undefined;
+    get<HTMLInputElement>('dormancy-enabled').checked = blueprint.dormancy !== undefined;
+    for (const field of [
+      'capacity',
+      'enterStress',
+      'wakeStress',
+      'enterEnergy',
+      'wakeEnergy',
+    ] as const) {
+      const input = get<HTMLInputElement>(`dormancy-${field}`);
+      input.disabled = !blueprint.dormancy;
+      input.value = String((blueprint.dormancy ?? DEFAULT_DORMANCY)[field]);
+    }
     get<HTMLInputElement>('propensity').disabled = blueprint.mutationPropensity === undefined;
     get<HTMLInputElement>('propensity').value = String(blueprint.mutationPropensity ?? 1);
     text(
@@ -2312,6 +2325,28 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     else delete blueprint.mutationPropensity;
     editor();
   });
+  get('dormancy-enabled').addEventListener('change', () => {
+    endStroke();
+    invalidateDesign();
+    if (get<HTMLInputElement>('dormancy-enabled').checked)
+      blueprint.dormancy = { ...DEFAULT_DORMANCY };
+    else delete blueprint.dormancy;
+    editor();
+  });
+  for (const field of [
+    'capacity',
+    'enterStress',
+    'wakeStress',
+    'enterEnergy',
+    'wakeEnergy',
+  ] as const)
+    get(`dormancy-${field}`).addEventListener('input', () => {
+      if (!blueprint.dormancy) return;
+      endStroke();
+      invalidateDesign();
+      blueprint.dormancy[field] = Number(get<HTMLInputElement>(`dormancy-${field}`).value);
+      editor();
+    });
   get('propensity').addEventListener('input', () => {
     if (blueprint.mutationPropensity === undefined) return;
     endStroke();

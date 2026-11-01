@@ -1,5 +1,6 @@
 import { RoleObserver } from './roles';
 import type { AttemptChannel } from './mutation-evidence';
+import { dormancyTick, emptyReserveFlow, fundReserveUpkeep } from './dormancy';
 import { mutatePropensity } from './mutation';
 import {
   legacyMutation,
@@ -51,6 +52,7 @@ import {
   validHistoricalGenome,
   migrateHistoricalGenome,
   cloneGenome,
+  exactDataRecord,
   validSettings,
   finite,
   integer,
@@ -60,6 +62,7 @@ import {
   type ShadeBrush,
   type WorldFileV14,
   type WorldFileV15,
+  type ReserveFlow,
   type WorldFileV13,
   type WorldFileV12,
   type WorldFileV11,
@@ -194,10 +197,14 @@ function exactKeys(value: unknown, keys: string[]): value is Record<string, unkn
     keys.every((key) => Object.hasOwn(value, key))
   );
 }
-function validFlow(value: Record<string, unknown>): boolean {
+function validFlow(value: Record<string, unknown>, reserves: boolean): boolean {
   const deaths = value.deaths,
     energy = value.energy;
   return (
+    (!Object.hasOwn(value, 'reserves') ||
+      (reserves &&
+        exactKeys(value.reserves, Object.keys(emptyReserveFlow())) &&
+        Object.values(value.reserves).every((amount) => finite(amount, 0, 1e9)))) &&
     integer(value.births, 0, 1e9) &&
     exactKeys(deaths, ['age', 'energy', 'manual']) &&
     Object.values(deaths).every((count) => integer(count, 0, 1e9)) &&
@@ -213,6 +220,7 @@ function validTelemetry(
   births: number,
   deaths: number,
   version: 1 | 2,
+  reserves: boolean,
 ): boolean {
   if (
     !exactKeys(value, [
@@ -236,9 +244,13 @@ function validTelemetry(
     pendingStart = elapsed ? boundary * TELEMETRY_INTERVAL_TICKS : value.originTick;
   if (
     value.samples.length !== length ||
-    !exactKeys(value.pending, ['births', 'deaths', 'energy', 'fromTick']) ||
+    !exactDataRecord(
+      value.pending,
+      ['births', 'deaths', 'energy', 'fromTick'],
+      reserves ? ['reserves'] : [],
+    ) ||
     value.pending.fromTick !== pendingStart ||
-    !validFlow(value.pending)
+    !validFlow(value.pending, reserves)
   )
     return false;
   let countedBirths = value.pending.births as number,
@@ -249,22 +261,26 @@ function validTelemetry(
   for (const [sampleIndex, sample] of value.samples.entries()) {
     const sampleTick = (boundary - length + sampleIndex + 1) * TELEMETRY_INTERVAL_TICKS;
     if (
-      !exactKeys(sample, [
-        'births',
-        'deaths',
-        'energy',
-        'fromTick',
-        'tick',
-        'population',
-        'food',
-        'cellCounts',
-        'meanPreference',
-        'meanTolerance',
-        ...(version === 2 ? ['adaptation'] : []),
-      ]) ||
+      !exactDataRecord(
+        sample,
+        [
+          'births',
+          'deaths',
+          'energy',
+          'fromTick',
+          'tick',
+          'population',
+          'food',
+          'cellCounts',
+          'meanPreference',
+          'meanTolerance',
+          ...(version === 2 ? ['adaptation'] : []),
+        ],
+        reserves ? ['reserves'] : [],
+      ) ||
       sample.tick !== sampleTick ||
       sample.fromTick !== Math.max(value.originTick, sampleTick - TELEMETRY_INTERVAL_TICKS) ||
-      !validFlow(sample) ||
+      !validFlow(sample, reserves) ||
       !integer(sample.population, 0, LIMIT) ||
       !integer(sample.food, 0, WIDTH * HEIGHT) ||
       !Array.isArray(sample.cellCounts) ||
@@ -327,6 +343,7 @@ function validInterventions(
   value: unknown,
   file:
     | WorldFile
+    | WorldFileV15
     | WorldFileV14
     | WorldFileV15
     | WorldFileV13
@@ -796,6 +813,12 @@ export class Ecosystem {
   private recordEnergy(field: keyof EnergyLedger, amount: number): void {
     if (this.recording) this.telemetry.pending.energy[field] += amount;
   }
+  private recordReserve(field: keyof ReserveFlow, amount: number): void {
+    if (this.recording) {
+      this.telemetry.pending.reserves ??= emptyReserveFlow();
+      this.telemetry.pending.reserves[field] += amount;
+    }
+  }
   populationObservation() {
     const view = new DataView(new ArrayBuffer(8)),
       preferenceBins: PreferenceBins = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -1213,6 +1236,7 @@ export class Ecosystem {
         : [],
       genome: ecological ? genome : cloneGenome(genome),
       ...(genome.controller ? { neuralBlocked: false } : {}),
+      ...(genome.dormancy ? { reserves: { stored: 0, dormant: false } } : {}),
     };
     if (!this.canPlace(o)) return;
     // Ecological inputs are existing validated genomes or their bounded mutation.
@@ -1239,6 +1263,7 @@ export class Ecosystem {
       this.food[i] = 1;
     }
     const removed = this.organisms.delete(o.id);
+    if (removed && o.genome.dormancy) this.recordReserve('discarded', o.reserves!.stored);
     if (o.id === this.perceptionId) this.selectPerception(0);
     this.deaths++;
     this.lastDeath = { tick: this.tick, cause };
@@ -1279,13 +1304,26 @@ export class Ecosystem {
       );
       const stress = Math.max(0, Math.abs(temp - o.genome.preference) - o.genome.tolerance);
       const upkeep = 0.012 + Math.max(0, o.genome.tolerance - 0.2) * 0.025;
+      const dormant = o.genome.dormancy
+        ? dormancyTick(o, stress, (field, amount) => this.recordReserve(field, amount))
+        : false;
+      const multiplier = dormant ? 0.2 : 1;
+      const cost = (upkeep + stress * 0.2) * o.genome.cells.length * multiplier;
+      if (o.genome.dormancy) this.recordReserve('withdrawn', fundReserveUpkeep(o, cost));
       let before = o.energy;
-      o.energy -= (upkeep + stress * 0.2) * o.genome.cells.length;
+      o.energy -= cost;
       this.recordEnergy('upkeepSpent', before - o.energy);
       this.recordEnergy(
         'climateUpkeepSpent',
-        (Math.max(0, o.genome.tolerance - 0.2) * 0.025 + stress * 0.2) * o.genome.cells.length,
+        (Math.max(0, o.genome.tolerance - 0.2) * 0.025 + stress * 0.2) *
+          o.genome.cells.length *
+          multiplier,
       );
+      if (dormant) {
+        if (o.energy <= 0 || o.age > 900 + o.genome.cells.length * 75)
+          this.kill(o, o.energy <= 0 ? 'energy' : 'age');
+        continue;
+      }
       for (const cell of o.genome.cells) {
         const type = cell.type;
         if (type === 4) {
@@ -1826,7 +1864,14 @@ export class Ecosystem {
         : emptyShade();
     if (
       f.version !== 2 &&
-      !validTelemetry(f.telemetry, f.tick, f.births, f.deaths, f.version === 3 ? 1 : 2)
+      !validTelemetry(
+        f.telemetry,
+        f.tick,
+        f.births,
+        f.deaths,
+        f.version === 3 ? 1 : 2,
+        f.version === WORLD_VERSION,
+      )
     )
       throw new Error('Invalid ecosystem telemetry.');
     if (
@@ -1939,6 +1984,15 @@ export class Ecosystem {
           : validHistoricalGenome(o.genome))
       )
         throw new Error('Invalid or overlapping organism.');
+      const dormancy = (o.genome as Genome).dormancy;
+      if (
+        f.version === WORLD_VERSION &&
+        dormancy &&
+        (!exactDataRecord(o.reserves, ['stored', 'dormant']) ||
+          !finite(o.reserves.stored, 0, dormancy.capacity) ||
+          typeof o.reserves.dormant !== 'boolean')
+      )
+        throw new Error('Invalid organism reserves.');
       const organism: Organism = structuredClone({
         ...o,
         genome:

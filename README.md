@@ -15,6 +15,7 @@ lineages spread by surviving and producing descendants.
 - **Living cellular organisms** — mouths, leaves, motors, stingers, armor and eyes combine into bodies that feed, compete and evolve.
 - **Drifting climates** — warm and cold zones move through the habitat; temperature preference and tolerance pass to offspring and can mutate.
 - **Adaptation with a tradeoff** — broad temperature tolerance costs more energy, while specialists are cheaper in favorable habitats.
+- **Optional energy reserves and dormancy** — design inherited sleep/wake thresholds and bounded, 80%-efficient storage; sleepers pay transition and maintenance costs and age normally, trading feeding, movement and reproduction for reduced upkeep without immunity or extinction rescue.
 - **Plant-fed food chain** — leaves produce food in neighboring free cells; there is no random food seeding or rainfall.
 - **Shape the habitat** — manually paint food, build barriers, erase patches, and introduce heatwaves or cold snaps.
 - **Seeded terrain** — preview Open field, Porous ridges or Chambered refuges; confirm a one-founder reset or explicitly clear/regenerate walls while protecting life and disclosing food removal.

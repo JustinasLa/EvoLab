@@ -20,6 +20,15 @@ const ENERGY_FIELDS = [
   'stingsGained',
   'stingsDrained',
 ] as const;
+const RESERVE_FIELDS = [
+  'discarded',
+  'deposited',
+  'withdrawn',
+  'conversionSpent',
+  'maintenanceSpent',
+  'entrySpent',
+  'exitSpent',
+] as const;
 export const MEASUREMENT_COLUMNS = [
   'record_type',
   'record_index',
@@ -28,6 +37,7 @@ export const MEASUREMENT_COLUMNS = [
   'deaths.energy',
   'deaths.manual',
   ...ENERGY_FIELDS.map((field) => `energy.${field}`),
+  ...RESERVE_FIELDS.map((field) => `reserves.${field}`),
   'fromTick',
   'tick',
   'population',
@@ -195,6 +205,11 @@ export function serializeMeasurements(source: MeasurementSource, format: Measure
       'deaths.energy': flow.deaths.energy,
       'deaths.manual': flow.deaths.manual,
       ...Object.fromEntries(ENERGY_FIELDS.map((field) => [`energy.${field}`, flow.energy[field]])),
+      ...(flow.reserves
+        ? Object.fromEntries(
+            RESERVE_FIELDS.map((field) => [`reserves.${field}`, flow.reserves![field]]),
+          )
+        : {}),
     };
   }
   envelope.telemetry.samples.forEach((sample, index) =>
