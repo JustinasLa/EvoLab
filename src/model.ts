@@ -95,7 +95,28 @@ export interface Genome {
   behavior: Behavior;
   /** Absent: global gate; present: inherited multiplier of the global upper bound. */
   mutationPropensity?: number;
+  dormancy?: DormancyTraits;
   legacyExtensions?: LegacyExtensions;
+}
+export interface DormancyTraits {
+  version: 1;
+  capacity: number;
+  enterStress: number;
+  wakeStress: number;
+  enterEnergy: number;
+  wakeEnergy: number;
+}
+export interface ReserveState {
+  stored: number;
+  dormant: boolean;
+}
+export interface ReserveFlow {
+  deposited: number;
+  withdrawn: number;
+  conversionSpent: number;
+  maintenanceSpent: number;
+  entrySpent: number;
+  exitSpent: number;
 }
 export interface HistoricalCell {
   x: number;
@@ -177,6 +198,7 @@ export interface Organism {
   children: number;
   ancestry: number[];
   genome: Genome;
+  reserves?: ReserveState;
 }
 export interface Settings {
   seed: number;
@@ -310,6 +332,7 @@ export interface TelemetryFlow {
   births: number;
   deaths: DeathCounts;
   energy: EnergyLedger;
+  reserves?: ReserveFlow;
 }
 export interface TelemetrySampleV1 extends TelemetryFlow {
   fromTick: number;
