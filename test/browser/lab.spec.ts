@@ -4572,7 +4572,7 @@ test.describe('pause on total extinction', () => {
     const recoveryNotice = await page.evaluate(
       '(() => { window.recoveryDelivery.release(); return document.getElementById("notice").textContent; })()',
     );
-    expect(recoveryNotice).toContain('version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 or 12');
+    expect(recoveryNotice).toContain('version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 or 13');
     expect(await pendingSave).toEqual(expected);
     await expect(page.locator('#notice')).toContainText('World saved');
     await expect(page.locator('#nutrients')).toHaveValue('7');
@@ -4692,7 +4692,7 @@ for (const terminalTick of [90, 91]) {
       await expectPopulationChart(page, populations);
       await importWorld(page, { ...terminal, version: 99 } as unknown as WorldFile);
       await expect(page.locator('#notice')).toContainText(
-        'version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 or 12',
+        'version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 or 13',
       );
       expect(await readWorld(page)).toEqual(terminal);
       await expectPopulationChart(page, populations);
@@ -5366,7 +5366,9 @@ test('B23-1 opt-in empty field retains the complete original climate trajectory 
       enabled: false,
       cells: [],
     });
+    expect(saved.mutationPolicy).toEqual({ version: 1, mode: 'legacy' });
     const {
+      mutationPolicy: _policy,
       thermalRefuges: _field,
       lineageArchive: _archive,
       shadeHabitats: _shade,

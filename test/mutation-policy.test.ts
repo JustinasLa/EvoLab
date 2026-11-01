@@ -178,6 +178,20 @@ describe('bounded opt-in mutation policy', () => {
         expect(expected).toEqual(before);
         const changed = !sameInherited(before, child.genome);
         differences += Number(changed);
+        if (channel === 'add') {
+          expect(child.genome.cells.slice(0, before.cells.length)).toEqual(before.cells);
+          expect(child.genome.cells.length).toBe(before.cells.length + Number(changed));
+        } else if (channel === 'remove') {
+          expect(child.genome.cells.length).toBe(before.cells.length - Number(changed));
+          for (const cell of child.genome.cells) expect(before.cells).toContainEqual(cell);
+        } else if (channel === 'change') {
+          expect(child.genome.cells.map(({ x, y }) => ({ x, y }))).toEqual(
+            before.cells.map(({ x, y }) => ({ x, y })),
+          );
+          expect(
+            child.genome.cells.filter((cell, i) => cell.type !== before.cells[i].type),
+          ).toHaveLength(Number(changed));
+        }
         expect(child.species === parent.species).toBe(!changed);
         expect(child.ancestry).toEqual(changed ? [parent.species] : []);
         expect(child.energy).toBe(child.genome.cells.length * 1.5 + 3);
@@ -191,6 +205,7 @@ describe('bounded opt-in mutation policy', () => {
   it('makes actual clonal births when all channels or passive reaction eligibility are disabled', () => {
     for (const [policy, source] of [
       [only(), genome()],
+      [only('reactions'), { ...genome(), behavior: { ...genome().behavior, version: 1 as const } }],
       [
         only('reactions'),
         { ...genome(), behavior: { version: 1 as const, mode: 'legacy' as const } },
