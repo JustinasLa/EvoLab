@@ -1535,6 +1535,50 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe('owned command admission and real-worker interleavings', () => {
+  it('owns event recording, replay evidence, busy requests and failed capture without touching the sandbox', () => {
+    expect(() => captureCommand({ type: 'event-recording', enabled: 1 }, DEFAULTS)).toThrow();
+    expect(() => captureCommand({ type: 'event-replay', eventId: 0 }, DEFAULTS)).toThrow();
+    const bridge = realWorker();
+    bridge.deliver();
+    root.querySelector<HTMLButtonElement>('#pause')!.click();
+    bridge.deliver();
+    const before = bridge.save();
+    root.querySelector<HTMLButtonElement>('#event-record')!.click();
+    bridge.deliver();
+    expect(root.querySelector('#event-window')!.textContent).toContain('Recording since');
+    const endpoint = {
+      postMessage: vi.fn(),
+      terminate: vi.fn(),
+      onmessage: null,
+      onerror: null,
+      onmessageerror: null,
+    };
+    vi.stubGlobal(
+      'Worker',
+      vi.fn(function () {
+        return endpoint;
+      }),
+    );
+    root.querySelector<HTMLButtonElement>('#event-open')!.click();
+    bridge.deliver();
+    expect(endpoint.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'start' }));
+    expect(bridge.save()).toEqual(before);
+    root.querySelector<HTMLButtonElement>('#event-cancel')!.click();
+    root.querySelector<HTMLButtonElement>('#event-open')!.click();
+    root.querySelector<HTMLButtonElement>('#event-open')!.click();
+    expect(root.querySelector('#event-status')!.textContent).toContain('busy');
+    bridge.deliver();
+    root.querySelector<HTMLButtonElement>('#event-open')!.click();
+    const response = bridge.outbox.find((message) => message.type === 'event-evidence');
+    response.type = 'error';
+    response.message = 'Evidence evicted';
+    response.code = 'invalid-command';
+    bridge.deliver();
+    expect(root.querySelector('#event-status')!.textContent).toBe('Evidence evicted');
+    root.querySelector<HTMLButtonElement>('#event-stop')!.click();
+    bridge.deliver();
+    expect(root.querySelector('#event-window')!.textContent).toContain('Recording off');
+  });
   it('preserves native comparison disclosure activation without a sandbox playback command', () => {
     const summary = get('comparisons').querySelector('summary')!;
     const before = worker.commands.mock.calls.length;

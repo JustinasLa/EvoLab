@@ -34,5 +34,5 @@ export interface EventReplay {
 }
 export type ReplayResponse =
   | { type: 'progress'; tick: number; endpointTick: number }
-  | { type: 'complete'; tick: number; population: number; verified: true }
+  | { type: 'complete'; tick: number; population: number; verified: true; cells: Uint8Array }
   | { type: 'error'; message: string };
