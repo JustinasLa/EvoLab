@@ -1391,11 +1391,14 @@ describe('bounded long-run transport', () => {
   it.each(
     ['settings', 'organism', 'genome', 'cell', 'all'].flatMap((surface) =>
       ([1, 4, 12] as const).flatMap((speed) =>
-        Array.from({ length: 5 }, (_, window) => ({
+        // Keep every batch of the same 120-tick corpus while bounding each
+        // case's full-payload serialization under the unchanged 5s deadline.
+        // Twelve is a multiple of every supported speed.
+        Array.from({ length: 10 }, (_, window) => ({
           surface,
           speed,
-          from: window * 24,
-          through: (window + 1) * 24,
+          from: window * 12,
+          through: (window + 1) * 12,
         })),
       ),
     ),
