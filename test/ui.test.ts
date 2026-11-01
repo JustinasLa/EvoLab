@@ -81,6 +81,7 @@ class WorkerStub extends EventTarget {
           : (this.state?.replacementId ?? 1),
       revision: ++this.revision,
       world: {
+        mutationPolicy: { version: 1, mode: 'legacy' },
         lineage: fixture.lineage ?? world.presentation(0, true).lineage,
         stats: frame.stats,
         climate: frame.climate,
@@ -167,6 +168,7 @@ class WorkerStub extends EventTarget {
                 state: {
                   ...state,
                   world: {
+                    mutationPolicy: { version: 1, mode: 'legacy' },
                     lineage: world.presentation(0, true).lineage,
                     stats: fixture.recovery.frame.stats,
                     climate: fixture.recovery.frame.climate,
@@ -4334,6 +4336,7 @@ describe('ecosystem desk', () => {
   });
   it('confirms every user reset with a frozen payload, cancellation focus and no ecological command on cancellation', () => {
     click('ecosystem-tab');
+    expect(root.querySelectorAll('.world-settings')).toHaveLength(1);
     root.querySelector<HTMLDetailsElement>('.world-settings')!.open = true;
     const before = worker.postMessage.mock.calls.length;
     get('reset').click();
@@ -7199,4 +7202,35 @@ it('draws only an accepted selected actual perception and keeps local overlay co
   bridge.deliver();
   expect(get('perception-observation').textContent).toContain('No retained perception');
   expect(painter.mock.calls.at(-1)![9]).toBeNull();
+});
+
+describe('worker-owned mutation controls', () => {
+  it('holds command capacity until matching delivery and rejects stale policy observations after replacement', () => {
+    const bridge = ownershipBridge();
+    set('mutation-mode', 'weighted', 'change');
+    set('mutation-weight-add', '0');
+    bridge.holdTerminals((data) => data.operation === 'mutation-policy');
+    click('mutation-apply');
+    const [id, record] = [...bridge.records].find(
+      ([, record]) => record.command.type === 'mutation-policy',
+    )!;
+    expect(get<HTMLFieldSetElement>('mutation-fields').disabled).toBe(true);
+    expect(get('mutation-status').textContent).toContain('Waiting');
+    click('mutation-apply');
+    expect(bridge.records.size).toBe(1);
+    bridge.emit({ ...record.terminal, operation: 'settings' });
+    expect(get<HTMLFieldSetElement>('mutation-fields').disabled).toBe(true);
+    bridge.deliver(id);
+    expect(get<HTMLFieldSetElement>('mutation-fields').disabled).toBe(false);
+    expect(get('mutation-status').textContent).toContain('Confirmed policy: Weighted');
+    set('mutation-weight-add', '19');
+    paint(0);
+    expect(get<HTMLInputElement>('mutation-weight-add').value).toBe('19');
+    bridge.holdTerminals(() => false);
+    click('reset');
+    expect(get<HTMLSelectElement>('mutation-mode').value).toBe('legacy');
+    bridge.emit(record.terminal);
+    expect(get<HTMLSelectElement>('mutation-mode').value).toBe('legacy');
+    expect(bridge.records.size).toBe(0);
+  });
 });

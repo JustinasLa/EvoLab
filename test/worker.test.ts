@@ -1,3 +1,4 @@
+import { weightedMutation } from '../src/mutation';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { startWorker, type Scope } from '../src/worker';
@@ -3659,4 +3660,39 @@ describe('actual selected perception through the worker protocol', () => {
       harness.dispose();
     },
   );
+});
+describe('worker mutation policy ownership', () => {
+  it('applies, logs and validates policy commands while paused without extra ticks, then continues exactly', () => {
+    const harness = workerHarness();
+    harness.send({ type: 'start', settings: DEFAULTS });
+    harness.send({ type: 'pause' });
+    const before = harness.save(),
+      policy = weightedMutation();
+    policy.weights.reactions = 0;
+    const receipt = harness.send({ type: 'mutation-policy', policy });
+    expect(receipt.type).toBe('manual-result');
+    expect(receipt.status).toBe('applied');
+    expect(receipt.state.world.mutationPolicy).toEqual(policy);
+    expect(receipt.state.world.stats.tick).toBe(before.tick);
+    expect(receipt.state.playback.paused).toBe(true);
+    receipt.state.world.mutationPolicy.weights.add = 19;
+    expect(harness.save().mutationPolicy).toEqual(policy);
+    const after = harness.save();
+    expect(after.random).toBe(before.random);
+    expect(after.organisms).toEqual(before.organisms);
+    expect(harness.send({ type: 'mutation-policy', policy }).status).toBe('no-op');
+    expect(harness.save()).toEqual(after);
+    expect(
+      harness.send({
+        type: 'mutation-policy',
+        policy: { version: 1, mode: 'weighted', weights: {} },
+      }).type,
+    ).toBe('error');
+    expect(harness.save()).toEqual(after);
+    const reference = Ecosystem.load(JSON.stringify(after));
+    harness.send({ type: 'step' });
+    reference.step();
+    expect(harness.save()).toEqual(reference.save());
+    harness.dispose();
+  });
 });

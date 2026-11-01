@@ -1485,6 +1485,7 @@ export class Ecosystem {
       terrain: { ...this.terrain },
       thermalRefuges: refugeSummary(this.thermalRefuges),
       shadeHabitats: shadeSummary(this.shadeHabitats),
+      mutationPolicy: structuredClone(this.mutationPolicy),
       selectedLeafLight: selectedLeafLight(this.shadeHabitats, organism ?? null),
       anchorTemperature: organism
         ? localTemperature(
