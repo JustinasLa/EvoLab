@@ -1,3 +1,4 @@
+import { roleScene } from './fixtures/roles';
 import { historicalArchive } from './fixtures/telemetry';
 import { weightedMutation } from '../src/mutation';
 import { afterEach, describe, it, expect, vi } from 'vitest';
@@ -66,6 +67,51 @@ const mouth: Genome = {
   tolerance: 0.3,
   tempo: 2,
 };
+it('observes roles only after subscription and preserves exact pause, step, load recovery and yields', () => {
+  const harness = workerHarness();
+  const { world } = roleScene();
+  harness.load(world.save());
+  harness.send({ type: 'pause', value: true });
+  expect(harness.state().world.roles).toBeUndefined();
+  const initial = harness.save();
+  const view = { epoch: 1, enabled: false, visible: true, roles: true };
+  harness.send({ type: 'display-view', view });
+  expect(harness.state().world.roles).toMatchObject({ originTick: 0, tick: 0, lineages: [] });
+  expect(harness.save()).toEqual(initial);
+  harness.send({ type: 'step' });
+  world.step();
+  expect(harness.save()).toEqual(world.save());
+  const roles = harness.state().world.roles;
+  expect(roles.lineages).toHaveLength(2);
+  expect(roles.edges).toHaveLength(1);
+  harness.send({ type: 'display-view', view: { ...view, epoch: 2, roles: false } });
+  expect(harness.last('error').message).toContain('Invalid or obsolete display view');
+  harness.send({ type: 'load', runId: 2, text: '{}' });
+  expect(harness.state().world.roles).toEqual(roles);
+  expect(harness.save()).toEqual(world.save());
+  harness.send({ type: 'display-view', runId: 1, view: { ...view, epoch: 2 } });
+  expect(harness.state().world.roles).toEqual(roles);
+  while (harness.tasks.length) harness.advance();
+  harness.load(world.save(), 3);
+  expect(harness.state().world.roles).toMatchObject({
+    originTick: 1,
+    fromTick: 1,
+    tick: 1,
+    lineages: [],
+    edges: [],
+  });
+  harness.send({ type: 'speed', value: 12 });
+  harness.send({ type: 'resume' });
+  harness.advance();
+  for (let tick = 0; tick < 12; tick++) world.step();
+  expect(harness.save()).toEqual(world.save());
+  expect(harness.tasks.length).toBeGreaterThan(0);
+  harness.send({ type: 'pause', value: true });
+  harness.send({ type: 'start', runId: 4, settings: DEFAULTS, display: { ...view, epoch: 3 } });
+  expect(harness.state().world.roles).toMatchObject({ originTick: 0, tick: 0, lineages: [] });
+  harness.dispose();
+});
+
 function sender(scope: Scope) {
   let posting = 0,
     runId = 0,

@@ -366,6 +366,7 @@ export interface LineagePresentation {
   current: (Species & { organismIds: number[] })[];
 }
 export type WorldPresentation = Pick<Frame, 'stats' | 'climate' | 'offset' | 'terrain'> & {
+  roles?: import('./roles').RoleSnapshot;
   mutationPolicy: MutationPolicy;
   lineage?: LineagePresentation;
   selectedBaseline?: OrganismBaseline;
@@ -377,6 +378,7 @@ export type WorldPresentation = Pick<Frame, 'stats' | 'climate' | 'offset' | 'te
 };
 export type HabitatFrame = Omit<Frame, 'telemetry' | 'interventions'>;
 export interface DisplayView {
+  roles?: true;
   lineage?: true;
   epoch: number;
   enabled: boolean;

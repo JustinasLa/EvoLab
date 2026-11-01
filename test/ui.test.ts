@@ -6896,6 +6896,49 @@ describe('lineage exploration with real worker state', () => {
   });
 });
 
+it('keeps roles subscription across views, resets evidence on replacement and retains failed-load evidence', async () => {
+  const bridge = realWorker(true);
+  bridge.deliver();
+  click('pause');
+  bridge.deliver();
+  const before = bridge.save();
+  const panel = get<HTMLDetailsElement>('ecological-roles');
+  panel.open = true;
+  panel.dispatchEvent(new Event('toggle'));
+  bridge.deliver();
+  expect(get('roles-coverage').textContent).toContain('0 completed ticks covered');
+  expect(bridge.save()).toEqual(before);
+  click('step');
+  bridge.deliver();
+  expect(get('roles-coverage').textContent).toContain('1 completed ticks covered');
+  expect(get('roles-tables').textContent).toContain('photosynthesis');
+  const retained = get('roles-tables').textContent;
+  await loadText('{}');
+  bridge.deliver();
+  expect(get('roles-tables').textContent).toBe(retained);
+  click('organism-tab');
+  click('ecosystem-tab');
+  bridge.deliver();
+  expect(get('roles-tables').textContent).toBe(retained);
+  click('reset');
+  bridge.deliver();
+  expect(get('roles-coverage').textContent).toContain('Session began at tick 0');
+  expect(get('roles-tables').querySelectorAll('tbody tr')).toHaveLength(0);
+});
+
+it('validates and retains the opt-in ecological roles display flag', () => {
+  const display = { epoch: 7, enabled: false, visible: true, roles: true };
+  expect(captureCommand({ type: 'start', settings: DEFAULTS, display }, DEFAULTS)).toMatchObject({
+    display,
+  });
+  expect(() =>
+    captureCommand(
+      { type: 'start', settings: DEFAULTS, display: { ...display, roles: false } },
+      DEFAULTS,
+    ),
+  ).toThrow('Invalid initial settings or display.');
+});
+
 it('validates and retains the opt-in lineage display flag without changing ecology settings', () => {
   const display = { epoch: 7, enabled: true, visible: false, lineage: true };
   expect(captureCommand({ type: 'start', settings: DEFAULTS, display }, DEFAULTS)).toMatchObject({

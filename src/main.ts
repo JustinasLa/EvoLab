@@ -70,6 +70,7 @@ import {
 } from './view';
 import { createTelemetryView } from './telemetry-view';
 import { createLineageView } from './lineage-view';
+import { createRolesView } from './roles-view';
 import { emptyRefuges, refugeTool, refugeSummary, validRefugeBrush } from './refuges';
 import {
   createLibrary,
@@ -103,7 +104,8 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
         !integer(data.display.epoch, 0, Number.MAX_SAFE_INTEGER) ||
         typeof data.display.enabled !== 'boolean' ||
         typeof data.display.visible !== 'boolean' ||
-        (data.display.lineage !== undefined && data.display.lineage !== true)
+        (data.display.lineage !== undefined && data.display.lineage !== true) ||
+        (data.display.roles !== undefined && data.display.roles !== true)
       )
         throw new Error('Invalid initial settings or display.');
       return {
@@ -115,6 +117,7 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
           enabled: data.display.enabled,
           visible: data.display.visible,
           ...(data.display.lineage ? { lineage: true as const } : {}),
+          ...(data.display.roles ? { roles: true as const } : {}),
         },
       };
     case 'load':
@@ -1538,12 +1541,14 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     enabled = desiredView.enabled,
     visible = desiredView.visible,
     lineage = desiredView.lineage === true,
+    roles = desiredView.roles === true,
   ): void {
     if (
       !alive ||
       (enabled === desiredView.enabled &&
         visible === desiredView.visible &&
-        lineage === (desiredView.lineage === true))
+        lineage === (desiredView.lineage === true) &&
+        roles === (desiredView.roles === true))
     )
       return;
     desiredView = {
@@ -1551,6 +1556,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       enabled,
       visible,
       ...(lineage ? { lineage: true as const } : {}),
+      ...(roles ? { roles: true as const } : {}),
     };
     viewIntent = { ...desiredView };
     if (!enabled || !visible) discardFenceEpoch = desiredView.epoch;
@@ -1717,7 +1723,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       .forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
     get('ecosystem-panel').hidden = name !== 'ecosystem';
     get('organism-panel').hidden = name !== 'organism';
-    if (name === 'ecosystem') lineageView.reveal();
+    if (name === 'ecosystem') {
+      lineageView.reveal();
+      rolesView.reveal();
+    }
   };
   function choose(next: Tool): void {
     endStroke();
@@ -2772,7 +2781,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     if (
       (event.target instanceof HTMLElement &&
         event.target.closest(
-          'input,select,textarea,button,summary,[contenteditable="true"],dialog',
+          'input,select,textarea,button,summary,[contenteditable="true"],dialog,#roles-tables',
         )) ||
       event.ctrlKey ||
       event.metaKey ||
@@ -2905,6 +2914,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   const lineageView = createLineageView(root, () => {
     dirty = true;
   });
+  const rolesView = createRolesView(root, () => {
+    changeView(desiredView.enabled, desiredView.visible, desiredView.lineage === true, true);
+  });
   let displayedLineage: WorldPresentation['lineage'];
   let displayedLineageReplacement = 0;
   let displayedObservation: ControlState | undefined;
@@ -2934,6 +2946,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           observation.world.stats.tick,
           observation.replacementId,
         );
+      rolesView.update(observation.world.roles);
       organismView.update(
         observation,
         differentRun ||
@@ -3480,6 +3493,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     librarySnapshot = { count: 0, rows: [] };
     telemetry.dispose();
     lineageView.dispose();
+    rolesView.dispose();
     organismView.dispose();
     mutationControls.dispose();
     cancelAnimationFrame(animation);
