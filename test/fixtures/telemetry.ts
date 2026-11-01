@@ -150,7 +150,12 @@ export function legacyV8(saved: WorldFile): WorldFileV8 {
 }
 
 export function legacyV9(saved: WorldFile): WorldFileV9 {
-  const { shadeHabitats: _shadeHabitats, ...retained } = structuredClone(saved);
+  assert.deepEqual(saved.mutationPolicy, { version: 1, mode: 'legacy' });
+  const {
+    mutationPolicy: _policy,
+    shadeHabitats: _shadeHabitats,
+    ...retained
+  } = structuredClone(saved);
   assert.ok(retained.interventions.entries.every((row) => !row.kind.startsWith('shade-')));
   return {
     ...retained,

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { weightedMutation } from '../src/mutation';
 import { Ecosystem } from '../src/ecosystem';
 import { DEFAULTS, founder, type Frame, type WorldFileV3 } from '../src/model';
 import { markup } from '../src/view';
@@ -306,6 +307,17 @@ describe('bounded model-dependent telemetry presentation', () => {
     expect(get('telemetry-status').textContent).toContain(
       'Following latest retained manual action',
     );
+  });
+  it('shows actual detached mutation policy changes in bounded manual details', () => {
+    const world = new Ecosystem(DEFAULTS, false),
+      policy = weightedMutation();
+    policy.weights.reactions = 0;
+    world.changeMutationPolicy(policy);
+    const before = world.save();
+    show(world.frame());
+    expect(get('telemetry-intervention-details').textContent).toContain('Mutation policy before');
+    expect(get('telemetry-intervention-details').textContent).toContain(JSON.stringify(policy));
+    expect(world.save()).toEqual(before);
   });
   it('clips only drawing, discloses before/after/crossing effects and keeps manual and sample pins independent', () => {
     const world = new Ecosystem(DEFAULTS, false),

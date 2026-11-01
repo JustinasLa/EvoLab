@@ -100,11 +100,12 @@ export function mutateWithPolicy(source: Genome, random: Random, policy: Mutatio
     g.tolerance = clamp(g.tolerance + (random.next() - 0.5) * 0.06, 0.12, 0.6);
   else if (channel === 'tempo') g.tempo = clamp(g.tempo + random.int(3) - 1, 2, 12);
   else if (g.behavior.mode === 'evolved') {
-    const category = (['food', 'wall', 'harmless', 'dangerous'] as const)[random.int(4)],
+    const reactions = g.behavior.reactions,
+      category = (['food', 'wall', 'harmless', 'dangerous'] as const)[random.int(4)],
       alternatives = (['ignore', 'chase', 'flee'] as const).filter(
-        (action) => action !== g.behavior.reactions[category],
+        (action) => action !== reactions[category],
       );
-    g.behavior.reactions[category] = alternatives[random.int(2)];
+    reactions[category] = alternatives[random.int(2)];
   }
   return g;
 }

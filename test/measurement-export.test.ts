@@ -179,10 +179,10 @@ describe('bounded retained measurement codec', () => {
       const json = restore(JSON.parse(serializeMeasurements(source, 'json').text));
       expect(decode(serializeMeasurements(source, 'csv').text)).toEqual(json);
       expect(json).toMatchObject({
-        version: 6,
-        rules: { version: 5 },
+        version: 7,
+        rules: { version: 6 },
         snapshot: {
-          worldVersion: 12,
+          worldVersion: 13,
           shadeHabitats: {
             version: 1,
             enabled,
@@ -194,7 +194,7 @@ describe('bounded retained measurement codec', () => {
             sumShadeUnits: 24,
           },
         },
-        interventions: { version: 4 },
+        interventions: { version: 5 },
       });
       expect(Object.keys(json.snapshot.shadeHabitats)).toEqual([
         'version',
@@ -228,12 +228,12 @@ describe('bounded retained measurement codec', () => {
         envelope = measurementEnvelope(source);
       const serialized = serializeMeasurements(source, format);
       expect(serialized.byteLength).toBe(new TextEncoder().encode(serialized.text).length);
-      expect(envelope.snapshot.worldVersion).toBe(12);
+      expect(envelope.snapshot.worldVersion).toBe(13);
       expect(envelope).toMatchObject({
-        version: 6,
-        rules: { version: 5 },
+        version: 7,
+        rules: { version: 6 },
         telemetry: { version: 2 },
-        interventions: { version: 4 },
+        interventions: { version: 5 },
       });
       expect(serialized.text).not.toContain('native-B5');
       expect(serialized.text).not.toContain('legacyExtensions');
@@ -247,7 +247,7 @@ describe('bounded retained measurement codec', () => {
     const envelope = measurementEnvelope(source);
     expect(source.snapshot.worldVersion).toBe(WORLD_VERSION);
     expect(world.save().version).toBe(WORLD_VERSION);
-    expect(envelope.version).toBe(6);
+    expect(envelope.version).toBe(7);
     expect(envelope.telemetry).toEqual(world.save().telemetry);
     expect(envelope.interventions).toEqual(world.save().interventions);
     expect(envelope).not.toHaveProperty('lineageArchive');
@@ -276,10 +276,10 @@ describe('bounded retained measurement codec', () => {
         decoded = decode(serializeMeasurements(source, 'csv').text);
       expect(decoded).toEqual(json);
       expect(json).toMatchObject({
-        version: 6,
-        rules: { version: 5 },
+        version: 7,
+        rules: { version: 6 },
         snapshot: {
-          worldVersion: 12,
+          worldVersion: 13,
           thermalRefuges: {
             version: 1,
             enabled,
@@ -291,7 +291,7 @@ describe('bounded retained measurement codec', () => {
             sumUnits: painted ? -4 : 0,
           },
         },
-        interventions: { version: 4 },
+        interventions: { version: 5 },
       });
       expect(Object.keys(json.snapshot.thermalRefuges)).toEqual([
         'version',
@@ -325,9 +325,9 @@ describe('bounded retained measurement codec', () => {
     world.changeTerrain('regenerate', { version: 1, preset: 'open-field', seed: -0 });
     const source = world.measurements(),
       envelope = measurementEnvelope(source);
-    expect(envelope.version).toBe(6);
-    expect(envelope.rules.version).toBe(5);
-    expect(envelope.snapshot.worldVersion).toBe(12);
+    expect(envelope.version).toBe(7);
+    expect(envelope.rules.version).toBe(6);
+    expect(envelope.snapshot.worldVersion).toBe(13);
     expect(envelope.snapshot.terrain).toEqual(world.terrain);
     expect(envelope.snapshot.settings).toEqual(DEFAULTS);
     expect(envelope.negativeZeroPaths).toContain('/snapshot/terrain/seed');

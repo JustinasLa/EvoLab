@@ -1,10 +1,11 @@
+import type { MutationPolicy } from './mutation';
 export const WIDTH = 240;
 export const HEIGHT = 156;
 export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 12;
+export const WORLD_VERSION = 13;
 export const LINEAGE_SUMMARY_CAPACITY = 256;
 export const LINEAGE_EVENT_CAPACITY = 512;
 export const INTERVENTION_CAPACITY = 128;
@@ -632,6 +633,7 @@ export interface WorldEcology {
   organisms: Organism[];
 }
 export interface WorldFile extends WorldEcology {
+  mutationPolicy: MutationPolicy;
   version: typeof WORLD_VERSION;
   shadeHabitats: ShadeFile;
   lineageArchive: LineageArchiveState;
@@ -643,10 +645,17 @@ export interface WorldFile extends WorldEcology {
 export type HistoricalWorldEcology = Omit<WorldEcology, 'organisms'> & {
   organisms: HistoricalOrganism[];
 };
-export interface WorldFileV11 extends Omit<WorldFile, 'version'> {
+export interface WorldFileV12 extends Omit<
+  WorldFile,
+  'version' | 'mutationPolicy' | 'interventions'
+> {
+  version: 12;
+  interventions: InterventionStateV4;
+}
+export interface WorldFileV11 extends Omit<WorldFileV12, 'version'> {
   version: 11;
 }
-export interface WorldFileV10 extends Omit<WorldFile, 'version'> {
+export interface WorldFileV10 extends Omit<WorldFileV12, 'version'> {
   version: 10;
 }
 export interface WorldFileV9 extends WorldEcology {
@@ -760,7 +769,11 @@ export type ShadeEffect =
   | { kind: 'shade-mode'; detail: { rulesVersion: 1; before: boolean; after: boolean } }
   | { kind: 'shade-paint'; detail: ShadePaintDetail }
   | { kind: 'shade-clear'; detail: { rulesVersion: 1; removedCells: number } };
-export type InterventionEffect = InterventionEffectV3 | ShadeEffect;
+export type MutationPolicyEffect = {
+  kind: 'mutation-policy';
+  detail: { before: MutationPolicy; after: MutationPolicy };
+};
+export type InterventionEffect = InterventionEffectV3 | ShadeEffect | MutationPolicyEffect;
 export type InterventionEntryV1 = InterventionEffectV1 & {
   sequence: number;
   origin: 'manual';
@@ -783,9 +796,17 @@ export type InterventionEntryV3 =
       firstTick: number;
       lastTick: number;
     });
-export type InterventionEntry =
+export type InterventionEntryV4 =
   | InterventionEntryV3
   | (ShadeEffect & {
+      sequence: number;
+      origin: 'manual';
+      firstTick: number;
+      lastTick: number;
+    });
+export type InterventionEntry =
+  | InterventionEntryV4
+  | (MutationPolicyEffect & {
       sequence: number;
       origin: 'manual';
       firstTick: number;
@@ -811,9 +832,12 @@ export interface InterventionStateV3 extends Omit<InterventionStateV1, 'version'
 }
 export interface InterventionStateV4 extends Omit<InterventionStateV1, 'version' | 'entries'> {
   version: 4;
+  entries: InterventionEntryV4[];
+}
+export interface InterventionState extends Omit<InterventionStateV4, 'version' | 'entries'> {
+  version: 5;
   entries: InterventionEntry[];
 }
-export type InterventionState = InterventionStateV4;
 export interface PaintOutcome {
   changedBrushCells: number;
   removedOrganisms: number;
@@ -821,6 +845,7 @@ export interface PaintOutcome {
 }
 export interface MeasurementSource {
   snapshot: {
+    mutationPolicy: MutationPolicy;
     worldVersion: typeof WORLD_VERSION;
     terrain: TerrainRecipe;
     thermalRefuges: RefugeSummary;

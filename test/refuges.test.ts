@@ -309,9 +309,11 @@ describe('painted temperature mechanics and genuine accepted-base equivalence', 
       shadeHabitats: _shade,
       lineageArchive: _archive,
       version: _version,
+      mutationPolicy,
       ...afterEcology
     } = world.save();
     afterEcology.organisms = restoreHistoricalWorld(world.save()).organisms as any;
+    expect(mutationPolicy).toEqual({ version: 1, mode: 'legacy' });
     expect({ version: 6, ...afterEcology }).toEqual(beforeEcology);
     expect(world.lineageSnapshot()).toEqual(archive);
     expect(world.clearRefuges()).toMatchObject({ removedCells: 1, nonzeroCells: 0 });

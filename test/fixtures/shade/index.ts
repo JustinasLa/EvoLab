@@ -31,7 +31,9 @@ export function world9Text(name: string): string {
 }
 
 export function projectWorld9(saved: WorldFile): WorldFileV9 {
-  const { shadeHabitats: _shadeHabitats, ...retained } = saved;
+  assert.deepEqual(saved.mutationPolicy, { version: 1, mode: 'legacy' });
+  assert.ok(saved.interventions.entries.every((row) => row.kind !== 'mutation-policy'));
+  const { mutationPolicy: _policy, shadeHabitats: _shadeHabitats, ...retained } = saved;
   assert.ok(retained.interventions.entries.every((row) => !row.kind.startsWith('shade-')));
   return {
     ...retained,

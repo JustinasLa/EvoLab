@@ -208,6 +208,11 @@ export function createTelemetryView(root: HTMLElement) {
     } else if (entry.kind === 'settings') {
       for (const [field, change] of Object.entries(entry.detail.changes))
         rows.push([field, `${change!.before} → ${change!.after}`]);
+    } else if (entry.kind === 'mutation-policy') {
+      rows.push(
+        ['Mutation policy before', JSON.stringify(entry.detail.before)],
+        ['Mutation policy after', JSON.stringify(entry.detail.after)],
+      );
     } else if (entry.kind === 'terrain') {
       rows.push(
         ['Wall action', entry.detail.action],

@@ -156,9 +156,13 @@ describe('active-only birth reaction mutation', () => {
   it('migrates complete world11 data without draws, field loss, identity changes or activation', () => {
     const { world } = scene();
     const current = world.save(),
-      predecessor = { ...current, version: 11 };
+      predecessor = {
+        ...current,
+        version: 11,
+        interventions: { ...current.interventions, version: 4 },
+      };
     const migrated = Ecosystem.load(JSON.stringify(predecessor));
-    expect(WORLD_VERSION).toBe(12);
+    expect(WORLD_VERSION).toBe(13);
     expect(migrated.save()).toEqual(current);
     world.step();
     migrated.step();

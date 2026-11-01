@@ -3154,7 +3154,7 @@ describe('integrated extinction and telemetry', () => {
     expect(harness.tasks).toHaveLength(0);
   });
 
-  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])(
+  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])(
     'migrates/restores v%i then preserves terminal and pending history through an empty save continuation',
     (version) => {
       const harness = workerHarness();
@@ -3185,10 +3185,24 @@ describe('integrated extinction and telemetry', () => {
                       : version === 9
                         ? legacyV9(current)
                         : version === 10
-                          ? { ...current, version: 10 as const }
+                          ? {
+                              ...current,
+                              version: 10 as const,
+                              interventions: { ...current.interventions, version: 4 },
+                            }
                           : version === 11
-                            ? { ...current, version: 11 as const }
-                            : current;
+                            ? {
+                                ...current,
+                                version: 11 as const,
+                                interventions: { ...current.interventions, version: 4 },
+                              }
+                            : version === 12
+                              ? {
+                                  ...current,
+                                  version: 12 as const,
+                                  interventions: { ...current.interventions, version: 4 },
+                                }
+                              : current;
       expect(file.version).toBe(version);
       if (file.version === 2) expect(file).not.toHaveProperty('telemetry');
       else {
@@ -3217,11 +3231,17 @@ describe('integrated extinction and telemetry', () => {
       if (file.version >= 4) {
         expect(imported).toEqual(
           file.version >= 10
-            ? { ...file, version: 12 }
+            ? {
+                ...file,
+                version: 13,
+                mutationPolicy: { version: 1, mode: 'legacy' },
+                interventions: { ...file.interventions, version: 5 },
+              }
             : file.version >= 5
               ? {
                   ...file,
-                  version: 12,
+                  version: 13,
+                  mutationPolicy: { version: 1, mode: 'legacy' },
                   shadeHabitats: { version: 1, enabled: false, cells: [] },
                   organisms: imported.organisms,
                   lineageArchive: imported.lineageArchive,
@@ -3230,18 +3250,19 @@ describe('integrated extinction and telemetry', () => {
                     file.version >= 7
                       ? file.thermalRefuges
                       : { version: 1, enabled: false, cells: [] },
-                  interventions: { ...file.interventions, version: 4 },
+                  interventions: { ...file.interventions, version: 5 },
                 }
               : {
                   ...file,
-                  version: 12,
+                  version: 13,
+                  mutationPolicy: { version: 1, mode: 'legacy' },
                   shadeHabitats: { version: 1, enabled: false, cells: [] },
                   organisms: imported.organisms,
                   lineageArchive: imported.lineageArchive,
                   terrain: { ...DEFAULT_TERRAIN },
                   thermalRefuges: { version: 1, enabled: false, cells: [] },
                   interventions: {
-                    version: 4,
+                    version: 5,
                     originTick: file.tick,
                     originKind: 'legacy-import',
                     originSettings: { ...file.settings },
@@ -3258,7 +3279,7 @@ describe('integrated extinction and telemetry', () => {
       harness.advance();
       reference.step();
       const terminal = harness.save();
-      expect(terminal.version).toBe(12);
+      expect(terminal.version).toBe(13);
       expect(terminal.telemetry.version).toBe(2);
       expect(terminal.telemetry.samples.at(-1)).toMatchObject({
         fromTick: version === 2 ? 89 : 60,
