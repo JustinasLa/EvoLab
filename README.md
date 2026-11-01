@@ -35,6 +35,19 @@ lineages spread by surviving and producing descendants.
 EvoLab uses an original cellular simulation and interface. It is artificial life,
 not a calibrated biological model.
 
+### Neural controller contract (in development)
+
+An explicitly enabled, inherited version-1 feed-forward controller uses six inputs,
+four hidden neurons and four outputs (40 weights and eight biases, each in −4…4).
+Inputs are the nearest actually visible food, wall, harmless and dangerous organism
+signals, normalized internal energy, and the previous blocked-action flag. Eyes
+retain the existing five-cell forward, occluded view; absent eyes provide no sight.
+Clamped linear activations choose rest, forward, left or right in that tie order.
+Each tempo-triggered evaluation costs 0.02 energy, including without eyes or motors;
+motor translation and quarter-turn attempts cost 0.03, including blocked attempts.
+Rest adds no action charge. No global information, learning, or population rescue
+is introduced. Ordinary organisms retain their existing behavior and random draws.
+
 ## Tests and coverage
 
 With Node.js 24 or newer installed:
