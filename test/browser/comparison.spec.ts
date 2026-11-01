@@ -328,3 +328,183 @@ test('native empty checkpoints retain honest extinction and the maximum bounded 
   await expect(page.locator('#comparison-results tbody tr')).toHaveCount(121);
   await expect(page.locator('#comparison-status')).toContainText('historical tick unknown');
 });
+
+test('native recipes export the complete source and actual observations, replay identically, and keep phone comparisons readable', async ({
+  page,
+}) => {
+  const before = await download(page, '#save');
+  const first = await run(page, 'heat', 61, 12);
+  const recipeText = await download(page, '#comparison-recipe');
+  const recipe = JSON.parse(recipeText);
+  expect(recipe.checkpoint).toBe(before);
+  expect(recipe.control.samples).toEqual(first.control.samples);
+  expect(recipe.treatment.samples).toEqual(first.treatment.samples);
+  expect(recipe.plan).toEqual(first.plan);
+  expect(recipe.rules).toEqual({ id: 'evolab-drift-cellular', version: 3, worldVersion: 10 });
+  const metric = page.locator('#comparison-metric');
+  for (const name of [
+    'population',
+    'births',
+    'deaths',
+    'meanPreference',
+    'meanTolerance',
+    'stressedFraction',
+  ]) {
+    await metric.selectOption(name);
+    await expect(page.locator('#comparison-results svg')).toHaveAttribute(
+      'aria-label',
+      /shared axes/,
+    );
+    await expect(page.locator('#comparison-results tbody tr')).toHaveCount(4);
+    expect(
+      await page
+        .locator('#comparison-results')
+        .evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true);
+  }
+  await metric.focus();
+  await page.keyboard.press('Space');
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  const commands = await page.evaluate(() => window.comparisonNative.types.length);
+  await page.locator('#comparison-file').setInputFiles({
+    name: 'recipe.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(recipeText),
+  });
+  await expect(page.locator('#comparison-status')).toContainText('Recipe reproduced');
+  const replay = await page.evaluate(() => window.comparisonNative.result!);
+  expect(replay).toEqual({ ...first, reproduced: true });
+  expect(await page.evaluate(() => window.comparisonNative.types.length)).toBe(commands);
+  expect(await download(page, '#save')).toBe(before);
+  await test
+    .info()
+    .attach('paired-experiment-recipe.json', { body: recipeText, contentType: 'application/json' });
+});
+
+test('native recipe validation rejects changed observations, invalid retained state and incomplete receipts without sandbox replacement', async ({
+  page,
+}) => {
+  const baseline = await download(page, '#save');
+  const first = await run(page, 'none', 31, 0);
+  const valid = JSON.parse(first.recipe);
+  const cases: [string, (recipe: any) => void][] = [
+    ['metadata', (recipe) => recipe.rules.version++],
+    ['incomplete', (recipe) => recipe.control.samples.pop()],
+    ['trait', (recipe) => (recipe.control.samples[0].meanPreference = 0.99)],
+    [
+      'checkpoint',
+      (recipe) => {
+        const world = JSON.parse(recipe.checkpoint);
+        world.organisms[0].genome.behavior.version = 2;
+        recipe.checkpoint = JSON.stringify(world);
+      },
+    ],
+  ];
+  for (const [name, change] of cases) {
+    const recipe = structuredClone(valid);
+    change(recipe);
+    await page.locator('#comparison-file').setInputFiles({
+      name: `${name}.json`,
+      mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify(recipe)),
+    });
+    await expect(page.locator('#comparison-start')).toBeEnabled();
+    await expect(page.locator('#comparison-status')).not.toContainText('Complete:');
+    await expect(page.locator('#comparison-results')).toBeEmpty();
+    await expect(page.locator('#comparison-recipe')).toBeDisabled();
+    expect(await download(page, '#save')).toBe(baseline);
+  }
+});
+
+test('native recipe read ownership rejects late reads after cancellation, new runs and world import', async ({
+  page,
+}) => {
+  const first = await run(page, 'none', 31, 0),
+    baseline = await download(page, '#save');
+  for (const action of ['cancel', 'rerun', 'import']) {
+    await page.evaluate(() => {
+      const native = File.prototype.text;
+      window.comparisonRead = { started: false, release: () => {} };
+      File.prototype.text = function () {
+        if (this.name !== 'held-recipe.json') return native.call(this);
+        window.comparisonRead.started = true;
+        File.prototype.text = native;
+        return new Promise(
+          (resolve) =>
+            (window.comparisonRead.release = () => {
+              void native.call(this).then(resolve);
+            }),
+        );
+      };
+    });
+    await page.locator('#comparison-file').setInputFiles({
+      name: 'held-recipe.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(first.recipe),
+    });
+    await expect.poll(() => page.evaluate(() => window.comparisonRead.started)).toBe(true);
+    await expect(page.locator('#comparison-start')).toBeDisabled();
+    await expect(page.locator('#comparison-recipe')).toBeDisabled();
+    await page.locator('#comparison-cancel').click();
+    if (action === 'rerun') await run(page, 'none', 1, 0);
+    if (action === 'import') {
+      await page.locator('#file').setInputFiles({
+        name: 'invalid-sandbox.json',
+        mimeType: 'application/json',
+        buffer: Buffer.from('{}'),
+      });
+      await expect(page.locator('#notice')).toContainText('valid EvoLab');
+    }
+    const created = await page.evaluate(() => window.comparisonNative.created);
+    await page.evaluate(() => window.comparisonRead.release());
+    await expect(page.locator('#comparison-import')).toBeEnabled();
+    expect(await page.evaluate(() => window.comparisonNative.created)).toBe(created);
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    expect(await download(page, '#save')).toBe(baseline);
+  }
+});
+
+test('native extinct comparisons disclose undefined traits and preserve measured zero population', async ({
+  page,
+}) => {
+  const empty = JSON.stringify(new Ecosystem(DEFAULTS, false).save());
+  await page.locator('#file').setInputFiles({
+    name: 'empty.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(empty),
+  });
+  await expect(page.locator('#extinction-summary')).toContainText('imported empty world');
+  const output = await run(page, 'none', 31, 0);
+  await expect(page.locator('#comparison-results')).toContainText('0 (extinct)');
+  for (const name of ['meanPreference', 'meanTolerance', 'stressedFraction']) {
+    await page.locator('#comparison-metric').selectOption(name);
+    await expect(page.locator('#comparison-results')).toContainText('Undefined (extinct)');
+    expect(
+      await page.locator('#comparison-results .comparison-line').first().getAttribute('d'),
+    ).toBe('');
+  }
+  await page.locator('#comparison-file').setInputFiles({
+    name: 'empty-recipe.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(output.recipe),
+  });
+  await expect(page.locator('#comparison-status')).toContainText('Recipe reproduced');
+});
+
+test('native oversized recipe admission creates no worker and preserves the paused sandbox', async ({
+  page,
+}) => {
+  const baseline = await download(page, '#save');
+  const created = await page.evaluate(() => window.comparisonNative.created);
+  await page.locator('#comparison-file').setInputFiles({
+    name: 'oversized-recipe.json',
+    mimeType: 'application/json',
+    buffer: Buffer.alloc(15_200_001, 32),
+  });
+  await expect(page.locator('#comparison-status')).toContainText('exceeds 15.2 MB');
+  expect(await page.evaluate(() => window.comparisonNative.created)).toBe(created);
+  await expect(page.locator('#comparison-recipe')).toBeDisabled();
+  await expect(page.locator('#comparison-results')).toBeEmpty();
+  await expect(page.locator('#run-state')).toHaveText('PAUSED');
+  expect(await download(page, '#save')).toBe(baseline);
+});

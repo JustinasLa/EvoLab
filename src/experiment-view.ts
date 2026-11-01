@@ -1,6 +1,8 @@
+import { renderComparisonReport, type ComparisonMetric } from './experiment-report';
 import { integer } from './model';
 import {
   COMPARISON_MAX_TICKS,
+  RECIPE_MAX_BYTES,
   type ComparisonPlan,
   type ComparisonResponse,
   type ComparisonResult,
@@ -26,6 +28,7 @@ export function mountComparisons(
         intervention: ComparisonPlan['intervention'];
       }
     | undefined;
+  let reading = false;
   let worker: Worker | undefined;
   let result: ComparisonResult | undefined;
   let url: string | undefined;
@@ -37,7 +40,7 @@ export function mountComparisons(
     clearTimeout(timer);
     if (url) URL.revokeObjectURL(url);
     url = undefined;
-    for (const branch of ['control', 'treatment'])
+    for (const branch of ['control', 'treatment', 'recipe'])
       get<HTMLButtonElement>(branch).disabled = !result;
   };
   const releaseWorker = (): void => {
@@ -56,7 +59,8 @@ export function mountComparisons(
     result = undefined;
     downloadDone();
     get('results').replaceChildren();
-    for (const branch of ['control', 'treatment']) get<HTMLButtonElement>(branch).disabled = true;
+    for (const branch of ['control', 'treatment', 'recipe'])
+      get<HTMLButtonElement>(branch).disabled = true;
   };
   const failed = (message: string): void => {
     if (!alive) return;
@@ -91,12 +95,16 @@ export function mountComparisons(
   };
   listen('start', start);
   listen('cancel', cancel);
-  for (const branch of ['control', 'treatment'] as const)
+  for (const branch of ['control', 'treatment', 'recipe'] as const)
     listen(branch, () => {
       if (!result || url) return;
       try {
-        url = URL.createObjectURL(new Blob([result[branch].state], { type: 'application/json' }));
-        for (const branch of ['control', 'treatment'])
+        url = URL.createObjectURL(
+          new Blob([branch === 'recipe' ? result.recipe : result[branch].state], {
+            type: 'application/json',
+          }),
+        );
+        for (const branch of ['control', 'treatment', 'recipe'])
           get<HTMLButtonElement>(branch).disabled = true;
         const anchor = document.createElement('a');
         anchor.href = url;
@@ -108,6 +116,99 @@ export function mountComparisons(
         status('Could not download the comparison checkpoint. Retry explicitly.');
       }
     });
+  function render(): void {
+    if (result)
+      renderComparisonReport(
+        get('results'),
+        result,
+        get<HTMLSelectElement>('metric').value as ComparisonMetric,
+      );
+  }
+  get('metric').addEventListener('change', render);
+  listeners.push(() => get('metric').removeEventListener('change', render));
+  function launch(
+    message:
+      { type: 'start'; text: string; plan: ComparisonPlan } | { type: 'replay'; text: string },
+    context: string,
+  ): void {
+    const owner = generation;
+    const current = (): boolean => alive && owner === generation && context === hooks.context();
+    try {
+      worker = createWorker();
+      worker.onerror = worker.onmessageerror = () => {
+        if (current()) failed('Comparison worker failed; no result retained.');
+      };
+      worker.onmessage = ({ data }: MessageEvent<ComparisonResponse>) => {
+        if (!current()) return;
+        if (data.type === 'error') failed(data.message);
+        else if (data.type === 'progress') {
+          status(
+            `Comparison tick ${data.progress.tick} / ${data.progress.horizonTick}; sandbox unchanged.`,
+          );
+          try {
+            worker!.postMessage({ type: 'ack' });
+          } catch {
+            failed('Comparison progress acknowledgement failed; no result retained.');
+          }
+        } else {
+          result = data.result;
+          releaseWorker();
+          render();
+          const outcome = (branch: 'control' | 'treatment'): string => {
+            const extinction = result![branch].extinction;
+            return extinction
+              ? `${branch}: extinct (${extinction.tick === null ? 'initially empty; historical tick unknown' : `tick ${extinction.tick}`}, ${extinction.cause})`
+              : `${branch}: alive at horizon`;
+          };
+          status(
+            `Complete: checkpoint tick ${result.sourceTick}, equal horizon ${result.plan.horizonTick}. ${result.plan.intervention === 'none' ? 'No intervention (control/control).' : `${result.plan.intervention} applied after completed tick ${result.plan.treatmentTick}, before its next tick.`} ${outcome('control')}; ${outcome('treatment')}.`,
+          );
+          if (result.reproduced)
+            status(
+              get('status').textContent +
+                ' Recipe reproduced: all recorded observations and extinction outcomes match.',
+            );
+          for (const branch of ['control', 'treatment', 'recipe'])
+            get<HTMLButtonElement>(branch).disabled = false;
+        }
+      };
+      worker.postMessage(message);
+    } catch {
+      failed('Could not start the comparison worker. No result retained.');
+    }
+  }
+  const input = get<HTMLInputElement>('file');
+  listen('import', () => {
+    input.value = '';
+    input.click();
+  });
+  const readRecipe = async (): Promise<void> => {
+    const file = input.files?.[0];
+    input.value = '';
+    if (!alive || !file || reading) return;
+    clear();
+    reading = true;
+    const owner = generation,
+      context = hooks.context();
+    const current = () => alive && owner === generation && context === hooks.context();
+    get<HTMLButtonElement>('start').disabled = true;
+    get<HTMLButtonElement>('cancel').disabled = false;
+    get<HTMLButtonElement>('import').disabled = true;
+    status('Reading experiment recipe; sandbox unchanged.');
+    try {
+      if (file.size > RECIPE_MAX_BYTES) throw new Error('Experiment recipe exceeds 15.2 MB.');
+      const text = await file.text();
+      if (current()) launch({ type: 'replay', text }, context);
+    } catch (error) {
+      if (current())
+        failed(error instanceof Error ? error.message : 'Could not read experiment recipe.');
+    } finally {
+      reading = false;
+      if (alive) get<HTMLButtonElement>('import').disabled = false;
+    }
+  };
+  input.addEventListener('change', readRecipe);
+  listeners.push(() => input.removeEventListener('change', readRecipe));
   return {
     saved(text: string, completedTick: number): void {
       if (!alive || !capture) return;
@@ -116,58 +217,8 @@ export function mountComparisons(
         failed('Comparison capture cancelled: the world changed.');
         return;
       }
-      const owner = generation;
-      const current = (): boolean =>
-        alive && owner === generation && request.context === hooks.context();
-      try {
-        worker = createWorker();
-        worker.onerror = worker.onmessageerror = () => {
-          if (current()) failed('Comparison worker failed; no result retained.');
-        };
-        worker.onmessage = ({ data }: MessageEvent<ComparisonResponse>) => {
-          if (!current()) return;
-          if (data.type === 'error') failed(data.message);
-          else if (data.type === 'progress') {
-            status(
-              `Comparison tick ${data.progress.tick} / ${data.progress.horizonTick}; sandbox unchanged.`,
-            );
-            try {
-              worker!.postMessage({ type: 'ack' });
-            } catch {
-              failed('Comparison progress acknowledgement failed; no result retained.');
-            }
-          } else {
-            result = data.result;
-            releaseWorker();
-            const table = document.createElement('table');
-            table.innerHTML =
-              '<caption>Retained population samples</caption><thead><tr><th>Tick</th><th>Control</th><th>Treatment</th></tr></thead>';
-            const body = document.createElement('tbody');
-            for (const [position, sample] of result.control.samples.entries()) {
-              const row = body.insertRow();
-              for (const value of [
-                sample.tick,
-                sample.population,
-                result.treatment.samples[position].population,
-              ])
-                row.insertCell().textContent = String(value);
-            }
-            table.append(body);
-            get('results').replaceChildren(table);
-            const outcome = (branch: 'control' | 'treatment'): string => {
-              const extinction = result![branch].extinction;
-              return extinction
-                ? `${branch}: extinct (${extinction.tick === null ? 'initially empty; historical tick unknown' : `tick ${extinction.tick}`}, ${extinction.cause})`
-                : `${branch}: alive at horizon`;
-            };
-            status(
-              `Complete: checkpoint tick ${result.sourceTick}, equal horizon ${result.plan.horizonTick}. ${result.plan.intervention === 'none' ? 'No intervention (control/control).' : `${result.plan.intervention} applied after completed tick ${result.plan.treatmentTick}, before its next tick.`} ${outcome('control')}; ${outcome('treatment')}.`,
-            );
-            for (const branch of ['control', 'treatment'])
-              get<HTMLButtonElement>(branch).disabled = false;
-          }
-        };
-        worker.postMessage({
+      launch(
+        {
           type: 'start',
           text,
           plan: {
@@ -175,16 +226,16 @@ export function mountComparisons(
             treatmentTick: completedTick + request.delay,
             horizonTick: completedTick + request.duration,
           },
-        });
-      } catch {
-        failed('Could not start the comparison worker. No result retained.');
-      }
+        },
+        request.context,
+      );
     },
     failed(message: string): void {
       if (capture) failed(message);
     },
     invalidate(): void {
-      if (capture || worker || result) failed('Comparison cleared: the sandbox lifecycle changed.');
+      if (capture || worker || result || reading)
+        failed('Comparison cleared: the sandbox lifecycle changed.');
     },
     dispose(): void {
       clear();
