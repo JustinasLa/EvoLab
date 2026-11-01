@@ -48,6 +48,7 @@ import {
   observedGenome,
   type RefugeBrush,
   type ShadeBrush,
+  type WorldFileV11,
   type WorldFileV10,
   type WorldFileV9,
   type Cell,
@@ -310,7 +311,14 @@ function brushCells(radius: number): number {
 function validInterventions(
   value: unknown,
   file:
-    WorldFile | WorldFileV10 | WorldFileV9 | WorldFileV8 | WorldFileV7 | WorldFileV6 | WorldFileV5,
+    | WorldFile
+    | WorldFileV11
+    | WorldFileV10
+    | WorldFileV9
+    | WorldFileV8
+    | WorldFileV7
+    | WorldFileV6
+    | WorldFileV5,
 ): boolean {
   const settingKeys = ['seed', 'mutation', 'nutrients', 'climate'];
   const settingsMatch = (left: Settings, right: Settings): boolean =>
@@ -327,7 +335,7 @@ function validInterventions(
       'entries',
     ]) ||
     value.version !==
-      (file.version === 10 || file.version === WORLD_VERSION
+      (file.version === 10 || file.version === 11 || file.version === WORLD_VERSION
         ? 4
         : file.version === 7 || file.version === 8 || file.version === 9
           ? 3
@@ -384,8 +392,10 @@ function validInterventions(
           file.version === 8 ||
           file.version === 9 ||
           file.version === 10 ||
+          file.version === 11 ||
           file.version === WORLD_VERSION)) ||
-      (row.kind === 'shade-paint' && (file.version === 10 || file.version === WORLD_VERSION))
+      (row.kind === 'shade-paint' &&
+        (file.version === 10 || file.version === 11 || file.version === WORLD_VERSION))
     ) {
       if (
         !exactKeys(detail, [
@@ -444,8 +454,10 @@ function validInterventions(
             file.version === 8 ||
             file.version === 9 ||
             file.version === 10 ||
+            file.version === 11 ||
             file.version === WORLD_VERSION)) ||
-        (row.kind === 'shade-mode' && (file.version === 10 || file.version === WORLD_VERSION))
+        (row.kind === 'shade-mode' &&
+          (file.version === 10 || file.version === 11 || file.version === WORLD_VERSION))
       ) {
         if (
           !exactKeys(detail, ['rulesVersion', 'before', 'after']) ||
@@ -461,8 +473,10 @@ function validInterventions(
             file.version === 8 ||
             file.version === 9 ||
             file.version === 10 ||
+            file.version === 11 ||
             file.version === WORLD_VERSION)) ||
-        (row.kind === 'shade-clear' && (file.version === 10 || file.version === WORLD_VERSION))
+        (row.kind === 'shade-clear' &&
+          (file.version === 10 || file.version === 11 || file.version === WORLD_VERSION))
       ) {
         if (
           !exactKeys(detail, ['rulesVersion', 'removedCells']) ||
@@ -524,6 +538,7 @@ function validInterventions(
           file.version === 8 ||
           file.version === 9 ||
           file.version === 10 ||
+          file.version === 11 ||
           file.version === WORLD_VERSION)
       ) {
         if (
@@ -585,6 +600,7 @@ function validInterventions(
     file.version === 8 ||
     file.version === 9 ||
     file.version === 10 ||
+    file.version === 11 ||
     file.version === WORLD_VERSION
   ) {
     let enabled = file.thermalRefuges.enabled;
@@ -596,7 +612,7 @@ function validInterventions(
       } else if (row.kind === 'refuge-paint' && !enabled) return false;
     }
   }
-  if (file.version === 10 || file.version === WORLD_VERSION) {
+  if (file.version === 10 || file.version === 11 || file.version === WORLD_VERSION) {
     let enabled = file.shadeHabitats.enabled;
     for (let position = value.entries.length - 1; position >= 0; position--) {
       const row = value.entries[position];
@@ -614,6 +630,7 @@ function validInterventions(
         file.version === 8 ||
         file.version === 9 ||
         file.version === 10 ||
+        file.version === 11 ||
         file.version === WORLD_VERSION) &&
         sameTerrain(previousTerrain, file.terrain))) &&
     (!previousShock ||
@@ -1497,6 +1514,7 @@ export class Ecosystem {
     const parsed: unknown = JSON.parse(text);
     const f = parsed as
       | WorldFile
+      | WorldFileV11
       | WorldFileV10
       | WorldFileV9
       | WorldFileV8
@@ -1518,6 +1536,7 @@ export class Ecosystem {
         f.version !== 8 &&
         f.version !== 9 &&
         f.version !== 10 &&
+        f.version !== 11 &&
         f.version !== WORLD_VERSION) ||
       !validSettings(f.settings) ||
       !integer(f.random, -2147483648, 4294967295) ||
@@ -1531,13 +1550,16 @@ export class Ecosystem {
       !Array.isArray(f.organisms) ||
       f.organisms.length > LIMIT
     )
-      throw new Error('Not a valid EvoLab ecosystem (version 2, 3, 4, 5, 6, 7, 8, 9, 10 or 11).');
+      throw new Error(
+        'Not a valid EvoLab ecosystem (version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 or 12).',
+      );
     if (
       (f.version === 6 ||
         f.version === 7 ||
         f.version === 8 ||
         f.version === 9 ||
         f.version === 10 ||
+        f.version === 11 ||
         f.version === WORLD_VERSION) &&
       !validTerrain(f.terrain)
     )
@@ -1547,11 +1569,14 @@ export class Ecosystem {
       f.version === 8 ||
       f.version === 9 ||
       f.version === 10 ||
+      f.version === 11 ||
       f.version === WORLD_VERSION
         ? parseRefuges(f.thermalRefuges)
         : emptyRefuges();
     const shadeHabitats =
-      f.version === 10 || f.version === WORLD_VERSION ? parseShade(f.shadeHabitats) : emptyShade();
+      f.version === 10 || f.version === 11 || f.version === WORLD_VERSION
+        ? parseShade(f.shadeHabitats)
+        : emptyShade();
     if (
       f.version !== 2 &&
       !validTelemetry(f.telemetry, f.tick, f.births, f.deaths, f.version === 3 ? 1 : 2)
@@ -1564,6 +1589,7 @@ export class Ecosystem {
         f.version === 8 ||
         f.version === 9 ||
         f.version === 10 ||
+        f.version === 11 ||
         f.version === WORLD_VERSION) &&
       !validInterventions(f.interventions, f)
     )
@@ -1575,6 +1601,7 @@ export class Ecosystem {
         f.version === 8 ||
         f.version === 9 ||
         f.version === 10 ||
+        f.version === 11 ||
         f.version === WORLD_VERSION
           ? f.terrain
           : DEFAULT_TERRAIN,
@@ -1595,6 +1622,7 @@ export class Ecosystem {
           f.version === 8 ||
           f.version === 9 ||
           f.version === 10 ||
+          f.version === 11 ||
           f.version === WORLD_VERSION) &&
           new Set(values).size !== values.length)
       )
@@ -1618,15 +1646,15 @@ export class Ecosystem {
         !Array.isArray(o.ancestry) ||
         o.ancestry.length > 8 ||
         !o.ancestry.every((s) => integer(s, 1, f.nextSpecies - 1)) ||
-        !(f.version === 9 || f.version === 10 || f.version === WORLD_VERSION
-          ? validGenome(o.genome, f.version === WORLD_VERSION)
+        !(f.version === 9 || f.version === 10 || f.version === 11 || f.version === WORLD_VERSION
+          ? validGenome(o.genome, f.version === 11 || f.version === WORLD_VERSION)
           : validHistoricalGenome(o.genome))
       )
         throw new Error('Invalid or overlapping organism.');
       const organism: Organism = structuredClone({
         ...o,
         genome:
-          f.version === 9 || f.version === 10 || f.version === WORLD_VERSION
+          f.version === 9 || f.version === 10 || f.version === 11 || f.version === WORLD_VERSION
             ? cloneGenome(o.genome as Genome)
             : migrateHistoricalGenome(o.genome as HistoricalGenome),
       });
@@ -1655,6 +1683,7 @@ export class Ecosystem {
       f.version === 8 ||
       f.version === 9 ||
       f.version === 10 ||
+      f.version === 11 ||
       f.version === WORLD_VERSION
         ? { ...structuredClone(f.interventions), version: 4 }
         : emptyInterventions(f.settings, f.tick, true);
@@ -1673,14 +1702,18 @@ export class Ecosystem {
             }
           : structuredClone(f.telemetry);
     world.lineage =
-      f.version === 9 || f.version === 10 || f.version === WORLD_VERSION || f.version === 8
+      f.version === 9 ||
+      f.version === 10 ||
+      f.version === 11 ||
+      f.version === WORLD_VERSION ||
+      f.version === 8
         ? LineageArchive.load(
             f.lineageArchive,
             world.organisms.values(),
             f.tick,
             f.nextSpecies,
             f.version === 8,
-            f.version === WORLD_VERSION,
+            f.version === 11 || f.version === WORLD_VERSION,
           )
         : LineageArchive.legacy(world.organisms.values(), f.tick);
     return world;
