@@ -179,10 +179,10 @@ describe('bounded retained measurement codec', () => {
       const json = restore(JSON.parse(serializeMeasurements(source, 'json').text));
       expect(decode(serializeMeasurements(source, 'csv').text)).toEqual(json);
       expect(json).toMatchObject({
-        version: 5,
-        rules: { version: 4 },
+        version: 6,
+        rules: { version: 5 },
         snapshot: {
-          worldVersion: 11,
+          worldVersion: 12,
           shadeHabitats: {
             version: 1,
             enabled,
@@ -230,8 +230,8 @@ describe('bounded retained measurement codec', () => {
       expect(serialized.byteLength).toBe(new TextEncoder().encode(serialized.text).length);
       expect(envelope.snapshot.worldVersion).toBe(11);
       expect(envelope).toMatchObject({
-        version: 5,
-        rules: { version: 4 },
+        version: 6,
+        rules: { version: 5 },
         telemetry: { version: 2 },
         interventions: { version: 4 },
       });
@@ -276,10 +276,10 @@ describe('bounded retained measurement codec', () => {
         decoded = decode(serializeMeasurements(source, 'csv').text);
       expect(decoded).toEqual(json);
       expect(json).toMatchObject({
-        version: 5,
-        rules: { version: 4 },
+        version: 6,
+        rules: { version: 5 },
         snapshot: {
-          worldVersion: 11,
+          worldVersion: 12,
           thermalRefuges: {
             version: 1,
             enabled,

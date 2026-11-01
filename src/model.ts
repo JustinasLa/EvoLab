@@ -4,7 +4,7 @@ export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 11;
+export const WORLD_VERSION = 12;
 export const LINEAGE_SUMMARY_CAPACITY = 256;
 export const LINEAGE_EVENT_CAPACITY = 512;
 export const INTERVENTION_CAPACITY = 128;
@@ -623,6 +623,9 @@ export interface WorldFile extends WorldEcology {
 export type HistoricalWorldEcology = Omit<WorldEcology, 'organisms'> & {
   organisms: HistoricalOrganism[];
 };
+export interface WorldFileV11 extends Omit<WorldFile, 'version'> {
+  version: 11;
+}
 export interface WorldFileV10 extends Omit<WorldFile, 'version'> {
   version: 10;
 }
@@ -1215,6 +1218,14 @@ export function mutate(source: Genome, random: Random): Genome {
   g.preference = clamp(g.preference + (random.next() - 0.5) * 0.18, 0, 1);
   g.tolerance = clamp(g.tolerance + (random.next() - 0.5) * 0.06, 0.12, 0.6);
   g.tempo = clamp(g.tempo + random.int(3) - 1, 2, 12);
+  if (g.behavior.version === 2 && g.behavior.mode === 'evolved') {
+    const reactions = g.behavior.reactions,
+      category = (['food', 'wall', 'harmless', 'dangerous'] as const)[random.int(4)],
+      alternatives = (['ignore', 'chase', 'flee'] as const).filter(
+        (action) => action !== reactions[category],
+      );
+    reactions[category] = alternatives[random.int(2)];
+  }
   return g;
 }
 export function speciesName(g: Genome): string {

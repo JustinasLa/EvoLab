@@ -3215,11 +3215,11 @@ describe('integrated extinction and telemetry', () => {
       if (file.version >= 4) {
         expect(imported).toEqual(
           file.version >= 10
-            ? { ...file, version: 11 }
+            ? { ...file, version: 12 }
             : file.version >= 5
               ? {
                   ...file,
-                  version: 11,
+                  version: 12,
                   shadeHabitats: { version: 1, enabled: false, cells: [] },
                   organisms: imported.organisms,
                   lineageArchive: imported.lineageArchive,
@@ -3232,7 +3232,7 @@ describe('integrated extinction and telemetry', () => {
                 }
               : {
                   ...file,
-                  version: 11,
+                  version: 12,
                   shadeHabitats: { version: 1, enabled: false, cells: [] },
                   organisms: imported.organisms,
                   lineageArchive: imported.lineageArchive,

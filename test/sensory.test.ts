@@ -375,10 +375,11 @@ describe('active behavior2 forward rays in the real ecology', () => {
     }
     expect(outcomes).toEqual([0, 2.5]);
   });
-  it('keeps active-only tables detached and unchanged by the existing mutation branch', () => {
+  it('mutates detached active tables while keeping passive direction and inheritance identities', () => {
     const source = genome();
     for (let seed = 1; seed <= 30; seed++)
-      expect(mutate(source, new Random(seed)).behavior).toEqual(source.behavior);
+      expect(mutate(source, new Random(seed)).behavior).not.toEqual(source.behavior);
+    expect(source.behavior).toEqual(active());
     const { world, mover } = scene();
     expect(
       sameInherited(
