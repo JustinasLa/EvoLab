@@ -33,13 +33,11 @@ test('native seeded active births retain real inherited reaction differences and
   const fixture = JSON.stringify({ ...reference.save(), version: 11 });
   await page.goto('/');
   await expect(page.locator('#population')).not.toHaveText('—');
-  await page
-    .locator('#file')
-    .setInputFiles({
-      name: 'native-world11.json',
-      mimeType: 'application/json',
-      buffer: Buffer.from(fixture),
-    });
+  await page.locator('#file').setInputFiles({
+    name: 'native-world11.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(fixture),
+  });
   await expect(page.locator('#notice')).toContainText('World restored');
   if ((await page.locator('#run-state').textContent()) === 'LIVE')
     await page.locator('#pause').click();
