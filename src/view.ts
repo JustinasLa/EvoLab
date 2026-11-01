@@ -202,7 +202,7 @@ export function behaviorStatus(genome: Genome): string {
 export function reactionEditor(genome: Genome): string {
   if (genome.behavior.version !== 2) return '';
   const behavior = genome.behavior;
-  return `<fieldset id="reaction-editor"><legend>Eye reactions</legend><p class="muted">Eyes look forward with the body, up to 5 cells. Walls and bodies block sight. Steering needs an eye and a motor.</p><div class="reaction-grid">${(
+  return `<fieldset id="reaction-editor"><legend>Eye reactions</legend><p class="muted">Eyes face the top of the design and rotate with the body, seeing up to 5 cells. Walls and bodies block sight. Steering needs an eye and a motor.</p><div class="reaction-grid">${(
     ['food', 'wall', 'harmless', 'dangerous'] as const
   )
     .map(
