@@ -730,7 +730,7 @@ test('terrain whole-world actions preserve wrapped life, food, selection, pins a
   );
   const csv = decodeDownloadedCsv(await downloadMeasurements(page, 'csv'));
   expect(csv).toEqual(json);
-  expect(json.version).toBe(4);
+  expect(json.version).toBe(5);
   expect(json.snapshot.terrain).toEqual(reference.terrain);
   expect(json.interventions).toEqual(reference.save().interventions);
 });
@@ -1494,7 +1494,7 @@ test('literal v3 telemetry migrates through the file input and real worker befor
   const migratedBytes = await downloadPausedWorld(page),
     migrated = JSON.parse(migratedBytes.toString()) as WorldFile;
   expect(migrated).toEqual(expected());
-  expect(migrated.version).toBe(10);
+  expect(migrated.version).toBe(11);
   expect(migrated.telemetry.version).toBe(2);
   expect(migrated.telemetry.originTick).toBe(fixture.telemetry.originTick);
   expect(migrated.telemetry.adaptationOriginTick).toBe(65);
@@ -2894,8 +2894,8 @@ for (const version of [2, 3, 4, 5, 6, 7, 8, 9, 10] as const) {
       coverage: 'applied-portions-only',
     });
     expect(json.windows.settings.unknownEvictedPrefix).toBe(version >= 5);
-    expect(json.version).toBe(4);
-    expect(json.rules.version).toBe(3);
+    expect(json.version).toBe(5);
+    expect(json.rules.version).toBe(4);
     expect(json.snapshot.thermalRefuges).toEqual(refugeSummary(reference.thermalRefuges));
     expect(json.snapshot.terrain).toEqual(DEFAULT_TERRAIN);
     for (const view of ['population', 'food', 'adaptation'])
@@ -3764,7 +3764,7 @@ test.describe('blueprint file rejection and cancellation', () => {
     {
       name: 'unsupported version',
       text: JSON.stringify({ ...parsed, version: 99 }),
-      notice: 'Unsupported blueprint version. Expected version 1 or 2.',
+      notice: 'Unsupported blueprint version. Expected version 1, 2 or 3.',
     },
     {
       name: 'disconnected cells',
@@ -4787,7 +4787,7 @@ test('restores real worker telemetry, renders its population projection and down
   expect(frame.telemetry).toEqual(before);
   const downloaded = JSON.parse((await downloadWorld(page)).toString());
   expect(downloaded.telemetry).toEqual(before);
-  expect(downloaded.version).toBe(10);
+  expect(downloaded.version).toBe(11);
   expect(downloaded.telemetry.version).toBe(2);
   expect(downloaded.telemetry.intervalTicks).toBe(30);
   const restored = Ecosystem.load(JSON.stringify(downloaded));
@@ -5019,7 +5019,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   await expect(page.locator('[data-shock="bloom"]')).toHaveCount(0);
   const saved = await downloadWorld(page),
     world = JSON.parse(saved.toString());
-  expect(world.version).toBe(10);
+  expect(world.version).toBe(11);
   expect(world.organisms.length).toBeGreaterThan(1);
   const o = world.organisms[0],
     c = o.genome.cells[0];

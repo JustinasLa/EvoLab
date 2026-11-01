@@ -138,7 +138,7 @@ describe('isolated complete checkpoint comparisons', () => {
     );
     expect(() => createComparison('{}', valid as ComparisonPlan)).toThrow('valid EvoLab');
     const invalid = JSON.parse(text);
-    invalid.organisms[0].genome.behavior.version = 2;
+    invalid.organisms[0].genome.behavior.version = 3;
     expect(() => createComparison(JSON.stringify(invalid), valid as ComparisonPlan)).toThrow();
     const event = Ecosystem.load(text);
     intervene(event, 'heat');
@@ -213,7 +213,7 @@ describe('measured paired recipes', () => {
       sourceTick: 2,
       seed: 2019,
       plan,
-      rules: { version: 3, worldVersion: 10 },
+      rules: { version: 4, worldVersion: 11 },
       runtime: comparisonRuntime(),
     });
     const replay = finishRunner(createRecipeComparison(result.recipe));
@@ -286,7 +286,7 @@ describe('measured paired recipes', () => {
       (r) => (r.control.extinction = { tick: 3, cause: 'manual' }),
       (r) => {
         const w = JSON.parse(r.checkpoint);
-        w.organisms[0].genome.behavior.version = 2;
+        w.organisms[0].genome.behavior.version = 3;
         r.checkpoint = JSON.stringify(w);
       },
       (r) => {

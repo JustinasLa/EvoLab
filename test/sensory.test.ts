@@ -83,6 +83,75 @@ describe('active behavior2 forward rays in the real ecology', () => {
       expect(world.save().telemetry.pending.energy.movementSpent).toBeCloseTo(0.03, 12);
     },
   );
+  it.each([0, 1, 2, 3])('casts from a non-anchor eye after body rotation %s', (rotation) => {
+    const cells: Cell[] = [
+      { x: 0, y: 0, type: 3 },
+      { x: 1, y: 0, type: 5 },
+      { x: 1, y: -1, type: 8 },
+    ];
+    const { world, mover } = scene(cells, {}, 60, 60, rotation),
+      [dx, dy] = [
+        [0, -1],
+        [1, 0],
+        [0, 1],
+        [-1, 0],
+      ][rotation];
+    const [ox, oy] = [
+      [1, -1],
+      [1, 1],
+      [-1, 1],
+      [-1, -1],
+    ][rotation];
+    world.food[index(60 + ox + dx * 3, 60 + oy + dy * 3)] = 1;
+    step(world);
+    expect(mover.direction).toBe((rotation + 3) % 4);
+    expect([mover.x, mover.y]).toEqual([60 + dx, 60 + dy]);
+  });
+  it('feeds before evaluating the current ray', () => {
+    const { world, mover } = scene([
+      { x: 0, y: 0, type: 8 },
+      { x: 1, y: 0, type: 5 },
+      { x: 1, y: -1, type: 3 },
+    ]);
+    world.food[index(60, 59)] = 1;
+    step(world);
+    expect(world.save().telemetry.pending.energy.mouthsGained).toBeCloseTo(2.2, 12);
+    expect([mover.x, mover.y, mover.direction]).toEqual([61, 60, 0]);
+  });
+  it.each([true, false])(
+    'sees then-current sequential occupancy: target moves first=%s',
+    (targetFirst) => {
+      const world = new Ecosystem(
+        { ...DEFAULTS, seed: 42, nutrients: 0, mutation: 0, climate: 0 },
+        false,
+      );
+      const target = () =>
+        world.spawn(
+          genome([
+            { x: 0, y: 0, type: 8 },
+            { x: 1, y: 0, type: 5 },
+          ]),
+          60,
+          58,
+          undefined,
+          undefined,
+          1,
+        )!;
+      const observer = () => world.spawn(genome(body, active({ harmless: 'flee' })), 60, 60)!;
+      const [other, mover] = targetFirst
+        ? [target(), observer()]
+        : (() => {
+            const o = observer();
+            return [target(), o];
+          })();
+      other.age = mover.age = 1;
+      other.direction = mover.direction = 0;
+      world.food[index(63, 58)] = 1;
+      step(world);
+      expect(mover.direction).toBe(targetFirst ? 0 : 1);
+      expect([other.x, other.y]).toEqual([61, 58]);
+    },
+  );
   it.each([
     [0, 0, 0],
     [WIDTH - 1, 40, 1],
