@@ -92,6 +92,11 @@ test('native independent pairs export and replay without modifying the complete 
     '2/2 independent seed pairs complete',
   );
   await expect(page.locator(`${selector('report')} svg`)).toHaveAttribute('role', 'img');
+  expect(
+    await page
+      .locator('#experiment-batches')
+      .evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+  ).toBe(true);
   const encoded = await download(page, selector('export'));
   expect(JSON.parse(encoded)).toEqual(result);
   await page.locator(selector('file')).setInputFiles({

@@ -61,6 +61,39 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe('comparison presentation ownership', () => {
+  it('hands ownership to a batch and back without accepting late comparison completion or capture', () => {
+    const batch = {
+      onmessage: null,
+      onerror: null,
+      onmessageerror: null,
+      postMessage: vi.fn(),
+      terminate: vi.fn(),
+    };
+    vi.stubGlobal(
+      'Worker',
+      vi.fn(function () {
+        return batch;
+      }),
+    );
+    const startBatch = () => root.querySelector<HTMLButtonElement>('[data-batch="start"]')!.click();
+    click('start');
+    view.saved(text(), 0);
+    const late = endpoint.onmessage!;
+    startBatch();
+    expect(endpoint.terminate).toHaveBeenCalledTimes(1);
+    expect(get('status').textContent).toContain('independent batch started');
+    expect(batch.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'start' }));
+    late({ data: completed() } as MessageEvent);
+    expect(get('results').childElementCount).toBe(0);
+    expect(get<HTMLButtonElement>('control').disabled).toBe(true);
+    click('start');
+    expect(batch.terminate).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(endpoint.postMessage).mock.calls.length;
+    startBatch();
+    view.saved(text(), 0);
+    expect(vi.mocked(endpoint.postMessage).mock.calls).toHaveLength(sent);
+    expect(get('status').textContent).toContain('independent batch started');
+  });
   it('freezes the requested plan at the native capture tick without issuing sandbox edits', () => {
     set('delay', '12');
     set('duration', '31');
