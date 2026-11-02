@@ -1537,6 +1537,14 @@ dialog a {
   min-width: 0;
   max-width: 100%;
 }
+#event-select,
+#event-canvas {
+  width: 100%;
+  max-width: 100%;
+}
+#event-canvas {
+  image-rendering: pixelated;
+}
 .roles-tables {
   overflow-x: auto;
 }

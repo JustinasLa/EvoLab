@@ -4,6 +4,7 @@ import { emptyShade, shadeTool, shadeSummary, validShadeBrush } from './shade';
 import { createOrganismView } from './organism-view';
 import { mountCheckpoints } from './checkpoint-view';
 import { mountComparisons } from './experiment-view';
+import { mountEvents } from './event-view';
 import './style.css';
 import {
   DEFAULT_TERRAIN,
@@ -96,6 +97,13 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
       throw new Error('Invalid habitat coordinates.');
   };
   switch (data.type) {
+    case 'event-recording':
+      if (typeof data.enabled !== 'boolean') throw new Error('Invalid event recording mode.');
+      return { type: 'event-recording', enabled: data.enabled };
+    case 'event-replay':
+      if (!integer(data.eventId, 1, Number.MAX_SAFE_INTEGER))
+        throw new Error('Invalid event bookmark.');
+      return { type: 'event-replay', eventId: data.eventId };
     case 'start':
       if (
         !validSettings(data.settings) ||
@@ -1690,6 +1698,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   }
   function stop(): void {
     comparisons.invalidate();
+    events.invalidate();
     checkpoints.invalidate();
     stopped = true;
     invalidateObservation();
@@ -1915,6 +1924,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     cancelReset(false);
     checkpoints.invalidate();
     comparisons.invalidate();
+    events.invalidate();
     invalidateObservation();
     const payload = captureCommand({ type: operation, ...data, display: desiredView }, settings);
     try {
@@ -2692,6 +2702,15 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       return send({ type: 'save' }, terrainRevision, 'comparison');
     },
   });
+  const events = mountEvents(root, {
+    context: () => `${generation}:${runId}:${worldRequest}`,
+    record: (enabled) => !lifecycleBusy() && send({ type: 'event-recording', enabled }),
+    request: (eventId) =>
+      !lifecycleBusy() &&
+      !hasOwner('event-recording') &&
+      !hasOwner('event-replay') &&
+      send({ type: 'event-replay', eventId }),
+  });
   const checkpoints = mountCheckpoints(root, {
     context: () => `${generation}:${runId}:${worldRequest}`,
     capture: () => {
@@ -2715,6 +2734,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   function invalidateCandidate(): void {
     checkpoints.invalidate();
     comparisons.invalidate();
+    events.invalidate();
     worldRequest++;
     waitingFile = null;
     const index = pending.findIndex((entry) => entry.payload.type === 'load');
@@ -2735,6 +2755,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       const content = await request.file.text();
       if (current()) {
         comparisons.invalidate();
+        events.invalidate();
         if (lifecycleBusy())
           notice('World replacement capacity busy; choose the file again after acknowledgement.');
         else {
@@ -2745,6 +2766,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     } catch (error) {
       if (current()) {
         comparisons.invalidate();
+        events.invalidate();
         notice(error instanceof Error ? error.message : 'Could not read this world.');
       }
     } finally {
@@ -2946,6 +2968,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           observation.world.stats.tick,
           observation.replacementId,
         );
+      events.update(observation.journal);
       rolesView.update(observation.world.roles);
       organismView.update(
         observation,
@@ -3104,32 +3127,34 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       !(
         data.type === 'error' ||
         data.type ===
-          (completion.type === 'save'
-            ? 'saved'
-            : completion.type === 'capture-design'
-              ? 'design-captured'
-              : completion.type === 'export-measurements'
-                ? 'measurement-exported'
-                : [
-                      'begin-stroke',
-                      'end-stroke',
-                      'paint',
-                      'settings',
-                      'mutation-policy',
-                      'shock',
-                      'clear-walls',
-                      'regenerate-walls',
-                      'refuge-mode',
-                      'paint-refuge',
-                      'clear-refuges',
-                      'shade-mode',
-                      'paint-shade',
-                      'clear-shade',
-                    ].includes(completion.type)
-                  ? 'manual-result'
-                  : completion.type === 'load'
-                    ? 'loaded'
-                    : 'control')
+          (completion.type === 'event-replay'
+            ? 'event-evidence'
+            : completion.type === 'save'
+              ? 'saved'
+              : completion.type === 'capture-design'
+                ? 'design-captured'
+                : completion.type === 'export-measurements'
+                  ? 'measurement-exported'
+                  : [
+                        'begin-stroke',
+                        'end-stroke',
+                        'paint',
+                        'settings',
+                        'mutation-policy',
+                        'shock',
+                        'clear-walls',
+                        'regenerate-walls',
+                        'refuge-mode',
+                        'paint-refuge',
+                        'clear-refuges',
+                        'shade-mode',
+                        'paint-shade',
+                        'clear-shade',
+                      ].includes(completion.type)
+                    ? 'manual-result'
+                    : completion.type === 'load'
+                      ? 'loaded'
+                      : 'control')
       )
     ) {
       if (
@@ -3291,6 +3316,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           );
         else if (data.type === 'manual-result' && data.status === 'rejected')
           notice('Worker rejected this manual action; no successful effect recorded.');
+      }
+      if (current && completion.type === 'event-replay') {
+        if (data.type === 'event-evidence') events.received(data.evidence);
+        else if (data.type === 'error') events.failed(data.message);
       }
       if (completion.checkpoint) {
         if (data.type === 'saved' && current) {
@@ -3487,6 +3516,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     library.dispose();
     checkpoints.dispose();
     comparisons.dispose();
+    events.dispose();
     for (const cleanup of cleanups) cleanup();
     if (exportUrl) URL.revokeObjectURL(exportUrl);
     candidate = undefined;
