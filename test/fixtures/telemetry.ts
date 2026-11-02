@@ -150,8 +150,10 @@ export function legacyV8(saved: WorldFile): WorldFileV8 {
 }
 
 export function legacyV9(saved: WorldFile): WorldFileV9 {
+  assert.ok(saved.nutrientCycle === null, 'Cannot project enabled nutrient ecology.');
   assert.deepEqual(saved.mutationPolicy, { version: 1, mode: 'legacy' });
   const {
+    nutrientCycle: _nutrientCycle,
     mutationPolicy: _policy,
     shadeHabitats: _shadeHabitats,
     ...retained

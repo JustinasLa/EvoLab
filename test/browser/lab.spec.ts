@@ -2818,7 +2818,7 @@ test('D9-A10 native file reads stay single-owner through cancellation, reset and
     contentType: 'application/json',
   });
 });
-for (const version of [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] as const) {
+for (const version of [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17] as const) {
   test(`measurement bytes preserve synthetic historical/current world${version} migration,180 samples and truthful manual windows`, async ({
     page,
   }) => {
@@ -2882,7 +2882,9 @@ for (const version of [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] as co
                                 ? { ...current, version: 14 as const }
                                 : version === 15
                                   ? { ...current, version: 15 as const }
-                                  : current;
+                                  : version === 16
+                                    ? { ...current, version: 16 as const }
+                                    : current;
     if (version >= 8 && version < 15 && 'lineageArchive' in candidate)
       candidate.lineageArchive = historicalArchive(candidate.lineageArchive);
     expect(candidate.version).toBe(version);
@@ -4582,7 +4584,7 @@ test.describe('pause on total extinction', () => {
       '(() => { window.recoveryDelivery.release(); return document.getElementById("notice").textContent; })()',
     );
     expect(recoveryNotice).toContain(
-      'version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 or 16',
+      'version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 or 17',
     );
     expect(await pendingSave).toEqual(expected);
     await expect(page.locator('#notice')).toContainText('World saved');
@@ -4703,7 +4705,7 @@ for (const terminalTick of [90, 91]) {
       await expectPopulationChart(page, populations);
       await importWorld(page, { ...terminal, version: 99 } as unknown as WorldFile);
       await expect(page.locator('#notice')).toContainText(
-        'version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 or 16',
+        'version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 or 17',
       );
       expect(await readWorld(page)).toEqual(terminal);
       await expectPopulationChart(page, populations);
@@ -5379,12 +5381,14 @@ test('B23-1 opt-in empty field retains the complete original climate trajectory 
     });
     expect(saved.mutationPolicy).toEqual({ version: 1, mode: 'legacy' });
     const {
+      nutrientCycle,
       mutationPolicy: _policy,
       thermalRefuges: _field,
       lineageArchive: _archive,
       shadeHabitats: _shade,
       ...retained
     } = saved;
+    expect(nutrientCycle).toBeNull();
     expect({
       ...retained,
       organisms: restoreHistoricalWorld(saved).organisms,

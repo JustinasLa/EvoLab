@@ -32,9 +32,15 @@ export function world9Text(name: string): string {
 }
 
 export function projectWorld9(saved: WorldFile): WorldFileV9 {
+  assert.ok(saved.nutrientCycle === null, 'Cannot project enabled nutrient ecology.');
   assert.deepEqual(saved.mutationPolicy, { version: 1, mode: 'legacy' });
   assert.ok(saved.interventions.entries.every((row) => row.kind !== 'mutation-policy'));
-  const { mutationPolicy: _policy, shadeHabitats: _shadeHabitats, ...retained } = saved;
+  const {
+    nutrientCycle: _nutrientCycle,
+    mutationPolicy: _policy,
+    shadeHabitats: _shadeHabitats,
+    ...retained
+  } = saved;
   assert.ok(retained.interventions.entries.every((row) => !row.kind.startsWith('shade-')));
   return {
     ...retained,

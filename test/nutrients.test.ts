@@ -24,6 +24,11 @@ import {
 import { nutrientDescription, nutrientMarkup } from '../src/nutrient-view';
 import { measurementEnvelope } from '../src/measurement-export';
 import { newController } from '../src/neural';
+import { predecessor } from './fixtures/refuges';
+import { projectWorld9 } from './fixtures/shade';
+import { restoreHistoricalWorld } from './fixtures/sensory-legacy';
+import { restoreMain8 } from './fixtures/sensory-main8';
+import { legacyV9 } from './fixtures/telemetry';
 
 const genome = (type: 3 | 4 | 5 | 6 = 4): Genome => ({
   cells: [{ x: 0, y: 0, type }],
@@ -47,6 +52,16 @@ function check(world: Ecosystem) {
 }
 
 describe('finite nutrient ecology', () => {
+  it('rejects enabled ecology in every historical comparison projection', () => {
+    for (const project of [
+      predecessor,
+      projectWorld9,
+      restoreHistoricalWorld,
+      restoreMain8,
+      legacyV9,
+    ])
+      expect(() => project(habitat(true).save())).toThrow();
+  });
   it('migrates native neural16 exactly and preserves funded controllers in nutrient17', () => {
     const controller = newController();
     controller.biases[5] = 1;
