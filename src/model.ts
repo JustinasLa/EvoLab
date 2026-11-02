@@ -8,7 +8,7 @@ export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 16;
+export const WORLD_VERSION = 17;
 export const LINEAGE_SUMMARY_CAPACITY = 256;
 export const LINEAGE_EVENT_CAPACITY = 512;
 export const INTERVENTION_CAPACITY = 128;
@@ -95,7 +95,38 @@ export interface Genome {
   behavior: Behavior;
   /** Absent: global gate; present: inherited multiplier of the global upper bound. */
   mutationPropensity?: number;
+  dormancy?: DormancyTraits;
   legacyExtensions?: LegacyExtensions;
+}
+export interface DormancyTraits {
+  version: 1;
+  capacity: number;
+  enterStress: number;
+  wakeStress: number;
+  enterEnergy: number;
+  wakeEnergy: number;
+}
+export interface ReserveState {
+  stored: number;
+  dormant: boolean;
+}
+export interface ReserveFlow {
+  discarded: number;
+  deposited: number;
+  withdrawn: number;
+  conversionSpent: number;
+  maintenanceSpent: number;
+  entrySpent: number;
+  exitSpent: number;
+}
+export function sameDormancy(
+  first: DormancyTraits | undefined,
+  second: DormancyTraits | undefined,
+): boolean {
+  if (!first || !second) return first === second;
+  return (
+    ['version', 'capacity', 'enterStress', 'wakeStress', 'enterEnergy', 'wakeEnergy'] as const
+  ).every((field) => first[field] === second[field]);
 }
 export interface HistoricalCell {
   x: number;
@@ -177,6 +208,7 @@ export interface Organism {
   children: number;
   ancestry: number[];
   genome: Genome;
+  reserves?: ReserveState;
 }
 export interface Settings {
   seed: number;
@@ -310,6 +342,7 @@ export interface TelemetryFlow {
   births: number;
   deaths: DeathCounts;
   energy: EnergyLedger;
+  reserves?: ReserveFlow;
 }
 export interface TelemetrySampleV1 extends TelemetryFlow {
   fromTick: number;
@@ -618,6 +651,7 @@ export function observedGenome(genome: Genome): Genome {
     tempo: genome.tempo,
     behavior: structuredClone(genome.behavior),
     ...(genome.controller ? { controller: structuredClone(genome.controller) } : {}),
+    ...(genome.dormancy ? { dormancy: structuredClone(genome.dormancy) } : {}),
     ...(genome.mutationPropensity === undefined
       ? {}
       : { mutationPropensity: genome.mutationPropensity }),
@@ -646,6 +680,7 @@ export function observedOrganism(organism: Organism): Organism {
     ancestry: Array.from(organism.ancestry),
     genome: observedGenome(organism.genome),
     ...(organism.genome.controller ? { neuralBlocked: organism.neuralBlocked } : {}),
+    ...(organism.genome.dormancy ? { reserves: structuredClone(organism.reserves) } : {}),
   };
 }
 export interface WorldEcology {
@@ -677,6 +712,9 @@ export type HistoricalWorldEcology = Omit<WorldEcology, 'organisms'> & {
 };
 export interface WorldFileV14 extends Omit<WorldFile, 'version'> {
   version: 14;
+}
+export interface WorldFileV16 extends Omit<WorldFile, 'version'> {
+  version: 16;
 }
 export interface WorldFileV15 extends Omit<WorldFile, 'version'> {
   version: 15;
@@ -1103,11 +1141,31 @@ export function validBehavior(value: unknown, active = true): value is Behavior 
     )
   );
 }
+export function validDormancy(value: unknown): value is DormancyTraits {
+  return (
+    exactDataRecord(value, [
+      'version',
+      'capacity',
+      'enterStress',
+      'wakeStress',
+      'enterEnergy',
+      'wakeEnergy',
+    ]) &&
+    value.version === 1 &&
+    finite(value.capacity, 1, 64) &&
+    finite(value.enterStress, 0.01, 1) &&
+    finite(value.wakeStress, 0, 0.99) &&
+    value.enterStress - value.wakeStress >= 0.01 - Number.EPSILON &&
+    finite(value.enterEnergy, 0, 16) &&
+    finite(value.wakeEnergy, value.enterEnergy + 1, 64)
+  );
+}
 export function validGenome(
   value: unknown,
   active = true,
   propensity = true,
   neural = true,
+  dormancy = true,
 ): value is Genome {
   if (
     !exactDataRecord(
@@ -1117,11 +1175,13 @@ export function validGenome(
         'legacyExtensions',
         ...(propensity ? ['mutationPropensity'] : []),
         ...(neural ? ['controller'] : []),
+        ...(dormancy ? ['dormancy'] : []),
       ],
     ) ||
     !validBehavior(value.behavior, active) ||
     (Object.hasOwn(value, 'controller') && !validController(value.controller)) ||
     (Object.hasOwn(value, 'mutationPropensity') && !finite(value.mutationPropensity, 0, 1)) ||
+    (Object.hasOwn(value, 'dormancy') && !validDormancy(value.dormancy)) ||
     !denseArray(value.cells)
   )
     return false;
@@ -1156,6 +1216,7 @@ export function cloneGenome(genome: Genome): Genome {
     tempo: copied.tempo,
     behavior: copied.behavior,
     ...(copied.controller ? { controller: copied.controller } : {}),
+    ...(copied.dormancy ? { dormancy: copied.dormancy } : {}),
     ...(copied.mutationPropensity === undefined
       ? {}
       : { mutationPropensity: copied.mutationPropensity }),

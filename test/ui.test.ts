@@ -3258,7 +3258,7 @@ describe('explicit bounded local library', () => {
     root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
     harness.deliver();
     const before = harness.save();
-    expect(before.version).toBe(16);
+    expect(before.version).toBe(17);
     expect(before.lineageArchive.summaries.length).toBeGreaterThan(0);
     expect(before.telemetry.version).toBe(2);
     expect(before.interventions.version).toBe(5);
@@ -5042,6 +5042,49 @@ describe('standalone blueprint files', () => {
     expect(bridge.save()).toEqual(before);
   });
 
+  it('edits inherited dormancy without changing a paused world and invalidates pending design reads', async () => {
+    const bridge = realWorker();
+    bridge.deliver();
+    click('pause');
+    bridge.advance();
+    bridge.deliver();
+    const before = bridge.save();
+    const ids = [...root.querySelectorAll('[id]')].map((element) => element.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    click('neural-enabled');
+    expect((await exported()).genome.controller).toEqual(newController());
+    expect(get<HTMLInputElement>('dormancy-enabled').checked).toBe(false);
+    get('dormancy-capacity').dispatchEvent(new Event('input'));
+    expect((await exported()).genome.dormancy).toBeUndefined();
+    click('dormancy-enabled');
+    expect(get<HTMLInputElement>('dormancy-capacity').disabled).toBe(false);
+    for (const [field, value] of [
+      ['capacity', 32],
+      ['enterStress', 0.2],
+      ['wakeStress', 0.03],
+      ['enterEnergy', 4],
+      ['wakeEnergy', 12],
+    ] as const) {
+      get<HTMLInputElement>(`dormancy-${field}`).value = String(value);
+      get(`dormancy-${field}`).dispatchEvent(new Event('input'));
+      expect((await exported()).genome.dormancy![field]).toBe(value);
+    }
+    const enabled = await exported();
+    let resolve!: (value: string) => void;
+    uploadBlueprint({ size: 20, text: () => new Promise((done) => (resolve = done)) });
+    click('dormancy-enabled');
+    resolve(serializeBlueprint(enabled));
+    await flush();
+    expect((await exported()).genome.dormancy).toBeUndefined();
+    expect(get<HTMLInputElement>('dormancy-capacity').disabled).toBe(true);
+    await importDraft(serializeBlueprint(enabled));
+    expect((await exported()).genome.dormancy).toEqual(enabled.genome.dormancy);
+    expect((await exported()).genome.controller).toEqual(enabled.genome.controller);
+    expect(bridge.save()).toEqual(before);
+    click('clear-design');
+    expect((await exported()).genome.dormancy).toBeUndefined();
+  });
+
   it('edits explicit propensity without world commands, retains exact imported values, and cancels stale designer reads', async () => {
     const bridge = realWorker();
     bridge.deliver();
@@ -5333,7 +5376,7 @@ describe('standalone blueprint files', () => {
     emit(sample, organism);
     expect(await exported('export-organism-blueprint')).toEqual({
       format: 'evolab-organism-blueprint',
-      version: 5,
+      version: 6,
       name: 'Bloom',
       description: '',
       genome: organism.genome,
@@ -5437,7 +5480,7 @@ describe('standalone blueprint files', () => {
       '{',
       '{}',
       'null',
-      JSON.stringify({ ...JSON.parse(serializeBlueprint(fixture())), version: 6 }),
+      JSON.stringify({ ...JSON.parse(serializeBlueprint(fixture())), version: 7 }),
       JSON.stringify({
         ...JSON.parse(serializeBlueprint(fixture())),
         genome: {
