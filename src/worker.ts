@@ -1,5 +1,6 @@
 import { shadeTool, validShadeBrush } from './shade';
 import { Ecosystem } from './ecosystem';
+import { EventRecorder } from './event-journal';
 import { DEFAULT_TERRAIN, resolvedTerrainSeed, validTerrain } from './terrain';
 import { serializeMeasurements } from './measurement-export';
 import { refugeTool, validRefugeBrush, refugeSummary } from './refuges';
@@ -45,6 +46,7 @@ export function startWorker(
   now: () => number = () => performance.now(),
 ): () => void {
   let world: Ecosystem | undefined;
+  let events: EventRecorder | undefined;
   let alive = true,
     paused = false,
     queued = false,
@@ -146,6 +148,7 @@ export function startWorker(
     }
     const organism = world!.organisms.get(selected);
     return {
+      ...(events ? { journal: events.snapshot() } : {}),
       replacementId,
       revision,
       world: structuredClone(cachedPresentation),
@@ -327,6 +330,7 @@ export function startWorker(
       for (let count = 0; count < speed; count++) {
         const population = world.organisms.size;
         world.step();
+        events?.observe(world);
         completedTicks = next(completedTicks);
         changed();
         reconcile(population);
@@ -432,6 +436,7 @@ export function startWorker(
         if (!validTerrain(terrain)) throw new Error('Invalid wall recipe.');
         const candidate = new Ecosystem(observedSettings(data.settings), true, { terrain });
         world = candidate;
+        events = undefined;
         runId = data.runId;
         replacementId = commandId;
         view = {
@@ -460,6 +465,7 @@ export function startWorker(
           telemetry: telemetry(),
         });
       } else if (data.type === 'load') {
+        events = undefined;
         if (typeof data.text !== 'string') throw new Error('Invalid world text.');
         runId = data.runId;
         failed = false;
@@ -504,6 +510,22 @@ export function startWorker(
         let mutation = true,
           exactTelemetry = false;
         switch (data.type) {
+          case 'event-recording':
+            if (typeof data.enabled !== 'boolean') throw new Error('Invalid event recording mode.');
+            events = data.enabled ? new EventRecorder(world) : undefined;
+            break;
+          case 'event-replay':
+            if (!events || !integer(data.eventId, 1, Number.MAX_SAFE_INTEGER))
+              throw new Error('No recorded event is available.');
+            complete({
+              type: 'event-evidence',
+              operation: 'event-replay',
+              runId,
+              commandId,
+              state: state(),
+              evidence: events.replay(data.eventId),
+            });
+            return;
           case 'pause':
             paused = true;
             if (target?.status === 'running') {
@@ -528,6 +550,7 @@ export function startWorker(
             const population = world.organisms.size;
             errorCode = 'fatal';
             world.step();
+            events?.observe(world);
             reconcile(population);
             interactive = view.visible;
             exactTelemetry = true;
@@ -973,6 +996,8 @@ export function startWorker(
             throw new Error('Unknown ecosystem command.');
         }
         effectApplied = true;
+        if (data.type !== 'step' && mutation && data.type !== 'event-recording')
+          events?.observe(world, true);
         if (manualResult?.status === 'no-op') {
           mutation = false;
           interactive = priorInteractive;
@@ -1009,6 +1034,7 @@ export function startWorker(
           'fatal',
         );
       else {
+        if (world) events?.observe(world, true);
         if (data.type === 'start' && world) {
           runId = data.runId;
           stroke = null;
@@ -1022,6 +1048,7 @@ export function startWorker(
     alive = false;
     scope.onmessage = null;
     world = undefined;
+    events = undefined;
     target = null;
     progressOwner = displayOwner = null;
     endpoints = [];

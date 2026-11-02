@@ -1,6 +1,7 @@
 import { validLifeHistory, type LifeHistory, type LifeHistoryLog } from './life-history';
 import type { BirthEvent } from './mutation-evidence';
 import type { MutationPolicy } from './mutation';
+import type { EventJournal, EventReplay } from './event-model';
 export const WIDTH = 240;
 export const HEIGHT = 156;
 export const LIMIT = 1600;
@@ -402,6 +403,7 @@ export interface TickRate {
   status: 'warming' | 'measured' | 'paused' | 'timing-gap';
 }
 export interface ControlState {
+  journal?: EventJournal;
   replacementId: number;
   revision: number;
   world: WorldPresentation;
@@ -425,6 +427,8 @@ export interface AcceptedTelemetrySource extends TelemetrySnapshot {
   replacementId: number;
 }
 export type CommandPayload =
+  | { type: 'event-recording'; enabled: boolean }
+  | { type: 'event-replay'; eventId: number }
   | { type: 'start'; settings: Settings; display: DisplayView; terrain: TerrainRecipe }
   | { type: 'load'; text: string }
   | { type: 'capture-design'; source: 'organism' | 'lineage'; sourceId: number; captureId: number }
@@ -475,6 +479,15 @@ export interface FlowAck {
 }
 export type WorkerCommand = OrdinaryCommand | FlowAck;
 export type WorkerResponse = (
+  | {
+      type: 'event-evidence';
+      operation: 'event-replay';
+      runId: number;
+      commandId: number;
+      state: ControlState;
+      evidence: EventReplay;
+      telemetry?: never;
+    }
   | {
       type: 'progress';
       runId: number;

@@ -10,6 +10,8 @@ lineages spread by surviving and producing descendants.
 
 ## Features
 
+- **Event bookmarks** — opt-in, bounded lineage-extinction, population-drop and first-observed-trait journals, with isolated checkpoint replay verified against original complete saves; never an inferred history or an automatic sandbox restore.
+
 - **Living cellular organisms** — mouths, leaves, motors, stingers, armor and eyes combine into bodies that feed, compete and evolve.
 - **Drifting climates** — warm and cold zones move through the habitat; temperature preference and tolerance pass to offspring and can mutate.
 - **Adaptation with a tradeoff** — broad temperature tolerance costs more energy, while specialists are cheaper in favorable habitats.
