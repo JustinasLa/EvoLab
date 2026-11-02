@@ -2,13 +2,14 @@ import type { BirthEvent } from './mutation-evidence';
 import type { MutationPolicy } from './mutation';
 import type { EventJournal, EventReplay } from './event-model';
 import { validController, type NeuralController } from './neural';
+import { validSenses, type Senses } from './senses';
 export const WIDTH = 240;
 export const HEIGHT = 156;
 export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 17;
+export const WORLD_VERSION = 18;
 export const LINEAGE_SUMMARY_CAPACITY = 256;
 export const LINEAGE_EVENT_CAPACITY = 512;
 export const INTERVENTION_CAPACITY = 128;
@@ -51,10 +52,18 @@ export interface PerceptionRay {
   origin: number;
   heading: number;
   cells: number[];
-  stop: PerceptionCategory | 'self' | 'range';
+  stop: PerceptionCategory | 'body' | 'stinger' | 'self' | 'range';
   reaction: Reaction | null;
 }
 export interface Perception {
+  senses?: {
+    inputs: number[];
+    available: boolean[];
+    temperatures: { position: number; value: number }[];
+    eyeCost: number;
+    temperatureCost: number;
+    action: string;
+  };
   id: number;
   tick: number;
   rays: PerceptionRay[];
@@ -87,6 +96,7 @@ export interface Cell {
   legacyExtensions?: LegacyExtensions;
 }
 export interface Genome {
+  senses?: Senses;
   controller?: NeuralController;
   cells: Cell[];
   preference: number;
@@ -626,6 +636,7 @@ export function observedGenome(genome: Genome): Genome {
     tempo: genome.tempo,
     behavior: structuredClone(genome.behavior),
     ...(genome.controller ? { controller: structuredClone(genome.controller) } : {}),
+    ...(genome.senses ? { senses: { ...genome.senses } } : {}),
     ...(genome.mutationPropensity === undefined
       ? {}
       : { mutationPropensity: genome.mutationPropensity }),
@@ -684,7 +695,10 @@ export interface WorldFile extends WorldEcology {
 export type HistoricalWorldEcology = Omit<WorldEcology, 'organisms'> & {
   organisms: HistoricalOrganism[];
 };
-export interface WorldFileV16 extends Omit<WorldFile, 'version' | 'nutrientCycle'> {
+export interface WorldFileV17 extends Omit<WorldFile, 'version'> {
+  version: 17;
+}
+export interface WorldFileV16 extends Omit<WorldFileV17, 'version' | 'nutrientCycle'> {
   version: 16;
 }
 export interface WorldFileV15 extends Omit<WorldFileV16, 'version'> {
@@ -1121,6 +1135,7 @@ export function validGenome(
   active = true,
   propensity = true,
   neural = true,
+  senses = true,
 ): value is Genome {
   if (
     !exactDataRecord(
@@ -1130,10 +1145,14 @@ export function validGenome(
         'legacyExtensions',
         ...(propensity ? ['mutationPropensity'] : []),
         ...(neural ? ['controller'] : []),
+        ...(senses ? ['senses'] : []),
       ],
     ) ||
     !validBehavior(value.behavior, active) ||
-    (Object.hasOwn(value, 'controller') && !validController(value.controller)) ||
+    (Object.hasOwn(value, 'controller') && !validController(value.controller, senses)) ||
+    (Object.hasOwn(value, 'senses') && !validSenses(value.senses)) ||
+    ((value.controller as NeuralController | undefined)?.version === 2) !==
+      Object.hasOwn(value, 'senses') ||
     (Object.hasOwn(value, 'mutationPropensity') && !finite(value.mutationPropensity, 0, 1)) ||
     !denseArray(value.cells)
   )
@@ -1169,6 +1188,7 @@ export function cloneGenome(genome: Genome): Genome {
     tempo: copied.tempo,
     behavior: copied.behavior,
     ...(copied.controller ? { controller: copied.controller } : {}),
+    ...(copied.senses ? { senses: copied.senses } : {}),
     ...(copied.mutationPropensity === undefined
       ? {}
       : { mutationPropensity: copied.mutationPropensity }),

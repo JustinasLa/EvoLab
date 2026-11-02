@@ -4,6 +4,8 @@ import { EventRecorder, completeCheckpoint } from '../src/event-journal';
 import { startReplayWorker, type ReplayScope } from '../src/event-replay-worker';
 import { startWorker, type Scope } from '../src/worker';
 import { DEFAULTS, WORLD_MAX_BYTES, founder } from '../src/model';
+import { newController } from '../src/neural';
+import { newSenses } from '../src/senses';
 import {
   EVENT_CAPACITY,
   REPLAY_CAPACITY,
@@ -16,6 +18,40 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+});
+it('replays expanded sensory costs and nutrient extinction with actual complete controller state', () => {
+  const world = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0 }, false, {
+    nutrientCycle: true,
+  });
+  const organism = world.spawn(
+    {
+      ...founder(0),
+      cells: [{ x: 0, y: 0, type: 8 }],
+      tempo: 2,
+      controller: newController(2),
+      senses: { ...newSenses(), range: 8, fov: 4, temperature: true },
+    },
+    40,
+    40,
+  )!;
+  organism.age = 1;
+  organism.energy = 0.05;
+  const recorder = new EventRecorder(world);
+  world.observeRoles();
+  const control = Ecosystem.load(completeCheckpoint(world));
+  world.step();
+  control.step();
+  expect(world.save()).toEqual(control.save());
+  recorder.observe(world);
+  const evidence = recorder.replay(recorder.snapshot().events.at(-1)!.id);
+  expect(JSON.parse(evidence.checkpoint).organisms[0].genome.controller.version).toBe(2);
+  expect(JSON.parse(evidence.checkpoint).organisms[0].genome.senses.temperature).toBe(true);
+  expect(JSON.parse(evidence.endpoint).organisms).toHaveLength(0);
+  const before = completeCheckpoint(world),
+    isolated = replay(evidence);
+  while (isolated.tasks.length) isolated.tasks.shift()!();
+  expect(isolated.messages.at(-1)).toMatchObject({ type: 'complete', verified: true });
+  expect(completeCheckpoint(world)).toBe(before);
 });
 it('replays complete nutrient fields across extinction and decay without editing the sandbox', () => {
   const world = new Ecosystem({ ...DEFAULTS, nutrients: 0 }, false, { nutrientCycle: true });

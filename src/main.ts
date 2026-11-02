@@ -1,6 +1,7 @@
 import { nutrientDescription } from './nutrient-view';
 import { mountMutationControls } from './mutation-view';
 import { newController } from './neural';
+import { editSenses, sensesEditor } from './senses-view';
 import { validMutationPolicy } from './mutation';
 import { emptyShade, shadeTool, shadeSummary, validShadeBrush } from './shade';
 import { createOrganismView } from './organism-view';
@@ -1825,6 +1826,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     get('behavior-controls').innerHTML = reactionEditor(blueprint);
     get<HTMLInputElement>('neural-enabled').checked = !!blueprint.controller;
     get('neural-controls').innerHTML = neuralEditor(blueprint);
+    get('senses-controls').innerHTML = sensesEditor(blueprint);
     text(
       'design-note',
       validGenome(blueprint)
@@ -2466,7 +2468,29 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     endStroke();
     invalidateDesign();
     if (get<HTMLInputElement>('neural-enabled').checked) blueprint.controller = newController();
-    else delete blueprint.controller;
+    else {
+      delete blueprint.controller;
+      delete blueprint.senses;
+    }
+    editor();
+  });
+  get('senses-controls').addEventListener('change', (event) => {
+    const input = (event.target as HTMLElement).closest<HTMLInputElement | HTMLSelectElement>(
+      '[data-sense]',
+    );
+    if (!input) return;
+    const value =
+      input instanceof HTMLInputElement && input.type === 'checkbox'
+        ? input.checked
+        : Number(input.value);
+    const next = editSenses(blueprint, input.dataset.sense!, value);
+    if (!next) {
+      editor();
+      return;
+    }
+    endStroke();
+    invalidateDesign();
+    blueprint = next;
     editor();
   });
   get('neural-controls').addEventListener('change', (event) => {
