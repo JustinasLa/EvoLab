@@ -58,7 +58,7 @@ export function measurementEnvelope(source: MeasurementSource) {
   const envelope = {
     format: 'evolab-drift-measurements',
     version: 9,
-    rules: { id: 'evolab-drift-cellular', version: 8 },
+    rules: { id: 'evolab-drift-cellular', version: 9 },
     snapshot: {
       worldVersion: source.snapshot.worldVersion,
       mutationPolicy: structuredClone(source.snapshot.mutationPolicy),

@@ -162,6 +162,7 @@ describe('explicit inherited mutation propensity', () => {
       const loaded = Ecosystem.load(JSON.stringify(predecessor));
       const expected = structuredClone(file);
       expected.lineageArchive.mutationOriginTick = file.tick;
+      expected.lifeHistoryLog.originTick = file.tick;
       expected.lineageArchive.events = expected.lineageArchive.events.filter(
         (event) => event.kind !== 'reproduction',
       );
@@ -169,8 +170,8 @@ describe('explicit inherited mutation propensity', () => {
       for (let tick = 0; tick < 120; tick++) {
         world.step();
         loaded.step();
-        const { lineageArchive: _prior, ...prior } = loaded.save();
-        const { lineageArchive: _current, ...current } = world.save();
+        const { lineageArchive: _prior, lifeHistoryLog: _priorLife, ...prior } = loaded.save();
+        const { lineageArchive: _current, lifeHistoryLog: _currentLife, ...current } = world.save();
         expect(prior).toEqual(current);
       }
     }
@@ -190,7 +191,7 @@ describe('explicit inherited mutation propensity', () => {
         description: '',
         genome: source(value),
       });
-      expect(JSON.parse(text).version).toBe(5);
+      expect(JSON.parse(text).version).toBe(6);
       expect(parseBlueprint(text).genome).toEqual(source(value));
       for (const version of [2, 3]) {
         const old = { ...JSON.parse(text), version };

@@ -3258,7 +3258,7 @@ describe('explicit bounded local library', () => {
     root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
     harness.deliver();
     const before = harness.save();
-    expect(before.version).toBe(16);
+    expect(before.version).toBe(17);
     expect(before.lineageArchive.summaries.length).toBeGreaterThan(0);
     expect(before.telemetry.version).toBe(2);
     expect(before.interventions.version).toBe(5);
@@ -5001,6 +5001,51 @@ describe('standalone blueprint files', () => {
     expect(bridge.save()).toEqual(expected.save());
   });
 
+  it('edits bounded life histories without worker mutations and cancels stale designer replacement', async () => {
+    const bridge = realWorker();
+    bridge.deliver();
+    click('pause');
+    bridge.advance();
+    bridge.deliver();
+    const before = bridge.save();
+    expect(get<HTMLInputElement>('inherited-life-history').checked).toBe(false);
+    get('life-maturity').dispatchEvent(new Event('input'));
+    expect((await exported()).genome.lifeHistory).toBeUndefined();
+    click('inherited-life-history');
+    for (const key of ['maturity', 'investment', 'maintenance']) {
+      const input = get<HTMLInputElement>(`life-${key}`);
+      expect(input.disabled).toBe(false);
+      input.value = '2';
+      input.dispatchEvent(new Event('input'));
+      expect(get(`life-${key}-value`).textContent).toBe('2');
+    }
+    const enabled = {
+      ...fixture(),
+      genome: {
+        ...fixture().genome,
+        lifeHistory: { version: 1 as const, maturity: 2, investment: 2, maintenance: 2 },
+      },
+    };
+    expect((await exported()).genome.lifeHistory).toEqual(enabled.genome.lifeHistory);
+    expect(get('life-design-rules').textContent).toContain('cadence 17');
+    expect(bridge.save()).toEqual(before);
+    click('inherited-life-history');
+    expect((await exported()).genome.lifeHistory).toBeUndefined();
+    expect(get<HTMLInputElement>('life-maturity').disabled).toBe(true);
+    await importDraft(serializeBlueprint(enabled));
+    expect((await exported()).genome).toEqual(enabled.genome);
+    let resolve!: (text: string) => void;
+    uploadBlueprint({ size: 20, text: () => new Promise((r) => (resolve = r)) });
+    get<HTMLInputElement>('life-maturity').value = '0';
+    get('life-maturity').dispatchEvent(new Event('input'));
+    resolve(serializeBlueprint(enabled));
+    await flush();
+    expect((await exported()).genome.lifeHistory!.maturity).toBe(0);
+    click('clear-design');
+    expect((await exported()).genome.lifeHistory).toBeUndefined();
+    expect(bridge.save()).toEqual(before);
+  });
+
   it('edits opt-in neural parameters without ticks and rejects invalid or stale designer data', async () => {
     const bridge = realWorker();
     bridge.deliver();
@@ -5333,7 +5378,7 @@ describe('standalone blueprint files', () => {
     emit(sample, organism);
     expect(await exported('export-organism-blueprint')).toEqual({
       format: 'evolab-organism-blueprint',
-      version: 5,
+      version: 6,
       name: 'Bloom',
       description: '',
       genome: organism.genome,
@@ -5437,7 +5482,7 @@ describe('standalone blueprint files', () => {
       '{',
       '{}',
       'null',
-      JSON.stringify({ ...JSON.parse(serializeBlueprint(fixture())), version: 6 }),
+      JSON.stringify({ ...JSON.parse(serializeBlueprint(fixture())), version: 7 }),
       JSON.stringify({
         ...JSON.parse(serializeBlueprint(fixture())),
         genome: {

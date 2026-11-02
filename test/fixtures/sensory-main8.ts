@@ -1,3 +1,4 @@
+import { assertLegacyLifeHistory } from './life-history';
 import { historicalArchive } from './telemetry';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -24,6 +25,7 @@ export function main8Fixture(name: string): string {
 // Old archives deliberately retained only semantic anatomy/traits. The world9
 // archive additionally retains the full passive genome, tested independently.
 export function restoreMain8(saved: WorldFile) {
+  assertLegacyLifeHistory(saved);
   assert.deepEqual(saved.mutationPolicy, { version: 1, mode: 'legacy' });
   assert.ok(saved.interventions.entries.every((row) => row.kind !== 'mutation-policy'));
   const archive = historicalArchive(saved.lineageArchive);
@@ -37,7 +39,12 @@ export function restoreMain8(saved: WorldFile) {
         tempo: genome.tempo,
       } as typeof row.foundingGenome;
     }
-  const { mutationPolicy: _policy, shadeHabitats: _shadeHabitats, ...retained } = saved;
+  const {
+    lifeHistoryLog: _lifeHistoryLog,
+    mutationPolicy: _policy,
+    shadeHabitats: _shadeHabitats,
+    ...retained
+  } = saved;
   return {
     ...retained,
     interventions: { ...saved.interventions, version: 3 },
