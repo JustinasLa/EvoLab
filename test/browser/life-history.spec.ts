@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { Ecosystem } from '../../src/ecosystem';
 import { DEFAULTS, founder, type WorldFile } from '../../src/model';
 import { parseBlueprint } from '../../src/blueprint';
-import { nativeDownload, registerNativeEvidence } from './sensory-evidence';
+import { nativeDownload, nativeSummary, registerNativeEvidence } from './sensory-evidence';
 registerNativeEvidence();
 const saved = async (page: Page): Promise<WorldFile> =>
   JSON.parse((await nativeDownload(page)).toString('utf8'));
@@ -12,16 +12,49 @@ async function start(page: Page) {
   await page.locator('#pause').click();
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
 }
-async function load(page: Page, file: unknown, success = true) {
+async function load(page: Page, file: WorldFile, success = true) {
+  const previous = (await nativeSummary(page)).responses.length;
   await page.locator('#file').setInputFiles({
     name: 'life-history.json',
     mimeType: 'application/json',
     buffer: Buffer.from(JSON.stringify(file)),
   });
+  await expect
+    .poll(async () =>
+      (await nativeSummary(page)).responses
+        .slice(previous)
+        .some((response: { type: string }) => response.type === (success ? 'loaded' : 'error')),
+    )
+    .toBe(true);
   await expect(page.locator('#notice')).toContainText(success ? 'World restored' : 'Invalid');
   if ((await page.locator('#run-state').textContent()) === 'LIVE')
     await page.locator('#pause').click();
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
+}
+// Populated imports resume under the existing UI contract. The native paused
+// capture establishes the exact completed boundary before Step assertions.
+async function restore(page: Page, reference: Ecosystem) {
+  await load(page, reference.save());
+  const actual = await saved(page);
+  expect(actual.tick).toBeGreaterThanOrEqual(reference.tick);
+  while (reference.tick < actual.tick) reference.step();
+  expect(actual).toEqual(reference.save());
+}
+async function inspectAt(page: Page, x: number, y: number) {
+  await page.locator('button[data-tool="inspect"]').click();
+  await page.locator('#world').scrollIntoViewIfNeeded();
+  const point = await page.locator('#world').evaluate(
+    (canvas, at) => {
+      const rect = canvas.getBoundingClientRect();
+      const scale = Math.min(canvas.clientWidth / 240, canvas.clientHeight / 156);
+      return {
+        x: rect.left + (canvas.clientWidth - 240 * scale) / 2 + (at.x + 0.5) * scale,
+        y: rect.top + (canvas.clientHeight - 156 * scale) / 2 + (at.y + 0.5) * scale,
+      };
+    },
+    { x, y },
+  );
+  await page.mouse.click(point.x, point.y);
 }
 const design = async (page: Page, selector = '#export-blueprint') =>
   parseBlueprint((await nativeDownload(page, selector)).toString('utf8'));
@@ -31,7 +64,7 @@ test('life-history designer, local library and captures preserve explicit traits
 }) => {
   await start(page);
   const reference = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
-  await load(page, reference.save());
+  await restore(page, reference);
   await page.locator('#organism-tab').click();
   const before = await saved(page);
   await expect(page.locator('#inherited-life-history')).not.toBeChecked();
@@ -68,8 +101,8 @@ test('life-history designer, local library and captures preserve explicit traits
   await expect(page.locator('#neural-enabled')).toBeChecked();
   expect(await saved(page)).toEqual(before);
   const placed = reference.spawn(enabled.genome, 120, 78)!;
-  await load(page, reference.save());
-  await page.locator('#world').click();
+  await restore(page, reference);
+  await inspectAt(page, placed.x, placed.y);
   await page.locator('#organism-tab').click();
   await page
     .locator('#specimen-details')
@@ -100,7 +133,7 @@ test('native worker keeps exact step, funded mutations, bounded outcomes and ful
   const parent = world.spawn(genome, 120, 78)!;
   parent.age = 30;
   parent.energy = 100;
-  await load(page, world.save());
+  await restore(page, world);
   for (let tick = 0; tick < 4; tick++) {
     const at = world.tick;
     await page.locator('#step').click();
@@ -119,13 +152,14 @@ test('native worker keeps exact step, funded mutations, bounded outcomes and ful
   await page.locator('#ecosystem-tab').click();
   await page.locator('#lineage-explorer > summary').click();
   await expect(page.locator('#life-history-outcomes')).toContainText('reached maturity');
+  await page.locator('#birth-select').selectOption(`${birth.tick}:${birth.parentOrganismId}`);
   await expect(page.locator('#birth-detail')).toContainText('Actual parental payment');
   await expect(page.locator('#birth-detail')).toContainText('Parent age 34');
   const malformed = structuredClone(expected);
   malformed.organisms[0].genome.lifeHistory!.maintenance = 3;
   await load(page, malformed, false);
   expect(await saved(page)).toEqual(expected);
-  await load(page, expected);
+  await restore(page, world);
   await page.locator('#step').click();
   world.step();
   await expect(page.locator('#tick')).toHaveText(`TICK ${world.tick}`);
