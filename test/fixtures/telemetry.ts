@@ -150,9 +150,11 @@ export function legacyV8(saved: WorldFile): WorldFileV8 {
 }
 
 export function legacyV9(saved: WorldFile): WorldFileV9 {
+  assert.equal(saved.biologicalShade.enabled, false, 'Cannot project enabled biological shade.');
   assert.ok(saved.nutrientCycle === null, 'Cannot project enabled nutrient ecology.');
   assert.deepEqual(saved.mutationPolicy, { version: 1, mode: 'legacy' });
   const {
+    biologicalShade: _biologicalShade,
     nutrientCycle: _nutrientCycle,
     mutationPolicy: _policy,
     shadeHabitats: _shadeHabitats,

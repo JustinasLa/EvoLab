@@ -21,6 +21,7 @@ lineages spread by surviving and producing descendants.
 - **Seeded terrain** — preview Open field, Porous ridges or Chambered refuges; confirm a one-founder reset or explicitly clear/regenerate walls while protecting life and disclosing food removal.
 - **Painted temperature refuges** — explicitly enable experimental warm/cool dabs that alter real climate upkeep and photosynthesis; keep inactive paint, erase temperature separately, and save bounded fields with manual provenance.
 - **Painted shade habitats** — explicitly enable bounded Shade, Lighten and Erase dabs that scale real leaf energy and food production together; inspect current leaf light separately from temperature and chart measured energy gains and costs.
+- **Biological shade** — opt in on confirmed reseeding to bounded armor-cast shade with cooling, light loss and real maintenance costs; inspect biological and painted contributions separately, without guaranteed cooperation or persistent residue.
 - **Design your own life** — draw connected organisms, choose their preferred temperature, and place them directly in the ecosystem.
 - **Directional eye reactions** — start a new active design with inherited chase, flee or ignore responses to food, walls and organisms; forward sight respects body rotation, occlusion and real movement costs.
 - **Optional neural controllers** — explicitly enable a small inherited network in the designer; real forward sight, energy and blocked-action feedback drive resting, movement or turning, with evaluation and action energy costs. Existing organisms retain their steering rules.
@@ -41,6 +42,7 @@ not a calibrated biological model.
 ## Documentation
 
 - [Optional nutrient cycle: units, costs, bounds and compatibility](docs/nutrient-cycle.md)
+- [Optional biological shade: timing, tradeoffs and provenance](docs/biological-shade.md)
 
 ## Tests and coverage
 

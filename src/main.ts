@@ -1,4 +1,5 @@
 import { nutrientDescription } from './nutrient-view';
+import { biologicalShadeDescription, biologicalShadeTile } from './biological-shade-view';
 import { mountMutationControls } from './mutation-view';
 import { newController } from './neural';
 import { validMutationPolicy } from './mutation';
@@ -110,6 +111,7 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
     case 'start':
       if (
         (data.nutrientCycle !== undefined && typeof data.nutrientCycle !== 'boolean') ||
+        (data.biologicalShade !== undefined && typeof data.biologicalShade !== 'boolean') ||
         !validSettings(data.settings) ||
         (data.terrain !== undefined && !validTerrain(data.terrain)) ||
         !data.display ||
@@ -123,6 +125,7 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
       return {
         type: 'start',
         ...(data.nutrientCycle !== undefined ? { nutrientCycle: data.nutrientCycle } : {}),
+        ...(data.biologicalShade !== undefined ? { biologicalShade: data.biologicalShade } : {}),
         settings: observedSettings(data.settings),
         terrain: { ...(data.terrain === undefined ? DEFAULT_TERRAIN : data.terrain) },
         display: {
@@ -353,6 +356,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     settledTerrainId = 0;
   let resetPayload: {
     nutrientCycle: boolean;
+    biologicalShade: boolean;
     settings: Settings;
     terrain: TerrainRecipe;
     run: number;
@@ -1913,6 +1917,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     }
     resetPayload = {
       nutrientCycle: get<HTMLInputElement>('nutrient-next').checked,
+      biologicalShade: get<HTMLInputElement>('biological-shade-next').checked,
       settings: structuredClone(next),
       terrain: { ...terrain },
       run: runId,
@@ -1921,14 +1926,19 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     };
     text(
       'reset-payload',
-      `World seed ${seed} · ${TERRAIN_LABELS[terrain.preset]} · terrain seed ${resolvedTerrainSeed(terrain, seed)} · generator ${terrain.version}. Nutrient cycle: ${resetPayload.nutrientCycle ? 'enabled, finite 149760 N endowment' : 'disabled, legacy rules'}. Resets temperature and shade to disabled/empty. This displayed payload is frozen; later draft edits require reopening.`,
+      `World seed ${seed} · ${TERRAIN_LABELS[terrain.preset]} · terrain seed ${resolvedTerrainSeed(terrain, seed)} · generator ${terrain.version}. Nutrient cycle: ${resetPayload.nutrientCycle ? 'enabled, finite 149760 N endowment' : 'disabled, legacy rules'}. Biological shade: ${resetPayload.biologicalShade ? 'enabled, costly armor-cast shade' : 'disabled'}. Resets painted temperature and shade to disabled/empty. This displayed payload is frozen; later draft edits require reopening.`,
     );
     get<HTMLDialogElement>('reset-dialog').showModal();
     get('cancel-reset').focus();
   }
   function replaceWorld(
     operation: 'start',
-    data: { settings: Settings; terrain: TerrainRecipe; nutrientCycle?: boolean },
+    data: {
+      settings: Settings;
+      terrain: TerrainRecipe;
+      nutrientCycle?: boolean;
+      biologicalShade?: boolean;
+    },
     revision = terrainRevision,
   ): void {
     cancelReset(false);
@@ -2246,6 +2256,18 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           : 'No enabled nutrient field in the displayed frame.',
     );
   }
+  function renderBiologicalShadeCell(): void {
+    text(
+      'biological-shade-cell',
+      biologicalShadeTile(
+        frame,
+        Number(get<HTMLInputElement>('biological-shade-x').value),
+        Number(get<HTMLInputElement>('biological-shade-y').value),
+      ),
+    );
+  }
+  for (const id of ['biological-shade-x', 'biological-shade-y'])
+    get(id).addEventListener('input', renderBiologicalShadeCell);
   for (const id of ['nutrient-x', 'nutrient-y'])
     get(id).addEventListener('input', renderNutrientCell);
   get('nutrient-layer').addEventListener('change', () => {
@@ -2366,6 +2388,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         settings: pending.settings,
         terrain: pending.terrain,
         nutrientCycle: pending.nutrientCycle,
+        biologicalShade: pending.biologicalShade,
       },
       pending.revision,
     );
@@ -3045,6 +3068,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       installRefuges(observation.world.thermalRefuges);
       installShade(observation.world.shadeHabitats);
       text(
+        'biological-shade-summary',
+        biologicalShadeDescription(observation.world.biologicalShade, observation.world.stats.tick),
+      );
+      text(
         'nutrient-summary',
         nutrientDescription(observation.world.nutrientCycle, observation.world.stats.tick),
       );
@@ -3504,6 +3531,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         nutrientLayer,
       );
       renderNutrientCell();
+      renderBiologicalShadeCell();
       dirty = false;
       freshness();
       if (consumed) {

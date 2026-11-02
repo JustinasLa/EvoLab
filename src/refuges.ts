@@ -125,8 +125,17 @@ export function localTemperature(
   strength: number,
   offset: number,
   field: RefugePlane,
+  biologicalUnits = 0,
 ): number {
-  return temperature(x, y, tick, strength, offset, activeRefugeUnits(field, x, y));
+  const painted = activeRefugeUnits(field, x, y);
+  return temperature(
+    x,
+    y,
+    tick,
+    strength,
+    offset,
+    biologicalUnits ? painted - biologicalUnits : painted,
+  );
 }
 
 export function refugeDab(field: RefugeField, brush: RefugeBrush, x: number, y: number) {

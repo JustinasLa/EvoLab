@@ -1536,6 +1536,54 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe('owned command admission and real-worker interleavings', () => {
+  it('opts into biological shade only through frozen confirmed reset, with paused provenance inspection', () => {
+    const harness = realWorker();
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    const disabled = harness.save();
+    expect(disabled.biologicalShade.enabled).toBe(false);
+    get<HTMLInputElement>('biological-shade-next').checked = true;
+    get('reset').click();
+    expect(get('reset-payload').textContent).toContain('enabled, costly armor-cast shade');
+    click('cancel-reset');
+    expect(harness.save()).toEqual(disabled);
+    get('reset').click();
+    get<HTMLInputElement>('biological-shade-next').checked = false;
+    click('confirm-reset');
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    paint(0);
+    harness.deliver();
+    const before = harness.save();
+    expect(before.biologicalShade.enabled).toBe(true);
+    expect(get('biological-shade-summary').textContent).toContain('living armor cells');
+    set('biological-shade-x', '120');
+    set('biological-shade-y', '78');
+    expect(get('biological-shade-cell').textContent).toContain('painted');
+    set('biological-shade-x', '-1');
+    expect(get('biological-shade-cell').textContent).toContain('whole-number');
+    expect(harness.save()).toEqual(before);
+    click('step');
+    harness.deliver();
+    paint(2);
+    harness.deliver();
+    const expected = Ecosystem.load(JSON.stringify(before));
+    expected.step();
+    expect(harness.save()).toEqual(expected.save());
+    expect(() =>
+      captureCommand(
+        {
+          type: 'start',
+          settings: DEFAULTS,
+          display: { epoch: 0, enabled: true, visible: true },
+          biologicalShade: 'true',
+        },
+        DEFAULTS,
+      ),
+    ).toThrow();
+  });
   it('nutrient reseed freezes opt-in and exposes observational fields without editing ecology', () => {
     const harness = realWorker();
     harness.deliver();
@@ -3306,7 +3354,7 @@ describe('explicit bounded local library', () => {
     root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
     harness.deliver();
     const before = harness.save();
-    expect(before.version).toBe(17);
+    expect(before.version).toBe(18);
     expect(before.lineageArchive.summaries.length).toBeGreaterThan(0);
     expect(before.telemetry.version).toBe(2);
     expect(before.interventions.version).toBe(5);
