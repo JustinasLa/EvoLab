@@ -87,7 +87,8 @@ or claims of universal neural superiority.
 
 `npx vitest run --config vitest.long-run.config.ts test/long-run/neural-observation.spec.ts`
 compares populated capture-on/off continuations and records bounded observation
-payloads and contextual throughput in `.scratch/long-run/`.
+payloads and contextual throughput with the finite nutrient cycle disabled and
+enabled in `.scratch/long-run/`.
 
 Playwright exercises the built application in desktop and mobile Chromium,
 including real workers, population changes, inspection, organism design, painting,
