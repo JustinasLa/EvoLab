@@ -26,7 +26,7 @@ async function start(page: Page) {
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
 }
 async function inspect(page: Page) {
-  await page.locator('[data-tool="inspect"]').click();
+  await page.locator('button[data-tool="inspect"]').click();
   const canvas = page.locator('#world');
   await canvas.scrollIntoViewIfNeeded();
   const point = await canvas.evaluate((element) => {
