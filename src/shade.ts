@@ -132,6 +132,7 @@ export const activeShadeUnits = (field: ShadePlane, x: number, y: number): numbe
 export function selectedLeafLight(
   field: ShadePlane,
   organism: Pick<Organism, 'x' | 'y' | 'rotation' | 'genome'> | null,
+  biological?: Uint8Array,
 ): SelectedLeafLight | null {
   if (!organism) return null;
   const places = positions(organism);
@@ -141,7 +142,13 @@ export function selectedLeafLight(
     sumLightUnits = 0;
   for (let cell = 0; cell < organism.genome.cells.length; cell++) {
     if (organism.genome.cells[cell].type !== 4) continue;
-    const lightUnits = SHADE_UNITS_PER_FULL_LIGHT - (field.enabled ? field.units[places[cell]] : 0);
+    const lightUnits =
+      SHADE_UNITS_PER_FULL_LIGHT -
+      Math.min(
+        16,
+        (field.enabled ? field.units[places[cell]] : 0) +
+          (biological ? biological[places[cell]] : 0),
+      );
     leafCells++;
     minimumLightUnits = Math.min(minimumLightUnits, lightUnits);
     maximumLightUnits = Math.max(maximumLightUnits, lightUnits);

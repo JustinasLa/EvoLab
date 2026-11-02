@@ -40,8 +40,10 @@ rule, not calibrated radiation or a promise of cooperation.
 
 ## Persistence and presentation
 
-Allocate the successor world/rules/measurement versions against current main at
-serial integration. No genome or blueprint version change is needed. Native saves
+World18, cellular rules10 and measurement11 add this opt-in to the world17 nutrient
+baseline. Reconcile these envelopes against current main at serial integration;
+concurrent reserved-energy, life-history and sensory paths must remain intact.
+No genome or blueprint version change is needed. Native saves
 must contain exactly `{version: 1, enabled: boolean}` for biological shade; reject
 unknown/missing fields and future versions before replacement. Older saves ignore
 previously unowned root extensions of that name and receive disabled mode.
@@ -52,11 +54,11 @@ and tile inspection report biological units/cooling alongside painted units and
 combined light. Measurement metadata describes current boundary exposure, not a
 historical biological field. Existing telemetry records actual energy changes.
 
-## Acceptance evidence planned
+## Verification coverage
 
-Real-engine tests cover hot/cold self and neighbor consequences, light and food
+`test/biological-shade.test.ts` covers hot/cold self and neighbor consequences, light and food
 costs, maintenance, finite-material conservation, overlap/saturation, rotations,
 wrapping, movement/death/birth timing, disabled identity and strict migrations.
-Worker/UI/browser tests cover opt-in/reset cancellation, source inspection, exact
+Worker/UI fixtures and `test/browser/biological-shade.spec.ts` cover opt-in/reset cancellation, source inspection, exact
 pause/step, save/reload, failed import and detached frame ownership. Standard full
-checks and bounded soak/throughput verification require the coordinator's grants.
+checks and `test/long-run/biological-shade.spec.ts` soak/throughput verification require the coordinator's grants. A focused pass is not full acceptance.

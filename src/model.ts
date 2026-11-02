@@ -290,6 +290,7 @@ export interface Stats {
   top: Species[];
 }
 export interface Frame {
+  biologicalShade?: import('./biological-shade').BiologicalShadePlane;
   nutrientCycle?: import('./nutrients').NutrientPlane;
   terrain: TerrainRecipe;
   thermalRefuges: RefugePlane;
@@ -384,6 +385,8 @@ export interface LineagePresentation {
   current: (Species & { organismIds: number[] })[];
 }
 export type WorldPresentation = Pick<Frame, 'stats' | 'climate' | 'offset' | 'terrain'> & {
+  biologicalShade?: import('./biological-shade').BiologicalShadeSummary;
+  selectedBiologicalShade?: import('./biological-shade').BiologicalShadeExposure;
   nutrientCycle?: import('./nutrients').NutrientSummary;
   roles?: import('./roles').RoleSnapshot;
   lifeHistory?: LifeHistoryLog;
@@ -453,6 +456,7 @@ export type CommandPayload =
       display: DisplayView;
       terrain: TerrainRecipe;
       nutrientCycle?: boolean;
+      biologicalShade?: boolean;
     }
   | { type: 'load'; text: string }
   | { type: 'capture-design'; source: 'organism' | 'lineage'; sourceId: number; captureId: number }
@@ -690,6 +694,7 @@ export interface WorldEcology {
 }
 export interface WorldFile extends WorldEcology {
   lifeHistoryLog: LifeHistoryLog;
+  biologicalShade: import('./biological-shade').BiologicalShadeMode;
   nutrientCycle: import('./nutrients').NutrientFile | null;
   mutationPolicy: MutationPolicy;
   version: typeof WORLD_VERSION;
@@ -703,7 +708,10 @@ export interface WorldFile extends WorldEcology {
 export type HistoricalWorldEcology = Omit<WorldEcology, 'organisms'> & {
   organisms: HistoricalOrganism[];
 };
-export interface WorldFileV18 extends Omit<WorldFile, 'version'> {
+export interface WorldFileV19 extends Omit<WorldFile, 'version' | 'biologicalShade'> {
+  version: 19;
+}
+export interface WorldFileV18 extends Omit<WorldFileV19, 'version'> {
   version: 18;
 }
 export interface WorldFileV17 extends Omit<WorldFileV18, 'version' | 'lifeHistoryLog'> {
@@ -921,6 +929,7 @@ export interface PaintOutcome {
 }
 export interface MeasurementSource {
   snapshot: {
+    biologicalShade?: import('./biological-shade').BiologicalShadeSummary;
     nutrientCycle?: import('./nutrients').NutrientSummary;
     mutationPolicy: MutationPolicy;
     worldVersion: typeof WORLD_VERSION;

@@ -6,6 +6,16 @@ import {
 } from './life-history';
 import { RoleObserver } from './roles';
 import {
+  armorCells,
+  ARMOR_SHADE_UPKEEP,
+  biologicalShadeField,
+  biologicalShadeSummary,
+  biologicalShadeExposure,
+  combinedShadeUnits,
+  parseBiologicalShade,
+  type BiologicalShadeMode,
+} from './biological-shade';
+import {
   createNutrients,
   nutrientFile,
   nutrientSummary,
@@ -804,6 +814,7 @@ function validInterventions(
 }
 export class Ecosystem {
   nutrientCycle: NutrientCycle | null = null;
+  biologicalShade: BiologicalShadeMode = { version: 1, enabled: false };
   random: Random;
   settings: Settings;
   terrain: TerrainRecipe;
@@ -862,6 +873,7 @@ export class Ecosystem {
       lineage?: boolean;
       terrain?: TerrainRecipe;
       nutrientCycle?: boolean;
+      biologicalShade?: boolean;
     } = {},
   ) {
     if (!validTerrain(options.terrain ?? DEFAULT_TERRAIN)) throw new Error('Invalid wall recipe.');
@@ -872,6 +884,7 @@ export class Ecosystem {
     this.interventions = emptyInterventions(settings);
     this.random = new Random(settings.seed);
     if (options.nutrientCycle) this.nutrientCycle = createNutrients();
+    this.biologicalShade.enabled = options.biologicalShade === true;
     if (seed) this.seed();
   }
   private displaceFood(position: number): void {
@@ -882,6 +895,7 @@ export class Ecosystem {
     if (this.recording) this.telemetry.pending.energy[field] += amount;
   }
   populationObservation() {
+    const biological = this.biologicalField();
     const view = new DataView(new ArrayBuffer(8)),
       preferenceBins: PreferenceBins = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       cellCounts: TelemetrySample['cellCounts'] = [0, 0, 0, 0, 0, 0];
@@ -904,6 +918,7 @@ export class Ecosystem {
         this.settings.climate,
         this.tick < this.eventUntil ? this.eventOffset : 0,
         this.thermalRefuges,
+        biological?.units[index(organism.x, organism.y)] ?? 0,
       );
       if (Math.max(0, Math.abs(local - genome.preference) - genome.tolerance) > 0)
         stressedOrganisms++;
@@ -1160,8 +1175,10 @@ export class Ecosystem {
     return { rowSequence, removedCells, nonzeroCells: 0 };
   }
   measurements(openStrokeSequence: number | null = null): MeasurementSource {
+    const biological = this.biologicalField();
     return {
       snapshot: {
+        ...(biological ? { biologicalShade: biologicalShadeSummary(biological) } : {}),
         ...(this.nutrientCycle
           ? {
               nutrientCycle: nutrientSummary(
@@ -1366,6 +1383,7 @@ export class Ecosystem {
   }
   step(): void {
     this.tick++;
+    const biological = this.biologicalField();
     const cycle = this.nutrientCycle;
     if (cycle) {
       cycle.budget = {
@@ -1391,11 +1409,13 @@ export class Ecosystem {
         this.settings.climate,
         this.tick < this.eventUntil ? this.eventOffset : 0,
         this.thermalRefuges,
+        biological?.units[index(o.x, o.y)] ?? 0,
       );
       const stress = Math.max(0, Math.abs(temp - o.genome.preference) - o.genome.tolerance);
       const upkeep = 0.012 + Math.max(0, o.genome.tolerance - 0.2) * 0.025;
       let before = o.energy;
       o.energy -= (upkeep + stress * 0.2) * o.genome.cells.length;
+      if (biological) o.energy -= armorCells(o) * ARMOR_SHADE_UPKEEP;
       this.recordEnergy('upkeepSpent', before - o.energy);
       if (life && life.maintenance > 0) {
         before = o.energy;
@@ -1412,7 +1432,10 @@ export class Ecosystem {
         const type = cell.type;
         if (type === 4) {
           before = o.energy;
-          const activeUnits = shadeUnits ? shadeUnits[metabolicPosition(o, cell)] : 0;
+          const paintedUnits = shadeUnits ? shadeUnits[metabolicPosition(o, cell)] : 0;
+          const activeUnits = biological
+            ? combinedShadeUnits(paintedUnits, biological.units[metabolicPosition(o, cell)])
+            : paintedUnits;
           if (!cycle || cycle.minerals[metabolicPosition(o, cell)] > 0) {
             if (activeUnits === 0) o.energy += 0.04 * daylight * (1 - stress);
             else o.energy += 0.04 * daylight * (1 - stress) * ((16 - activeUnits) / 16);
@@ -1810,6 +1833,7 @@ export class Ecosystem {
       generation = Math.max(generation, o.generation);
     }
     const organism = this.organisms.get(selected);
+    const biological = this.biologicalField();
     const offset = this.tick < this.eventUntil ? this.eventOffset : 0;
     let lineage: WorldPresentation['lineage'];
     if (includeLineage) {
@@ -1827,6 +1851,16 @@ export class Ecosystem {
     }
     return {
       ...(lineage ? { lineage, lifeHistory: structuredClone(this.lifeHistoryLog) } : {}),
+      ...(biological ? { biologicalShade: biologicalShadeSummary(biological) } : {}),
+      ...(biological && organism
+        ? {
+            selectedBiologicalShade: biologicalShadeExposure(
+              biological,
+              this.shadeHabitats,
+              organism,
+            ),
+          }
+        : {}),
       ...(this.nutrientCycle
         ? { nutrientCycle: nutrientSummary(this.nutrientCycle, this.organisms.values(), this.food) }
         : {}),
@@ -1835,7 +1869,7 @@ export class Ecosystem {
       thermalRefuges: refugeSummary(this.thermalRefuges),
       shadeHabitats: shadeSummary(this.shadeHabitats),
       mutationPolicy: structuredClone(this.mutationPolicy),
-      selectedLeafLight: selectedLeafLight(this.shadeHabitats, organism ?? null),
+      selectedLeafLight: selectedLeafLight(this.shadeHabitats, organism ?? null, biological?.units),
       anchorTemperature: organism
         ? localTemperature(
             organism.x,
@@ -1844,6 +1878,7 @@ export class Ecosystem {
             this.settings.climate,
             offset,
             this.thermalRefuges,
+            biological?.units[index(organism.x, organism.y)] ?? 0,
           )
         : null,
       anchorRefugeUnits: organism
@@ -1879,6 +1914,9 @@ export class Ecosystem {
   interventionSnapshot(): InterventionState {
     return structuredClone(this.interventions);
   }
+  private biologicalField() {
+    return this.biologicalShade.enabled ? biologicalShadeField(this.organisms.values()) : null;
+  }
   display(
     presentation: Pick<Frame, 'stats' | 'climate' | 'offset'>,
   ): Omit<Frame, 'telemetry' | 'interventions'> {
@@ -1893,6 +1931,9 @@ export class Ecosystem {
     return {
       cells,
       ids,
+      ...(this.biologicalShade.enabled
+        ? { biologicalShade: biologicalShadeField(this.organisms.values()) }
+        : {}),
       ...(this.nutrientCycle
         ? {
             nutrientCycle: {
@@ -1940,6 +1981,7 @@ export class Ecosystem {
     }
     return {
       version: WORLD_VERSION,
+      biologicalShade: { ...this.biologicalShade },
       lifeHistoryLog: structuredClone(this.lifeHistoryLog),
       nutrientCycle: this.nutrientCycle ? nutrientFile(this.nutrientCycle) : null,
       mutationPolicy: structuredClone(this.mutationPolicy),
@@ -2128,6 +2170,10 @@ export class Ecosystem {
     });
     world.thermalRefuges = thermalRefuges;
     world.shadeHabitats = shadeHabitats;
+    world.biologicalShade =
+      f.version === WORLD_VERSION
+        ? parseBiologicalShade(f.biologicalShade)
+        : { version: 1, enabled: false };
     world.mutationPolicy =
       f.version === 13 ||
       f.version === 14 ||

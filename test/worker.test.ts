@@ -69,6 +69,37 @@ const mouth: Genome = {
   tolerance: 0.3,
   tempo: 2,
 };
+it('biological shade reset retains exact step, transfer ownership, stale rejection and load recovery', () => {
+  const harness = workerHarness();
+  harness.send({ type: 'start', settings: DEFAULTS, biologicalShade: true, nutrientCycle: true });
+  harness.send({ type: 'pause' });
+  const initial = harness.save();
+  expect(initial.biologicalShade).toEqual({ version: 1, enabled: true });
+  const reference = Ecosystem.load(JSON.stringify(initial));
+  const display = harness.frame();
+  expect(display.biologicalShade!.units.length).toBe(WIDTH * 156);
+  display.biologicalShade!.units.fill(16);
+  expect(harness.save()).toEqual(initial);
+  harness.send({ type: 'step' });
+  reference.step();
+  expect(harness.save()).toEqual(reference.save());
+  expect(harness.state().playback.paused).toBe(true);
+  expect(harness.state().world.biologicalShade.armorCells).toBe(0);
+  const corrupted = { ...harness.save(), biologicalShade: { version: 2, enabled: true } };
+  expect(harness.load(corrupted, 2).type).toBe('error');
+  expect(harness.save()).toEqual(reference.save());
+  harness.send({ type: 'step', runId: 1 });
+  expect(harness.save()).toEqual(reference.save());
+  expect(
+    harness.send({ type: 'start', settings: DEFAULTS, biologicalShade: 'yes', runId: 3 }).type,
+  ).toBe('error');
+  expect(harness.save()).toEqual(reference.save());
+  harness.send({ type: 'resume' });
+  harness.advance();
+  expect(harness.save().tick).toBeGreaterThan(reference.tick);
+  expect(harness.tasks.length).toBeGreaterThan(0);
+  harness.dispose();
+});
 it('nutrient reset opt-in retains exact step, transfer ownership, yields and corrupt-load recovery', () => {
   const harness = workerHarness();
   harness.send({ type: 'start', settings: DEFAULTS, nutrientCycle: true });
