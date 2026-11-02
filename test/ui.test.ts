@@ -5303,7 +5303,7 @@ describe('standalone blueprint files', () => {
     emit(sample, organism);
     expect(await exported('export-organism-blueprint')).toEqual({
       format: 'evolab-organism-blueprint',
-      version: 4,
+      version: 5,
       name: 'Bloom',
       description: '',
       genome: organism.genome,

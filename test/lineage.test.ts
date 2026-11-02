@@ -1097,11 +1097,19 @@ describe('bounded observed lineage lifecycle', () => {
                         : legacyV8(saved);
           const migrated = Ecosystem.load(JSON.stringify(file));
           const physical = ({
+            lifeHistoryLog: _lifeHistoryLog,
             lineageArchive: _archive,
             telemetry: _history,
             interventions: _manual,
             ...state
           }: WorldFile) => state;
+          expect(migrated.save().lifeHistoryLog).toEqual({
+            version: 1,
+            originTick: tick,
+            maintenanceSpent: 0,
+            eventsPruned: false,
+            events: [],
+          });
           expect(physical(migrated.save())).toEqual(physical(saved));
           expect(migrated.lineageSnapshot()).toMatchObject({
             originKind: version === 8 ? saved.lineageArchive.originKind : 'legacy-import',

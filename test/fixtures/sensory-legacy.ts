@@ -1,3 +1,4 @@
+import { assertLegacyLifeHistory } from './life-history';
 import assert from 'node:assert/strict';
 import {
   validGenome,
@@ -86,9 +87,11 @@ export function restoreHistoricalGenome(genome: Genome): HistoricalGenome {
   return restored;
 }
 function historicalScalars(saved: WorldFile) {
+  assertLegacyLifeHistory(saved);
   assert.deepEqual(saved.mutationPolicy, { version: 1, mode: 'legacy' });
   assert.ok(saved.interventions.entries.every((row) => row.kind !== 'mutation-policy'));
   const {
+    lifeHistoryLog: _lifeHistoryLog,
     mutationPolicy: _policy,
     terrain: _terrain,
     thermalRefuges: _refuges,
