@@ -1,4 +1,5 @@
 import { eventMarkup } from './event-view';
+import { nutrientMarkup } from './nutrient-view';
 import { mutationControlsMarkup } from './mutation-view';
 import { drawPerception } from './perception-view';
 import {
@@ -93,6 +94,7 @@ export function draw(
   highlighted: ReadonlySet<number> = new Set(),
   light = false,
   perception: Perception | null = null,
+  resource: 'minerals' | 'detritus' | null = null,
 ): void {
   const ctx = canvas.getContext('2d')!,
     b = buffer.getContext('2d')!;
@@ -137,6 +139,13 @@ export function draw(
         Math.round(15 + 75 * transmission),
         Math.round(22 + 48 * transmission),
       ];
+    }
+    if (resource && frame.nutrientCycle) {
+      const intensity = Math.min(frame.nutrientCycle[resource][i], 16) / 16;
+      color =
+        resource === 'minerals'
+          ? [0, Math.round(255 * intensity), Math.round(128 * intensity)]
+          : [Math.round(255 * intensity), Math.round(128 * intensity), 0];
     }
     const p = i * 4;
     pixels.data[p] = color[0];
@@ -338,6 +347,7 @@ export const markup = `
         <section class="shade-section"><div class="section-caption"><h3>Painted shade habitats (experimental)</h3><button id="light" class="secondary" aria-pressed="false">Show light</button></div><label class="terrain-follow"><input id="shade-enabled" type="checkbox">Enable painted shade habitats</label><p class="muted">Artificial habitat rule, not a realistic sunlight model. Shade reduces actual leaf energy and leaf-food probability by the same factor. It does not cool temperature or discount upkeep. Off retains paint but applies full light; reseeding clears paint and disables shade.</p><div class="refuge-tools"><button data-tool="shade" data-shade-tool aria-pressed="false" disabled>Shade</button><button data-tool="lighten" data-shade-tool aria-pressed="false" disabled>Lighten</button><button data-tool="erase-shade" data-shade-tool aria-pressed="false" disabled>Erase shade</button></div><label class="slider-label" for="shade-intensity">Shade intensity<output id="shade-intensity-value">4 units</output></label><input id="shade-intensity" type="range" min="1" max="16" step="1" value="4"><p class="muted">One unit removes 1/16 of light. Additive wrapped dabs saturate at 16 units (darkness); radius 0–8. Lighten subtracts units; erase restores full light. Capacity 4096 nonzero cells, including stored paint while off; an over-capacity dab is rejected whole.</p><p id="shade-summary" class="muted"></p><p id="shade-pending" role="status"></p><button id="clear-shade" class="secondary wide">Clear painted shade</button><p class="muted">Clear preserves mode, life, food, walls and temperature paint. Light background: dark = 0/16, pale = 16/16 transmission. Objects retain their functional colors. Light and temperature backgrounds are separate; leaves sample their own rotated, wrapped cells before movement. See Measured energy flows for recorded actual gains and costs.</p></section>
         <section class="refuge-section"><h3>Painted temperature refuges (experimental)</h3><label class="terrain-follow"><input id="refuge-enabled" type="checkbox">Enable painted temperature refuges</label><p class="muted">Manual environment change. Painted offsets alter actual climate upkeep and photosynthesis, so they can change survival and funded reproduction. The scale is abstract, not Celsius. Off retains paint but ignores it. Reseeding clears paint and turns this option off. Walls do not insulate temperature.</p><div class="refuge-tools"><button data-tool="warm" data-refuge-tool aria-pressed="false" disabled>Warm</button><button data-tool="cool" data-refuge-tool aria-pressed="false" disabled>Cool</button><button data-tool="erase-temperature" data-refuge-tool aria-pressed="false" disabled>Erase temperature</button></div><label class="slider-label" for="refuge-intensity">Intensity<output id="refuge-intensity-value">4 units</output></label><input id="refuge-intensity" type="range" min="1" max="32" step="1" value="4"><p class="muted">Additive wrapped dabs; saturation ±32 units. One unit = 0.01 normalized temperature = 0.4 abstract display degrees. Radius 0–8; erase ignores intensity. At most 4096 nonzero cells; an over-capacity dab is rejected whole. Event cadence changes paint, not seeded randomness.</p><p id="refuge-summary" class="muted">Disabled · empty · 0/4096 nonzero cells · offsets 0..0 units · rules 1</p><p id="refuge-pending" role="status"></p><button id="clear-refuges" class="secondary wide">Clear painted temperature</button><p class="muted">Preserves mode, life, food and walls. Objects obscure the temperature background; organisms sample at their anchor. Post-movement inspection can differ from earlier metabolic exposure.</p></section>
         ${mutationControlsMarkup()}
+        ${nutrientMarkup()}
         <details class="world-settings"><summary>World settings</summary><label class="slider-label" for="mutation">Global mutation rate / upper bound<output id="mutation-value">12%</output></label><input id="mutation" type="range" min="0" max="0.4" step="0.01" value="0.12"><label class="slider-label" for="nutrients">Leaf food chance<output id="nutrients-value">5%</output></label><input id="nutrients" type="range" min="0" max="20" step="1" value="5"><label class="seed-label" for="seed">World seed<input id="seed" type="number" min="0" max="4294967295" step="1" required value="42"></label>
         <div class="terrain-controls"><h3>Terrain</h3><label for="terrain-preset">Draft wall preset</label><select id="terrain-preset"><option value="open-field">Open field</option><option value="porous-ridges" selected>Porous ridges</option><option value="chambered-refuges">Chambered refuges</option></select><label class="terrain-follow"><input id="terrain-follow" type="checkbox" checked>Use world seed</label><label id="terrain-seed-label" for="terrain-seed" hidden>Terrain seed<input id="terrain-seed" type="number" min="0" max="4294967295" step="1" required value="42"></label><figure class="terrain-preview"><canvas id="terrain-preview" width="240" height="156" role="img" aria-labelledby="terrain-preview-caption"></canvas><figcaption id="terrain-preview-caption"></figcaption></figure><p id="terrain-committed" class="muted"></p><p id="terrain-draft-status" role="status"></p><button id="clear-walls" type="button" class="wide">Clear walls</button><p class="muted">Remove all walls; keep life and food.</p><button id="regenerate-walls" type="button" class="wide">Regenerate walls</button><p class="muted">Replaces walls; protects all living cells. Removes food only where new walls cover it. Actual walls may differ from the reset preview.</p></div>
         <button id="reset" class="secondary wide">Reseed world</button></details>

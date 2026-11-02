@@ -1536,6 +1536,54 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe('owned command admission and real-worker interleavings', () => {
+  it('nutrient reseed freezes opt-in and exposes observational fields without editing ecology', () => {
+    const harness = realWorker();
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    expect(harness.save().nutrientCycle).toBeNull();
+    get<HTMLInputElement>('nutrient-next').checked = true;
+    get('reset').click();
+    expect(get('reset-payload').textContent).toContain('finite 149760 N');
+    get<HTMLInputElement>('nutrient-next').checked = false;
+    get('confirm-reset').click();
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    paint(0);
+    harness.deliver();
+    const before = harness.save();
+    expect(before.nutrientCycle).not.toBeNull();
+    expect(get('nutrient-summary').textContent).toContain('149760/149760 N');
+    for (const layer of ['minerals', 'detritus', 'none']) {
+      set('nutrient-layer', layer, 'change');
+      paint(1);
+      harness.deliver();
+    }
+    set('nutrient-x', '120');
+    set('nutrient-y', '78');
+    expect(get('nutrient-cell').textContent).toContain('mineral N');
+    set('nutrient-x', '-1');
+    expect(get('nutrient-cell').textContent).toContain('whole-number');
+    expect(harness.save()).toEqual(before);
+    click('step');
+    harness.deliver();
+    paint(2);
+    harness.deliver();
+    expect(get('nutrient-summary').textContent).toContain('Last completed tick');
+    expect(() =>
+      captureCommand(
+        {
+          type: 'start',
+          settings: DEFAULTS,
+          terrain: DEFAULT_TERRAIN,
+          display: { epoch: 0, enabled: true, visible: true },
+          nutrientCycle: 'true',
+        },
+        DEFAULTS,
+      ),
+    ).toThrow();
+  });
   it('owns event recording, replay evidence, busy requests and failed capture without touching the sandbox', () => {
     expect(() => captureCommand({ type: 'event-recording', enabled: 1 }, DEFAULTS)).toThrow();
     expect(() => captureCommand({ type: 'event-replay', eventId: 0 }, DEFAULTS)).toThrow();
@@ -3258,7 +3306,7 @@ describe('explicit bounded local library', () => {
     root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
     harness.deliver();
     const before = harness.save();
-    expect(before.version).toBe(16);
+    expect(before.version).toBe(17);
     expect(before.lineageArchive.summaries.length).toBeGreaterThan(0);
     expect(before.telemetry.version).toBe(2);
     expect(before.interventions.version).toBe(5);

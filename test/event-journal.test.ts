@@ -17,6 +17,24 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
+it('replays complete nutrient fields across extinction and decay without editing the sandbox', () => {
+  const world = new Ecosystem({ ...DEFAULTS, nutrients: 0 }, false, { nutrientCycle: true });
+  const organism = world.spawn({ ...founder(0), cells: [{ x: 0, y: 0, type: 7 }] }, 40, 40)!;
+  organism.energy = 0.001;
+  const recorder = new EventRecorder(world);
+  world.step();
+  recorder.observe(world);
+  const evidence = recorder.replay(recorder.snapshot().events.at(-1)!.id);
+  for (let tick = 1; tick < 32; tick++) world.step();
+  evidence.endpointTick = world.tick;
+  evidence.endpoint = completeCheckpoint(world);
+  const before = world.save();
+  const isolated = replay(evidence);
+  while (isolated.tasks.length) isolated.tasks.shift()!();
+  expect(isolated.messages.at(-1)).toMatchObject({ type: 'complete' });
+  expect(world.save()).toEqual(before);
+  expect(world.nutrientCycle!.detritus[40 * 240 + 40]).toBe(0);
+});
 function fixture() {
   const world = new Ecosystem(
     { ...DEFAULTS, seed: 42, mutation: 0, nutrients: 0, climate: 0 },
