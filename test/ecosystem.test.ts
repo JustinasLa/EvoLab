@@ -133,6 +133,7 @@ describe('approved seeded terrain, opaque extension and exact continuation contr
       for (const tick of [0, 30, 90, 330, 1600]) {
         while (world.tick < tick) world.step();
         const {
+          nutrientCycle,
           mutationPolicy,
           terrain,
           thermalRefuges,
@@ -141,6 +142,7 @@ describe('approved seeded terrain, opaque extension and exact continuation contr
           ...snapshot
         } = world.save();
         snapshot.organisms = restoreHistoricalWorld(world.save()).organisms as any;
+        expect(nutrientCycle).toBeNull();
         expect(mutationPolicy).toEqual({ version: 1, mode: 'legacy' });
         expect(terrain).toEqual(DEFAULT_TERRAIN);
         expect(thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
@@ -536,7 +538,7 @@ describe('passive inherited sensory data and reversible compatibility', () => {
     const parsed = parseBlueprint(
       serializeBlueprint({ name: 'Stored only', description: '', genome }),
     );
-    expect(parsed.version).toBe(5);
+    expect(parsed.version).toBe(6);
     expect(parsed.genome).toEqual(genome);
     expect(Ecosystem.load(JSON.stringify(before)).save()).toEqual(before);
     expect(world.save()).toEqual(before);
@@ -847,7 +849,7 @@ describe('passive inherited sensory data and reversible compatibility', () => {
           parsed = parseBlueprint(baselineFixtures['blueprint1.json']);
         expect(parsed).toEqual({
           ...old,
-          version: 5,
+          version: 6,
           genome: { ...old.genome, behavior: { version: 1, mode: 'legacy' } },
         });
         for (const name of [
@@ -2892,6 +2894,7 @@ describe('telemetry persistence, migration and complete candidate validation', (
           { version: _version, ...expectedEcology } = file,
           {
             version: current,
+            nutrientCycle,
             mutationPolicy,
             interventions,
             lineageArchive,
@@ -2900,7 +2903,8 @@ describe('telemetry persistence, migration and complete candidate validation', (
             shadeHabitats,
             ...actualEcology
           } = ecology(world.save());
-        expect(world.save().version).toBe(17);
+        expect(world.save().version).toBe(18);
+        expect(nutrientCycle).toBeNull();
         expect(thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
         expect(shadeHabitats).toEqual({ version: 1, enabled: false, cells: [] });
         expect(terrain).toEqual(DEFAULT_TERRAIN);

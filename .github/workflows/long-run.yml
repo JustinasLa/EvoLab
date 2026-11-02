@@ -34,6 +34,7 @@ jobs:
         run: |
           npm run bench:ecosystem
           npm run bench:neural
+          npm run bench:senses
       - name: Upload complete long-run receipts
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

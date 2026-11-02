@@ -9,7 +9,7 @@ export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 17;
+export const WORLD_VERSION = 18;
 export const LINEAGE_SUMMARY_CAPACITY = 256;
 export const LINEAGE_EVENT_CAPACITY = 512;
 export const INTERVENTION_CAPACITY = 128;
@@ -287,6 +287,7 @@ export interface Stats {
   top: Species[];
 }
 export interface Frame {
+  nutrientCycle?: import('./nutrients').NutrientPlane;
   terrain: TerrainRecipe;
   thermalRefuges: RefugePlane;
   shadeHabitats: ShadePlane;
@@ -380,6 +381,7 @@ export interface LineagePresentation {
   current: (Species & { organismIds: number[] })[];
 }
 export type WorldPresentation = Pick<Frame, 'stats' | 'climate' | 'offset' | 'terrain'> & {
+  nutrientCycle?: import('./nutrients').NutrientSummary;
   roles?: import('./roles').RoleSnapshot;
   mutationPolicy: MutationPolicy;
   lineage?: LineagePresentation;
@@ -439,7 +441,13 @@ export interface AcceptedTelemetrySource extends TelemetrySnapshot {
 export type CommandPayload =
   | { type: 'event-recording'; enabled: boolean }
   | { type: 'event-replay'; eventId: number }
-  | { type: 'start'; settings: Settings; display: DisplayView; terrain: TerrainRecipe }
+  | {
+      type: 'start';
+      settings: Settings;
+      display: DisplayView;
+      terrain: TerrainRecipe;
+      nutrientCycle?: boolean;
+    }
   | { type: 'load'; text: string }
   | { type: 'capture-design'; source: 'organism' | 'lineage'; sourceId: number; captureId: number }
   | { type: 'pause' | 'resume' | 'step' | 'save' }
@@ -674,6 +682,7 @@ export interface WorldEcology {
   organisms: Organism[];
 }
 export interface WorldFile extends WorldEcology {
+  nutrientCycle: import('./nutrients').NutrientFile | null;
   mutationPolicy: MutationPolicy;
   version: typeof WORLD_VERSION;
   shadeHabitats: ShadeFile;
@@ -686,20 +695,23 @@ export interface WorldFile extends WorldEcology {
 export type HistoricalWorldEcology = Omit<WorldEcology, 'organisms'> & {
   organisms: HistoricalOrganism[];
 };
-export interface WorldFileV14 extends Omit<WorldFile, 'version'> {
-  version: 14;
+export interface WorldFileV17 extends Omit<WorldFile, 'version'> {
+  version: 17;
 }
-export interface WorldFileV15 extends Omit<WorldFile, 'version'> {
-  version: 15;
-}
-export interface WorldFileV16 extends Omit<WorldFile, 'version'> {
+export interface WorldFileV16 extends Omit<WorldFileV17, 'version' | 'nutrientCycle'> {
   version: 16;
 }
-export interface WorldFileV13 extends Omit<WorldFile, 'version'> {
+export interface WorldFileV15 extends Omit<WorldFileV16, 'version'> {
+  version: 15;
+}
+export interface WorldFileV14 extends Omit<WorldFileV15, 'version'> {
+  version: 14;
+}
+export interface WorldFileV13 extends Omit<WorldFileV15, 'version'> {
   version: 13;
 }
 export interface WorldFileV12 extends Omit<
-  WorldFile,
+  WorldFileV15,
   'version' | 'mutationPolicy' | 'interventions'
 > {
   version: 12;
@@ -898,6 +910,7 @@ export interface PaintOutcome {
 }
 export interface MeasurementSource {
   snapshot: {
+    nutrientCycle?: import('./nutrients').NutrientSummary;
     mutationPolicy: MutationPolicy;
     worldVersion: typeof WORLD_VERSION;
     terrain: TerrainRecipe;

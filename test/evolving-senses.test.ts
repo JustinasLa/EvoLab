@@ -20,6 +20,8 @@ import { newSenses, validSenses, mutateSenses, sameSenses, SENSE_CHANNELS } from
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
 import { classifyRecord, createLibrary, libraryCandidate, type LibraryEntry } from '../src/library';
 import { libraryHarness } from './fixtures/library';
+import { NUTRIENT_TOTAL, nutrientSummary, validateNutrients } from '../src/nutrients';
+import { createComparison, createRecipeComparison } from '../src/experiments';
 import { sameInherited } from '../src/lineage';
 import { birthObservation, inheritedDifference, validBirthEvent } from '../src/mutation-evidence';
 
@@ -56,6 +58,139 @@ function scene(genome = design(), x = 60, y = 60, rotation = 0) {
 }
 
 describe('explicit inherited expanded senses', () => {
+  it('charges expanded sensing into the finite nutrient budget without creating matter or energy', () => {
+    const states = [false, true].map((expanded) => {
+      const source = design();
+      if (expanded) source.senses = { ...newSenses(), range: 8, fov: 4, temperature: true };
+      else {
+        source.controller = newController();
+        delete source.senses;
+      }
+      const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false, {
+        nutrientCycle: true,
+      });
+      const organism = world.spawn(source, 60, 60)!;
+      organism.age = 1;
+      organism.energy = 10;
+      world.step();
+      const resources = nutrientSummary(world.nutrientCycle!, world.organisms.values(), world.food);
+      expect(resources.total).toBe(NUTRIENT_TOTAL);
+      expect(resources.food).toBe(0);
+      expect(resources.budget!.sunlight).toBe(0);
+      expect(resources.budget!.before - resources.budget!.after).toBeCloseTo(
+        resources.budget!.dissipated,
+        12,
+      );
+      expect(resources.budget!.dissipated).toBeCloseTo(0.024 + 0.02 + (expanded ? 0.064 : 0), 12);
+      validateNutrients(world.nutrientCycle!, world.organisms.values(), world.food);
+      expect(Ecosystem.load(JSON.stringify(world.save())).save()).toEqual(world.save());
+      return { world, organism, resources };
+    });
+    expect(states[0].organism.energy - states[1].organism.energy).toBeCloseTo(0.064, 12);
+    const paid = states[1];
+    paid.organism.energy = 0.05;
+    paid.organism.age = 3;
+    paid.world.step();
+    const death = nutrientSummary(
+      paid.world.nutrientCycle!,
+      paid.world.organisms.values(),
+      paid.world.food,
+    );
+    expect(death.total).toBe(NUTRIENT_TOTAL);
+    expect(death.biomass).toBe(0);
+    expect(death.detritus).toBe(2);
+    expect(death.food).toBe(0);
+    expect(death.budget!.dissipated).toBeCloseTo(0.05, 12);
+    expect(Ecosystem.load(JSON.stringify(paid.world.save())).save()).toEqual(paid.world.save());
+  });
+
+  it.each([16, 17])(
+    'keeps literal world%i neural state strict without silently activating expanded senses',
+    (version) => {
+      const source = design();
+      source.controller = newController();
+      delete source.senses;
+      const original = new Ecosystem(
+        { ...DEFAULTS, nutrients: 0, mutation: 0, climate: 0 },
+        false,
+        { nutrientCycle: version === 17 },
+      );
+      const organism = original.spawn(source, 60, 60)!;
+      organism.neuralBlocked = true;
+      const file = { ...original.save(), version };
+      const restored = Ecosystem.load(JSON.stringify(file));
+      for (let tick = 0; tick < 4; tick++) {
+        original.step();
+        restored.step();
+      }
+      expect(restored.save()).toEqual(original.save());
+      expect(restored.organisms.get(organism.id)!.genome.senses).toBeUndefined();
+      for (const target of ['living', 'founding'] as const) {
+        const invalid = structuredClone(file);
+        const genome =
+          target === 'living'
+            ? invalid.organisms[0].genome
+            : invalid.lineageArchive.summaries[0].foundingGenome!;
+        genome.controller = newController(2);
+        genome.senses = newSenses();
+        expect(() => Ecosystem.load(JSON.stringify(invalid))).toThrow();
+      }
+      const missingBlocked = structuredClone(file);
+      delete missingBlocked.organisms[0].neuralBlocked;
+      expect(() => Ecosystem.load(JSON.stringify(missingBlocked))).toThrow();
+      const missingFields = structuredClone(file) as Record<string, unknown>;
+      delete missingFields.nutrientCycle;
+      if (version === 17) expect(() => Ecosystem.load(JSON.stringify(missingFields))).toThrow();
+      else expect(Ecosystem.load(JSON.stringify(missingFields)).nutrientCycle).toBeNull();
+      const extinct = scene();
+      extinct.world.paint(
+        'erase',
+        extinct.organism.x,
+        extinct.organism.y,
+        0,
+        extinct.organism.genome,
+      );
+      expect(extinct.world.organisms.size).toBe(0);
+      expect(Ecosystem.load(JSON.stringify(extinct.world.save())).save()).toEqual(
+        extinct.world.save(),
+      );
+      expect(() => Ecosystem.load(JSON.stringify({ ...extinct.world.save(), version }))).toThrow(
+        'lineage',
+      );
+    },
+  );
+
+  it('preserves composed nutrient and sensory checkpoints through declared comparison provenance', () => {
+    const source = design();
+    source.senses!.temperature = true;
+    const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false, {
+      nutrientCycle: true,
+    });
+    world.spawn(source, 60, 60);
+    const initial = JSON.stringify(world.save());
+    const runner = createComparison(initial, {
+      intervention: 'none',
+      treatmentTick: 0,
+      horizonTick: 4,
+    });
+    while (runner.advance(() => 0).tick < 4) {}
+    const result = runner.result();
+    expect(result.control.state).toBe(result.treatment.state);
+    const replay = createRecipeComparison(result.recipe);
+    while (replay.advance(() => 0).tick < 4) {}
+    expect(replay.result()).toEqual({ ...result, reproduced: true });
+    for (const branch of [result.control, result.treatment]) {
+      const saved = Ecosystem.load(branch.state);
+      expect(saved.nutrientCycle).not.toBeNull();
+      expect(saved.organisms.values().next().value!.genome.senses).toEqual(source.senses);
+      expect(
+        nutrientSummary(saved.nutrientCycle!, saved.organisms.values(), saved.food).total,
+      ).toBe(NUTRIENT_TOTAL);
+    }
+    expect(JSON.stringify(world.save())).toBe(initial);
+    runner.dispose();
+    replay.dispose();
+  });
   it('preserves current and predecessor controllers through complete library storage and world continuation', async () => {
     const native = libraryHarness();
     let identity = 0;
