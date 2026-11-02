@@ -1,4 +1,5 @@
 import { RoleObserver } from './roles';
+import { NeuralObserver } from './neural-observation';
 import type { AttemptChannel } from './mutation-evidence';
 import { mutatePropensity } from './mutation';
 import {
@@ -765,6 +766,15 @@ export class Ecosystem {
   private perceptionId = 0;
   private lastPerception: Perception | null = null;
   private roles?: RoleObserver;
+  private neural?: NeuralObserver;
+  selectNeural(id: number, enabled: boolean): void {
+    if (!enabled) this.neural = undefined;
+    else if (this.neural?.id !== id)
+      this.neural = new NeuralObserver(id, this.tick, this.organisms.get(id));
+  }
+  neuralObservation() {
+    return this.neural?.snapshot(this.organisms.get(this.neural.id)) ?? null;
+  }
   observeRoles(): void {
     this.roles ??= new RoleObserver(this.tick);
   }
@@ -1234,6 +1244,7 @@ export class Ecosystem {
     return o;
   }
   kill(o: Organism, cause: DeathCause): void {
+    if (this.neural?.id === o.id) this.neural.finish(o, this.tick, 'death');
     for (const i of positions(o)) {
       this.occupied[i] = 0;
       this.food[i] = 1;
@@ -1320,6 +1331,7 @@ export class Ecosystem {
               before = o.energy;
               o.energy += 2.2;
               this.recordEnergy('mouthsGained', o.energy - before);
+              this.neural?.meal(o.id, this.tick, o.energy - before);
               this.roles?.energy(o.species, 'mouthsGained', o.energy - before);
             }
             const victim = this.organisms.get(this.occupied[n]);
@@ -1344,10 +1356,18 @@ export class Ecosystem {
         }
       }
       if (o.genome.controller && o.age % o.genome.tempo === 0) {
-        const action = neuralAction(o.genome.controller, neuralInputs(o, this));
+        const decision = this.neural?.id === o.id ? this.neural.begin(o, this.tick) : undefined;
+        const inputs = neuralInputs(o, this, decision?.rays);
+        const action = neuralAction(o.genome.controller, inputs, decision);
         before = o.energy;
         o.energy -= NEURAL_COST;
         this.recordEnergy('upkeepSpent', before - o.energy);
+        if (decision) {
+          decision.inputs = inputs;
+          decision.action = action;
+          decision.result = action === 'rest' ? 'rest' : 'no-motor';
+          decision.evaluationCost = before - o.energy;
+        }
         o.neuralBlocked = false;
         if (action !== 'rest' && o.genome.cells.some((cell) => cell.type === 5)) {
           let moved: boolean;
@@ -1363,7 +1383,12 @@ export class Ecosystem {
           before = o.energy;
           o.energy -= NEURAL_ACTION_COST;
           this.recordEnergy('movementSpent', before - o.energy);
+          if (decision) {
+            decision.result = moved ? 'accepted' : 'blocked';
+            decision.actionCost = before - o.energy;
+          }
         }
+        if (decision) decision.after = { x: o.x, y: o.y, rotation: o.rotation, energy: o.energy };
       } else if (
         !o.genome.controller &&
         o.genome.cells.some((c) => c.type === 5) &&
@@ -1497,6 +1522,7 @@ export class Ecosystem {
           });
       }
     }
+    if (this.neural) this.neural.finish(this.organisms.get(this.neural.id), this.tick);
     this.observe();
   }
   paint(tool: Tool, x: number, y: number, radius: number, genome: Genome): PaintOutcome {
