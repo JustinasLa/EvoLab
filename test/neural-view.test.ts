@@ -46,6 +46,12 @@ it('provides an accessible network, exact equivalent tables, bounded history and
   setup.view.update(setup.state(), 3);
   const region = setup.get('neural-data');
   expect(region.querySelector('svg')!.getAttribute('role')).toBe('img');
+  expect(region.textContent).toContain(
+    'Controller v1; actual captured topology 6–4–4; 40 weights / 8 biases.',
+  );
+  expect(region.querySelector('svg')!.getAttribute('aria-label')).toContain(
+    'controller v1, 6-input, 4-hidden, 4-output',
+  );
   expect(region.querySelectorAll('circle')).toHaveLength(14);
   expect(region.querySelectorAll('line')).toHaveLength(40);
   expect(region.querySelectorAll('circle.chosen')).toHaveLength(1);
