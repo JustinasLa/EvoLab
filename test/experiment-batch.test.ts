@@ -41,10 +41,16 @@ describe('independent seeded batches', () => {
     const runner = createBatch(plan);
     plan.seeds[0] = 9;
     const output = finish(runner);
+    expect(output.rules).toEqual({ version: 9, worldVersion: 17 });
     expect(output.runs.map((run) => run.seed)).toEqual([41, 42]);
     expect(output.runs.every((run) => run.status === 'complete')).toBe(true);
     for (const run of output.runs) {
       const recipe = run.recipe!;
+      expect(recipe.rules).toEqual({
+        id: 'evolab-drift-cellular',
+        version: 9,
+        worldVersion: 17,
+      });
       expect(recipe.control).toEqual(recipe.treatment);
       const world = new Ecosystem({ ...DEFAULTS, seed: run.seed });
       world.step();
@@ -211,6 +217,7 @@ describe('independent seeded batches', () => {
       (value) => (value.runtime = 'elsewhere'),
       (value) => value.rules.version++,
       (value) => value.rules.worldVersion++,
+      (value) => (value.rules = { version: 8, worldVersion: 16 }),
       (value) => (value.extra = 1),
       (value) => value.runs.pop(),
       (value) => value.runs[0].seed++,

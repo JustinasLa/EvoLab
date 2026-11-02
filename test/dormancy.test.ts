@@ -25,6 +25,11 @@ import { NEURAL_COST, newController } from '../src/neural';
 import { EventRecorder } from '../src/event-journal';
 import { startReplayWorker, type ReplayScope } from '../src/event-replay-worker';
 import type { ReplayResponse } from '../src/event-model';
+import { createComparison, createRecipeComparison } from '../src/experiments';
+import {
+  EXPERIMENT_INTERVENTIONS,
+  type ExperimentIntervention,
+} from '../src/experiment-interventions';
 
 const advance = (world: Ecosystem, ticks: number) => {
   for (let tick = 0; tick < ticks; tick++) world.step();
@@ -365,6 +370,44 @@ describe('bounded inherited dormancy', () => {
     expect(child.reserves).toEqual({ stored: 0, dormant: false });
     expect(Ecosystem.load(JSON.stringify(world.save())).save()).toEqual(world.save());
   });
+
+  it.each(Object.keys(EXPERIMENT_INTERVENTIONS) as ExperimentIntervention[])(
+    'preserves exact neural and reserve state through %s comparison and recipe replay',
+    (intervention) => {
+      const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
+      const design = genome(true, 4);
+      design.controller = newController();
+      const organism = world.spawn(design, 60, 60)!;
+      organism.neuralBlocked = true;
+      organism.energy = 9;
+      organism.reserves = { stored: 12, dormant: true };
+      const checkpoint = JSON.stringify(world.save());
+      const direct = Ecosystem.load(checkpoint);
+      const runner = createComparison(checkpoint, {
+        intervention,
+        treatmentTick: 2,
+        horizonTick: 6,
+      });
+      for (let tick = 0; tick < 6; tick++) {
+        if (tick === 2) EXPERIMENT_INTERVENTIONS[intervention].apply(direct);
+        direct.step();
+      }
+      while (runner.advance(() => 0).tick < 6) {}
+      const result = runner.result();
+      runner.dispose();
+      expect(result.treatment.state).toBe(JSON.stringify(direct.save()));
+      expect(JSON.parse(result.recipe).rules).toEqual({
+        id: 'evolab-drift-cellular',
+        version: 9,
+        worldVersion: 17,
+      });
+      const replay = createRecipeComparison(result.recipe);
+      while (replay.advance(() => 0).tick < 6) {}
+      expect(replay.result()).toEqual({ ...result, reproduced: true });
+      replay.dispose();
+      expect(world.save()).toEqual(JSON.parse(checkpoint));
+    },
+  );
 
   it('replays complete journal checkpoints containing neural dormancy and reserve loss on age death', () => {
     const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
