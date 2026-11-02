@@ -1,3 +1,4 @@
+import { lifeDiff } from './life-history-view';
 import { perceptionHtml } from './perception-view';
 import {
   CELL_NAMES,
@@ -54,7 +55,7 @@ export function genomeDiff(
   const origin = direct
     ? `Compared with the actual reproductive parent in lineage #${baseline.lineageId}. This retained pair describes this birth only.`
     : `Compared with ${baseline.relation === 'parent-lineage' ? 'parent lineage' : 'own lineage'} #${baseline.lineageId} founding genome. This is a retained endpoint comparison, not an individual parent or a sequence of mutations.`;
-  return `<p>${origin}</p><div class="baseline-preview">${genomeSvg(previous, 72)}<span>${direct ? 'Actual parent anatomy' : 'Retained founding anatomy'}</span></div><ul>${(changes.length ? changes : ['Anatomy unchanged (local cell coordinates).']).map((change) => `<li>${change}</li>`).join('')}</ul><table><caption>Inherited traits (exact normalized values; tempo in ticks)</caption><thead><tr><th>Trait</th><th>${direct ? 'Parent' : 'Baseline'}</th><th>${direct ? 'Child' : 'Selected'}</th><th>Difference</th></tr></thead><tbody>${traits}${propensityRow}</tbody></table><p>${behavior} Both behavior1 modes remain inactive.</p><p>Accepted opaque metadata is outside this observed comparison.</p>`;
+  return `<p>${origin}</p><div class="baseline-preview">${genomeSvg(previous, 72)}<span>${direct ? 'Actual parent anatomy' : 'Retained founding anatomy'}</span></div><ul>${(changes.length ? changes : ['Anatomy unchanged (local cell coordinates).']).map((change) => `<li>${change}</li>`).join('')}</ul><table><caption>Inherited traits (exact normalized values; tempo in ticks)</caption><thead><tr><th>Trait</th><th>${direct ? 'Parent' : 'Baseline'}</th><th>${direct ? 'Child' : 'Selected'}</th><th>Difference</th></tr></thead><tbody>${traits}${propensityRow}${lifeDiff(previous, current)}</tbody></table><p>${behavior} Both behavior1 modes remain inactive.</p><p>Accepted opaque metadata is outside this observed comparison.</p>`;
 }
 
 // Only accepted observations enter this page-owned state. One identity and one

@@ -1,3 +1,4 @@
+import { assertLegacyLifeHistory } from './fixtures/life-history';
 import { describe, it, expect } from 'vitest';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -133,6 +134,7 @@ describe('approved seeded terrain, opaque extension and exact continuation contr
       for (const tick of [0, 30, 90, 330, 1600]) {
         while (world.tick < tick) world.step();
         const {
+          lifeHistoryLog: _lifeHistoryLog,
           nutrientCycle,
           mutationPolicy,
           terrain,
@@ -141,6 +143,7 @@ describe('approved seeded terrain, opaque extension and exact continuation contr
           lineageArchive: _lineageArchive,
           ...snapshot
         } = world.save();
+        assertLegacyLifeHistory(world.save());
         snapshot.organisms = restoreHistoricalWorld(world.save()).organisms as any;
         expect(nutrientCycle).toBeNull();
         expect(mutationPolicy).toEqual({ version: 1, mode: 'legacy' });
@@ -538,7 +541,7 @@ describe('passive inherited sensory data and reversible compatibility', () => {
     const parsed = parseBlueprint(
       serializeBlueprint({ name: 'Stored only', description: '', genome }),
     );
-    expect(parsed.version).toBe(5);
+    expect(parsed.version).toBe(6);
     expect(parsed.genome).toEqual(genome);
     expect(Ecosystem.load(JSON.stringify(before)).save()).toEqual(before);
     expect(world.save()).toEqual(before);
@@ -849,7 +852,7 @@ describe('passive inherited sensory data and reversible compatibility', () => {
           parsed = parseBlueprint(baselineFixtures['blueprint1.json']);
         expect(parsed).toEqual({
           ...old,
-          version: 5,
+          version: 6,
           genome: { ...old.genome, behavior: { version: 1, mode: 'legacy' } },
         });
         for (const name of [
@@ -2763,6 +2766,13 @@ describe('measured thermal adaptation', () => {
       expect(ecology(saved)).toEqual({
         ...ecology(world.save()),
         lineageArchive: saved.lineageArchive,
+        lifeHistoryLog: {
+          version: 1,
+          originTick: tick,
+          maintenanceSpent: 0,
+          eventsPruned: false,
+          events: [],
+        },
         interventions: {
           version: 5,
           originTick: tick,
@@ -2901,9 +2911,17 @@ describe('telemetry persistence, migration and complete candidate validation', (
             terrain,
             thermalRefuges,
             shadeHabitats,
+            lifeHistoryLog,
             ...actualEcology
           } = ecology(world.save());
-        expect(world.save().version).toBe(17);
+        expect(world.save().version).toBe(18);
+        expect(lifeHistoryLog).toEqual({
+          version: 1,
+          originTick: tick,
+          maintenanceSpent: 0,
+          eventsPruned: false,
+          events: [],
+        });
         expect(nutrientCycle).toBeNull();
         expect(thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
         expect(shadeHabitats).toEqual({ version: 1, enabled: false, cells: [] });

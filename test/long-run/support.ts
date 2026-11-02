@@ -105,7 +105,13 @@ export function invariants(world: Ecosystem): void {
     integer(organism.y, 0, HEIGHT - 1);
     integer(organism.rotation, 0, 3);
     integer(organism.direction, 0, 3);
-    integer(organism.age, 0, 900 + 75 * organism.genome.cells.length);
+    integer(
+      organism.age,
+      0,
+      900 +
+        75 * organism.genome.cells.length +
+        (organism.genome.lifeHistory?.maintenance ?? 0) * 300,
+    );
     // Later attackers or a larger mutated child can leave a survivor negative
     // until its next turn. Use the actual supported Save bounds, not energy > 0.
     finite(organism.energy, -1000, 100000);

@@ -1,0 +1,1772 @@
+{
+  "source": "7890152417d517a37f210b55f4e7852cb98bb8a5",
+  "method": "Canonical main Ecosystem source with shared pure dependencies; no life-history traits. Complete world16 snapshots and full saved-state SHA256 after 1, 30 and 80 continuation ticks.",
+  "outcomes": [
+    {
+      "seed": 7,
+      "weighted": false,
+      "initial": {
+        "version": 16,
+        "mutationPolicy": {
+          "version": 1,
+          "mode": "legacy"
+        },
+        "terrain": {
+          "version": 1,
+          "preset": "porous-ridges",
+          "seed": null
+        },
+        "thermalRefuges": {
+          "version": 1,
+          "enabled": false,
+          "cells": []
+        },
+        "shadeHabitats": {
+          "version": 1,
+          "enabled": false,
+          "cells": []
+        },
+        "lineageArchive": {
+          "version": 2,
+          "mutationOriginTick": 0,
+          "originKind": "fresh",
+          "originTick": 0,
+          "summariesPruned": false,
+          "eventsPruned": false,
+          "eventsEvictedThroughTick": null,
+          "living": [
+            {
+              "id": 5,
+              "origin": "manual",
+              "createdTick": 0,
+              "parentId": null,
+              "liveCount": 1,
+              "peakCount": 1,
+              "peakKind": "lifetime",
+              "extinctTick": null
+            },
+            {
+              "id": 6,
+              "origin": "mutation",
+              "createdTick": 3,
+              "parentId": 5,
+              "liveCount": 1,
+              "peakCount": 1,
+              "peakKind": "lifetime",
+              "extinctTick": null
+            }
+          ],
+          "summaries": [
+            {
+              "id": 5,
+              "origin": "manual",
+              "createdTick": 0,
+              "parentId": null,
+              "liveCount": 1,
+              "peakCount": 1,
+              "peakKind": "lifetime",
+              "extinctTick": null,
+              "admittedTick": 0,
+              "foundingGenome": {
+                "cells": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "type": 3
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "type": 5
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "type": 8
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "type": 3
+                  }
+                ],
+                "preference": 0.5,
+                "tolerance": 0.3,
+                "tempo": 5,
+                "behavior": {
+                  "version": 1,
+                  "mode": "legacy"
+                },
+                "controller": {
+                  "version": 1,
+                  "weights": [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                  ],
+                  "biases": [0, 0, 0, 0, 0, 1, 0, 0]
+                },
+                "mutationPropensity": 0.7
+              },
+              "genomeStatus": "retained"
+            },
+            {
+              "id": 6,
+              "origin": "mutation",
+              "createdTick": 3,
+              "parentId": 5,
+              "liveCount": 1,
+              "peakCount": 1,
+              "peakKind": "lifetime",
+              "extinctTick": null,
+              "admittedTick": 3,
+              "foundingGenome": {
+                "cells": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "type": 3
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "type": 5
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "type": 6
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "type": 3
+                  }
+                ],
+                "preference": 0.48299390384927393,
+                "tolerance": 0.29797395795118065,
+                "tempo": 4,
+                "behavior": {
+                  "version": 1,
+                  "mode": "legacy"
+                },
+                "controller": {
+                  "version": 1,
+                  "weights": [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                  ],
+                  "biases": [0, 0, 0, 0, 0, 0.8789077805122361, 0, 0]
+                },
+                "mutationPropensity": 0.7
+              },
+              "genomeStatus": "retained"
+            }
+          ],
+          "events": [
+            {
+              "kind": "created",
+              "id": 5,
+              "tick": 0,
+              "origin": "manual",
+              "parentId": null
+            },
+            {
+              "kind": "created",
+              "id": 6,
+              "tick": 3,
+              "origin": "mutation",
+              "parentId": 5
+            },
+            {
+              "id": 5,
+              "tick": 3,
+              "parentOrganismId": 1,
+              "parentGenome": {
+                "cells": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "type": 3
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "type": 5
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "type": 8
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "type": 3
+                  }
+                ],
+                "preference": 0.5,
+                "tolerance": 0.3,
+                "tempo": 5,
+                "behavior": {
+                  "version": 1,
+                  "mode": "legacy"
+                },
+                "controller": {
+                  "version": 1,
+                  "weights": [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                  ],
+                  "biases": [0, 0, 0, 0, 0, 1, 0, 0]
+                },
+                "mutationPropensity": 0.7
+              },
+              "gate": true,
+              "channels": ["change", "preference", "tolerance", "tempo", "neural-bias"],
+              "placementAttempts": 1,
+              "childOrganismId": 2,
+              "childLineageId": 6,
+              "childGenome": {
+                "cells": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "type": 3
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "type": 5
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "type": 6
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "type": 3
+                  }
+                ],
+                "preference": 0.48299390384927393,
+                "tolerance": 0.29797395795118065,
+                "tempo": 4,
+                "behavior": {
+                  "version": 1,
+                  "mode": "legacy"
+                },
+                "controller": {
+                  "version": 1,
+                  "weights": [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                  ],
+                  "biases": [0, 0, 0, 0, 0, 0.8789077805122361, 0, 0]
+                },
+                "mutationPropensity": 0.7
+              },
+              "kind": "reproduction",
+              "outcome": "born-changed"
+            }
+          ]
+        },
+        "telemetry": {
+          "version": 2,
+          "intervalTicks": 30,
+          "originTick": 0,
+          "adaptationOriginTick": 0,
+          "samples": [],
+          "pending": {
+            "births": 1,
+            "deaths": {
+              "age": 0,
+              "energy": 0,
+              "manual": 0
+            },
+            "energy": {
+              "leavesGained": 0,
+              "mouthsGained": 0,
+              "movementSpent": 0,
+              "upkeepSpent": 0.1740000000000208,
+              "climateUpkeepSpent": 0.029999999999999995,
+              "reproductionSpent": 11,
+              "offspringGranted": 9,
+              "stingsGained": 0,
+              "stingsDrained": 0
+            },
+            "fromTick": 0
+          }
+        },
+        "interventions": {
+          "version": 5,
+          "originTick": 0,
+          "originKind": "fresh",
+          "originSettings": {
+            "seed": 7,
+            "mutation": 0.4,
+            "nutrients": 0,
+            "climate": 0
+          },
+          "totalEntries": 0,
+          "evictedThroughTick": null,
+          "prefixSettings": {
+            "seed": 7,
+            "mutation": 0.4,
+            "nutrients": 0,
+            "climate": 0
+          },
+          "entries": []
+        },
+        "settings": {
+          "seed": 7,
+          "mutation": 0.4,
+          "nutrients": 0,
+          "climate": 0
+        },
+        "random": -759718057,
+        "tick": 3,
+        "births": 1,
+        "deaths": 0,
+        "nextId": 3,
+        "nextSpecies": 7,
+        "eventUntil": 0,
+        "eventOffset": 0,
+        "food": [],
+        "walls": [],
+        "organisms": [
+          {
+            "id": 1,
+            "species": 5,
+            "x": 120,
+            "y": 78,
+            "rotation": 0,
+            "direction": 0,
+            "age": 33,
+            "energy": 88.82599999999998,
+            "generation": 0,
+            "children": 1,
+            "ancestry": [],
+            "genome": {
+              "cells": [
+                {
+                  "x": 0,
+                  "y": 0,
+                  "type": 3
+                },
+                {
+                  "x": -1,
+                  "y": 0,
+                  "type": 5
+                },
+                {
+                  "x": 0,
+                  "y": -1,
+                  "type": 8
+                },
+                {
+                  "x": 1,
+                  "y": 0,
+                  "type": 3
+                }
+              ],
+              "preference": 0.5,
+              "tolerance": 0.3,
+              "tempo": 5,
+              "behavior": {
+                "version": 1,
+                "mode": "legacy"
+              },
+              "controller": {
+                "version": 1,
+                "weights": [
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                ],
+                "biases": [0, 0, 0, 0, 0, 1, 0, 0]
+              },
+              "mutationPropensity": 0.7
+            },
+            "neuralBlocked": false
+          },
+          {
+            "id": 2,
+            "species": 6,
+            "x": 120,
+            "y": 73,
+            "rotation": 0,
+            "direction": 1,
+            "age": 0,
+            "energy": 9,
+            "generation": 1,
+            "children": 0,
+            "ancestry": [5],
+            "genome": {
+              "cells": [
+                {
+                  "x": 0,
+                  "y": 0,
+                  "type": 3
+                },
+                {
+                  "x": -1,
+                  "y": 0,
+                  "type": 5
+                },
+                {
+                  "x": 0,
+                  "y": -1,
+                  "type": 6
+                },
+                {
+                  "x": 1,
+                  "y": 0,
+                  "type": 3
+                }
+              ],
+              "preference": 0.48299390384927393,
+              "tolerance": 0.29797395795118065,
+              "tempo": 4,
+              "behavior": {
+                "version": 1,
+                "mode": "legacy"
+              },
+              "controller": {
+                "version": 1,
+                "weights": [
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                ],
+                "biases": [0, 0, 0, 0, 0, 0.8789077805122361, 0, 0]
+              },
+              "mutationPropensity": 0.7
+            },
+            "neuralBlocked": false
+          }
+        ]
+      },
+      "endpoints": [
+        {
+          "tick": 4,
+          "hash": "13946474c85d1f3f2bd3e8eeb1ea49e09ede17380009b5c72aa74d5c01043ba6"
+        },
+        {
+          "tick": 33,
+          "hash": "68001e1560c46bd6b4b37fc079ff628836ffe76ac090c02efde3845bcb9582e1"
+        },
+        {
+          "tick": 83,
+          "hash": "b525eeeb900d2abafa23de83e422150e82d32d2c2590f8529eadbc71882637a9"
+        }
+      ]
+    },
+    {
+      "seed": 7,
+      "weighted": true,
+      "initial": {
+        "version": 16,
+        "mutationPolicy": {
+          "version": 1,
+          "mode": "weighted",
+          "weights": {
+            "add": 1,
+            "remove": 1,
+            "change": 1,
+            "preference": 1,
+            "tolerance": 1,
+            "tempo": 1,
+            "reactions": 1
+          }
+        },
+        "terrain": {
+          "version": 1,
+          "preset": "porous-ridges",
+          "seed": null
+        },
+        "thermalRefuges": {
+          "version": 1,
+          "enabled": false,
+          "cells": []
+        },
+        "shadeHabitats": {
+          "version": 1,
+          "enabled": false,
+          "cells": []
+        },
+        "lineageArchive": {
+          "version": 2,
+          "mutationOriginTick": 0,
+          "originKind": "fresh",
+          "originTick": 0,
+          "summariesPruned": false,
+          "eventsPruned": false,
+          "eventsEvictedThroughTick": null,
+          "living": [
+            {
+              "id": 5,
+              "origin": "manual",
+              "createdTick": 0,
+              "parentId": null,
+              "liveCount": 1,
+              "peakCount": 1,
+              "peakKind": "lifetime",
+              "extinctTick": null
+            },
+            {
+              "id": 6,
+              "origin": "mutation",
+              "createdTick": 3,
+              "parentId": 5,
+              "liveCount": 1,
+              "peakCount": 1,
+              "peakKind": "lifetime",
+              "extinctTick": null
+            }
+          ],
+          "summaries": [
+            {
+              "id": 5,
+              "origin": "manual",
+              "createdTick": 0,
+              "parentId": null,
+              "liveCount": 1,
+              "peakCount": 1,
+              "peakKind": "lifetime",
+              "extinctTick": null,
+              "admittedTick": 0,
+              "foundingGenome": {
+                "cells": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "type": 3
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "type": 5
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "type": 8
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "type": 3
+                  }
+                ],
+                "preference": 0.5,
+                "tolerance": 0.3,
+                "tempo": 5,
+                "behavior": {
+                  "version": 1,
+                  "mode": "legacy"
+                },
+                "controller": {
+                  "version": 1,
+                  "weights": [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                  ],
+                  "biases": [0, 0, 0, 0, 0, 1, 0, 0]
+                },
+                "mutationPropensity": 0.7
+              },
+              "genomeStatus": "retained"
+            },
+            {
+              "id": 6,
+              "origin": "mutation",
+              "createdTick": 3,
+              "parentId": 5,
+              "liveCount": 1,
+              "peakCount": 1,
+              "peakKind": "lifetime",
+              "extinctTick": null,
+              "admittedTick": 3,
+              "foundingGenome": {
+                "cells": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "type": 3
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "type": 5
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "type": 8
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "type": 3
+                  }
+                ],
+                "preference": 0.5,
+                "tolerance": 0.3,
+                "tempo": 6,
+                "behavior": {
+                  "version": 1,
+                  "mode": "legacy"
+                },
+                "controller": {
+                  "version": 1,
+                  "weights": [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                  ],
+                  "biases": [0, 0, 0, -0.01688368374016136, 0, 1, 0, 0]
+                },
+                "mutationPropensity": 0.7
+              },
+              "genomeStatus": "retained"
+            }
+          ],
+          "events": [
+            {
+              "kind": "created",
+              "id": 5,
+              "tick": 0,
+              "origin": "manual",
+              "parentId": null
+            },
+            {
+              "kind": "created",
+              "id": 6,
+              "tick": 3,
+              "origin": "mutation",
+              "parentId": 5
+            },
+            {
+              "id": 5,
+              "tick": 3,
+              "parentOrganismId": 1,
+              "parentGenome": {
+                "cells": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "type": 3
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "type": 5
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "type": 8
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "type": 3
+                  }
+                ],
+                "preference": 0.5,
+                "tolerance": 0.3,
+                "tempo": 5,
+                "behavior": {
+                  "version": 1,
+                  "mode": "legacy"
+                },
+                "controller": {
+                  "version": 1,
+                  "weights": [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                  ],
+                  "biases": [0, 0, 0, 0, 0, 1, 0, 0]
+                },
+                "mutationPropensity": 0.7
+              },
+              "gate": true,
+              "channels": ["tempo", "neural-bias"],
+              "placementAttempts": 1,
+              "childOrganismId": 2,
+              "childLineageId": 6,
+              "childGenome": {
+                "cells": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "type": 3
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "type": 5
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "type": 8
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "type": 3
+                  }
+                ],
+                "preference": 0.5,
+                "tolerance": 0.3,
+                "tempo": 6,
+                "behavior": {
+                  "version": 1,
+                  "mode": "legacy"
+                },
+                "controller": {
+                  "version": 1,
+                  "weights": [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                  ],
+                  "biases": [0, 0, 0, -0.01688368374016136, 0, 1, 0, 0]
+                },
+                "mutationPropensity": 0.7
+              },
+              "kind": "reproduction",
+              "outcome": "born-changed"
+            }
+          ]
+        },
+        "telemetry": {
+          "version": 2,
+          "intervalTicks": 30,
+          "originTick": 0,
+          "adaptationOriginTick": 0,
+          "samples": [],
+          "pending": {
+            "births": 1,
+            "deaths": {
+              "age": 0,
+              "energy": 0,
+              "manual": 0
+            },
+            "energy": {
+              "leavesGained": 0,
+              "mouthsGained": 0,
+              "movementSpent": 0,
+              "upkeepSpent": 0.1740000000000208,
+              "climateUpkeepSpent": 0.029999999999999995,
+              "reproductionSpent": 11,
+              "offspringGranted": 9,
+              "stingsGained": 0,
+              "stingsDrained": 0
+            },
+            "fromTick": 0
+          }
+        },
+        "interventions": {
+          "version": 5,
+          "originTick": 0,
+          "originKind": "fresh",
+          "originSettings": {
+            "seed": 7,
+            "mutation": 0.4,
+            "nutrients": 0,
+            "climate": 0
+          },
+          "totalEntries": 1,
+          "evictedThroughTick": null,
+          "prefixSettings": {
+            "seed": 7,
+            "mutation": 0.4,
+            "nutrients": 0,
+            "climate": 0
+          },
+          "entries": [
+            {
+              "kind": "mutation-policy",
+              "detail": {
+                "before": {
+                  "version": 1,
+                  "mode": "legacy"
+                },
+                "after": {
+                  "version": 1,
+                  "mode": "weighted",
+                  "weights": {
+                    "add": 1,
+                    "remove": 1,
+                    "change": 1,
+                    "preference": 1,
+                    "tolerance": 1,
+                    "tempo": 1,
+                    "reactions": 1
+                  }
+                }
+              },
+              "sequence": 1,
+              "origin": "manual",
+              "firstTick": 0,
+              "lastTick": 0
+            }
+          ]
+        },
+        "settings": {
+          "seed": 7,
+          "mutation": 0.4,
+          "nutrients": 0,
+          "climate": 0
+        },
+        "random": 503953283,
+        "tick": 3,
+        "births": 1,
+        "deaths": 0,
+        "nextId": 3,
+        "nextSpecies": 7,
+        "eventUntil": 0,
+        "eventOffset": 0,
+        "food": [],
+        "walls": [],
+        "organisms": [
+          {
+            "id": 1,
+            "species": 5,
+            "x": 120,
+            "y": 78,
+            "rotation": 0,
+            "direction": 0,
+            "age": 33,
+            "energy": 88.82599999999998,
+            "generation": 0,
+            "children": 1,
+            "ancestry": [],
+            "genome": {
+              "cells": [
+                {
+                  "x": 0,
+                  "y": 0,
+                  "type": 3
+                },
+                {
+                  "x": -1,
+                  "y": 0,
+                  "type": 5
+                },
+                {
+                  "x": 0,
+                  "y": -1,
+                  "type": 8
+                },
+                {
+                  "x": 1,
+                  "y": 0,
+                  "type": 3
+                }
+              ],
+              "preference": 0.5,
+              "tolerance": 0.3,
+              "tempo": 5,
+              "behavior": {
+                "version": 1,
+                "mode": "legacy"
+              },
+              "controller": {
+                "version": 1,
+                "weights": [
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                ],
+                "biases": [0, 0, 0, 0, 0, 1, 0, 0]
+              },
+              "mutationPropensity": 0.7
+            },
+            "neuralBlocked": false
+          },
+          {
+            "id": 2,
+            "species": 6,
+            "x": 114,
+            "y": 78,
+            "rotation": 1,
+            "direction": 0,
+            "age": 0,
+            "energy": 9,
+            "generation": 1,
+            "children": 0,
+            "ancestry": [5],
+            "genome": {
+              "cells": [
+                {
+                  "x": 0,
+                  "y": 0,
+                  "type": 3
+                },
+                {
+                  "x": -1,
+                  "y": 0,
+                  "type": 5
+                },
+                {
+                  "x": 0,
+                  "y": -1,
+                  "type": 8
+                },
+                {
+                  "x": 1,
+                  "y": 0,
+                  "type": 3
+                }
+              ],
+              "preference": 0.5,
+              "tolerance": 0.3,
+              "tempo": 6,
+              "behavior": {
+                "version": 1,
+                "mode": "legacy"
+              },
+              "controller": {
+                "version": 1,
+                "weights": [
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                ],
+                "biases": [0, 0, 0, -0.01688368374016136, 0, 1, 0, 0]
+              },
+              "mutationPropensity": 0.7
+            },
+            "neuralBlocked": false
+          }
+        ]
+      },
+      "endpoints": [
+        {
+          "tick": 4,
+          "hash": "bbba3400c9b4a225d35602c5302fd46e72010a65269e422645bd24d9da861ca2"
+        },
+        {
+          "tick": 33,
+          "hash": "5a043b548ef38a51e51e93219e7c0eedb24c6295a0beb56445d2cf8c2cdd1fb7"
+        },
+        {
+          "tick": 83,
+          "hash": "2aff8ea052f5b7a87e312819a6e866570fd1de353f09d1405392760160e8908f"
+        }
+      ]
+    },
+    {
+      "seed": 42,
+      "weighted": false,
+      "initial": {
+        "version": 16,
+        "mutationPolicy": {
+          "version": 1,
+          "mode": "legacy"
+        },
+        "terrain": {
+          "version": 1,
+          "preset": "porous-ridges",
+          "seed": null
+        },
+        "thermalRefuges": {
+          "version": 1,
+          "enabled": false,
+          "cells": []
+        },
+        "shadeHabitats": {
+          "version": 1,
+          "enabled": false,
+          "cells": []
+        },
+        "lineageArchive": {
+          "version": 2,
+          "mutationOriginTick": 0,
+          "originKind": "fresh",
+          "originTick": 0,
+          "summariesPruned": false,
+          "eventsPruned": false,
+          "eventsEvictedThroughTick": null,
+          "living": [
+            {
+              "id": 5,
+              "origin": "manual",
+              "createdTick": 0,
+              "parentId": null,
+              "liveCount": 2,
+              "peakCount": 2,
+              "peakKind": "lifetime",
+              "extinctTick": null
+            }
+          ],
+          "summaries": [
+            {
+              "id": 5,
+              "origin": "manual",
+              "createdTick": 0,
+              "parentId": null,
+              "liveCount": 2,
+              "peakCount": 2,
+              "peakKind": "lifetime",
+              "extinctTick": null,
+              "admittedTick": 0,
+              "foundingGenome": {
+                "cells": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "type": 3
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "type": 5
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "type": 8
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "type": 3
+                  }
+                ],
+                "preference": 0.5,
+                "tolerance": 0.3,
+                "tempo": 5,
+                "behavior": {
+                  "version": 1,
+                  "mode": "legacy"
+                },
+                "controller": {
+                  "version": 1,
+                  "weights": [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                  ],
+                  "biases": [0, 0, 0, 0, 0, 1, 0, 0]
+                },
+                "mutationPropensity": 0.7
+              },
+              "genomeStatus": "retained"
+            }
+          ],
+          "events": [
+            {
+              "kind": "created",
+              "id": 5,
+              "tick": 0,
+              "origin": "manual",
+              "parentId": null
+            },
+            {
+              "id": 5,
+              "tick": 3,
+              "parentOrganismId": 1,
+              "parentGenome": {
+                "cells": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "type": 3
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "type": 5
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "type": 8
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "type": 3
+                  }
+                ],
+                "preference": 0.5,
+                "tolerance": 0.3,
+                "tempo": 5,
+                "behavior": {
+                  "version": 1,
+                  "mode": "legacy"
+                },
+                "controller": {
+                  "version": 1,
+                  "weights": [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                  ],
+                  "biases": [0, 0, 0, 0, 0, 1, 0, 0]
+                },
+                "mutationPropensity": 0.7
+              },
+              "gate": false,
+              "channels": [],
+              "placementAttempts": 1,
+              "childOrganismId": 2,
+              "childLineageId": 5,
+              "childGenome": {
+                "cells": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "type": 3
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "type": 5
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "type": 8
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "type": 3
+                  }
+                ],
+                "preference": 0.5,
+                "tolerance": 0.3,
+                "tempo": 5,
+                "behavior": {
+                  "version": 1,
+                  "mode": "legacy"
+                },
+                "controller": {
+                  "version": 1,
+                  "weights": [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                  ],
+                  "biases": [0, 0, 0, 0, 0, 1, 0, 0]
+                },
+                "mutationPropensity": 0.7
+              },
+              "kind": "reproduction",
+              "outcome": "born-clone"
+            }
+          ]
+        },
+        "telemetry": {
+          "version": 2,
+          "intervalTicks": 30,
+          "originTick": 0,
+          "adaptationOriginTick": 0,
+          "samples": [],
+          "pending": {
+            "births": 1,
+            "deaths": {
+              "age": 0,
+              "energy": 0,
+              "manual": 0
+            },
+            "energy": {
+              "leavesGained": 0,
+              "mouthsGained": 0,
+              "movementSpent": 0,
+              "upkeepSpent": 0.1740000000000208,
+              "climateUpkeepSpent": 0.029999999999999995,
+              "reproductionSpent": 11,
+              "offspringGranted": 9,
+              "stingsGained": 0,
+              "stingsDrained": 0
+            },
+            "fromTick": 0
+          }
+        },
+        "interventions": {
+          "version": 5,
+          "originTick": 0,
+          "originKind": "fresh",
+          "originSettings": {
+            "seed": 42,
+            "mutation": 0.4,
+            "nutrients": 0,
+            "climate": 0
+          },
+          "totalEntries": 0,
+          "evictedThroughTick": null,
+          "prefixSettings": {
+            "seed": 42,
+            "mutation": 0.4,
+            "nutrients": 0,
+            "climate": 0
+          },
+          "entries": []
+        },
+        "settings": {
+          "seed": 42,
+          "mutation": 0.4,
+          "nutrients": 0,
+          "climate": 0
+        },
+        "random": -63941155,
+        "tick": 3,
+        "births": 1,
+        "deaths": 0,
+        "nextId": 3,
+        "nextSpecies": 6,
+        "eventUntil": 0,
+        "eventOffset": 0,
+        "food": [],
+        "walls": [],
+        "organisms": [
+          {
+            "id": 1,
+            "species": 5,
+            "x": 120,
+            "y": 78,
+            "rotation": 0,
+            "direction": 2,
+            "age": 33,
+            "energy": 88.82599999999998,
+            "generation": 0,
+            "children": 1,
+            "ancestry": [],
+            "genome": {
+              "cells": [
+                {
+                  "x": 0,
+                  "y": 0,
+                  "type": 3
+                },
+                {
+                  "x": -1,
+                  "y": 0,
+                  "type": 5
+                },
+                {
+                  "x": 0,
+                  "y": -1,
+                  "type": 8
+                },
+                {
+                  "x": 1,
+                  "y": 0,
+                  "type": 3
+                }
+              ],
+              "preference": 0.5,
+              "tolerance": 0.3,
+              "tempo": 5,
+              "behavior": {
+                "version": 1,
+                "mode": "legacy"
+              },
+              "controller": {
+                "version": 1,
+                "weights": [
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                ],
+                "biases": [0, 0, 0, 0, 0, 1, 0, 0]
+              },
+              "mutationPropensity": 0.7
+            },
+            "neuralBlocked": false
+          },
+          {
+            "id": 2,
+            "species": 5,
+            "x": 117,
+            "y": 78,
+            "rotation": 2,
+            "direction": 1,
+            "age": 0,
+            "energy": 9,
+            "generation": 1,
+            "children": 0,
+            "ancestry": [],
+            "genome": {
+              "cells": [
+                {
+                  "x": 0,
+                  "y": 0,
+                  "type": 3
+                },
+                {
+                  "x": -1,
+                  "y": 0,
+                  "type": 5
+                },
+                {
+                  "x": 0,
+                  "y": -1,
+                  "type": 8
+                },
+                {
+                  "x": 1,
+                  "y": 0,
+                  "type": 3
+                }
+              ],
+              "preference": 0.5,
+              "tolerance": 0.3,
+              "tempo": 5,
+              "behavior": {
+                "version": 1,
+                "mode": "legacy"
+              },
+              "controller": {
+                "version": 1,
+                "weights": [
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                ],
+                "biases": [0, 0, 0, 0, 0, 1, 0, 0]
+              },
+              "mutationPropensity": 0.7
+            },
+            "neuralBlocked": false
+          }
+        ]
+      },
+      "endpoints": [
+        {
+          "tick": 4,
+          "hash": "29d3d639df1ebe2d8e78ebc380f605f147da08c6c4e95db07d0495f5684fb888"
+        },
+        {
+          "tick": 33,
+          "hash": "c3387028681b7be2a95cabfc41d463e84cde90c54cc53eb68674907bce8beb24"
+        },
+        {
+          "tick": 83,
+          "hash": "d590ecb32f382b3fee5e18969158643e00b917293fbb02265650e09283cba4c5"
+        }
+      ]
+    },
+    {
+      "seed": 42,
+      "weighted": true,
+      "initial": {
+        "version": 16,
+        "mutationPolicy": {
+          "version": 1,
+          "mode": "weighted",
+          "weights": {
+            "add": 1,
+            "remove": 1,
+            "change": 1,
+            "preference": 1,
+            "tolerance": 1,
+            "tempo": 1,
+            "reactions": 1
+          }
+        },
+        "terrain": {
+          "version": 1,
+          "preset": "porous-ridges",
+          "seed": null
+        },
+        "thermalRefuges": {
+          "version": 1,
+          "enabled": false,
+          "cells": []
+        },
+        "shadeHabitats": {
+          "version": 1,
+          "enabled": false,
+          "cells": []
+        },
+        "lineageArchive": {
+          "version": 2,
+          "mutationOriginTick": 0,
+          "originKind": "fresh",
+          "originTick": 0,
+          "summariesPruned": false,
+          "eventsPruned": false,
+          "eventsEvictedThroughTick": null,
+          "living": [
+            {
+              "id": 5,
+              "origin": "manual",
+              "createdTick": 0,
+              "parentId": null,
+              "liveCount": 2,
+              "peakCount": 2,
+              "peakKind": "lifetime",
+              "extinctTick": null
+            }
+          ],
+          "summaries": [
+            {
+              "id": 5,
+              "origin": "manual",
+              "createdTick": 0,
+              "parentId": null,
+              "liveCount": 2,
+              "peakCount": 2,
+              "peakKind": "lifetime",
+              "extinctTick": null,
+              "admittedTick": 0,
+              "foundingGenome": {
+                "cells": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "type": 3
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "type": 5
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "type": 8
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "type": 3
+                  }
+                ],
+                "preference": 0.5,
+                "tolerance": 0.3,
+                "tempo": 5,
+                "behavior": {
+                  "version": 1,
+                  "mode": "legacy"
+                },
+                "controller": {
+                  "version": 1,
+                  "weights": [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                  ],
+                  "biases": [0, 0, 0, 0, 0, 1, 0, 0]
+                },
+                "mutationPropensity": 0.7
+              },
+              "genomeStatus": "retained"
+            }
+          ],
+          "events": [
+            {
+              "kind": "created",
+              "id": 5,
+              "tick": 0,
+              "origin": "manual",
+              "parentId": null
+            },
+            {
+              "id": 5,
+              "tick": 3,
+              "parentOrganismId": 1,
+              "parentGenome": {
+                "cells": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "type": 3
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "type": 5
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "type": 8
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "type": 3
+                  }
+                ],
+                "preference": 0.5,
+                "tolerance": 0.3,
+                "tempo": 5,
+                "behavior": {
+                  "version": 1,
+                  "mode": "legacy"
+                },
+                "controller": {
+                  "version": 1,
+                  "weights": [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                  ],
+                  "biases": [0, 0, 0, 0, 0, 1, 0, 0]
+                },
+                "mutationPropensity": 0.7
+              },
+              "gate": false,
+              "channels": [],
+              "placementAttempts": 1,
+              "childOrganismId": 2,
+              "childLineageId": 5,
+              "childGenome": {
+                "cells": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "type": 3
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "type": 5
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "type": 8
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "type": 3
+                  }
+                ],
+                "preference": 0.5,
+                "tolerance": 0.3,
+                "tempo": 5,
+                "behavior": {
+                  "version": 1,
+                  "mode": "legacy"
+                },
+                "controller": {
+                  "version": 1,
+                  "weights": [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                  ],
+                  "biases": [0, 0, 0, 0, 0, 1, 0, 0]
+                },
+                "mutationPropensity": 0.7
+              },
+              "kind": "reproduction",
+              "outcome": "born-clone"
+            }
+          ]
+        },
+        "telemetry": {
+          "version": 2,
+          "intervalTicks": 30,
+          "originTick": 0,
+          "adaptationOriginTick": 0,
+          "samples": [],
+          "pending": {
+            "births": 1,
+            "deaths": {
+              "age": 0,
+              "energy": 0,
+              "manual": 0
+            },
+            "energy": {
+              "leavesGained": 0,
+              "mouthsGained": 0,
+              "movementSpent": 0,
+              "upkeepSpent": 0.1740000000000208,
+              "climateUpkeepSpent": 0.029999999999999995,
+              "reproductionSpent": 11,
+              "offspringGranted": 9,
+              "stingsGained": 0,
+              "stingsDrained": 0
+            },
+            "fromTick": 0
+          }
+        },
+        "interventions": {
+          "version": 5,
+          "originTick": 0,
+          "originKind": "fresh",
+          "originSettings": {
+            "seed": 42,
+            "mutation": 0.4,
+            "nutrients": 0,
+            "climate": 0
+          },
+          "totalEntries": 1,
+          "evictedThroughTick": null,
+          "prefixSettings": {
+            "seed": 42,
+            "mutation": 0.4,
+            "nutrients": 0,
+            "climate": 0
+          },
+          "entries": [
+            {
+              "kind": "mutation-policy",
+              "detail": {
+                "before": {
+                  "version": 1,
+                  "mode": "legacy"
+                },
+                "after": {
+                  "version": 1,
+                  "mode": "weighted",
+                  "weights": {
+                    "add": 1,
+                    "remove": 1,
+                    "change": 1,
+                    "preference": 1,
+                    "tolerance": 1,
+                    "tempo": 1,
+                    "reactions": 1
+                  }
+                }
+              },
+              "sequence": 1,
+              "origin": "manual",
+              "firstTick": 0,
+              "lastTick": 0
+            }
+          ]
+        },
+        "settings": {
+          "seed": 42,
+          "mutation": 0.4,
+          "nutrients": 0,
+          "climate": 0
+        },
+        "random": -63941155,
+        "tick": 3,
+        "births": 1,
+        "deaths": 0,
+        "nextId": 3,
+        "nextSpecies": 6,
+        "eventUntil": 0,
+        "eventOffset": 0,
+        "food": [],
+        "walls": [],
+        "organisms": [
+          {
+            "id": 1,
+            "species": 5,
+            "x": 120,
+            "y": 78,
+            "rotation": 0,
+            "direction": 2,
+            "age": 33,
+            "energy": 88.82599999999998,
+            "generation": 0,
+            "children": 1,
+            "ancestry": [],
+            "genome": {
+              "cells": [
+                {
+                  "x": 0,
+                  "y": 0,
+                  "type": 3
+                },
+                {
+                  "x": -1,
+                  "y": 0,
+                  "type": 5
+                },
+                {
+                  "x": 0,
+                  "y": -1,
+                  "type": 8
+                },
+                {
+                  "x": 1,
+                  "y": 0,
+                  "type": 3
+                }
+              ],
+              "preference": 0.5,
+              "tolerance": 0.3,
+              "tempo": 5,
+              "behavior": {
+                "version": 1,
+                "mode": "legacy"
+              },
+              "controller": {
+                "version": 1,
+                "weights": [
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                ],
+                "biases": [0, 0, 0, 0, 0, 1, 0, 0]
+              },
+              "mutationPropensity": 0.7
+            },
+            "neuralBlocked": false
+          },
+          {
+            "id": 2,
+            "species": 5,
+            "x": 117,
+            "y": 78,
+            "rotation": 2,
+            "direction": 1,
+            "age": 0,
+            "energy": 9,
+            "generation": 1,
+            "children": 0,
+            "ancestry": [],
+            "genome": {
+              "cells": [
+                {
+                  "x": 0,
+                  "y": 0,
+                  "type": 3
+                },
+                {
+                  "x": -1,
+                  "y": 0,
+                  "type": 5
+                },
+                {
+                  "x": 0,
+                  "y": -1,
+                  "type": 8
+                },
+                {
+                  "x": 1,
+                  "y": 0,
+                  "type": 3
+                }
+              ],
+              "preference": 0.5,
+              "tolerance": 0.3,
+              "tempo": 5,
+              "behavior": {
+                "version": 1,
+                "mode": "legacy"
+              },
+              "controller": {
+                "version": 1,
+                "weights": [
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                ],
+                "biases": [0, 0, 0, 0, 0, 1, 0, 0]
+              },
+              "mutationPropensity": 0.7
+            },
+            "neuralBlocked": false
+          }
+        ]
+      },
+      "endpoints": [
+        {
+          "tick": 4,
+          "hash": "19b7d62ee21f1dc864303c01de340d90f65da99ea90f7d6233af482179bda1a0"
+        },
+        {
+          "tick": 33,
+          "hash": "eed4fcb10ffde8aabf2936684ad15c1776bfb8bb641cea298b592c52ab52f43f"
+        },
+        {
+          "tick": 83,
+          "hash": "78a53bacf7fda8103589ebef056f268d786fcc3c2b15319c32f5912161991cee"
+        }
+      ]
+    }
+  ]
+}

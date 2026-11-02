@@ -45,9 +45,12 @@ are deferred rather than represented by an uncosted energy source.
 
 Native world format 17 extends neural world16 with a required `nutrientCycle`
 field (`null` means disabled). Native16 controllers and blocked-action state
-remain strict and retain exact continuation on migration. Blueprint format5 is
-unchanged: nutrient mode belongs to the world, not an organism blueprint.
-Experiment rules9 and measurement format10 identify this composed ruleset.
+remain strict and retain exact continuation on migration. Nutrient mode belongs
+to the world rather than an organism blueprint; life history separately extends
+blueprint5 to blueprint6.
+World17 retains the original nutrient contract. World18 adds optional life history and
+its bounded outcome log without relaxing nutrient validation. Experiment rules10 and
+measurement format10 identify the composed ruleset.
 
 Resource views expose both planes, pool totals in N, current stored energy in E,
 and the latest completed tick's energy balance (before + sunlight = after +

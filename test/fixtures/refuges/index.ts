@@ -1,3 +1,4 @@
+import { assertLegacyLifeHistory } from '../life-history';
 import { syntheticHistoricalWorld } from '../sensory-legacy';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -33,10 +34,12 @@ export function fixtureText(name: string): string {
 export const acceptedReference = (text: string): AcceptedEcosystem => AcceptedEcosystem.load(text);
 
 export function predecessor(saved: WorldFile): WorldFileV6 {
+  assertLegacyLifeHistory(saved);
   assert.ok(saved.nutrientCycle === null, 'Cannot project enabled nutrient ecology.');
   assert.deepEqual(saved.mutationPolicy, { version: 1, mode: 'legacy' });
   assert.ok(saved.interventions.entries.every((row) => row.kind !== 'mutation-policy'));
   const {
+    lifeHistoryLog: _lifeHistoryLog,
     nutrientCycle: _nutrientCycle,
     mutationPolicy: _policy,
     shadeHabitats: _shadeHabitats,

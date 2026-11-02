@@ -70,7 +70,7 @@ describe('finite nutrient ecology', () => {
     expect(result.control.state).not.toEqual(result.treatment.state);
     expect(JSON.parse(result.recipe).rules).toEqual({
       id: 'evolab-drift-cellular',
-      version: 9,
+      version: 10,
       worldVersion: WORLD_VERSION,
     });
     const replay = createRecipeComparison(result.recipe);

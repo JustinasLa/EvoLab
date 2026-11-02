@@ -1,3 +1,4 @@
+import { LIFE_TRAITS } from './life-history';
 import {
   clamp,
   cloneGenome,
@@ -127,5 +128,19 @@ export function mutatePropensity(
   observe?.('propensity');
   const genome = cloneGenome(source);
   genome.mutationPropensity = clamp(source.mutationPropensity + (random.next() - 0.5) * 0.2, 0, 1);
+  return genome;
+}
+
+/** One bounded trait step after the ordinary gate, only for explicit opt-in. */
+export function mutateLifeHistory(
+  source: Genome,
+  random: Random,
+  observe?: (channel: string) => void,
+): Genome {
+  if (!source.lifeHistory) return source;
+  const genome = cloneGenome(source);
+  const key = LIFE_TRAITS[random.int(LIFE_TRAITS.length)];
+  observe?.('lifeHistory');
+  genome.lifeHistory![key] = clamp(genome.lifeHistory![key] + (random.int(2) === 0 ? -1 : 1), 0, 2);
   return genome;
 }
