@@ -7554,6 +7554,67 @@ it('neural panel subscriptions reject delayed selections, old epochs and replace
   expect(get('neural-data').textContent).toContain('capture is off');
 });
 
+it.each(['full queue', 'delayed nonpost'] as const)(
+  'neural selection ownership survives %s without premature or stuck evidence',
+  async (failure) => {
+    const bridge = realWorker(true);
+    bridge.deliver();
+    const world = new Ecosystem({ ...DEFAULTS, mutation: 0, climate: 0, nutrients: 0 }, false);
+    world.spawn({ ...founder(0), tempo: 2, controller: newController() }, 60, 60);
+    world.spawn(founder(0), 100, 100);
+    await loadText(JSON.stringify(world.save()));
+    bridge.deliver();
+    click('pause');
+    bridge.deliver();
+    bridge.command({ type: 'inspect', x: 60, y: 60 });
+    bridge.deliver();
+    get<HTMLDetailsElement>('neural-inspector').open = true;
+    get('neural-inspector').dispatchEvent(new Event('toggle'));
+    bridge.deliver();
+    click('step');
+    bridge.deliver();
+    click('step');
+    bridge.deliver();
+    expect(get('neural-data').textContent).toContain('last evaluated at tick 2');
+    const before = bridge.save();
+    if (failure === 'full queue') {
+      bridge.command({ type: 'inspect', x: 100, y: 100 });
+      const selecting = bridge.outbox.find((message) => message.operation === 'inspect')!;
+      for (let index = 0; index < 30; index++) click('refresh-habitat');
+      bridge.command({ type: 'inspect', x: 60, y: 60 });
+      expect(get('notice').textContent).toContain('Controls busy');
+      worker.onmessage!({
+        data: {
+          type: 'progress',
+          runId: selecting.runId,
+          sequence: 900,
+          state: structuredClone(selecting.state),
+        },
+      } as MessageEvent);
+      expect(get('neural-data').textContent).toContain('selection is changing');
+      bridge.deliver();
+      expect(get('neural-data').textContent).toContain('no neural controller');
+    } else {
+      click('refresh-habitat');
+      bridge.command({ type: 'inspect', x: 100, y: 100 });
+      const post = worker.postMessage.getMockImplementation()!;
+      let attempts = 0;
+      worker.postMessage.mockImplementation((data) => {
+        if (data.type === 'inspect') {
+          attempts++;
+          throw new DOMException('proven neural inspect nonpost', 'DataCloneError');
+        }
+        post(data);
+      });
+      bridge.deliver();
+      expect(attempts).toBe(1);
+      expect(get('notice').textContent).toContain('Could not post this action');
+      expect(get('neural-data').textContent).toContain('last evaluated at tick 2');
+    }
+    expect(bridge.save()).toEqual(before);
+  },
+);
+
 describe('worker-owned mutation controls', () => {
   it('holds command capacity until matching delivery and rejects stale policy observations after replacement', () => {
     const bridge = ownershipBridge();

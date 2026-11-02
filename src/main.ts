@@ -1190,6 +1190,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     );
   const hasOwner = (type: CommandPayload['type']): boolean =>
     posted?.type === type || pending.some((entry) => entry.payload.type === type);
+  function syncNeuralSelection(): void {
+    neuralView.pendingSelection(hasOwner('inspect'));
+    neuralView.update(latestState, desiredView.epoch);
+  }
   function availability(): void {
     const unavailable = terminated || stopped || lifecycleBusy(),
       exportBlocked =
@@ -1395,6 +1399,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       rejectedTicket = entry.ticket;
       if (error instanceof DOMException && error.name === 'DataCloneError') {
         posted = null;
+        if (payload.type === 'inspect') syncNeuralSelection();
         if (payload.type === 'capture-design') {
           captureIntent = null;
           updateCapture();
@@ -2001,7 +2006,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       captureIntent = null;
       updateCapture();
       get<HTMLDetailsElement>('specimen-details').open = true;
-      if (!send({ type: 'inspect', ...p })) neuralView.pendingSelection(false);
+      if (!send({ type: 'inspect', ...p })) syncNeuralSelection();
       tab('organism');
     } else if (tool !== 'pan') {
       if (refugeTool(tool) || shadeTool(tool)) {
