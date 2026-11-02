@@ -1,4 +1,5 @@
 import { WORLD_MAX_BYTES } from './model';
+import type { ExperimentIntervention } from './experiment-interventions';
 
 export const COMPARISON_MAX_TICKS = 3600;
 export const COMPARISON_SAMPLE_INTERVAL = 30;
@@ -8,7 +9,7 @@ export const COMPARISON_BATCH_TICKS = 12;
 export const RECIPE_MAX_BYTES = WORLD_MAX_BYTES * 6 + 200_000;
 export const EXPERIMENT_RULES_VERSION = 8;
 export interface ComparisonPlan {
-  intervention: 'none' | 'heat' | 'cold';
+  intervention: ExperimentIntervention;
   treatmentTick: number;
   horizonTick: number;
 }
