@@ -11,6 +11,7 @@ import {
   type NutrientCycle,
 } from './nutrients';
 import type { AttemptChannel } from './mutation-evidence';
+import { dormancyTick, emptyReserveFlow, fundReserveUpkeep } from './dormancy';
 import { mutatePropensity } from './mutation';
 import {
   legacyMutation,
@@ -62,6 +63,7 @@ import {
   validHistoricalGenome,
   migrateHistoricalGenome,
   cloneGenome,
+  exactDataRecord,
   validSettings,
   finite,
   integer,
@@ -69,9 +71,11 @@ import {
   observedGenome,
   type RefugeBrush,
   type ShadeBrush,
-  type WorldFileV16,
-  type WorldFileV15,
   type WorldFileV14,
+  type WorldFileV16,
+  type WorldFileV17,
+  type WorldFileV15,
+  type ReserveFlow,
   type WorldFileV13,
   type WorldFileV12,
   type WorldFileV11,
@@ -206,10 +210,14 @@ function exactKeys(value: unknown, keys: string[]): value is Record<string, unkn
     keys.every((key) => Object.hasOwn(value, key))
   );
 }
-function validFlow(value: Record<string, unknown>): boolean {
+function validFlow(value: Record<string, unknown>, reserves: boolean): boolean {
   const deaths = value.deaths,
     energy = value.energy;
   return (
+    (!Object.hasOwn(value, 'reserves') ||
+      (reserves &&
+        exactKeys(value.reserves, Object.keys(emptyReserveFlow())) &&
+        Object.values(value.reserves).every((amount) => finite(amount, 0, 1e9)))) &&
     integer(value.births, 0, 1e9) &&
     exactKeys(deaths, ['age', 'energy', 'manual']) &&
     Object.values(deaths).every((count) => integer(count, 0, 1e9)) &&
@@ -225,6 +233,7 @@ function validTelemetry(
   births: number,
   deaths: number,
   version: 1 | 2,
+  reserves: boolean,
 ): boolean {
   if (
     !exactKeys(value, [
@@ -248,9 +257,13 @@ function validTelemetry(
     pendingStart = elapsed ? boundary * TELEMETRY_INTERVAL_TICKS : value.originTick;
   if (
     value.samples.length !== length ||
-    !exactKeys(value.pending, ['births', 'deaths', 'energy', 'fromTick']) ||
+    !exactDataRecord(
+      value.pending,
+      ['births', 'deaths', 'energy', 'fromTick'],
+      reserves ? ['reserves'] : [],
+    ) ||
     value.pending.fromTick !== pendingStart ||
-    !validFlow(value.pending)
+    !validFlow(value.pending, reserves)
   )
     return false;
   let countedBirths = value.pending.births as number,
@@ -261,22 +274,26 @@ function validTelemetry(
   for (const [sampleIndex, sample] of value.samples.entries()) {
     const sampleTick = (boundary - length + sampleIndex + 1) * TELEMETRY_INTERVAL_TICKS;
     if (
-      !exactKeys(sample, [
-        'births',
-        'deaths',
-        'energy',
-        'fromTick',
-        'tick',
-        'population',
-        'food',
-        'cellCounts',
-        'meanPreference',
-        'meanTolerance',
-        ...(version === 2 ? ['adaptation'] : []),
-      ]) ||
+      !exactDataRecord(
+        sample,
+        [
+          'births',
+          'deaths',
+          'energy',
+          'fromTick',
+          'tick',
+          'population',
+          'food',
+          'cellCounts',
+          'meanPreference',
+          'meanTolerance',
+          ...(version === 2 ? ['adaptation'] : []),
+        ],
+        reserves ? ['reserves'] : [],
+      ) ||
       sample.tick !== sampleTick ||
       sample.fromTick !== Math.max(value.originTick, sampleTick - TELEMETRY_INTERVAL_TICKS) ||
-      !validFlow(sample) ||
+      !validFlow(sample, reserves) ||
       !integer(sample.population, 0, LIMIT) ||
       !integer(sample.food, 0, WIDTH * HEIGHT) ||
       !Array.isArray(sample.cellCounts) ||
@@ -339,6 +356,7 @@ function validInterventions(
   value: unknown,
   file:
     | WorldFile
+    | WorldFileV17
     | WorldFileV16
     | WorldFileV15
     | WorldFileV14
@@ -371,6 +389,7 @@ function validInterventions(
       file.version === 14 ||
       file.version === 15 ||
       file.version === 16 ||
+      file.version === 17 ||
       file.version === WORLD_VERSION
         ? 5
         : file.version === 10 || file.version === 11 || file.version === 12
@@ -436,6 +455,7 @@ function validInterventions(
           file.version === 14 ||
           file.version === 15 ||
           file.version === 16 ||
+          file.version === 17 ||
           file.version === WORLD_VERSION)) ||
       (row.kind === 'shade-paint' &&
         (file.version === 10 ||
@@ -445,6 +465,7 @@ function validInterventions(
           file.version === 14 ||
           file.version === 15 ||
           file.version === 16 ||
+          file.version === 17 ||
           file.version === WORLD_VERSION))
     ) {
       if (
@@ -510,6 +531,7 @@ function validInterventions(
             file.version === 14 ||
             file.version === 15 ||
             file.version === 16 ||
+            file.version === 17 ||
             file.version === WORLD_VERSION)) ||
         (row.kind === 'shade-mode' &&
           (file.version === 10 ||
@@ -519,6 +541,7 @@ function validInterventions(
             file.version === 14 ||
             file.version === 15 ||
             file.version === 16 ||
+            file.version === 17 ||
             file.version === WORLD_VERSION))
       ) {
         if (
@@ -541,6 +564,7 @@ function validInterventions(
             file.version === 14 ||
             file.version === 15 ||
             file.version === 16 ||
+            file.version === 17 ||
             file.version === WORLD_VERSION)) ||
         (row.kind === 'shade-clear' &&
           (file.version === 10 ||
@@ -550,6 +574,7 @@ function validInterventions(
             file.version === 14 ||
             file.version === 15 ||
             file.version === 16 ||
+            file.version === 17 ||
             file.version === WORLD_VERSION))
       ) {
         if (
@@ -586,6 +611,7 @@ function validInterventions(
           file.version === 14 ||
           file.version === 15 ||
           file.version === 16 ||
+          file.version === 17 ||
           file.version === WORLD_VERSION)
       ) {
         if (
@@ -633,6 +659,7 @@ function validInterventions(
           file.version === 14 ||
           file.version === 15 ||
           file.version === 16 ||
+          file.version === 17 ||
           file.version === WORLD_VERSION)
       ) {
         if (
@@ -700,6 +727,7 @@ function validInterventions(
     file.version === 14 ||
     file.version === 15 ||
     file.version === 16 ||
+    file.version === 17 ||
     file.version === WORLD_VERSION
   ) {
     let enabled = file.thermalRefuges.enabled;
@@ -719,6 +747,7 @@ function validInterventions(
     file.version === 14 ||
     file.version === 15 ||
     file.version === 16 ||
+    file.version === 17 ||
     file.version === WORLD_VERSION
   ) {
     let enabled = file.shadeHabitats.enabled;
@@ -735,6 +764,7 @@ function validInterventions(
     file.version === 14 ||
     file.version === 15 ||
     file.version === 16 ||
+    file.version === 17 ||
     file.version === WORLD_VERSION
   ) {
     let policy = file.mutationPolicy;
@@ -758,6 +788,7 @@ function validInterventions(
         file.version === 14 ||
         file.version === 15 ||
         file.version === 16 ||
+        file.version === 17 ||
         file.version === WORLD_VERSION) &&
         sameTerrain(previousTerrain, file.terrain))) &&
     (!previousShock ||
@@ -832,6 +863,12 @@ export class Ecosystem {
   }
   private recordEnergy(field: keyof EnergyLedger, amount: number): void {
     if (this.recording) this.telemetry.pending.energy[field] += amount;
+  }
+  private recordReserve(field: keyof ReserveFlow, amount: number): void {
+    if (this.recording) {
+      this.telemetry.pending.reserves ??= emptyReserveFlow();
+      this.telemetry.pending.reserves[field] += amount;
+    }
   }
   populationObservation() {
     const view = new DataView(new ArrayBuffer(8)),
@@ -1259,6 +1296,7 @@ export class Ecosystem {
         : [],
       genome: ecological ? genome : cloneGenome(genome),
       ...(genome.controller ? { neuralBlocked: false } : {}),
+      ...(genome.dormancy ? { reserves: { stored: 0, dormant: false } } : {}),
     };
     if (!this.canPlace(o)) return;
     const footprint = positions(o);
@@ -1292,6 +1330,7 @@ export class Ecosystem {
       else this.food[i] = 1;
     }
     const removed = this.organisms.delete(o.id);
+    if (removed && o.genome.dormancy) this.recordReserve('discarded', o.reserves!.stored);
     if (o.id === this.perceptionId) this.selectPerception(0);
     this.deaths++;
     this.lastDeath = { tick: this.tick, cause };
@@ -1343,13 +1382,26 @@ export class Ecosystem {
       );
       const stress = Math.max(0, Math.abs(temp - o.genome.preference) - o.genome.tolerance);
       const upkeep = 0.012 + Math.max(0, o.genome.tolerance - 0.2) * 0.025;
+      const dormant = o.genome.dormancy
+        ? dormancyTick(o, stress, (field, amount) => this.recordReserve(field, amount))
+        : false;
+      const multiplier = dormant ? 0.2 : 1;
+      const cost = (upkeep + stress * 0.2) * o.genome.cells.length * multiplier;
+      if (o.genome.dormancy) this.recordReserve('withdrawn', fundReserveUpkeep(o, cost));
       let before = o.energy;
-      o.energy -= (upkeep + stress * 0.2) * o.genome.cells.length;
+      o.energy -= cost;
       this.recordEnergy('upkeepSpent', before - o.energy);
       this.recordEnergy(
         'climateUpkeepSpent',
-        (Math.max(0, o.genome.tolerance - 0.2) * 0.025 + stress * 0.2) * o.genome.cells.length,
+        (Math.max(0, o.genome.tolerance - 0.2) * 0.025 + stress * 0.2) *
+          o.genome.cells.length *
+          multiplier,
       );
+      if (dormant) {
+        if (o.energy <= 0 || o.age > 900 + o.genome.cells.length * 75)
+          this.kill(o, o.energy <= 0 ? 'energy' : 'age');
+        continue;
+      }
       for (const cell of o.genome.cells) {
         const type = cell.type;
         if (type === 4) {
@@ -1499,7 +1551,11 @@ export class Ecosystem {
         o.energy -= 0.03;
         this.recordEnergy('movementSpent', before - o.energy);
       }
-      if (cycle) o.energy = Math.min(o.energy, ORGANISM_ENERGY_LIMIT);
+      if (cycle)
+        o.energy = Math.min(
+          o.energy,
+          ORGANISM_ENERGY_LIMIT - (o.genome.dormancy ? o.reserves!.stored : 0),
+        );
       if (o.energy <= 0 || o.age > 900 + o.genome.cells.length * 75) {
         this.kill(o, o.energy <= 0 ? 'energy' : 'age');
         continue;
@@ -1840,6 +1896,7 @@ export class Ecosystem {
     const f = parsed as
       | WorldFile
       | WorldFileV16
+      | WorldFileV17
       | WorldFileV15
       | WorldFileV14
       | WorldFileV13
@@ -1872,6 +1929,7 @@ export class Ecosystem {
         f.version !== 14 &&
         f.version !== 15 &&
         f.version !== 16 &&
+        f.version !== 17 &&
         f.version !== WORLD_VERSION) ||
       !validSettings(f.settings) ||
       !integer(f.random, -2147483648, 4294967295) ||
@@ -1886,7 +1944,7 @@ export class Ecosystem {
       f.organisms.length > LIMIT
     )
       throw new Error(
-        'Not a valid EvoLab ecosystem (version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 or 17).',
+        'Not a valid EvoLab ecosystem (version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17 or 18).',
       );
     if (
       (f.version === 6 ||
@@ -1900,6 +1958,7 @@ export class Ecosystem {
         f.version === 14 ||
         f.version === 15 ||
         f.version === 16 ||
+        f.version === 17 ||
         f.version === WORLD_VERSION) &&
       !validTerrain(f.terrain)
     )
@@ -1915,6 +1974,7 @@ export class Ecosystem {
       f.version === 14 ||
       f.version === 15 ||
       f.version === 16 ||
+      f.version === 17 ||
       f.version === WORLD_VERSION
         ? parseRefuges(f.thermalRefuges)
         : emptyRefuges();
@@ -1926,12 +1986,20 @@ export class Ecosystem {
       f.version === 14 ||
       f.version === 15 ||
       f.version === 16 ||
+      f.version === 17 ||
       f.version === WORLD_VERSION
         ? parseShade(f.shadeHabitats)
         : emptyShade();
     if (
       f.version !== 2 &&
-      !validTelemetry(f.telemetry, f.tick, f.births, f.deaths, f.version === 3 ? 1 : 2)
+      !validTelemetry(
+        f.telemetry,
+        f.tick,
+        f.births,
+        f.deaths,
+        f.version === 3 ? 1 : 2,
+        f.version === WORLD_VERSION,
+      )
     )
       throw new Error('Invalid ecosystem telemetry.');
     if (
@@ -1939,6 +2007,7 @@ export class Ecosystem {
         f.version === 14 ||
         f.version === 15 ||
         f.version === 16 ||
+        f.version === 17 ||
         f.version === WORLD_VERSION) &&
       !validMutationPolicy(f.mutationPolicy)
     )
@@ -1956,6 +2025,7 @@ export class Ecosystem {
         f.version === 14 ||
         f.version === 15 ||
         f.version === 16 ||
+        f.version === 17 ||
         f.version === WORLD_VERSION) &&
       !validInterventions(f.interventions, f)
     )
@@ -1973,6 +2043,7 @@ export class Ecosystem {
         f.version === 14 ||
         f.version === 15 ||
         f.version === 16 ||
+        f.version === 17 ||
         f.version === WORLD_VERSION
           ? f.terrain
           : DEFAULT_TERRAIN,
@@ -1984,6 +2055,7 @@ export class Ecosystem {
       f.version === 14 ||
       f.version === 15 ||
       f.version === 16 ||
+      f.version === 17 ||
       f.version === WORLD_VERSION
         ? structuredClone(f.mutationPolicy)
         : legacyMutation();
@@ -2007,6 +2079,7 @@ export class Ecosystem {
           f.version === 14 ||
           f.version === 15 ||
           f.version === 16 ||
+          f.version === 17 ||
           f.version === WORLD_VERSION) &&
           new Set(values).size !== values.length)
       )
@@ -2025,7 +2098,7 @@ export class Ecosystem {
         !integer(o.direction, 0, 3) ||
         !integer(o.age, 0, 100000) ||
         !finite(o.energy, -1000, 100000) ||
-        ((f.version === 16 || f.version === WORLD_VERSION) &&
+        ((f.version === 16 || f.version === 17 || f.version === WORLD_VERSION) &&
           (o.genome as Genome)?.controller &&
           typeof o.neuralBlocked !== 'boolean') ||
         !integer(o.generation, 0, 1e9) ||
@@ -2041,6 +2114,7 @@ export class Ecosystem {
         f.version === 14 ||
         f.version === 15 ||
         f.version === 16 ||
+        f.version === 17 ||
         f.version === WORLD_VERSION
           ? validGenome(
               o.genome,
@@ -2050,16 +2124,28 @@ export class Ecosystem {
                 f.version === 14 ||
                 f.version === 15 ||
                 f.version === 16 ||
+                f.version === 17 ||
                 f.version === WORLD_VERSION,
               f.version === 14 ||
                 f.version === 15 ||
                 f.version === 16 ||
+                f.version === 17 ||
                 f.version === WORLD_VERSION,
-              f.version === 16 || f.version === WORLD_VERSION,
+              f.version === 16 || f.version === 17 || f.version === WORLD_VERSION,
+              f.version === WORLD_VERSION,
             )
           : validHistoricalGenome(o.genome))
       )
         throw new Error('Invalid or overlapping organism.');
+      const dormancy = (o.genome as Genome).dormancy;
+      if (
+        f.version === WORLD_VERSION &&
+        dormancy &&
+        (!exactDataRecord(o.reserves, ['stored', 'dormant']) ||
+          !finite(o.reserves.stored, 0, dormancy.capacity) ||
+          typeof o.reserves.dormant !== 'boolean')
+      )
+        throw new Error('Invalid organism reserves.');
       const organism: Organism = structuredClone({
         ...o,
         genome:
@@ -2071,6 +2157,7 @@ export class Ecosystem {
           f.version === 14 ||
           f.version === 15 ||
           f.version === 16 ||
+          f.version === 17 ||
           f.version === WORLD_VERSION
             ? cloneGenome(o.genome as Genome)
             : migrateHistoricalGenome(o.genome as HistoricalGenome),
@@ -2079,14 +2166,22 @@ export class Ecosystem {
       world.organisms.set(o.id, organism);
       for (const p of positions(organism)) {
         world.occupied[p] = o.id;
-        if (f.version === WORLD_VERSION && f.nutrientCycle !== null && world.food[p])
+        if (
+          (f.version === 17 || f.version === WORLD_VERSION) &&
+          f.nutrientCycle !== null &&
+          world.food[p]
+        )
           throw new Error('Nutrient food overlaps a body.');
         world.food[p] = 0;
       }
     }
     for (let i = 0; i < world.food.length; i++)
       if (world.walls[i]) {
-        if (f.version === WORLD_VERSION && f.nutrientCycle !== null && world.food[i])
+        if (
+          (f.version === 17 || f.version === WORLD_VERSION) &&
+          f.nutrientCycle !== null &&
+          world.food[i]
+        )
           throw new Error('Nutrient food overlaps a wall.');
         world.food[i] = 0;
       }
@@ -2113,6 +2208,7 @@ export class Ecosystem {
       f.version === 14 ||
       f.version === 15 ||
       f.version === 16 ||
+      f.version === 17 ||
       f.version === WORLD_VERSION
         ? { ...structuredClone(f.interventions), version: 5 }
         : emptyInterventions(f.settings, f.tick, true);
@@ -2139,6 +2235,7 @@ export class Ecosystem {
       f.version === 14 ||
       f.version === 15 ||
       f.version === 16 ||
+      f.version === 17 ||
       f.version === WORLD_VERSION ||
       f.version === 8
         ? LineageArchive.load(
@@ -2153,15 +2250,23 @@ export class Ecosystem {
               f.version === 14 ||
               f.version === 15 ||
               f.version === 16 ||
+              f.version === 17 ||
               f.version === WORLD_VERSION,
-            f.version === 14 || f.version === 15 || f.version === 16 || f.version === WORLD_VERSION,
-            f.version === 15 || f.version === 16 || f.version === WORLD_VERSION,
+            f.version === 14 ||
+              f.version === 15 ||
+              f.version === 16 ||
+              f.version === 17 ||
+              f.version === WORLD_VERSION,
+            f.version === 15 || f.version === 16 || f.version === 17 || f.version === WORLD_VERSION,
             f.nextId,
-            f.version === 16 || f.version === WORLD_VERSION,
+            f.version === 16 || f.version === 17 || f.version === WORLD_VERSION,
+            f.version === WORLD_VERSION,
           )
         : LineageArchive.legacy(world.organisms.values(), f.tick);
     world.nutrientCycle =
-      f.version === WORLD_VERSION ? parseNutrients(f.nutrientCycle, f.tick) : null;
+      f.version === 17 || f.version === WORLD_VERSION
+        ? parseNutrients(f.nutrientCycle, f.tick)
+        : null;
     if (world.nutrientCycle)
       validateNutrients(world.nutrientCycle, world.organisms.values(), world.food);
     return world;

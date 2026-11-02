@@ -36,18 +36,26 @@ are deferred rather than represented by an uncosted energy source.
   gradient of at least two N. The four successive phases are even/odd horizontal
   and even/odd vertical pairs. Edges wrap; walls block decay/transport and retain
   their matter until cleared. Occupancy does not insulate soil. No RNG is used.
-- Enabled organisms retain at most 1,000 E each; excess is dissipated. Stings
+- Enabled organisms retain at most 1,000 E each, counting liquid energy plus any
+  explicitly enabled dormancy reserves; excess liquid energy is dissipated. Reserves
+  hold energy only, not additional nutrient matter. Their conversion, maintenance,
+  entry/exit costs and death losses enter the complete tick energy balance; internal
+  deposits and withdrawals are not energy intake. Stings
   cannot withdraw more positive energy than a victim holds, and retain 26% of
   the withdrawal. The rest is lost. Total stored energy is bounded by
   `1,000 * population limit + 2.2 * grid size`; decomposition creates no energy.
 
 ## Observation and persistence
 
-Native world format 17 extends neural world16 with a required `nutrientCycle`
-field (`null` means disabled). Native16 controllers and blocked-action state
-remain strict and retain exact continuation on migration. Blueprint format5 is
-unchanged: nutrient mode belongs to the world, not an organism blueprint.
-Experiment rules9 and measurement format10 identify this composed ruleset.
+Native world format 18 extends nutrient world17 with optional inherited dormancy
+and exact living reserves. World17 introduced the required `nutrientCycle`
+field (`null` means disabled) and remains accepted without activating dormancy.
+Native16 controllers and blocked-action state remain strict and retain exact
+continuation on migration. Blueprint format6 admits dormancy traits, while nutrient
+mode still belongs to the world, not an organism blueprint. Experiment rules10 and
+measurement format11 identify this composed ruleset. Predecessor world17 budgets
+retain their original bounds and validation; reserve state is never interpreted
+under that schema.
 
 Resource views expose both planes, pool totals in N, current stored energy in E,
 and the latest completed tick's energy balance (before + sunlight = after +

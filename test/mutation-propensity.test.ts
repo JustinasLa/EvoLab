@@ -190,7 +190,7 @@ describe('explicit inherited mutation propensity', () => {
         description: '',
         genome: source(value),
       });
-      expect(JSON.parse(text).version).toBe(5);
+      expect(JSON.parse(text).version).toBe(6);
       expect(parseBlueprint(text).genome).toEqual(source(value));
       for (const version of [2, 3]) {
         const old = { ...JSON.parse(text), version };

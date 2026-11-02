@@ -1,5 +1,6 @@
 import {
   integer,
+  sameDormancy,
   observedGenome,
   validGenome,
   type Genome,
@@ -38,18 +39,22 @@ export const birthKeys = [
   'childGenome',
   'outcome',
 ];
-function projection(value: unknown, neural = true): value is Genome {
-  if (!validGenome(value, true, true, neural)) return false;
+function projection(value: unknown, neural: boolean, dormancy: boolean): value is Genome {
+  if (!validGenome(value, true, true, neural, dormancy)) return false;
   const genome = value as Genome;
   return (
     Object.keys(genome).length ===
-      (genome.mutationPropensity === undefined ? 5 : 6) + (genome.controller ? 1 : 0) &&
+      5 +
+        Number(genome.mutationPropensity !== undefined) +
+        Number(genome.controller !== undefined) +
+        Number(genome.dormancy !== undefined) &&
     genome.cells.every((cell) => Object.keys(cell).length === 3)
   );
 }
 /** Numeric observations treat signed zeros equally, as ordinary Save JSON does. */
 export function inheritedDifference(parent: Genome, child: Genome): boolean {
   return (
+    !sameDormancy(parent.dormancy, child.dormancy) ||
     parent.preference !== child.preference ||
     !sameController(parent.controller, child.controller) ||
     !Object.is(parent.tolerance, child.tolerance) ||
@@ -133,6 +138,7 @@ export function validBirthEvent(
   nextSpecies: number,
   nextId: number,
   neural = true,
+  dormancy = true,
 ): boolean {
   if (!Array.isArray(event.channels)) return false;
   const attempted = event.gate || event.channels.includes('propensity');
@@ -142,7 +148,7 @@ export function validBirthEvent(
     event.kind === 'reproduction' &&
     integer(event.id, 1, nextSpecies - 1) &&
     integer(event.parentOrganismId, 1, nextId - 1) &&
-    projection(event.parentGenome, neural) &&
+    projection(event.parentGenome, neural, dormancy) &&
     typeof event.gate === 'boolean' &&
     Array.isArray(event.channels) &&
     event.channels.length <= (event.parentGenome.controller ? 7 : 6) &&
@@ -164,7 +170,8 @@ export function validBirthEvent(
       ? event.childOrganismId === null &&
         event.childLineageId === null &&
         event.placementAttempts === 3
-      : projection(event.childGenome, neural) &&
+      : projection(event.childGenome, neural, dormancy) &&
+        sameDormancy(event.parentGenome.dormancy, event.childGenome.dormancy) &&
         possibleChanges(event, event.childGenome) &&
         integer(event.childOrganismId, event.parentOrganismId + 1, nextId - 1) &&
         integer(event.childLineageId, event.id, nextSpecies - 1) &&
