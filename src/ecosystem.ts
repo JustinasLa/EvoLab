@@ -1,3 +1,4 @@
+import { RoleObserver } from './roles';
 import type { AttemptChannel } from './mutation-evidence';
 import { mutatePropensity } from './mutation';
 import {
@@ -739,6 +740,13 @@ export class Ecosystem {
   private lineage = new LineageArchive();
   private perceptionId = 0;
   private lastPerception: Perception | null = null;
+  private roles?: RoleObserver;
+  observeRoles(): void {
+    this.roles ??= new RoleObserver(this.tick);
+  }
+  roleSnapshot() {
+    return this.roles?.snapshot(this.organisms.values());
+  }
   selectPerception(id: number): void {
     const next = this.organisms.has(id) ? id : 0;
     if (next !== this.perceptionId) this.lastPerception = null;
@@ -1230,6 +1238,7 @@ export class Ecosystem {
   }
   step(): void {
     this.tick++;
+    this.roles?.beginTick(this.tick);
     const daylight = 0.65 + 0.35 * Math.sin(this.tick / 180),
       shadeUnits = this.shadeHabitats.enabled ? this.shadeHabitats.units : null;
     for (const o of [...this.organisms.values()]) {
@@ -1260,6 +1269,7 @@ export class Ecosystem {
           if (activeUnits === 0) o.energy += 0.04 * daylight * (1 - stress);
           else o.energy += 0.04 * daylight * (1 - stress) * ((16 - activeUnits) / 16);
           this.recordEnergy('leavesGained', o.energy - before);
+          this.roles?.energy(o.species, 'leavesGained', o.energy - before);
           const foodChance =
             activeUnits === 0
               ? (this.settings.nutrients / 100) * daylight * (1 - stress)
@@ -1285,6 +1295,7 @@ export class Ecosystem {
               before = o.energy;
               o.energy += 2.2;
               this.recordEnergy('mouthsGained', o.energy - before);
+              this.roles?.energy(o.species, 'mouthsGained', o.energy - before);
             }
             const victim = this.organisms.get(this.occupied[n]);
             if (type === 6 && victim && victim.id !== o.id && o.age % 4 === 0) {
@@ -1296,6 +1307,12 @@ export class Ecosystem {
                 before = o.energy;
                 o.energy += 0.65;
                 this.recordEnergy('stingsGained', o.energy - before);
+                this.roles?.sting(
+                  victim.species,
+                  o.species,
+                  victimBefore - victim.energy,
+                  o.energy - before,
+                );
               }
             }
           }
