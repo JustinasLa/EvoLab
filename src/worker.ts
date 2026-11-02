@@ -233,6 +233,9 @@ export function startWorker(
           frame.ids.buffer,
           frame.thermalRefuges.units.buffer,
           frame.shadeHabitats.units.buffer,
+          ...(frame.nutrientCycle
+            ? [frame.nutrientCycle.minerals.buffer, frame.nutrientCycle.detritus.buffer]
+            : []),
         ],
       );
     } catch (error) {
@@ -428,13 +431,17 @@ export function startWorker(
       if (data.type === 'start') {
         if (
           !validSettings(data.settings) ||
+          (data.nutrientCycle !== undefined && typeof data.nutrientCycle !== 'boolean') ||
           !validView(data.display) ||
           data.display.epoch < view.epoch
         )
           throw new Error('Invalid ecosystem settings or display view.');
         const terrain = data.terrain === undefined ? DEFAULT_TERRAIN : data.terrain;
         if (!validTerrain(terrain)) throw new Error('Invalid wall recipe.');
-        const candidate = new Ecosystem(observedSettings(data.settings), true, { terrain });
+        const candidate = new Ecosystem(observedSettings(data.settings), true, {
+          terrain,
+          nutrientCycle: data.nutrientCycle,
+        });
         world = candidate;
         events = undefined;
         runId = data.runId;

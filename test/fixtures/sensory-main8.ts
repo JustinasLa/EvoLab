@@ -39,8 +39,10 @@ export function restoreMain8(saved: WorldFile) {
         tempo: genome.tempo,
       } as typeof row.foundingGenome;
     }
+  assert.ok(saved.nutrientCycle === null, 'Cannot project enabled nutrient ecology.');
   const {
     lifeHistoryLog: _lifeHistoryLog,
+    nutrientCycle: _nutrientCycle,
     mutationPolicy: _policy,
     shadeHabitats: _shadeHabitats,
     ...retained

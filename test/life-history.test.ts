@@ -353,7 +353,7 @@ describe('life-history schema and inspection', () => {
     const { world, parent } = scene();
     world.step();
     const current = world.save();
-    for (const version of [9, 10, 11, 12, 13, 14, 15, 16])
+    for (const version of [9, 10, 11, 12, 13, 14, 15, 16, 17])
       expect(() => Ecosystem.load(JSON.stringify({ ...current, version }))).toThrow();
     const blueprint = JSON.parse(
       serializeBlueprint({ name: 'life', description: '', genome: parent.genome }),
@@ -503,8 +503,10 @@ describe('legacy life-history continuation oracle', () => {
         version: _version,
         lineageArchive: _archive,
         lifeHistoryLog: log,
+        nutrientCycle,
         ...ecology
       } = world.save();
+      expect(nutrientCycle).toBeNull();
       expect(createHash('sha256').update(JSON.stringify(ecology)).digest('hex')).toBe(hash);
       expect(log).toEqual(emptyLifeHistoryLog(0));
     }

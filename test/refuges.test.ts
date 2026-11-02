@@ -307,6 +307,7 @@ describe('painted temperature mechanics and genuine accepted-base equivalence', 
     const {
       lifeHistoryLog,
       interventions: _afterLog,
+      nutrientCycle,
       thermalRefuges: _field,
       shadeHabitats: _shade,
       lineageArchive: _archive,
@@ -315,6 +316,7 @@ describe('painted temperature mechanics and genuine accepted-base equivalence', 
       ...afterEcology
     } = world.save();
     afterEcology.organisms = restoreHistoricalWorld(world.save()).organisms as any;
+    expect(nutrientCycle).toBeNull();
     expect(mutationPolicy).toEqual({ version: 1, mode: 'legacy' });
     expect(lifeHistoryLog).toEqual(lifeHistoryBefore);
     expect({ version: 6, ...afterEcology }).toEqual(beforeEcology);

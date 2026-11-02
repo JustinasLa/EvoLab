@@ -88,10 +88,12 @@ export function restoreHistoricalGenome(genome: Genome): HistoricalGenome {
 }
 function historicalScalars(saved: WorldFile) {
   assertLegacyLifeHistory(saved);
+  assert.ok(saved.nutrientCycle === null, 'Cannot project enabled nutrient ecology.');
   assert.deepEqual(saved.mutationPolicy, { version: 1, mode: 'legacy' });
   assert.ok(saved.interventions.entries.every((row) => row.kind !== 'mutation-policy'));
   const {
     lifeHistoryLog: _lifeHistoryLog,
+    nutrientCycle: _nutrientCycle,
     mutationPolicy: _policy,
     terrain: _terrain,
     thermalRefuges: _refuges,

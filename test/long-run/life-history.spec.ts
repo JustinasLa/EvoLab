@@ -3,6 +3,7 @@ import { it } from 'vitest';
 import { Ecosystem } from '../../src/ecosystem';
 import { DEFAULTS, LIMIT, founder } from '../../src/model';
 import { context, digest, invariants, receipt } from './support';
+import { NUTRIENT_TOTAL, nutrientSummary, validateNutrients } from '../../src/nutrients';
 
 it('retains bounded life histories and exact restoration through paid multi-condition trajectories', () => {
   const results: object[] = [];
@@ -83,5 +84,60 @@ it('retains bounded life histories and exact restoration through paid multi-cond
     status: 'passed',
     limitations:
       'Direct engine, four 12000-tick trajectories, no rescue after extinction; 600-tick throughput with one warm-up and three measured repetitions. Contrasting opt-in strategies change ecology; elapsed differences include those consequences, not isolated observer overhead. No winner or biological conclusion.',
+  });
+});
+
+it('restores finite nutrient pools and paid life histories under four resource/climate trajectories', () => {
+  const outcomes: object[] = [];
+  for (const climate of [0, 1])
+    for (const strategy of [0, 2]) {
+      let world = new Ecosystem(
+        { ...DEFAULTS, seed: 42, mutation: 0.4, nutrients: 5, climate },
+        false,
+        { nutrientCycle: true },
+      );
+      const genome = founder(0);
+      genome.lifeHistory = {
+        version: 1,
+        maturity: strategy,
+        investment: strategy,
+        maintenance: strategy,
+      };
+      world.spawn(genome, 120, 78);
+      const reference = Ecosystem.load(JSON.stringify(world.save()));
+      let peak = 1;
+      for (let tick = 0; tick < 12000; tick++) {
+        world.step();
+        reference.step();
+        peak = Math.max(peak, world.organisms.size);
+        if (tick % 1200 === 1199) {
+          invariants(world);
+          validateNutrients(world.nutrientCycle!, world.organisms.values(), world.food);
+          assert.equal(
+            nutrientSummary(world.nutrientCycle!, world.organisms.values(), world.food).total,
+            NUTRIENT_TOTAL,
+          );
+          assert.deepEqual(world.save(), reference.save());
+          assert.ok(world.save().lifeHistoryLog.events.length <= 128);
+          world = Ecosystem.load(JSON.stringify(world.save()));
+        }
+      }
+      outcomes.push({
+        climate,
+        strategy,
+        peak,
+        births: world.births,
+        deaths: world.deaths,
+        resources: nutrientSummary(world.nutrientCycle!, world.organisms.values(), world.food),
+        log: world.save().lifeHistoryLog,
+        finalSHA256: digest(JSON.stringify(world.save())),
+      });
+    }
+  receipt('life-history-nutrients', {
+    ...context(),
+    outcomes,
+    status: 'passed',
+    limitations:
+      'Four 12000-tick direct-engine trajectories with exact restoration every1200ticks and strict finite nutrient/energy validation. No rescue after extinction and no prescribed winning strategy.',
   });
 });

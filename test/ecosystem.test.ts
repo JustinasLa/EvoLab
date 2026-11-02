@@ -135,6 +135,7 @@ describe('approved seeded terrain, opaque extension and exact continuation contr
         while (world.tick < tick) world.step();
         const {
           lifeHistoryLog: _lifeHistoryLog,
+          nutrientCycle,
           mutationPolicy,
           terrain,
           thermalRefuges,
@@ -144,6 +145,7 @@ describe('approved seeded terrain, opaque extension and exact continuation contr
         } = world.save();
         assertLegacyLifeHistory(world.save());
         snapshot.organisms = restoreHistoricalWorld(world.save()).organisms as any;
+        expect(nutrientCycle).toBeNull();
         expect(mutationPolicy).toEqual({ version: 1, mode: 'legacy' });
         expect(terrain).toEqual(DEFAULT_TERRAIN);
         expect(thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
@@ -2902,6 +2904,7 @@ describe('telemetry persistence, migration and complete candidate validation', (
           { version: _version, ...expectedEcology } = file,
           {
             version: current,
+            nutrientCycle,
             mutationPolicy,
             interventions,
             lineageArchive,
@@ -2911,7 +2914,7 @@ describe('telemetry persistence, migration and complete candidate validation', (
             lifeHistoryLog,
             ...actualEcology
           } = ecology(world.save());
-        expect(world.save().version).toBe(17);
+        expect(world.save().version).toBe(18);
         expect(lifeHistoryLog).toEqual({
           version: 1,
           originTick: tick,
@@ -2919,6 +2922,7 @@ describe('telemetry persistence, migration and complete candidate validation', (
           eventsPruned: false,
           events: [],
         });
+        expect(nutrientCycle).toBeNull();
         expect(thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
         expect(shadeHabitats).toEqual({ version: 1, enabled: false, cells: [] });
         expect(terrain).toEqual(DEFAULT_TERRAIN);
