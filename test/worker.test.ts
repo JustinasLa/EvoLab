@@ -3768,6 +3768,109 @@ describe('actual selected perception through the worker protocol', () => {
     },
   );
 });
+describe('actual neural inspection through the worker protocol', () => {
+  it('preserves role measurements, journal checkpoints and bounded backpressured observations', () => {
+    const world = new Ecosystem({ ...DEFAULTS, mutation: 0, climate: 0, nutrients: 0 }, false);
+    world.spawn({ ...founder(0), tempo: 2, controller: newController() }, 60, 60);
+    const observed = workerHarness(false),
+      control = workerHarness(false);
+    for (const harness of [observed, control]) {
+      harness.load(world.save());
+      harness.send({ type: 'pause' });
+      harness.send({ type: 'event-recording', enabled: true });
+      harness.send({
+        type: 'display-view',
+        view: {
+          epoch: 1,
+          enabled: false,
+          visible: false,
+          roles: true,
+          lineage: true,
+          ...(harness === observed ? { neural: true } : {}),
+        },
+      });
+      harness.send({ type: 'inspect', x: 60, y: 60 });
+    }
+    const firstProgress = observed.last('progress');
+    for (let tick = 0; tick < 36; tick++) {
+      observed.send({ type: 'step' });
+      control.send({ type: 'step' });
+    }
+    expect(observed.last('progress')).toBe(firstProgress);
+    expect(observed.state().neural.decisions).toHaveLength(12);
+    expect(observed.state().neural.pruned).toBe(true);
+    expect(control.state().neural).toBeUndefined();
+    expect(observed.state().world.roles).toEqual(control.state().world.roles);
+    expect(observed.state().journal).toEqual(control.state().journal);
+    expect(observed.save()).toEqual(control.save());
+    observed.dispose();
+    control.dispose();
+  });
+  it.each([1, 4, 12])(
+    'captures only on demand and keeps continuation exact at speed %s',
+    (speed) => {
+      const world = new Ecosystem({ ...DEFAULTS, mutation: 0, climate: 0, nutrients: 0 }, false);
+      const organism = world.spawn(
+        { ...founder(0), tempo: 2, controller: newController() },
+        60,
+        60,
+      )!;
+      const harness = workerHarness();
+      harness.load(world.save());
+      harness.send({ type: 'pause' });
+      harness.send({ type: 'speed', value: speed });
+      harness.send({ type: 'inspect', x: 60, y: 60 });
+      expect(harness.state().neural).toBeUndefined();
+      const view = { epoch: 1, enabled: false, visible: false, neural: true };
+      harness.send({ type: 'display-view', view });
+      world.selectNeural(organism.id, true);
+      expect(harness.state().neural.status).toBe('awaiting-evaluation');
+      expect(harness.save()).toEqual(world.save());
+      for (let tick = 0; tick < 4; tick++) {
+        harness.send({ type: 'step' });
+        world.step();
+        expect(harness.state().neural).toEqual(world.neuralObservation());
+        expect(harness.save()).toEqual(world.save());
+      }
+      harness.state().neural.decisions[0].inputs[0] = 99;
+      harness.send({ type: 'snapshot', display: false });
+      expect(harness.state().neural).toEqual(world.neuralObservation());
+      harness.send({ type: 'load', runId: 2, text: '{}' });
+      expect(harness.state().neural).toEqual(world.neuralObservation());
+      expect(harness.state().playback.paused).toBe(true);
+      const revision = harness.state().revision;
+      harness.send({ type: 'display-view', view: { ...view, epoch: 0 } });
+      expect(harness.state().neural).toEqual(world.neuralObservation());
+      harness.send({ type: 'display-view', view: { ...view, epoch: 2, neural: false } });
+      expect(harness.state().neural).toEqual(world.neuralObservation());
+      expect(harness.state().revision).toBeGreaterThanOrEqual(revision);
+      harness.send({ type: 'display-view', view: { epoch: 2, visible: true, enabled: true } });
+      expect(harness.state().neural).toBeUndefined();
+      harness.send({ type: 'step' });
+      world.step();
+      expect(harness.save()).toEqual(world.save());
+      harness.send({ type: 'display-view', view: { ...view, epoch: 3 } });
+      expect(harness.state().neural.decisions).toEqual([]);
+      harness.send({ type: 'step' });
+      world.step();
+      harness.send({ type: 'paint', tool: 'erase', x: 60, y: 60, radius: 0, genome: founder(0) });
+      expect(harness.state().neural.status).toBe('dead');
+      expect(harness.state().neural.decisions).toHaveLength(1);
+      harness.load(world.save(), 3);
+      expect(harness.state().neural.status).toBe('no-selection');
+      expect(harness.state().neural.decisions).toEqual([]);
+      harness.send({ type: 'inspect', runId: 2, x: 60, y: 60 });
+      expect(harness.state().neural.status).toBe('no-selection');
+      harness.send({ type: 'inspect', x: 60, y: 60 });
+      expect(harness.state().neural.status).toBe('awaiting-evaluation');
+      harness.send({ type: 'inspect', x: 100, y: 100 });
+      expect(harness.state().neural.status).toBe('no-selection');
+      harness.send({ type: 'start', runId: 4, settings: DEFAULTS, display: { ...view, epoch: 4 } });
+      expect(harness.state().neural.status).toBe('no-selection');
+      harness.dispose();
+    },
+  );
+});
 describe('worker mutation policy ownership', () => {
   it('applies, logs and validates policy commands while paused without extra ticks, then continues exactly', () => {
     const harness = workerHarness();

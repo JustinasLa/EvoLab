@@ -161,4 +161,50 @@ describe('session neural observation', () => {
     control.step();
     expect(restored.save()).toEqual(control.save());
   });
+
+  it('caps maximum anatomy rays, history and serialized observation size without recording opaque data', () => {
+    const { world, organism } = scene(0);
+    world.kill(organism, 'manual');
+    const cells = Array.from({ length: 16 }, (_, offset) => ({
+      x: offset % 4,
+      y: Math.floor(offset / 4),
+      type: 8 as const,
+    }));
+    const selected = world.spawn(
+      { ...founder(0), cells, tempo: 2, controller: neural.newController() },
+      100,
+      100,
+    )!;
+    selected.energy = 100;
+    world.selectNeural(selected.id, true);
+    for (let tick = 0; tick < 30; tick++) world.step();
+    const observation = world.neuralObservation()!;
+    expect(observation.decisions).toHaveLength(12);
+    expect(observation.pruned).toBe(true);
+    for (const decision of observation.decisions) {
+      expect(decision.rays).toHaveLength(16);
+      expect(decision.rays.every((ray) => ray.cells.length <= 5)).toBe(true);
+      expect(decision.inputs).toHaveLength(6);
+      expect(decision.hidden).toHaveLength(4);
+      expect(decision.outputs).toHaveLength(4);
+    }
+    expect(new TextEncoder().encode(JSON.stringify(observation)).byteLength).toBeLessThan(65536);
+  });
+
+  it('retains the actual terminal evaluation and death boundary without extending its outcome window', () => {
+    const { world, organism } = scene();
+    organism.energy = 0.03;
+    const control = Ecosystem.load(JSON.stringify(world.save()));
+    world.selectNeural(organism.id, true);
+    world.step();
+    control.step();
+    expect(world.organisms.has(organism.id)).toBe(false);
+    expect(world.neuralObservation()!.status).toBe('dead');
+    expect(latest(world).outcome).toMatchObject({ throughTick: 1, boundary: 'death' });
+    expect(latest(world).evaluationCost).toBeGreaterThan(0);
+    expect(latest(world).actionCost).toBeGreaterThan(0);
+    expect(world.save()).toEqual(control.save());
+    world.step();
+    expect(latest(world).outcome.throughTick).toBe(1);
+  });
 });

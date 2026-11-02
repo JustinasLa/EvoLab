@@ -23,6 +23,7 @@ lineages spread by surviving and producing descendants.
 - **Design your own life** — draw connected organisms, choose their preferred temperature, and place them directly in the ecosystem.
 - **Directional eye reactions** — start a new active design with inherited chase, flee or ignore responses to food, walls and organisms; forward sight respects body rotation, occlusion and real movement costs.
 - **Optional neural controllers** — explicitly enable a small inherited network in the designer; real forward sight, energy and blocked-action feedback drive resting, movement or turning, with evaluation and action energy costs. Existing organisms retain their steering rules.
+- **Inspect neural decisions** — open the selected organism’s Neural activity panel for actual inputs, hidden/output activations, action attempts and incurred costs, with an accessible network, exact tables and up to 12 observed decisions. Stale, unavailable and pruned evidence is explicit; subsequent meals are not causal explanations.
 - **Inspect inherited sight** — active reactions can mutate at birth; inspect the selected organism’s actual last rays, occlusions and chosen direction with its observation tick.
 - **Mutation controls** — retain legacy birth mutation by default or opt into relative weights for anatomy, climate traits, tempo and active reactions; apply drafts explicitly and save their manual history.
 - **Keep inherited designs** — standalone blueprints preserve complete anatomy, traits and reactions; existing passive designs and ordinary presets retain legacy steering.
@@ -68,11 +69,20 @@ rendering and selection changes, including death and rejected imports.
 
 Neural fixtures check bounded 6–4–4 controllers, detached birth mutation, real
 energy and reproduction tradeoffs, strict world/blueprint/library persistence,
-and exact worker controls. The reaction perception overlay does not trace neural
-decisions; neural activity inspection is separate follow-up work. Run
+and exact worker controls. Neural inspection captures only the selected organism
+while its disclosure is open in the active Organism panel and the document is
+visible. It retains at most 12 real evaluations, including eye rays and subsequent
+measured mouth gains, without extra evaluation, RNG or changed complete saves.
+Closing the panel clears this session-only history. The network and exact tables
+disclose stale, unavailable and pruned evidence; no action reward or causal
+explanation is inferred. The reaction perception overlay remains separate. Run
 `npm run bench:neural` for contextual populated-world throughput and deterministic
 checkpoint continuation receipts in `.scratch/long-run/`, without timing thresholds
 or claims of universal neural superiority.
+
+`npx vitest run --config vitest.long-run.config.ts test/long-run/neural-observation.spec.ts`
+compares populated capture-on/off continuations and records bounded observation
+payloads and contextual throughput in `.scratch/long-run/`.
 
 Playwright exercises the built application in desktop and mobile Chromium,
 including real workers, population changes, inspection, organism design, painting,

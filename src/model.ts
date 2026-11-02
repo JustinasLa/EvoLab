@@ -1,6 +1,7 @@
 import type { BirthEvent } from './mutation-evidence';
 import type { MutationPolicy } from './mutation';
 import type { EventJournal, EventReplay } from './event-model';
+import type { NeuralObservation } from './neural-observation';
 import { validController, type NeuralController } from './neural';
 export const WIDTH = 240;
 export const HEIGHT = 156;
@@ -382,6 +383,7 @@ export type WorldPresentation = Pick<Frame, 'stats' | 'climate' | 'offset' | 'te
 };
 export type HabitatFrame = Omit<Frame, 'telemetry' | 'interventions'>;
 export interface DisplayView {
+  neural?: true;
   roles?: true;
   lineage?: true;
   epoch: number;
@@ -403,6 +405,7 @@ export interface TickRate {
   status: 'warming' | 'measured' | 'paused' | 'timing-gap';
 }
 export interface ControlState {
+  neural?: NeuralObservation | null;
   journal?: EventJournal;
   replacementId: number;
   revision: number;
