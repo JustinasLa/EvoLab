@@ -294,7 +294,8 @@ describe('painted temperature mechanics and genuine accepted-base equivalence', 
   it('retains inactive paint, changes no ecology at command time and clears only the field', () => {
     const world = new Ecosystem(),
       before = predecessor(world.save()),
-      archive = world.lineageSnapshot();
+      archive = world.lineageSnapshot(),
+      lifeHistoryBefore = world.save().lifeHistoryLog;
     expect(world.changeRefugeMode(false)).toBeNull();
     expect(world.clearRefuges().rowSequence).toBeNull();
     expect(() => world.paintRefuge(brush(), 0, 0)).toThrow(/disabled/);
@@ -304,6 +305,7 @@ describe('painted temperature mechanics and genuine accepted-base equivalence', 
     expect(refugeFile(world.thermalRefuges).cells).toEqual([[index(120, 78), 4]]);
     const { interventions: _beforeLog, ...beforeEcology } = before;
     const {
+      lifeHistoryLog,
       interventions: _afterLog,
       thermalRefuges: _field,
       shadeHabitats: _shade,
@@ -314,6 +316,7 @@ describe('painted temperature mechanics and genuine accepted-base equivalence', 
     } = world.save();
     afterEcology.organisms = restoreHistoricalWorld(world.save()).organisms as any;
     expect(mutationPolicy).toEqual({ version: 1, mode: 'legacy' });
+    expect(lifeHistoryLog).toEqual(lifeHistoryBefore);
     expect({ version: 6, ...afterEcology }).toEqual(beforeEcology);
     expect(world.lineageSnapshot()).toEqual(archive);
     expect(world.clearRefuges()).toMatchObject({ removedCells: 1, nonzeroCells: 0 });
