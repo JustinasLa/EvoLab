@@ -5,7 +5,7 @@ const headings = ['north', 'east', 'south', 'west'];
 const travel = ['east', 'south', 'west', 'north'];
 export function perceptionHtml(trace: Perception | null, tick: number): string {
   if (!trace)
-    return '<p>No retained perception. Select an active organism with an eye and motor, then let it reach an eligible movement tick. Paused inspection never reconstructs earlier sight. Death or a different selection clears this observation.</p>';
+    return '<p>No retained perception. Select an active reaction-table organism with an eye and motor, then let it reach an eligible movement tick. Neural evaluations and their eye rays appear in Neural activity instead. Paused inspection never reconstructs earlier sight. Death or a different selection clears this observation.</p>';
   const chosen =
     trace.chosenEye === null
       ? 'No non-ignored candidate; retained travel heading'

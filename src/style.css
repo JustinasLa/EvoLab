@@ -1568,3 +1568,58 @@ dialog a {
   text-align: left;
   vertical-align: top;
 }
+
+#neural-inspector {
+  min-width: 0;
+  margin-block: 12px;
+}
+#neural-data {
+  max-height: 36rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+#neural-data:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+#neural-data svg {
+  display: block;
+  width: 100%;
+  min-width: 260px;
+}
+#neural-data line {
+  stroke: currentColor;
+  stroke-width: 1;
+  opacity: 0.4;
+}
+#neural-data .negative {
+  stroke-dasharray: 5 3;
+}
+#neural-data .zero {
+  stroke-dasharray: 1 4;
+  opacity: 0.2;
+}
+#neural-data circle {
+  fill: var(--surface);
+  stroke: currentColor;
+}
+#neural-data .chosen {
+  stroke-width: 4;
+  stroke: var(--accent);
+}
+#neural-data text {
+  fill: currentColor;
+  font-size: 12px;
+}
+#neural-data table {
+  min-width: 32rem;
+  border-collapse: collapse;
+  margin-block: 1rem;
+}
+#neural-data th,
+#neural-data td {
+  padding: 0.4rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+}
