@@ -1,5 +1,15 @@
 import { RoleObserver } from './roles';
 import {
+  armorCells,
+  ARMOR_SHADE_UPKEEP,
+  biologicalShadeField,
+  biologicalShadeSummary,
+  biologicalShadeExposure,
+  combinedShadeUnits,
+  parseBiologicalShade,
+  type BiologicalShadeMode,
+} from './biological-shade';
+import {
   createNutrients,
   nutrientFile,
   nutrientSummary,
@@ -69,6 +79,7 @@ import {
   observedGenome,
   type RefugeBrush,
   type ShadeBrush,
+  type WorldFileV17,
   type WorldFileV16,
   type WorldFileV15,
   type WorldFileV14,
@@ -339,6 +350,7 @@ function validInterventions(
   value: unknown,
   file:
     | WorldFile
+    | WorldFileV17
     | WorldFileV16
     | WorldFileV15
     | WorldFileV14
@@ -371,6 +383,7 @@ function validInterventions(
       file.version === 14 ||
       file.version === 15 ||
       file.version === 16 ||
+      file.version === 17 ||
       file.version === WORLD_VERSION
         ? 5
         : file.version === 10 || file.version === 11 || file.version === 12
@@ -436,6 +449,7 @@ function validInterventions(
           file.version === 14 ||
           file.version === 15 ||
           file.version === 16 ||
+          file.version === 17 ||
           file.version === WORLD_VERSION)) ||
       (row.kind === 'shade-paint' &&
         (file.version === 10 ||
@@ -445,6 +459,7 @@ function validInterventions(
           file.version === 14 ||
           file.version === 15 ||
           file.version === 16 ||
+          file.version === 17 ||
           file.version === WORLD_VERSION))
     ) {
       if (
@@ -510,6 +525,7 @@ function validInterventions(
             file.version === 14 ||
             file.version === 15 ||
             file.version === 16 ||
+            file.version === 17 ||
             file.version === WORLD_VERSION)) ||
         (row.kind === 'shade-mode' &&
           (file.version === 10 ||
@@ -519,6 +535,7 @@ function validInterventions(
             file.version === 14 ||
             file.version === 15 ||
             file.version === 16 ||
+            file.version === 17 ||
             file.version === WORLD_VERSION))
       ) {
         if (
@@ -541,6 +558,7 @@ function validInterventions(
             file.version === 14 ||
             file.version === 15 ||
             file.version === 16 ||
+            file.version === 17 ||
             file.version === WORLD_VERSION)) ||
         (row.kind === 'shade-clear' &&
           (file.version === 10 ||
@@ -550,6 +568,7 @@ function validInterventions(
             file.version === 14 ||
             file.version === 15 ||
             file.version === 16 ||
+            file.version === 17 ||
             file.version === WORLD_VERSION))
       ) {
         if (
@@ -586,6 +605,7 @@ function validInterventions(
           file.version === 14 ||
           file.version === 15 ||
           file.version === 16 ||
+          file.version === 17 ||
           file.version === WORLD_VERSION)
       ) {
         if (
@@ -633,6 +653,7 @@ function validInterventions(
           file.version === 14 ||
           file.version === 15 ||
           file.version === 16 ||
+          file.version === 17 ||
           file.version === WORLD_VERSION)
       ) {
         if (
@@ -700,6 +721,7 @@ function validInterventions(
     file.version === 14 ||
     file.version === 15 ||
     file.version === 16 ||
+    file.version === 17 ||
     file.version === WORLD_VERSION
   ) {
     let enabled = file.thermalRefuges.enabled;
@@ -719,6 +741,7 @@ function validInterventions(
     file.version === 14 ||
     file.version === 15 ||
     file.version === 16 ||
+    file.version === 17 ||
     file.version === WORLD_VERSION
   ) {
     let enabled = file.shadeHabitats.enabled;
@@ -735,6 +758,7 @@ function validInterventions(
     file.version === 14 ||
     file.version === 15 ||
     file.version === 16 ||
+    file.version === 17 ||
     file.version === WORLD_VERSION
   ) {
     let policy = file.mutationPolicy;
@@ -758,6 +782,7 @@ function validInterventions(
         file.version === 14 ||
         file.version === 15 ||
         file.version === 16 ||
+        file.version === 17 ||
         file.version === WORLD_VERSION) &&
         sameTerrain(previousTerrain, file.terrain))) &&
     (!previousShock ||
@@ -766,6 +791,7 @@ function validInterventions(
 }
 export class Ecosystem {
   nutrientCycle: NutrientCycle | null = null;
+  biologicalShade: BiologicalShadeMode = { version: 1, enabled: false };
   random: Random;
   settings: Settings;
   terrain: TerrainRecipe;
@@ -814,6 +840,7 @@ export class Ecosystem {
       lineage?: boolean;
       terrain?: TerrainRecipe;
       nutrientCycle?: boolean;
+      biologicalShade?: boolean;
     } = {},
   ) {
     if (!validTerrain(options.terrain ?? DEFAULT_TERRAIN)) throw new Error('Invalid wall recipe.');
@@ -824,6 +851,7 @@ export class Ecosystem {
     this.interventions = emptyInterventions(settings);
     this.random = new Random(settings.seed);
     if (options.nutrientCycle) this.nutrientCycle = createNutrients();
+    this.biologicalShade.enabled = options.biologicalShade === true;
     if (seed) this.seed();
   }
   private displaceFood(position: number): void {
@@ -834,6 +862,7 @@ export class Ecosystem {
     if (this.recording) this.telemetry.pending.energy[field] += amount;
   }
   populationObservation() {
+    const biological = this.biologicalField();
     const view = new DataView(new ArrayBuffer(8)),
       preferenceBins: PreferenceBins = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       cellCounts: TelemetrySample['cellCounts'] = [0, 0, 0, 0, 0, 0];
@@ -856,6 +885,7 @@ export class Ecosystem {
         this.settings.climate,
         this.tick < this.eventUntil ? this.eventOffset : 0,
         this.thermalRefuges,
+        biological?.units[index(organism.x, organism.y)] ?? 0,
       );
       if (Math.max(0, Math.abs(local - genome.preference) - genome.tolerance) > 0)
         stressedOrganisms++;
@@ -1112,8 +1142,10 @@ export class Ecosystem {
     return { rowSequence, removedCells, nonzeroCells: 0 };
   }
   measurements(openStrokeSequence: number | null = null): MeasurementSource {
+    const biological = this.biologicalField();
     return {
       snapshot: {
+        ...(biological ? { biologicalShade: biologicalShadeSummary(biological) } : {}),
         ...(this.nutrientCycle
           ? {
               nutrientCycle: nutrientSummary(
@@ -1316,6 +1348,7 @@ export class Ecosystem {
   }
   step(): void {
     this.tick++;
+    const biological = this.biologicalField();
     const cycle = this.nutrientCycle;
     if (cycle) {
       cycle.budget = {
@@ -1340,11 +1373,13 @@ export class Ecosystem {
         this.settings.climate,
         this.tick < this.eventUntil ? this.eventOffset : 0,
         this.thermalRefuges,
+        biological?.units[index(o.x, o.y)] ?? 0,
       );
       const stress = Math.max(0, Math.abs(temp - o.genome.preference) - o.genome.tolerance);
       const upkeep = 0.012 + Math.max(0, o.genome.tolerance - 0.2) * 0.025;
       let before = o.energy;
       o.energy -= (upkeep + stress * 0.2) * o.genome.cells.length;
+      if (biological) o.energy -= armorCells(o) * ARMOR_SHADE_UPKEEP;
       this.recordEnergy('upkeepSpent', before - o.energy);
       this.recordEnergy(
         'climateUpkeepSpent',
@@ -1354,7 +1389,10 @@ export class Ecosystem {
         const type = cell.type;
         if (type === 4) {
           before = o.energy;
-          const activeUnits = shadeUnits ? shadeUnits[metabolicPosition(o, cell)] : 0;
+          const paintedUnits = shadeUnits ? shadeUnits[metabolicPosition(o, cell)] : 0;
+          const activeUnits = biological
+            ? combinedShadeUnits(paintedUnits, biological.units[metabolicPosition(o, cell)])
+            : paintedUnits;
           if (!cycle || cycle.minerals[metabolicPosition(o, cell)] > 0) {
             if (activeUnits === 0) o.energy += 0.04 * daylight * (1 - stress);
             else o.energy += 0.04 * daylight * (1 - stress) * ((16 - activeUnits) / 16);
@@ -1678,6 +1716,7 @@ export class Ecosystem {
       generation = Math.max(generation, o.generation);
     }
     const organism = this.organisms.get(selected);
+    const biological = this.biologicalField();
     const offset = this.tick < this.eventUntil ? this.eventOffset : 0;
     let lineage: WorldPresentation['lineage'];
     if (includeLineage) {
@@ -1695,6 +1734,16 @@ export class Ecosystem {
     }
     return {
       ...(lineage ? { lineage } : {}),
+      ...(biological ? { biologicalShade: biologicalShadeSummary(biological) } : {}),
+      ...(biological && organism
+        ? {
+            selectedBiologicalShade: biologicalShadeExposure(
+              biological,
+              this.shadeHabitats,
+              organism,
+            ),
+          }
+        : {}),
       ...(this.nutrientCycle
         ? { nutrientCycle: nutrientSummary(this.nutrientCycle, this.organisms.values(), this.food) }
         : {}),
@@ -1703,7 +1752,7 @@ export class Ecosystem {
       thermalRefuges: refugeSummary(this.thermalRefuges),
       shadeHabitats: shadeSummary(this.shadeHabitats),
       mutationPolicy: structuredClone(this.mutationPolicy),
-      selectedLeafLight: selectedLeafLight(this.shadeHabitats, organism ?? null),
+      selectedLeafLight: selectedLeafLight(this.shadeHabitats, organism ?? null, biological?.units),
       anchorTemperature: organism
         ? localTemperature(
             organism.x,
@@ -1712,6 +1761,7 @@ export class Ecosystem {
             this.settings.climate,
             offset,
             this.thermalRefuges,
+            biological?.units[index(organism.x, organism.y)] ?? 0,
           )
         : null,
       anchorRefugeUnits: organism
@@ -1747,6 +1797,9 @@ export class Ecosystem {
   interventionSnapshot(): InterventionState {
     return structuredClone(this.interventions);
   }
+  private biologicalField() {
+    return this.biologicalShade.enabled ? biologicalShadeField(this.organisms.values()) : null;
+  }
   display(
     presentation: Pick<Frame, 'stats' | 'climate' | 'offset'>,
   ): Omit<Frame, 'telemetry' | 'interventions'> {
@@ -1761,6 +1814,9 @@ export class Ecosystem {
     return {
       cells,
       ids,
+      ...(this.biologicalShade.enabled
+        ? { biologicalShade: biologicalShadeField(this.organisms.values()) }
+        : {}),
       ...(this.nutrientCycle
         ? {
             nutrientCycle: {
@@ -1808,6 +1864,7 @@ export class Ecosystem {
     }
     return {
       version: WORLD_VERSION,
+      biologicalShade: { ...this.biologicalShade },
       nutrientCycle: this.nutrientCycle ? nutrientFile(this.nutrientCycle) : null,
       mutationPolicy: structuredClone(this.mutationPolicy),
       terrain: { ...this.terrain },
@@ -1839,6 +1896,7 @@ export class Ecosystem {
     const parsed: unknown = JSON.parse(text);
     const f = parsed as
       | WorldFile
+      | WorldFileV17
       | WorldFileV16
       | WorldFileV15
       | WorldFileV14
@@ -1872,6 +1930,7 @@ export class Ecosystem {
         f.version !== 14 &&
         f.version !== 15 &&
         f.version !== 16 &&
+        f.version !== 17 &&
         f.version !== WORLD_VERSION) ||
       !validSettings(f.settings) ||
       !integer(f.random, -2147483648, 4294967295) ||
@@ -1886,7 +1945,7 @@ export class Ecosystem {
       f.organisms.length > LIMIT
     )
       throw new Error(
-        'Not a valid EvoLab ecosystem (version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 or 17).',
+        'Not a valid EvoLab ecosystem (version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17 or 18).',
       );
     if (
       (f.version === 6 ||
@@ -1900,6 +1959,7 @@ export class Ecosystem {
         f.version === 14 ||
         f.version === 15 ||
         f.version === 16 ||
+        f.version === 17 ||
         f.version === WORLD_VERSION) &&
       !validTerrain(f.terrain)
     )
@@ -1915,6 +1975,7 @@ export class Ecosystem {
       f.version === 14 ||
       f.version === 15 ||
       f.version === 16 ||
+      f.version === 17 ||
       f.version === WORLD_VERSION
         ? parseRefuges(f.thermalRefuges)
         : emptyRefuges();
@@ -1926,6 +1987,7 @@ export class Ecosystem {
       f.version === 14 ||
       f.version === 15 ||
       f.version === 16 ||
+      f.version === 17 ||
       f.version === WORLD_VERSION
         ? parseShade(f.shadeHabitats)
         : emptyShade();
@@ -1939,6 +2001,7 @@ export class Ecosystem {
         f.version === 14 ||
         f.version === 15 ||
         f.version === 16 ||
+        f.version === 17 ||
         f.version === WORLD_VERSION) &&
       !validMutationPolicy(f.mutationPolicy)
     )
@@ -1956,6 +2019,7 @@ export class Ecosystem {
         f.version === 14 ||
         f.version === 15 ||
         f.version === 16 ||
+        f.version === 17 ||
         f.version === WORLD_VERSION) &&
       !validInterventions(f.interventions, f)
     )
@@ -1973,17 +2037,23 @@ export class Ecosystem {
         f.version === 14 ||
         f.version === 15 ||
         f.version === 16 ||
+        f.version === 17 ||
         f.version === WORLD_VERSION
           ? f.terrain
           : DEFAULT_TERRAIN,
     });
     world.thermalRefuges = thermalRefuges;
     world.shadeHabitats = shadeHabitats;
+    world.biologicalShade =
+      f.version === WORLD_VERSION
+        ? parseBiologicalShade(f.biologicalShade)
+        : { version: 1, enabled: false };
     world.mutationPolicy =
       f.version === 13 ||
       f.version === 14 ||
       f.version === 15 ||
       f.version === 16 ||
+      f.version === 17 ||
       f.version === WORLD_VERSION
         ? structuredClone(f.mutationPolicy)
         : legacyMutation();
@@ -2007,6 +2077,7 @@ export class Ecosystem {
           f.version === 14 ||
           f.version === 15 ||
           f.version === 16 ||
+          f.version === 17 ||
           f.version === WORLD_VERSION) &&
           new Set(values).size !== values.length)
       )
@@ -2025,7 +2096,7 @@ export class Ecosystem {
         !integer(o.direction, 0, 3) ||
         !integer(o.age, 0, 100000) ||
         !finite(o.energy, -1000, 100000) ||
-        ((f.version === 16 || f.version === WORLD_VERSION) &&
+        ((f.version === 16 || f.version === 17 || f.version === WORLD_VERSION) &&
           (o.genome as Genome)?.controller &&
           typeof o.neuralBlocked !== 'boolean') ||
         !integer(o.generation, 0, 1e9) ||
@@ -2041,6 +2112,7 @@ export class Ecosystem {
         f.version === 14 ||
         f.version === 15 ||
         f.version === 16 ||
+        f.version === 17 ||
         f.version === WORLD_VERSION
           ? validGenome(
               o.genome,
@@ -2050,12 +2122,14 @@ export class Ecosystem {
                 f.version === 14 ||
                 f.version === 15 ||
                 f.version === 16 ||
+                f.version === 17 ||
                 f.version === WORLD_VERSION,
               f.version === 14 ||
                 f.version === 15 ||
                 f.version === 16 ||
+                f.version === 17 ||
                 f.version === WORLD_VERSION,
-              f.version === 16 || f.version === WORLD_VERSION,
+              f.version === 16 || f.version === 17 || f.version === WORLD_VERSION,
             )
           : validHistoricalGenome(o.genome))
       )
@@ -2071,6 +2145,7 @@ export class Ecosystem {
           f.version === 14 ||
           f.version === 15 ||
           f.version === 16 ||
+          f.version === 17 ||
           f.version === WORLD_VERSION
             ? cloneGenome(o.genome as Genome)
             : migrateHistoricalGenome(o.genome as HistoricalGenome),
@@ -2079,14 +2154,22 @@ export class Ecosystem {
       world.organisms.set(o.id, organism);
       for (const p of positions(organism)) {
         world.occupied[p] = o.id;
-        if (f.version === WORLD_VERSION && f.nutrientCycle !== null && world.food[p])
+        if (
+          (f.version === 17 || f.version === WORLD_VERSION) &&
+          f.nutrientCycle !== null &&
+          world.food[p]
+        )
           throw new Error('Nutrient food overlaps a body.');
         world.food[p] = 0;
       }
     }
     for (let i = 0; i < world.food.length; i++)
       if (world.walls[i]) {
-        if (f.version === WORLD_VERSION && f.nutrientCycle !== null && world.food[i])
+        if (
+          (f.version === 17 || f.version === WORLD_VERSION) &&
+          f.nutrientCycle !== null &&
+          world.food[i]
+        )
           throw new Error('Nutrient food overlaps a wall.');
         world.food[i] = 0;
       }
@@ -2113,6 +2196,7 @@ export class Ecosystem {
       f.version === 14 ||
       f.version === 15 ||
       f.version === 16 ||
+      f.version === 17 ||
       f.version === WORLD_VERSION
         ? { ...structuredClone(f.interventions), version: 5 }
         : emptyInterventions(f.settings, f.tick, true);
@@ -2139,6 +2223,7 @@ export class Ecosystem {
       f.version === 14 ||
       f.version === 15 ||
       f.version === 16 ||
+      f.version === 17 ||
       f.version === WORLD_VERSION ||
       f.version === 8
         ? LineageArchive.load(
@@ -2153,15 +2238,22 @@ export class Ecosystem {
               f.version === 14 ||
               f.version === 15 ||
               f.version === 16 ||
+              f.version === 17 ||
               f.version === WORLD_VERSION,
-            f.version === 14 || f.version === 15 || f.version === 16 || f.version === WORLD_VERSION,
-            f.version === 15 || f.version === 16 || f.version === WORLD_VERSION,
+            f.version === 14 ||
+              f.version === 15 ||
+              f.version === 16 ||
+              f.version === 17 ||
+              f.version === WORLD_VERSION,
+            f.version === 15 || f.version === 16 || f.version === 17 || f.version === WORLD_VERSION,
             f.nextId,
-            f.version === 16 || f.version === WORLD_VERSION,
+            f.version === 16 || f.version === 17 || f.version === WORLD_VERSION,
           )
         : LineageArchive.legacy(world.organisms.values(), f.tick);
     world.nutrientCycle =
-      f.version === WORLD_VERSION ? parseNutrients(f.nutrientCycle, f.tick) : null;
+      f.version === 17 || f.version === WORLD_VERSION
+        ? parseNutrients(f.nutrientCycle, f.tick)
+        : null;
     if (world.nutrientCycle)
       validateNutrients(world.nutrientCycle, world.organisms.values(), world.food);
     return world;

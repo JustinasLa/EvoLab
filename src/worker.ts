@@ -233,6 +233,7 @@ export function startWorker(
           frame.ids.buffer,
           frame.thermalRefuges.units.buffer,
           frame.shadeHabitats.units.buffer,
+          ...(frame.biologicalShade ? [frame.biologicalShade.units.buffer] : []),
           ...(frame.nutrientCycle
             ? [frame.nutrientCycle.minerals.buffer, frame.nutrientCycle.detritus.buffer]
             : []),
@@ -432,6 +433,7 @@ export function startWorker(
         if (
           !validSettings(data.settings) ||
           (data.nutrientCycle !== undefined && typeof data.nutrientCycle !== 'boolean') ||
+          (data.biologicalShade !== undefined && typeof data.biologicalShade !== 'boolean') ||
           !validView(data.display) ||
           data.display.epoch < view.epoch
         )
@@ -441,6 +443,7 @@ export function startWorker(
         const candidate = new Ecosystem(observedSettings(data.settings), true, {
           terrain,
           nutrientCycle: data.nutrientCycle,
+          biologicalShade: data.biologicalShade,
         });
         world = candidate;
         events = undefined;

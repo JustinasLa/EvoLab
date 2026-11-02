@@ -8,7 +8,7 @@ export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 17;
+export const WORLD_VERSION = 18;
 export const LINEAGE_SUMMARY_CAPACITY = 256;
 export const LINEAGE_EVENT_CAPACITY = 512;
 export const INTERVENTION_CAPACITY = 128;
@@ -277,6 +277,7 @@ export interface Stats {
   top: Species[];
 }
 export interface Frame {
+  biologicalShade?: import('./biological-shade').BiologicalShadePlane;
   nutrientCycle?: import('./nutrients').NutrientPlane;
   terrain: TerrainRecipe;
   thermalRefuges: RefugePlane;
@@ -371,6 +372,8 @@ export interface LineagePresentation {
   current: (Species & { organismIds: number[] })[];
 }
 export type WorldPresentation = Pick<Frame, 'stats' | 'climate' | 'offset' | 'terrain'> & {
+  biologicalShade?: import('./biological-shade').BiologicalShadeSummary;
+  selectedBiologicalShade?: import('./biological-shade').BiologicalShadeExposure;
   nutrientCycle?: import('./nutrients').NutrientSummary;
   roles?: import('./roles').RoleSnapshot;
   mutationPolicy: MutationPolicy;
@@ -437,6 +440,7 @@ export type CommandPayload =
       display: DisplayView;
       terrain: TerrainRecipe;
       nutrientCycle?: boolean;
+      biologicalShade?: boolean;
     }
   | { type: 'load'; text: string }
   | { type: 'capture-design'; source: 'organism' | 'lineage'; sourceId: number; captureId: number }
@@ -671,6 +675,7 @@ export interface WorldEcology {
   organisms: Organism[];
 }
 export interface WorldFile extends WorldEcology {
+  biologicalShade: import('./biological-shade').BiologicalShadeMode;
   nutrientCycle: import('./nutrients').NutrientFile | null;
   mutationPolicy: MutationPolicy;
   version: typeof WORLD_VERSION;
@@ -684,7 +689,10 @@ export interface WorldFile extends WorldEcology {
 export type HistoricalWorldEcology = Omit<WorldEcology, 'organisms'> & {
   organisms: HistoricalOrganism[];
 };
-export interface WorldFileV16 extends Omit<WorldFile, 'version' | 'nutrientCycle'> {
+export interface WorldFileV17 extends Omit<WorldFile, 'version' | 'biologicalShade'> {
+  version: 17;
+}
+export interface WorldFileV16 extends Omit<WorldFileV17, 'version' | 'nutrientCycle'> {
   version: 16;
 }
 export interface WorldFileV15 extends Omit<WorldFileV16, 'version'> {
@@ -896,6 +904,7 @@ export interface PaintOutcome {
 }
 export interface MeasurementSource {
   snapshot: {
+    biologicalShade?: import('./biological-shade').BiologicalShadeSummary;
     nutrientCycle?: import('./nutrients').NutrientSummary;
     mutationPolicy: MutationPolicy;
     worldVersion: typeof WORLD_VERSION;
