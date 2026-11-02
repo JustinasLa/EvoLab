@@ -105,8 +105,13 @@ it('rejects old epochs, mismatched identities, pending selection and hidden dema
   vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
   expect(setup.view.wanted()).toBe(false);
   expect(setup.world.save()).toEqual(original);
+  const retained = setup.root.innerHTML;
+  const notifications = setup.changed.mock.calls.length;
   setup.view.dispose();
-  expect(setup.root.querySelector('#neural-inspector')).toBeNull();
+  setup.get('neural-inspector').dispatchEvent(new Event('toggle'));
+  setup.get('specimen-details').dispatchEvent(new Event('toggle'));
+  expect(setup.changed).toHaveBeenCalledTimes(notifications);
+  expect(setup.root.innerHTML).toBe(retained);
 });
 
 it('labels no selection, non-neural and death before capture without invented activity', () => {
