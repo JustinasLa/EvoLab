@@ -340,7 +340,7 @@ test('native recipes export the complete source and actual observations, replay 
   expect(recipe.control.samples).toEqual(first.control.samples);
   expect(recipe.treatment.samples).toEqual(first.treatment.samples);
   expect(recipe.plan).toEqual(first.plan);
-  expect(recipe.rules).toEqual({ id: 'evolab-drift-cellular', version: 8, worldVersion: 16 });
+  expect(recipe.rules).toEqual({ id: 'evolab-drift-cellular', version: 9, worldVersion: 17 });
   const metric = page.locator('#comparison-metric');
   for (const name of [
     'population',

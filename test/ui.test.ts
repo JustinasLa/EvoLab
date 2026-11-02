@@ -3258,7 +3258,7 @@ describe('explicit bounded local library', () => {
     root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
     harness.deliver();
     const before = harness.save();
-    expect(before.version).toBe(16);
+    expect(before.version).toBe(17);
     expect(before.lineageArchive.summaries.length).toBeGreaterThan(0);
     expect(before.telemetry.version).toBe(2);
     expect(before.interventions.version).toBe(5);
@@ -5001,6 +5001,47 @@ describe('standalone blueprint files', () => {
     expect(bridge.save()).toEqual(expected.save());
   });
 
+  it('edits expanded inherited senses with explicit reset, bounded controls and no world changes', async () => {
+    const bridge = realWorker();
+    bridge.deliver();
+    click('pause');
+    bridge.advance();
+    bridge.deliver();
+    const before = bridge.save();
+    get('senses-controls').dispatchEvent(new Event('change', { bubbles: true }));
+    click('neural-enabled');
+    const sense = (key: string) => root.querySelector<HTMLInputElement>(`[data-sense="${key}"]`)!;
+    sense('enabled').click();
+    expect((await exported()).genome.controller!.version).toBe(2);
+    sense('range').value = '8';
+    sense('range').dispatchEvent(new Event('change', { bubbles: true }));
+    sense('orientation').value = '2';
+    sense('orientation').dispatchEvent(new Event('change', { bubbles: true }));
+    sense('fov').value = '4';
+    sense('fov').dispatchEvent(new Event('change', { bubbles: true }));
+    sense('temperature').click();
+    const enabled = await exported();
+    expect(enabled.genome.senses).toEqual({
+      version: 1,
+      orientation: 2,
+      range: 8,
+      fov: 4,
+      temperature: true,
+    });
+    sense('range').value = '10';
+    sense('range').dispatchEvent(new Event('change', { bubbles: true }));
+    expect(sense('range').value).toBe('8');
+    await importDraft(serializeBlueprint(enabled));
+    expect((await exported()).genome).toEqual(enabled.genome);
+    sense('enabled').click();
+    expect((await exported()).genome.controller).toEqual(newController());
+    expect((await exported()).genome.senses).toBeUndefined();
+    sense('enabled').click();
+    click('neural-enabled');
+    expect((await exported()).genome.senses).toBeUndefined();
+    expect(bridge.save()).toEqual(before);
+  });
+
   it('edits opt-in neural parameters without ticks and rejects invalid or stale designer data', async () => {
     const bridge = realWorker();
     bridge.deliver();
@@ -5333,7 +5374,7 @@ describe('standalone blueprint files', () => {
     emit(sample, organism);
     expect(await exported('export-organism-blueprint')).toEqual({
       format: 'evolab-organism-blueprint',
-      version: 5,
+      version: 6,
       name: 'Bloom',
       description: '',
       genome: organism.genome,
@@ -5437,7 +5478,7 @@ describe('standalone blueprint files', () => {
       '{',
       '{}',
       'null',
-      JSON.stringify({ ...JSON.parse(serializeBlueprint(fixture())), version: 6 }),
+      JSON.stringify({ ...JSON.parse(serializeBlueprint(fixture())), version: 7 }),
       JSON.stringify({
         ...JSON.parse(serializeBlueprint(fixture())),
         genome: {

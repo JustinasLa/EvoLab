@@ -18,6 +18,8 @@ import { newController, neuralAction, validController } from '../src/neural';
 import { expandedInputs, neuralInputs } from '../src/sensory';
 import { newSenses, validSenses, mutateSenses, sameSenses, SENSE_CHANNELS } from '../src/senses';
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
+import { classifyRecord, createLibrary, libraryCandidate, type LibraryEntry } from '../src/library';
+import { libraryHarness } from './fixtures/library';
 import { sameInherited } from '../src/lineage';
 import { birthObservation, inheritedDifference, validBirthEvent } from '../src/mutation-evidence';
 
@@ -54,6 +56,87 @@ function scene(genome = design(), x = 60, y = 60, rotation = 0) {
 }
 
 describe('explicit inherited expanded senses', () => {
+  it('preserves current and predecessor controllers through complete library storage and world continuation', async () => {
+    const native = libraryHarness();
+    let identity = 0;
+    const library = createLibrary({
+      factory: () => native.factory,
+      randomId: () => `00000000-0000-4000-8000-${String(++identity).padStart(12, '0')}`,
+    });
+    await library.list();
+    for (const version of [1, 2] as const) {
+      const source = design();
+      source.controller = newController(version);
+      if (version === 1) delete source.senses;
+      else source.senses!.temperature = true;
+      source.controller.biases[5] = 1;
+      await library.mutate({
+        type: 'create',
+        candidate: libraryCandidate(source, `Senses v${version}`, ''),
+      });
+      const rows = (await library.list()).rows;
+      const entry = rows.find(
+        (row) => row.kind === 'valid' && row.blueprint.name === `Senses v${version}`,
+      )! as LibraryEntry;
+      expect(entry.kind).toBe('valid');
+      const classified = classifyRecord(entry.id, entry.token);
+      expect(classified.kind).toBe('valid');
+      if (classified.kind !== 'valid') throw new Error('Expected valid local design');
+      expect(classified.blueprint.genome).toEqual(source);
+      const { world, organism } = scene(source);
+      organism.neuralBlocked = true;
+      const file = world.save();
+      if (version === 1) (file as { version: number }).version = 16;
+      const restored = Ecosystem.load(JSON.stringify(file));
+      for (let tick = 0; tick < 12; tick++) {
+        world.step();
+        restored.step();
+      }
+      expect(restored.save()).toEqual(world.save());
+    }
+    library.dispose();
+  });
+
+  it('inherits real accepted offspring, validates retained birth and extinct founding senses before loading', () => {
+    let witnessed = false;
+    for (let seed = 1; seed <= 16 && !witnessed; seed++) {
+      const { world, organism } = scene();
+      world.changeSettings({ mutation: 0.4 });
+      world.random = new Random(seed);
+      organism.age = 32;
+      organism.energy = 100;
+      world.step();
+      const file = world.save();
+      expect(Ecosystem.load(JSON.stringify(file)).save()).toEqual(file);
+      const birth = file.lineageArchive.events.find(
+        (event) => event.kind === 'reproduction' && event.gate,
+      );
+      if (!birth || birth.kind !== 'reproduction' || !birth.childGenome) continue;
+      witnessed = true;
+      expect(birth.channels.some((channel) => SENSE_CHANNELS.includes(channel as never))).toBe(
+        true,
+      );
+      const child = world.organisms.get(birth.childOrganismId!)!;
+      expect(child.genome.senses).not.toBe(organism.genome.senses);
+      expect(child.genome.controller).not.toBe(organism.genome.controller);
+      expect(validGenome(child.genome)).toBe(true);
+      const corruptBirth = structuredClone(file);
+      const corrupted = corruptBirth.lineageArchive.events.find(
+        (event) => event.kind === 'reproduction',
+      )!;
+      if (corrupted.kind !== 'reproduction') throw new Error('Expected birth evidence');
+      corrupted.parentGenome.senses!.range = 9;
+      expect(() => Ecosystem.load(JSON.stringify(corruptBirth))).toThrow();
+      world.paint('erase', organism.x, organism.y, 0, organism.genome);
+      const extinct = world.save();
+      const summary = extinct.lineageArchive.summaries.find((row) => row.id === organism.species)!;
+      expect(summary.liveCount).toBe(0);
+      expect(Ecosystem.load(JSON.stringify(extinct)).save()).toEqual(extinct);
+      summary.foundingGenome!.senses!.orientation = 4;
+      expect(() => Ecosystem.load(JSON.stringify(extinct))).toThrow();
+    }
+    expect(witnessed).toBe(true);
+  });
   it('validates the exact paired opt-in and rejects malformed or predecessor declarations', () => {
     const source = design();
     expect(validGenome(source)).toBe(true);
@@ -240,6 +323,63 @@ describe('explicit inherited expanded senses', () => {
     }
     expect(narrow.organism.y).toBe(59);
     expect(turned.organism.y).toBe(60);
+  });
+
+  it('range and occlusion change real actions while blocked sight still pays its provisioned range', () => {
+    const short = design();
+    short.controller!.weights[0] = 1;
+    short.controller!.weights[44] = 1;
+    const long = cloneGenome(short);
+    long.senses!.range = 8;
+    const shortScene = scene(short),
+      longScene = scene(long),
+      occluded = scene(long);
+    for (const candidate of [shortScene, longScene, occluded]) {
+      candidate.world.food[index(60, 54)] = 1;
+      candidate.world.selectPerception(candidate.organism.id);
+    }
+    occluded.world.walls[index(60, 57)] = 1;
+    for (const candidate of [shortScene, longScene, occluded]) candidate.world.step();
+    expect(shortScene.organism.y).toBe(60);
+    expect(longScene.organism.y).toBe(59);
+    expect(occluded.organism.y).toBe(60);
+    expect(shortScene.world.perception()!.senses!.eyeCost).toBe(0.005);
+    expect(longScene.world.perception()!.senses!.eyeCost).toBe(0.008);
+    expect(occluded.world.perception()!.senses!.eyeCost).toBe(0.008);
+    expect(shortScene.organism.energy - longScene.organism.energy).toBeCloseTo(0.003 + 0.03, 12);
+    expect(occluded.organism.energy - longScene.organism.energy).toBeCloseTo(0.03, 12);
+  });
+
+  it('additional sensing can cause genuine energy exhaustion and the maximum trace stays bounded', () => {
+    const costly = design();
+    costly.senses!.range = 8;
+    costly.senses!.fov = 4;
+    const paid = scene(costly),
+      legacy = cloneGenome(costly);
+    legacy.controller = newController();
+    delete legacy.senses;
+    const control = scene(legacy);
+    for (const candidate of [paid, control]) candidate.organism.energy = 0.05;
+    paid.world.selectPerception(paid.organism.id);
+    paid.world.step();
+    control.world.step();
+    expect(paid.world.organisms.size).toBe(0);
+    expect(paid.world.deaths).toBe(1);
+    expect(paid.world.perception()).toBeNull();
+    expect(control.world.organisms.size).toBe(1);
+    const maximum = design();
+    maximum.cells = Array.from({ length: 16 }, (_, cell) => ({
+      x: cell % 4,
+      y: Math.floor(cell / 4),
+      type: 8,
+    }));
+    maximum.senses = { ...newSenses(), range: 8, fov: 4, temperature: true };
+    const { world, organism, trace } = scene(maximum);
+    const measurement = expandedInputs(organism, world, () => 0.5, trace);
+    expect(trace.rays).toHaveLength(64);
+    expect(trace.rays.reduce((count, ray) => count + ray.cells.length, 0)).toBeLessThanOrEqual(512);
+    expect(measurement.eyeCost).toBe(0.512);
+    expect(measurement.temperatures).toHaveLength(4);
   });
 
   it('uses paid local temperature to steer but cannot promise migration through walls', () => {

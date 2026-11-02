@@ -1,4 +1,5 @@
 import { WIDTH, type Perception } from './model';
+import { SENSE_LABELS } from './senses-view';
 
 const headings = ['north', 'east', 'south', 'west'];
 // Travel headings in the ecology use E/S/W/N, unlike body rotations.
@@ -6,6 +7,10 @@ const travel = ['east', 'south', 'west', 'north'];
 export function perceptionHtml(trace: Perception | null, tick: number): string {
   if (!trace)
     return '<p>No retained perception. Select an active organism with an eye and motor, then let it reach an eligible movement tick. Paused inspection never reconstructs earlier sight. Death or a different selection clears this observation.</p>';
+  if (trace.senses) {
+    const senses = trace.senses;
+    return `<p>Actual controller v2 perception at tick ${trace.tick}; current observation tick ${tick}${trace.tick < tick ? ' — historical' : ''}. Pre-action samples; no re-evaluation on inspection.</p><p>Action ${senses.action}; ${senses.action === 'rest' ? 'rested' : trace.moved ? 'accepted' : 'not performed or blocked'}. Final body faces ${headings[trace.finalRotation]}. Paid sensing: eyes ${senses.eyeCost}; temperature ${senses.temperatureCost}; network evaluation 0.02 separately.</p><ol>${senses.inputs.map((value, input) => `<li>${SENSE_LABELS[input]}: ${senses.available[input] ? value : 'unavailable (network value 0)'}</li>`).join('')}</ol><p>Temperature samples: ${senses.temperatures.length ? senses.temperatures.map((sample) => `(${sample.position % WIDTH},${Math.floor(sample.position / WIDTH)}) = ${sample.value}`).join('; ') : 'unavailable; no samples taken and no thermal cost'}.</p><p>Overlay: cyan visited cells, orange first occlusion, violet local thermal samples. Recorded samples only; world may since have changed.</p><ol>${trace.rays.map((ray) => `<li>Eye ${ray.eye} from (${ray.origin % WIDTH},${Math.floor(ray.origin / WIDTH)}), facing ${headings[ray.heading]}: ${ray.cells.length} visited; ${ray.stop === 'range' ? 'range exhausted' : `occluded by ${ray.stop}`}.</li>`).join('')}</ol>`;
+  }
   const chosen =
     trace.chosenEye === null
       ? 'No non-ignored candidate; retained travel heading'
@@ -23,6 +28,16 @@ export function drawPerception(
   scale: number,
 ): void {
   ctx.lineWidth = 1.5;
+  if (trace.senses) {
+    ctx.strokeStyle = '#a38ae4';
+    for (const sample of trace.senses.temperatures)
+      ctx.strokeRect(
+        left + (sample.position % WIDTH) * scale + scale * 0.2,
+        top + Math.floor(sample.position / WIDTH) * scale + scale * 0.2,
+        scale * 0.6,
+        scale * 0.6,
+      );
+  }
   for (const ray of trace.rays) {
     ctx.strokeStyle = '#58bce5';
     for (const p of ray.cells)
