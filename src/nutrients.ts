@@ -76,11 +76,11 @@ export function recycleNutrients(cycle: NutrientCycle, walls: Uint8Array, tick: 
       cycle.detritus[position]--;
       cycle.minerals[position]++;
     }
-  for (let y = 0; y < HEIGHT; y++)
-    for (let x = 0; x < WIDTH; x++) {
-      if ((horizontal ? x : y) % 2 !== parity) continue;
-      const source = index(x, y),
-        target = index(x + (horizontal ? 1 : 0), y + (horizontal ? 0 : 1));
+  for (let row = 0; row < HEIGHT; row++)
+    for (let column = 0; column < WIDTH; column++) {
+      if ((horizontal ? column : row) % 2 !== parity) continue;
+      const source = index(column, row),
+        target = index(column + (horizontal ? 1 : 0), row + (horizontal ? 0 : 1));
       if (walls[source] || walls[target]) continue;
       const difference = cycle.minerals[source] - cycle.minerals[target];
       if (Math.abs(difference) < 2) continue;

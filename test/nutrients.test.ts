@@ -46,6 +46,17 @@ function check(world: Ecosystem) {
 }
 
 describe('finite nutrient ecology', () => {
+  it('keeps ecological-role observation passive under the enabled resource costs', () => {
+    const world = habitat(true),
+      reference = Ecosystem.load(JSON.stringify(world.save()));
+    world.observeRoles();
+    for (let tick = 0; tick < 40; tick++) {
+      world.step();
+      reference.step();
+    }
+    expect(world.save()).toEqual(reference.save());
+    expect(world.roleSnapshot()).toBeDefined();
+  });
   it('initializes once, charges the founder, exposes detached fields and records units', () => {
     const world = habitat(true);
     expect(summary(world)).toMatchObject({
