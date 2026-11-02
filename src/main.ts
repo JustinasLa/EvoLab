@@ -3,6 +3,7 @@ import { newController } from './neural';
 import { validMutationPolicy } from './mutation';
 import { emptyShade, shadeTool, shadeSummary, validShadeBrush } from './shade';
 import { createOrganismView } from './organism-view';
+import { createNeuralView } from './neural-view';
 import { mountCheckpoints } from './checkpoint-view';
 import { mountComparisons } from './experiment-view';
 import { mountEvents } from './event-view';
@@ -334,6 +335,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   const organismView = createOrganismView(root, canvas, camera, () => {
     dirty = true;
   });
+  const neuralView = createNeuralView(root, () => changeView());
   let hover: { x: number; y: number } | undefined,
     touchAnchor: { x: number; y: number } | undefined;
   function clearPlacement(): void {
@@ -513,6 +515,8 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     designRevision++;
   }
   function invalidateObservation(): void {
+    neuralView.pendingSelection(false);
+    neuralView.clear();
     clearPlacement();
     captureIntent = null;
     acceptedObservationRun = undefined;
@@ -1552,13 +1556,15 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     visible = desiredView.visible,
     lineage = desiredView.lineage === true,
     roles = desiredView.roles === true,
+    neural = neuralView.wanted(),
   ): void {
     if (
       !alive ||
       (enabled === desiredView.enabled &&
         visible === desiredView.visible &&
         lineage === (desiredView.lineage === true) &&
-        roles === (desiredView.roles === true))
+        roles === (desiredView.roles === true) &&
+        neural === (desiredView.neural === true))
     )
       return;
     desiredView = {
@@ -1567,7 +1573,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       visible,
       ...(lineage ? { lineage: true as const } : {}),
       ...(roles ? { roles: true as const } : {}),
+      ...(neural ? { neural: true as const } : {}),
     };
+    neuralView.update(latestState, desiredView.epoch);
     viewIntent = { ...desiredView };
     if (!enabled || !visible) discardFenceEpoch = desiredView.epoch;
     if (pendingFrame) {
@@ -1738,6 +1746,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       lineageView.reveal();
       rolesView.reveal();
     }
+    changeView();
   };
   function choose(next: Tool): void {
     endStroke();
@@ -1982,10 +1991,11 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     if (!p) return;
     if (tool === 'inspect') {
       organismView.clear();
+      neuralView.pendingSelection(true);
       captureIntent = null;
       updateCapture();
       get<HTMLDetailsElement>('specimen-details').open = true;
-      send({ type: 'inspect', ...p });
+      if (!send({ type: 'inspect', ...p })) neuralView.pendingSelection(false);
       tab('organism');
     } else if (tool !== 'pan') {
       if (refugeTool(tool) || shadeTool(tool)) {
@@ -2833,7 +2843,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     if (
       (event.target instanceof HTMLElement &&
         event.target.closest(
-          'input,select,textarea,button,summary,[contenteditable="true"],dialog,#roles-tables',
+          'input,select,textarea,button,summary,[contenteditable="true"],dialog,#roles-tables,#neural-data',
         )) ||
       event.ctrlKey ||
       event.metaKey ||
@@ -3000,6 +3010,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         );
       events.update(observation.journal);
       rolesView.update(observation.world.roles);
+      neuralView.update(observation, desiredView.epoch);
       organismView.update(
         observation,
         differentRun ||
@@ -3284,6 +3295,13 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
                 !(data.type === 'manual-result' && data.status === 'rejected'),
             );
             if (
+              completion.type === 'inspect' &&
+              !pending.some((entry) => entry.payload.type === 'inspect')
+            ) {
+              neuralView.pendingSelection(false);
+              neuralView.update(latestState, desiredView.epoch);
+            }
+            if (
               (data.type === 'error' ||
                 (data.type === 'manual-result' && data.status === 'rejected')) &&
               completion.type === 'settings'
@@ -3555,6 +3573,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     lineageView.dispose();
     rolesView.dispose();
     organismView.dispose();
+    neuralView.dispose();
     mutationControls.dispose();
     cancelAnimationFrame(animation);
     terminate();

@@ -154,6 +154,7 @@ export function startWorker(
       world: structuredClone(cachedPresentation),
       selected: organism ? observedOrganism(organism) : null,
       perception: world!.perception(),
+      ...(view.neural ? { neural: world!.neuralObservation() } : {}),
       settings: observedSettings(world!.settings),
       speed,
       playback: {
@@ -351,7 +352,8 @@ export function startWorker(
       typeof value.enabled === 'boolean' &&
       typeof value.visible === 'boolean' &&
       (value.lineage === undefined || value.lineage === true) &&
-      (value.roles === undefined || value.roles === true)
+      (value.roles === undefined || value.roles === true) &&
+      (value.neural === undefined || value.neural === true)
     );
   }
   const coordinates = (value: any): boolean =>
@@ -445,10 +447,12 @@ export function startWorker(
           visible: data.display.visible,
           ...(data.display.lineage ? { lineage: true as const } : {}),
           ...(data.display.roles ? { roles: true as const } : {}),
+          ...(data.display.neural ? { neural: true as const } : {}),
         };
         if (view.roles) world.observeRoles();
         paused = failed = false;
         selected = 0;
+        world.selectNeural(selected, view.neural === true);
         extinction = null;
         stroke = null;
         target = null;
@@ -490,6 +494,7 @@ export function startWorker(
         replacementId = commandId;
         failed = paused = false;
         selected = 0;
+        world.selectNeural(selected, view.neural === true);
         target = null;
         extinction = world.organisms.size ? null : { tick: world.tick, cause: 'empty-import' };
         changed();
@@ -614,7 +619,9 @@ export function startWorker(
               visible: data.view.visible,
               ...(data.view.lineage ? { lineage: true as const } : {}),
               ...(data.view.roles ? { roles: true as const } : {}),
+              ...(data.view.neural ? { neural: true as const } : {}),
             };
+            world.selectNeural(selected, view.neural === true);
             if (view.roles) world.observeRoles();
             if (!view.visible) interactive = false;
             resetRate();
@@ -841,6 +848,7 @@ export function startWorker(
             if (!coordinates(data)) throw new Error('Invalid inspection coordinates.');
             selected = world.occupied[index(data.x, data.y)];
             world.selectPerception(selected);
+            world.selectNeural(selected, view.neural === true);
             interactive ||= paused && view.visible;
             exactTelemetry = paused;
             break;
