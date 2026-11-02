@@ -1,4 +1,5 @@
 import { mountMutationControls } from './mutation-view';
+import { newController } from './neural';
 import { validMutationPolicy } from './mutation';
 import { emptyShade, shadeTool, shadeSummary, validShadeBrush } from './shade';
 import { createOrganismView } from './organism-view';
@@ -60,6 +61,7 @@ import {
 import {
   behaviorStatus,
   reactionEditor,
+  neuralEditor,
   draw,
   genomeSvg,
   markup,
@@ -1816,6 +1818,8 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     );
     text('behavior-status', behaviorStatus(blueprint));
     get('behavior-controls').innerHTML = reactionEditor(blueprint);
+    get<HTMLInputElement>('neural-enabled').checked = !!blueprint.controller;
+    get('neural-controls').innerHTML = neuralEditor(blueprint);
     text(
       'design-note',
       validGenome(blueprint)
@@ -2428,6 +2432,32 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     endStroke();
     invalidateDesign();
     blueprint.behavior.reactions[category] = reaction;
+  });
+  get('neural-enabled').addEventListener('change', () => {
+    endStroke();
+    invalidateDesign();
+    if (get<HTMLInputElement>('neural-enabled').checked) blueprint.controller = newController();
+    else delete blueprint.controller;
+    editor();
+  });
+  get('neural-controls').addEventListener('change', (event) => {
+    const input = (event.target as HTMLElement).closest<HTMLInputElement>('input[data-neural]');
+    if (!input || !blueprint.controller) return;
+    const kind = input.dataset.neural,
+      offset = Number(input.dataset.offset),
+      value = input.valueAsNumber;
+    if (
+      (kind !== 'weights' && kind !== 'biases') ||
+      !integer(offset, 0, blueprint.controller[kind].length - 1)
+    )
+      return;
+    if (!Number.isFinite(value) || value < -4 || value > 4) {
+      input.value = String(blueprint.controller[kind][offset]);
+      return;
+    }
+    endStroke();
+    invalidateDesign();
+    blueprint.controller[kind][offset] = value;
   });
   get('blueprint-name').addEventListener('input', () => {
     invalidateDesign();

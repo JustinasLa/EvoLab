@@ -31,7 +31,9 @@ jobs:
       - name: Deterministic 100000-tick seed corpus
         run: npm run test:soak
       - name: Separate contextual throughput measurements
-        run: npm run bench:ecosystem
+        run: |
+          npm run bench:ecosystem
+          npm run bench:neural
       - name: Upload complete long-run receipts
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
