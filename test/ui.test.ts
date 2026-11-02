@@ -7518,6 +7518,17 @@ it('neural panel subscriptions reject delayed selections, old epochs and replace
   click('step');
   bridge.deliver();
   expect(get('neural-data').textContent).toContain('last evaluated at tick 4');
+  bridge.command({ type: 'inspect', x: 100, y: 100 });
+  bridge.command({ type: 'inspect', x: organism.x, y: organism.y });
+  const intermediate = bridge.outbox.findIndex(
+    (message) => message.type === 'control' && message.operation === 'inspect',
+  );
+  expect(intermediate).toBeGreaterThanOrEqual(0);
+  worker.onmessage!({ data: bridge.outbox.splice(intermediate, 1)[0] } as MessageEvent);
+  expect(get('neural-data').textContent).toContain('selection is changing');
+  expect(get('neural-data').textContent).not.toContain('no neural controller');
+  bridge.deliver();
+  expect(get('neural-data').textContent).toContain('no evaluation captured yet');
   get<HTMLDetailsElement>('neural-inspector').open = false;
   get('neural-inspector').dispatchEvent(new Event('toggle'));
   bridge.deliver();

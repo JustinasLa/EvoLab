@@ -4,7 +4,7 @@ import { DEFAULTS, founder, index, type Genome } from '../src/model';
 import * as neural from '../src/neural';
 import { NEURAL_HISTORY_LIMIT } from '../src/neural-observation';
 
-function scene(action = 1, motor = true) {
+function scene(action = 1, motor = true, nutrientCycle = false) {
   const controller = neural.newController();
   controller.weights[0] = 2;
   controller.weights[6] = -2;
@@ -19,7 +19,9 @@ function scene(action = 1, motor = true) {
     tempo: 2,
     controller,
   };
-  const world = new Ecosystem({ ...DEFAULTS, climate: 0, mutation: 0, nutrients: 0 }, false);
+  const world = new Ecosystem({ ...DEFAULTS, climate: 0, mutation: 0, nutrients: 0 }, false, {
+    nutrientCycle,
+  });
   const organism = world.spawn(genome, 60, 60, undefined, undefined, 0)!;
   organism.age = 1;
   organism.energy = 30;
@@ -137,30 +139,33 @@ describe('session neural observation', () => {
     expect(world.neuralObservation()).toBeNull();
   });
 
-  it('preserves complete saves, RNG, evaluation counts and continued ecology with capture churn', () => {
-    const { world, organism } = scene();
-    const control = Ecosystem.load(JSON.stringify(world.save()));
-    const evaluate = vi.spyOn(neural, 'neuralAction');
-    for (let tick = 0; tick < 48; tick++) {
-      world.selectNeural(tick % 7 === 0 ? 0 : organism.id, tick % 11 !== 0);
-      world.step();
-      const observedEvaluations = evaluate.mock.calls.length;
-      evaluate.mockClear();
-      world.neuralObservation();
-      world.presentation(organism.id);
-      expect(evaluate).not.toHaveBeenCalled();
+  it.each([false, true])(
+    'preserves complete saves, RNG, evaluation counts and continued ecology with capture churn and nutrient cycle %s',
+    (nutrientCycle) => {
+      const { world, organism } = scene(1, true, nutrientCycle);
+      const control = Ecosystem.load(JSON.stringify(world.save()));
+      const evaluate = vi.spyOn(neural, 'neuralAction');
+      for (let tick = 0; tick < 48; tick++) {
+        world.selectNeural(tick % 7 === 0 ? 0 : organism.id, tick % 11 !== 0);
+        world.step();
+        const observedEvaluations = evaluate.mock.calls.length;
+        evaluate.mockClear();
+        world.neuralObservation();
+        world.presentation(organism.id);
+        expect(evaluate).not.toHaveBeenCalled();
+        control.step();
+        expect(evaluate).toHaveBeenCalledTimes(observedEvaluations);
+        evaluate.mockClear();
+        expect(world.save()).toEqual(control.save());
+      }
+      evaluate.mockRestore();
+      const restored = Ecosystem.load(JSON.stringify(world.save()));
+      expect(restored.neuralObservation()).toBeNull();
+      restored.step();
       control.step();
-      expect(evaluate).toHaveBeenCalledTimes(observedEvaluations);
-      evaluate.mockClear();
-      expect(world.save()).toEqual(control.save());
-    }
-    evaluate.mockRestore();
-    const restored = Ecosystem.load(JSON.stringify(world.save()));
-    expect(restored.neuralObservation()).toBeNull();
-    restored.step();
-    control.step();
-    expect(restored.save()).toEqual(control.save());
-  });
+      expect(restored.save()).toEqual(control.save());
+    },
+  );
 
   it('caps maximum anatomy rays, history and serialized observation size without recording opaque data', () => {
     const { world, organism } = scene(0);
