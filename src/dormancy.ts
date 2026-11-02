@@ -62,10 +62,11 @@ export function dormancyTick(
       Math.max(0, organism.energy - traits.wakeEnergy),
       (traits.capacity - state.stored) / 0.8,
     );
+    const nextStored = Math.min(traits.capacity, state.stored + input * 0.8);
+    const deposited = nextStored - state.stored;
+    if (deposited > input) return state.dormant;
     organism.energy -= input;
-    const before = state.stored;
-    state.stored = Math.min(traits.capacity, state.stored + input * 0.8);
-    const deposited = state.stored - before;
+    state.stored = nextStored;
     record('deposited', deposited);
     record('conversionSpent', input - deposited);
   }

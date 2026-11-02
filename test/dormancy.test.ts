@@ -103,6 +103,27 @@ describe('bounded inherited dormancy', () => {
     expect(noRecording.telemetry.pending.reserves).toBeUndefined();
   });
 
+  it('keeps sub-precision storage conservative and every resulting save reloadable', () => {
+    for (const stored of [16, 32, 48, 63])
+      for (let offset = 1; offset < 40; offset++) {
+        const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
+        const design = genome();
+        design.dormancy!.capacity = 64;
+        const organism = world.spawn(design, 60, 60)!;
+        organism.reserves!.stored = stored;
+        organism.energy = 10 + 0.001 + stored * 0.0005 + offset * Number.EPSILON;
+        world.step();
+        const flow = world.telemetry.pending.reserves!;
+        expect(flow.conversionSpent).toBeGreaterThanOrEqual(0);
+        expect(organism.reserves!.stored).toBeLessThanOrEqual(64);
+        expect(Ecosystem.load(JSON.stringify(world.save())).save()).toEqual(world.save());
+        if (stored === 32 && offset === 21) {
+          expect(organism.reserves!.stored).toBe(32);
+          expect(flow.deposited).toBe(0);
+        }
+      }
+  });
+
   it('pays entry and exit, funds upkeep, and resumes only after a paid successful wake', () => {
     const { world, organism } = fixture();
     organism.energy = 2;
