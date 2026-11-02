@@ -6,8 +6,9 @@ import {
   type LineageArchiveState,
 } from './model';
 import { MUTATION_CHANNELS, type MutationChannel } from './mutation';
+import { NEURAL_CHANNELS, sameController } from './neural';
 
-export type AttemptChannel = MutationChannel | 'propensity';
+export type AttemptChannel = MutationChannel | 'propensity' | (typeof NEURAL_CHANNELS)[number];
 export interface BirthEvent {
   kind: 'reproduction';
   /** Reproductive parent's lineage, not a newly allocated lineage. */
@@ -37,11 +38,12 @@ export const birthKeys = [
   'childGenome',
   'outcome',
 ];
-function projection(value: unknown): value is Genome {
-  if (!validGenome(value)) return false;
+function projection(value: unknown, neural = true): value is Genome {
+  if (!validGenome(value, true, true, neural)) return false;
   const genome = value as Genome;
   return (
-    Object.keys(genome).length === (genome.mutationPropensity === undefined ? 5 : 6) &&
+    Object.keys(genome).length ===
+      (genome.mutationPropensity === undefined ? 5 : 6) + (genome.controller ? 1 : 0) &&
     genome.cells.every((cell) => Object.keys(cell).length === 3)
   );
 }
@@ -49,6 +51,7 @@ function projection(value: unknown): value is Genome {
 export function inheritedDifference(parent: Genome, child: Genome): boolean {
   return (
     parent.preference !== child.preference ||
+    !sameController(parent.controller, child.controller) ||
     !Object.is(parent.tolerance, child.tolerance) ||
     !Object.is(parent.tempo, child.tempo) ||
     parent.mutationPropensity !== child.mutationPropensity ||
@@ -88,6 +91,17 @@ function possibleChanges(event: BirthEvent, child: Genome): boolean {
   return (
     parent.behavior.version === child.behavior.version &&
     parent.behavior.mode === child.behavior.mode &&
+    !!parent.controller === !!child.controller &&
+    (!parent.controller ||
+      !child.controller ||
+      ((channels.includes('neural-weight') ||
+        parent.controller.weights.every(
+          (weight, offset) => weight === child.controller!.weights[offset],
+        )) &&
+        (channels.includes('neural-bias') ||
+          parent.controller.biases.every(
+            (bias, offset) => bias === child.controller!.biases[offset],
+          )))) &&
     (parent.mutationPropensity === undefined) === (child.mutationPropensity === undefined) &&
     (['preference', 'tolerance', 'tempo', 'mutationPropensity'] as const).every(
       (key) =>
@@ -114,7 +128,12 @@ function possibleChanges(event: BirthEvent, child: Genome): boolean {
   );
 }
 /** Strict bounded observation validation, independently of complete opaque genomes. */
-export function validBirthEvent(event: BirthEvent, nextSpecies: number, nextId: number): boolean {
+export function validBirthEvent(
+  event: BirthEvent,
+  nextSpecies: number,
+  nextId: number,
+  neural = true,
+): boolean {
   if (!Array.isArray(event.channels)) return false;
   const attempted = event.gate || event.channels.includes('propensity');
   return (
@@ -123,12 +142,19 @@ export function validBirthEvent(event: BirthEvent, nextSpecies: number, nextId: 
     event.kind === 'reproduction' &&
     integer(event.id, 1, nextSpecies - 1) &&
     integer(event.parentOrganismId, 1, nextId - 1) &&
-    projection(event.parentGenome) &&
+    projection(event.parentGenome, neural) &&
     typeof event.gate === 'boolean' &&
     Array.isArray(event.channels) &&
-    event.channels.length <= 6 &&
+    event.channels.length <= (event.parentGenome.controller ? 7 : 6) &&
     new Set(event.channels).size === event.channels.length &&
-    event.channels.every((channel) => [...MUTATION_CHANNELS, 'propensity'].includes(channel)) &&
+    event.channels.every((channel) =>
+      [
+        ...MUTATION_CHANNELS,
+        'propensity',
+        ...(neural && event.parentGenome.controller ? NEURAL_CHANNELS : []),
+      ].includes(channel),
+    ) &&
+    !(event.channels.includes('neural-weight') && event.channels.includes('neural-bias')) &&
     (event.gate || event.channels.every((channel) => channel === 'propensity')) &&
     (!event.channels.includes('propensity') ||
       event.parentGenome.mutationPropensity !== undefined) &&
@@ -138,7 +164,7 @@ export function validBirthEvent(event: BirthEvent, nextSpecies: number, nextId: 
       ? event.childOrganismId === null &&
         event.childLineageId === null &&
         event.placementAttempts === 3
-      : projection(event.childGenome) &&
+      : projection(event.childGenome, neural) &&
         possibleChanges(event, event.childGenome) &&
         integer(event.childOrganismId, event.parentOrganismId + 1, nextId - 1) &&
         integer(event.childLineageId, event.id, nextSpecies - 1) &&
@@ -169,7 +195,7 @@ export function retainedBirthExport(archive: LineageArchiveState, tick: number) 
   const events = archive.events.filter((event) => event.kind === 'reproduction');
   return {
     format: 'evolab-retained-births',
-    version: 1,
+    version: 2,
     completedTick: tick,
     window: {
       recordingOriginTick: archive.mutationOriginTick ?? tick,
