@@ -68,6 +68,38 @@ const mouth: Genome = {
   tolerance: 0.3,
   tempo: 2,
 };
+it('nutrient reset opt-in retains exact step, transfer ownership, yields and corrupt-load recovery', () => {
+  const harness = workerHarness();
+  harness.send({ type: 'start', settings: DEFAULTS, nutrientCycle: true });
+  harness.send({ type: 'pause' });
+  const initial = harness.save();
+  expect(initial.nutrientCycle).not.toBeNull();
+  const reference = Ecosystem.load(JSON.stringify(initial));
+  const display = harness.frame();
+  expect(display.nutrientCycle!.minerals.length).toBe(WIDTH * 156);
+  display.nutrientCycle!.minerals.fill(0);
+  expect(harness.save()).toEqual(initial);
+  harness.send({ type: 'step' });
+  reference.step();
+  expect(harness.save()).toEqual(reference.save());
+  expect(harness.state().playback.paused).toBe(true);
+  expect(harness.state().world.nutrientCycle.total).toBe(149760);
+  const corrupted = harness.save();
+  corrupted.nutrientCycle!.minerals[0]++;
+  expect(harness.load(corrupted, 2).type).toBe('error');
+  expect(harness.save()).toEqual(reference.save());
+  harness.send({ type: 'step', runId: 1 });
+  expect(harness.save()).toEqual(reference.save());
+  expect(
+    harness.send({ type: 'start', settings: DEFAULTS, nutrientCycle: 'yes', runId: 3 }).type,
+  ).toBe('error');
+  expect(harness.save()).toEqual(reference.save());
+  harness.send({ type: 'resume' });
+  harness.advance();
+  expect(harness.save().tick).toBeGreaterThan(reference.tick);
+  expect(harness.tasks.length).toBeGreaterThan(0);
+  harness.dispose();
+});
 it('observes roles only after subscription and preserves exact pause, step, load recovery and yields', () => {
   const harness = workerHarness();
   const { world } = roleScene();

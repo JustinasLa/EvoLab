@@ -1,4 +1,15 @@
 import { RoleObserver } from './roles';
+import {
+  createNutrients,
+  nutrientFile,
+  nutrientSummary,
+  parseNutrients,
+  recycleNutrients,
+  storedEnergy,
+  validateNutrients,
+  ORGANISM_ENERGY_LIMIT,
+  type NutrientCycle,
+} from './nutrients';
 import type { AttemptChannel } from './mutation-evidence';
 import { mutatePropensity } from './mutation';
 import {
@@ -58,8 +69,8 @@ import {
   observedGenome,
   type RefugeBrush,
   type ShadeBrush,
-  type WorldFileV14,
   type WorldFileV15,
+  type WorldFileV14,
   type WorldFileV13,
   type WorldFileV12,
   type WorldFileV11,
@@ -327,8 +338,8 @@ function validInterventions(
   value: unknown,
   file:
     | WorldFile
-    | WorldFileV14
     | WorldFileV15
+    | WorldFileV14
     | WorldFileV13
     | WorldFileV12
     | WorldFileV11
@@ -739,6 +750,7 @@ function validInterventions(
   );
 }
 export class Ecosystem {
+  nutrientCycle: NutrientCycle | null = null;
   random: Random;
   settings: Settings;
   terrain: TerrainRecipe;
@@ -782,7 +794,12 @@ export class Ecosystem {
   constructor(
     settings: Settings = DEFAULTS,
     seed = true,
-    options: { telemetry?: boolean; lineage?: boolean; terrain?: TerrainRecipe } = {},
+    options: {
+      telemetry?: boolean;
+      lineage?: boolean;
+      terrain?: TerrainRecipe;
+      nutrientCycle?: boolean;
+    } = {},
   ) {
     if (!validTerrain(options.terrain ?? DEFAULT_TERRAIN)) throw new Error('Invalid wall recipe.');
     this.recording = options.telemetry !== false;
@@ -791,7 +808,12 @@ export class Ecosystem {
     this.terrain = { ...(options.terrain ?? DEFAULT_TERRAIN) };
     this.interventions = emptyInterventions(settings);
     this.random = new Random(settings.seed);
+    if (options.nutrientCycle) this.nutrientCycle = createNutrients();
     if (seed) this.seed();
+  }
+  private displaceFood(position: number): void {
+    if (this.nutrientCycle && this.food[position]) this.nutrientCycle.detritus[position]++;
+    this.food[position] = 0;
   }
   private recordEnergy(field: keyof EnergyLedger, amount: number): void {
     if (this.recording) this.telemetry.pending.energy[field] += amount;
@@ -1077,6 +1099,15 @@ export class Ecosystem {
   measurements(openStrokeSequence: number | null = null): MeasurementSource {
     return {
       snapshot: {
+        ...(this.nutrientCycle
+          ? {
+              nutrientCycle: nutrientSummary(
+                this.nutrientCycle,
+                this.organisms.values(),
+                this.food,
+              ),
+            }
+          : {}),
         mutationPolicy: structuredClone(this.mutationPolicy),
         worldVersion: WORLD_VERSION,
         terrain: { ...this.terrain },
@@ -1140,7 +1171,7 @@ export class Ecosystem {
     const rowSequence = this.appendIntervention({ kind: 'terrain', detail });
     this.walls.set(walls);
     if (action === 'regenerate')
-      for (let cell = 0; cell < walls.length; cell++) if (walls[cell]) this.food[cell] = 0;
+      for (let cell = 0; cell < walls.length; cell++) if (walls[cell]) this.displaceFood(cell);
     this.terrain = { ...detail.after };
     return { detail, rowSequence };
   }
@@ -1215,6 +1246,11 @@ export class Ecosystem {
       ...(genome.controller ? { neuralBlocked: false } : {}),
     };
     if (!this.canPlace(o)) return;
+    const footprint = positions(o);
+    if (this.nutrientCycle) {
+      if (footprint.some((position) => this.nutrientCycle!.minerals[position] < 1)) return;
+      for (const position of footprint) this.nutrientCycle.minerals[position]--;
+    }
     // Ecological inputs are existing validated genomes or their bounded mutation.
     // Read-only occupancy checks need no copy; admitted offspring own a full one.
     if (ecological) o.genome = structuredClone(genome);
@@ -1222,7 +1258,7 @@ export class Ecosystem {
     this.organisms.set(o.id, o);
     for (const i of positions(o)) {
       this.occupied[i] = o.id;
-      this.food[i] = 0;
+      this.displaceFood(i);
     }
     if (this.lineageRecording)
       this.lineage.birth(
@@ -1234,9 +1270,11 @@ export class Ecosystem {
     return o;
   }
   kill(o: Organism, cause: DeathCause): void {
+    if (this.nutrientCycle && !this.organisms.has(o.id)) return;
     for (const i of positions(o)) {
       this.occupied[i] = 0;
-      this.food[i] = 1;
+      if (this.nutrientCycle) this.nutrientCycle.detritus[i]++;
+      else this.food[i] = 1;
     }
     const removed = this.organisms.delete(o.id);
     if (o.id === this.perceptionId) this.selectPerception(0);
@@ -1257,12 +1295,23 @@ export class Ecosystem {
     Object.assign(o, { x: target.x, y: target.y, rotation });
     for (const i of positions(o)) {
       this.occupied[i] = o.id;
-      this.food[i] = 0;
+      this.displaceFood(i);
     }
     return true;
   }
   step(): void {
     this.tick++;
+    const cycle = this.nutrientCycle;
+    if (cycle) {
+      cycle.budget = {
+        tick: this.tick,
+        before: storedEnergy(this.organisms.values(), this.food),
+        sunlight: 0,
+        after: 0,
+        dissipated: 0,
+      };
+      recycleNutrients(cycle, this.walls, this.tick);
+    }
     this.roles?.beginTick(this.tick);
     const daylight = 0.65 + 0.35 * Math.sin(this.tick / 180),
       shadeUnits = this.shadeHabitats.enabled ? this.shadeHabitats.units : null;
@@ -1291,8 +1340,11 @@ export class Ecosystem {
         if (type === 4) {
           before = o.energy;
           const activeUnits = shadeUnits ? shadeUnits[metabolicPosition(o, cell)] : 0;
-          if (activeUnits === 0) o.energy += 0.04 * daylight * (1 - stress);
-          else o.energy += 0.04 * daylight * (1 - stress) * ((16 - activeUnits) / 16);
+          if (!cycle || cycle.minerals[metabolicPosition(o, cell)] > 0) {
+            if (activeUnits === 0) o.energy += 0.04 * daylight * (1 - stress);
+            else o.energy += 0.04 * daylight * (1 - stress) * ((16 - activeUnits) / 16);
+          }
+          if (cycle) cycle.budget!.sunlight += o.energy - before;
           this.recordEnergy('leavesGained', o.energy - before);
           this.roles?.energy(o.species, 'leavesGained', o.energy - before);
           const foodChance =
@@ -1306,7 +1358,14 @@ export class Ecosystem {
             const p = metabolicPosition(o, cell),
               [dx, dy] = DIRECTIONS[this.random.int(4)],
               n = index((p % WIDTH) + dx, Math.floor(p / WIDTH) + dy);
-            if (!this.occupied[n] && !this.walls[n]) this.food[n] = 1;
+            if (!this.occupied[n] && !this.walls[n]) {
+              if (!cycle) this.food[n] = 1;
+              else if (!this.food[n] && cycle.minerals[p] > 0 && o.energy >= 2.25) {
+                cycle.minerals[p]--;
+                o.energy -= 2.25;
+                this.food[n] = 1;
+              }
+            }
           }
         }
         if (type === 3 || type === 6) {
@@ -1317,6 +1376,7 @@ export class Ecosystem {
             const n = index(x + dx, y + dy);
             if (type === 3 && this.food[n]) {
               this.food[n] = 0;
+              if (cycle) cycle.minerals[p]++;
               before = o.energy;
               o.energy += 2.2;
               this.recordEnergy('mouthsGained', o.energy - before);
@@ -1327,10 +1387,11 @@ export class Ecosystem {
               const cell = positions(victim).indexOf(n);
               if (victim.genome.cells[cell].type !== 7) {
                 const victimBefore = victim.energy;
-                victim.energy -= 2.5;
+                const drained = cycle ? Math.min(2.5, Math.max(0, victim.energy)) : 2.5;
+                victim.energy -= drained;
                 this.recordEnergy('stingsDrained', victimBefore - victim.energy);
                 before = o.energy;
-                o.energy += 0.65;
+                o.energy += cycle ? drained * 0.26 : 0.65;
                 this.recordEnergy('stingsGained', o.energy - before);
                 this.roles?.sting(
                   victim.species,
@@ -1423,6 +1484,7 @@ export class Ecosystem {
         o.energy -= 0.03;
         this.recordEnergy('movementSpent', before - o.energy);
       }
+      if (cycle) o.energy = Math.min(o.energy, ORGANISM_ENERGY_LIMIT);
       if (o.energy <= 0 || o.age > 900 + o.genome.cells.length * 75) {
         this.kill(o, o.energy <= 0 ? 'energy' : 'age');
         continue;
@@ -1497,6 +1559,11 @@ export class Ecosystem {
           });
       }
     }
+    if (cycle) {
+      const budget = cycle.budget!;
+      budget.after = storedEnergy(this.organisms.values(), this.food);
+      budget.dissipated = Math.max(0, budget.before + budget.sunlight - budget.after);
+    }
     this.observe();
   }
   paint(tool: Tool, x: number, y: number, radius: number, genome: Genome): PaintOutcome {
@@ -1533,13 +1600,19 @@ export class Ecosystem {
           const p = index(x + dx, y + dy);
           if (tool === 'erase') {
             if (this.occupied[p]) victims.add(this.occupied[p]);
-            this.food[p] = 0;
+            this.displaceFood(p);
             this.walls[p] = 0;
           }
-          if (tool === 'food' && !this.walls[p] && !this.occupied[p]) this.food[p] = 1;
+          if (tool === 'food' && !this.walls[p] && !this.occupied[p]) {
+            if (!this.nutrientCycle) this.food[p] = 1;
+            else if (!this.food[p] && this.nutrientCycle.minerals[p] > 0) {
+              this.nutrientCycle.minerals[p]--;
+              this.food[p] = 1;
+            }
+          }
           if (tool === 'wall' && !this.occupied[p]) {
             this.walls[p] = 1;
-            this.food[p] = 0;
+            this.displaceFood(p);
           }
         }
     for (const id of victims) {
@@ -1548,7 +1621,7 @@ export class Ecosystem {
     if (tool === 'erase')
       for (let dy = -radius; dy <= radius; dy++)
         for (let dx = -radius; dx <= radius; dx++)
-          if (dx * dx + dy * dy <= radius * radius) this.food[index(x + dx, y + dy)] = 0;
+          if (dx * dx + dy * dy <= radius * radius) this.displaceFood(index(x + dx, y + dy));
     return {
       placement: null,
       removedOrganisms: victims.size,
@@ -1607,6 +1680,9 @@ export class Ecosystem {
     }
     return {
       ...(lineage ? { lineage } : {}),
+      ...(this.nutrientCycle
+        ? { nutrientCycle: nutrientSummary(this.nutrientCycle, this.organisms.values(), this.food) }
+        : {}),
       ...(organism ? { selectedBaseline: this.lineage.baseline(organism.species) } : {}),
       terrain: { ...this.terrain },
       thermalRefuges: refugeSummary(this.thermalRefuges),
@@ -1670,6 +1746,14 @@ export class Ecosystem {
     return {
       cells,
       ids,
+      ...(this.nutrientCycle
+        ? {
+            nutrientCycle: {
+              minerals: this.nutrientCycle.minerals.slice(),
+              detritus: this.nutrientCycle.detritus.slice(),
+            },
+          }
+        : {}),
       stats: presentation.stats,
       climate: presentation.climate,
       offset: presentation.offset,
@@ -1709,6 +1793,7 @@ export class Ecosystem {
     }
     return {
       version: WORLD_VERSION,
+      nutrientCycle: this.nutrientCycle ? nutrientFile(this.nutrientCycle) : null,
       mutationPolicy: structuredClone(this.mutationPolicy),
       terrain: { ...this.terrain },
       thermalRefuges: refugeFile(this.thermalRefuges),
@@ -1957,10 +2042,17 @@ export class Ecosystem {
       world.organisms.set(o.id, organism);
       for (const p of positions(organism)) {
         world.occupied[p] = o.id;
+        if (f.version === WORLD_VERSION && f.nutrientCycle !== null && world.food[p])
+          throw new Error('Nutrient food overlaps a body.');
         world.food[p] = 0;
       }
     }
-    for (let i = 0; i < world.food.length; i++) if (world.walls[i]) world.food[i] = 0;
+    for (let i = 0; i < world.food.length; i++)
+      if (world.walls[i]) {
+        if (f.version === WORLD_VERSION && f.nutrientCycle !== null && world.food[i])
+          throw new Error('Nutrient food overlaps a wall.');
+        world.food[i] = 0;
+      }
     Object.assign(world, {
       tick: f.tick,
       births: f.births,
@@ -2028,6 +2120,10 @@ export class Ecosystem {
             f.version === WORLD_VERSION,
           )
         : LineageArchive.legacy(world.organisms.values(), f.tick);
+    world.nutrientCycle =
+      f.version === WORLD_VERSION ? parseNutrients(f.nutrientCycle, f.tick) : null;
+    if (world.nutrientCycle)
+      validateNutrients(world.nutrientCycle, world.organisms.values(), world.food);
     return world;
   }
 }

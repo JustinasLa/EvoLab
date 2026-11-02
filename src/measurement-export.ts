@@ -60,6 +60,9 @@ export function measurementEnvelope(source: MeasurementSource) {
     version: 9,
     rules: { id: 'evolab-drift-cellular', version: 8 },
     snapshot: {
+      ...(source.snapshot.nutrientCycle
+        ? { nutrientCycle: structuredClone(source.snapshot.nutrientCycle) }
+        : {}),
       worldVersion: source.snapshot.worldVersion,
       mutationPolicy: structuredClone(source.snapshot.mutationPolicy),
       terrain: { ...source.snapshot.terrain },
