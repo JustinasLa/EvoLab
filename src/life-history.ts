@@ -143,7 +143,7 @@ export function validateLifeHistoryLog(
       !integer(event.tick, previous, tick) ||
       !integer(event.organismId, 1, nextId - 1) ||
       !integer(event.lineageId, 1, nextSpecies - 1) ||
-      !integer(event.age, 0, 100000) ||
+      !integer(event.age, 0, 100001) ||
       !integer(event.cells, 1, 16) ||
       !validLifeHistory(event.traits) ||
       !['mature', 'age', 'energy', 'manual'].includes(String(event.kind))

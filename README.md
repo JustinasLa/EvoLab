@@ -22,6 +22,7 @@ lineages spread by surviving and producing descendants.
 - **Painted shade habitats** — explicitly enable bounded Shade, Lighten and Erase dabs that scale real leaf energy and food production together; inspect current leaf light separately from temperature and chart measured energy gains and costs.
 - **Design your own life** — draw connected organisms, choose their preferred temperature, and place them directly in the ecosystem.
 - **Directional eye reactions** — start a new active design with inherited chase, flee or ignore responses to food, walls and organisms; forward sight respects body rotation, occlusion and real movement costs.
+- **Optional neural controllers** — explicitly enable a small inherited network in the designer; real forward sight, energy and blocked-action feedback drive resting, movement or turning, with evaluation and action energy costs. Existing organisms retain their steering rules.
 - **Inspect inherited sight** — active reactions can mutate at birth; inspect the selected organism’s actual last rays, occlusions and chosen direction with its observation tick.
 - **Mutation controls** — retain legacy birth mutation by default or opt into relative weights for anatomy, climate traits, tempo and active reactions; apply drafts explicitly and save their manual history.
 - **Inherited life histories** — explicitly enable bounded maturity, offspring investment and maintenance traits; longer life costs upkeep and slower reproduction, and every birth remains parent-funded. Inspect actual payments, mutation pairs and retained maturity/death outcomes.
@@ -64,6 +65,14 @@ round trips and native designer, keyboard and local-library checks. Active birth
 mutation tests cover bounded reaction transitions and real inherited differences;
 selected-perception tests compare exact engine continuations with observation,
 rendering and selection changes, including death and rejected imports.
+
+Neural fixtures check bounded 6–4–4 controllers, detached birth mutation, real
+energy and reproduction tradeoffs, strict world/blueprint/library persistence,
+and exact worker controls. The reaction perception overlay does not trace neural
+decisions; neural activity inspection is separate follow-up work. Run
+`npm run bench:neural` for contextual populated-world throughput and deterministic
+checkpoint continuation receipts in `.scratch/long-run/`, without timing thresholds
+or claims of universal neural superiority.
 
 Playwright exercises the built application in desktop and mobile Chromium,
 including real workers, population changes, inspection, organism design, painting,

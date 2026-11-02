@@ -1,4 +1,5 @@
 import { emptyShade, shadeSummary, selectedLeafLight } from '../src/shade';
+import { newController } from '../src/neural';
 import { checkpointRecord } from '../src/checkpoints';
 import { createComparison } from '../src/experiments';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -3257,7 +3258,7 @@ describe('explicit bounded local library', () => {
     root.querySelector<HTMLButtonElement>('[data-shock="heat"]')!.click();
     harness.deliver();
     const before = harness.save();
-    expect(before.version).toBe(16);
+    expect(before.version).toBe(17);
     expect(before.lineageArchive.summaries.length).toBeGreaterThan(0);
     expect(before.telemetry.version).toBe(2);
     expect(before.interventions.version).toBe(5);
@@ -4967,6 +4968,39 @@ describe('standalone blueprint files', () => {
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
   });
 
+  it('rejects late native neural observations from a replaced run without changing paused state', async () => {
+    const bridge = realWorker();
+    bridge.deliver();
+    click('pause');
+    bridge.deliver();
+    const source = new Ecosystem({ ...DEFAULTS, nutrients: 0, climate: 0, mutation: 0 }, false);
+    const genome = founder(0);
+    genome.controller = newController();
+    source.spawn(genome, 60, 60);
+    await loadText(JSON.stringify(source.save()));
+    const stale = structuredClone(
+      bridge.outbox.filter((response) => response.type === 'frame' || response.type === 'loaded'),
+    );
+    expect(stale.length).toBeGreaterThan(0);
+    bridge.deliver();
+    await loadText(JSON.stringify(source.save()));
+    bridge.deliver();
+    if (get('run-state').textContent === 'LIVE') {
+      click('pause');
+      bridge.deliver();
+    }
+    const before = bridge.save(),
+      markup = root.innerHTML;
+    for (const response of stale) worker.onmessage!({ data: response } as MessageEvent);
+    expect(root.innerHTML).toBe(markup);
+    expect(bridge.save()).toEqual(before);
+    click('step');
+    bridge.deliver();
+    const expected = Ecosystem.load(JSON.stringify(before));
+    expected.step();
+    expect(bridge.save()).toEqual(expected.save());
+  });
+
   it('edits bounded life histories without worker mutations and cancels stale designer replacement', async () => {
     const bridge = realWorker();
     bridge.deliver();
@@ -5009,6 +5043,47 @@ describe('standalone blueprint files', () => {
     expect((await exported()).genome.lifeHistory!.maturity).toBe(0);
     click('clear-design');
     expect((await exported()).genome.lifeHistory).toBeUndefined();
+    expect(bridge.save()).toEqual(before);
+  });
+
+  it('edits opt-in neural parameters without ticks and rejects invalid or stale designer data', async () => {
+    const bridge = realWorker();
+    bridge.deliver();
+    click('pause');
+    bridge.advance();
+    bridge.deliver();
+    const before = bridge.save();
+    expect(get<HTMLInputElement>('neural-enabled').checked).toBe(false);
+    get('neural-controls').dispatchEvent(new Event('change', { bubbles: true }));
+    click('neural-enabled');
+    expect(get('behavior-status').textContent).toContain('Neural controller v1');
+    const weight = root.querySelector<HTMLInputElement>(
+      '[data-neural="weights"][data-offset="0"]',
+    )!;
+    weight.value = '0.125';
+    weight.dispatchEvent(new Event('change', { bubbles: true }));
+    expect((await exported()).genome.controller!.weights[0]).toBe(0.125);
+    for (const invalid of ['5', '-5', '']) {
+      weight.value = invalid;
+      weight.dispatchEvent(new Event('change', { bubbles: true }));
+      expect(weight.value).toBe('0.125');
+    }
+    weight.dataset.offset = '100';
+    weight.dispatchEvent(new Event('change', { bubbles: true }));
+    weight.dataset.offset = '0';
+    weight.dataset.neural = 'invalid';
+    weight.dispatchEvent(new Event('change', { bubbles: true }));
+    weight.dataset.neural = 'weights';
+    const enabled = await exported();
+    await importDraft(serializeBlueprint(enabled));
+    expect((await exported()).genome).toEqual(enabled.genome);
+    let resolve!: (text: string) => void;
+    uploadBlueprint({ size: 20, text: () => new Promise((done) => (resolve = done)) });
+    click('neural-enabled');
+    resolve(serializeBlueprint(enabled));
+    await flush();
+    expect((await exported()).genome).not.toHaveProperty('controller');
+    expect(get('neural-controls').innerHTML).toBe('');
     expect(bridge.save()).toEqual(before);
   });
 
@@ -5303,7 +5378,7 @@ describe('standalone blueprint files', () => {
     emit(sample, organism);
     expect(await exported('export-organism-blueprint')).toEqual({
       format: 'evolab-organism-blueprint',
-      version: 5,
+      version: 6,
       name: 'Bloom',
       description: '',
       genome: organism.genome,
@@ -5407,7 +5482,7 @@ describe('standalone blueprint files', () => {
       '{',
       '{}',
       'null',
-      JSON.stringify({ ...JSON.parse(serializeBlueprint(fixture())), version: 6 }),
+      JSON.stringify({ ...JSON.parse(serializeBlueprint(fixture())), version: 7 }),
       JSON.stringify({
         ...JSON.parse(serializeBlueprint(fixture())),
         genome: {

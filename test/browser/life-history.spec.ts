@@ -44,7 +44,9 @@ test('life-history designer, local library and captures preserve explicit traits
     await expect(page.locator(`#life-${key}-value`)).toHaveText('2');
     await expect(page.locator(`#life-${key}`)).toBeFocused();
   }
+  await page.locator('#neural-enabled').check();
   const enabled = await design(page);
+  expect(enabled.genome.controller).toBeDefined();
   expect(enabled.genome.lifeHistory).toEqual({
     version: 1,
     maturity: 2,
@@ -63,6 +65,7 @@ test('life-history designer, local library and captures preserve explicit traits
   await page.locator('#library-load').click();
   await page.locator('#library-confirm').click();
   expect((await design(page)).genome).toEqual(enabled.genome);
+  await expect(page.locator('#neural-enabled')).toBeChecked();
   expect(await saved(page)).toEqual(before);
   const placed = reference.spawn(enabled.genome, 120, 78)!;
   await load(page, reference.save());

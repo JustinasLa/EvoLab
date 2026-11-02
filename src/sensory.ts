@@ -5,6 +5,7 @@ import {
   type Perception,
   type PerceptionRay,
   type Organism,
+  clamp,
 } from './model';
 
 interface Habitat {
@@ -26,6 +27,29 @@ const categories = ['dangerous', 'wall', 'harmless', 'food'] as const;
 export function sensoryDirection(organism: Organism, habitat: Habitat, trace?: Perception): number {
   const behavior = organism.genome.behavior;
   if (behavior.mode !== 'evolved' || behavior.version !== 2) return organism.direction;
+  return scanSight(organism, habitat, trace);
+}
+
+export function neuralInputs(organism: Organism, habitat: Habitat): number[] {
+  const inputs = [
+    0,
+    0,
+    0,
+    0,
+    clamp(organism.energy / (organism.genome.cells.length * 3 + 9), 0, 1),
+    organism.neuralBlocked ? 1 : 0,
+  ];
+  scanSight(organism, habitat, undefined, inputs);
+  return inputs;
+}
+
+function scanSight(
+  organism: Organism,
+  habitat: Habitat,
+  trace?: Perception,
+  inputs?: number[],
+): number {
+  const behavior = organism.genome.behavior;
   const origins = positions(organism),
     heading = organism.rotation,
     [dx, dy] = headings[heading],
@@ -57,7 +81,12 @@ export function sensoryDirection(organism: Organism, habitat: Habitat, trace?: P
         category = seen.genome.cells.some((part) => part.type === 6) ? 'dangerous' : 'harmless';
       } else if (habitat.food[p]) category = 'food';
       else continue;
-      const reaction = behavior.reactions[category];
+      if (inputs) {
+        const input = ['food', 'wall', 'harmless', 'dangerous'].indexOf(category);
+        inputs[input] = Math.max(inputs[input], (6 - distance) / 5);
+      }
+      const reaction =
+        !inputs && behavior.mode === 'evolved' ? behavior.reactions[category] : 'ignore';
       if (ray) {
         ray.stop = category;
         ray.reaction = reaction;

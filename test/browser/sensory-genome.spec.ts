@@ -175,7 +175,7 @@ test('B1 genuine blueprint1 migrates passively through complete native exports a
   );
   expect(blueprint).toEqual({
     ...old,
-    version: 4,
+    version: 6,
     genome: { ...old.genome, behavior: { version: 1, mode: 'legacy' } },
   });
   await plant(page, reference, blueprint.genome, 220, 140);

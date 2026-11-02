@@ -213,7 +213,11 @@ describe('real life-history ecology and observations', () => {
     energy.parent.energy = 0.001;
     energy.parent.age = 100000;
     energy.world.step();
-    expect(energy.world.save().lifeHistoryLog.events[0].kind).toBe('energy');
+    expect(energy.world.save().lifeHistoryLog.events[0]).toMatchObject({
+      kind: 'energy',
+      age: 100001,
+    });
+    expect(Ecosystem.load(JSON.stringify(energy.world.save())).save()).toEqual(energy.world.save());
     const manual = scene();
     manual.world.kill(manual.parent, 'manual');
     expect(manual.world.save().lifeHistoryLog.events[0].kind).toBe('manual');
@@ -334,7 +338,7 @@ describe('life-history schema and inspection', () => {
     }
     expect(loaded.save()).toEqual(world.save());
     const blueprint = serializeBlueprint({ name: 'life', description: '', genome: parent.genome });
-    expect(JSON.parse(blueprint).version).toBe(5);
+    expect(JSON.parse(blueprint).version).toBe(6);
     expect(parseBlueprint(blueprint).genome).toEqual(parent.genome);
     expect(cloneGenome(parent.genome).lifeHistory).not.toBe(parent.genome.lifeHistory);
     expect(observedGenome(parent.genome).lifeHistory).toEqual(parent.genome.lifeHistory);
@@ -349,16 +353,16 @@ describe('life-history schema and inspection', () => {
     const { world, parent } = scene();
     world.step();
     const current = world.save();
-    for (const version of [9, 10, 11, 12, 13, 14, 15])
+    for (const version of [9, 10, 11, 12, 13, 14, 15, 16])
       expect(() => Ecosystem.load(JSON.stringify({ ...current, version }))).toThrow();
     const blueprint = JSON.parse(
       serializeBlueprint({ name: 'life', description: '', genome: parent.genome }),
     );
-    for (const version of [2, 3, 4])
+    for (const version of [2, 3, 4, 5])
       expect(() => parseBlueprint(JSON.stringify({ ...blueprint, version }))).toThrow();
     for (const value of [null, undefined, { ...defaultLifeHistory(), maturity: 3 }])
       expect(validGenome({ ...parent.genome, lifeHistory: value })).toBe(false);
-    expect(validGenome(parent.genome, true, true, false)).toBe(false);
+    expect(validGenome(parent.genome, true, true, true, false)).toBe(false);
     const broken = structuredClone(current);
     broken.organisms[0].genome.lifeHistory!.maintenance = 3;
     expect(() => Ecosystem.load(JSON.stringify(broken))).toThrow('organism');
