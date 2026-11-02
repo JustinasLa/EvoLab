@@ -15,6 +15,10 @@ export const NEURAL_ACTION_COST = 0.03;
 export const NEURAL_CHANNELS = ['neural-weight', 'neural-bias'] as const;
 export const NEURAL_ACTIONS = ['rest', 'forward', 'left', 'right'] as const;
 export type NeuralAction = (typeof NEURAL_ACTIONS)[number];
+export interface NeuralActivity {
+  hidden: number[];
+  outputs: number[];
+}
 
 export function newController(): NeuralController {
   return {
@@ -48,6 +52,7 @@ export function sameController(first?: NeuralController, second?: NeuralControll
 export function neuralAction(
   controller: NeuralController,
   inputs: readonly number[],
+  activity?: NeuralActivity,
 ): NeuralAction {
   const hidden = Array<number>(NEURAL_HIDDEN).fill(0);
   for (let neuron = 0; neuron < NEURAL_HIDDEN; neuron++) {
@@ -56,6 +61,7 @@ export function neuralAction(
       activation += inputs[input] * controller.weights[neuron * NEURAL_INPUTS + input];
     hidden[neuron] = clamp(activation, -1, 1);
   }
+  if (activity) activity.hidden = hidden;
   let chosen = 0,
     best = -Infinity;
   for (let output = 0; output < NEURAL_OUTPUTS; output++) {
@@ -63,6 +69,7 @@ export function neuralAction(
     for (let neuron = 0; neuron < NEURAL_HIDDEN; neuron++)
       activation += hidden[neuron] * controller.weights[24 + output * NEURAL_HIDDEN + neuron];
     const score = clamp(activation, -1, 1);
+    activity?.outputs.push(score);
     if (score > best) {
       best = score;
       chosen = output;
