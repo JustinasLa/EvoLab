@@ -7,8 +7,13 @@ import {
 } from './model';
 import { MUTATION_CHANNELS, type MutationChannel } from './mutation';
 import { NEURAL_CHANNELS, sameController } from './neural';
+import { SENSE_CHANNELS, sameSenses } from './senses';
 
-export type AttemptChannel = MutationChannel | 'propensity' | (typeof NEURAL_CHANNELS)[number];
+export type AttemptChannel =
+  | MutationChannel
+  | 'propensity'
+  | (typeof NEURAL_CHANNELS)[number]
+  | (typeof SENSE_CHANNELS)[number];
 export interface BirthEvent {
   kind: 'reproduction';
   /** Reproductive parent's lineage, not a newly allocated lineage. */
@@ -38,13 +43,14 @@ export const birthKeys = [
   'childGenome',
   'outcome',
 ];
-function projection(value: unknown, neural = true): value is Genome {
-  if (!validGenome(value, true, true, neural)) return false;
+function projection(value: unknown, neural = true, senses = true): value is Genome {
+  if (!validGenome(value, true, true, neural, senses)) return false;
   const genome = value as Genome;
   return (
     Object.keys(genome).length ===
-      (genome.mutationPropensity === undefined ? 5 : 6) + (genome.controller ? 1 : 0) &&
-    genome.cells.every((cell) => Object.keys(cell).length === 3)
+      (genome.mutationPropensity === undefined ? 5 : 6) +
+        (genome.controller ? 1 : 0) +
+        (genome.senses ? 1 : 0) && genome.cells.every((cell) => Object.keys(cell).length === 3)
   );
 }
 /** Numeric observations treat signed zeros equally, as ordinary Save JSON does. */
@@ -52,6 +58,7 @@ export function inheritedDifference(parent: Genome, child: Genome): boolean {
   return (
     parent.preference !== child.preference ||
     !sameController(parent.controller, child.controller) ||
+    !sameSenses(parent.senses, child.senses) ||
     !Object.is(parent.tolerance, child.tolerance) ||
     !Object.is(parent.tempo, child.tempo) ||
     parent.mutationPropensity !== child.mutationPropensity ||
@@ -92,6 +99,14 @@ function possibleChanges(event: BirthEvent, child: Genome): boolean {
     parent.behavior.version === child.behavior.version &&
     parent.behavior.mode === child.behavior.mode &&
     !!parent.controller === !!child.controller &&
+    parent.controller?.version === child.controller?.version &&
+    !!parent.senses === !!child.senses &&
+    (!parent.senses ||
+      !child.senses ||
+      (['orientation', 'range', 'fov', 'temperature'] as const).every(
+        (key, offset) =>
+          parent.senses![key] === child.senses![key] || channels.includes(SENSE_CHANNELS[offset]),
+      )) &&
     (!parent.controller ||
       !child.controller ||
       ((channels.includes('neural-weight') ||
@@ -133,6 +148,7 @@ export function validBirthEvent(
   nextSpecies: number,
   nextId: number,
   neural = true,
+  senses = true,
 ): boolean {
   if (!Array.isArray(event.channels)) return false;
   const attempted = event.gate || event.channels.includes('propensity');
@@ -142,19 +158,22 @@ export function validBirthEvent(
     event.kind === 'reproduction' &&
     integer(event.id, 1, nextSpecies - 1) &&
     integer(event.parentOrganismId, 1, nextId - 1) &&
-    projection(event.parentGenome, neural) &&
+    projection(event.parentGenome, neural, senses) &&
     typeof event.gate === 'boolean' &&
     Array.isArray(event.channels) &&
-    event.channels.length <= (event.parentGenome.controller ? 7 : 6) &&
+    event.channels.length <=
+      (event.parentGenome.senses ? 8 : event.parentGenome.controller ? 7 : 6) &&
     new Set(event.channels).size === event.channels.length &&
     event.channels.every((channel) =>
       [
         ...MUTATION_CHANNELS,
         'propensity',
         ...(neural && event.parentGenome.controller ? NEURAL_CHANNELS : []),
+        ...(senses && event.parentGenome.senses ? SENSE_CHANNELS : []),
       ].includes(channel),
     ) &&
     !(event.channels.includes('neural-weight') && event.channels.includes('neural-bias')) &&
+    SENSE_CHANNELS.filter((channel) => event.channels.includes(channel)).length <= 1 &&
     (event.gate || event.channels.every((channel) => channel === 'propensity')) &&
     (!event.channels.includes('propensity') ||
       event.parentGenome.mutationPropensity !== undefined) &&
@@ -164,7 +183,7 @@ export function validBirthEvent(
       ? event.childOrganismId === null &&
         event.childLineageId === null &&
         event.placementAttempts === 3
-      : projection(event.childGenome, neural) &&
+      : projection(event.childGenome, neural, senses) &&
         possibleChanges(event, event.childGenome) &&
         integer(event.childOrganismId, event.parentOrganismId + 1, nextId - 1) &&
         integer(event.childLineageId, event.id, nextSpecies - 1) &&

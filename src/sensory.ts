@@ -7,6 +7,7 @@ import {
   type Organism,
   clamp,
 } from './model';
+import { EYE_CELL_COST, TEMPERATURE_SAMPLE_COST } from './senses';
 
 interface Habitat {
   walls: Uint8Array;
@@ -41,6 +42,94 @@ export function neuralInputs(organism: Organism, habitat: Habitat): number[] {
   ];
   scanSight(organism, habitat, undefined, inputs);
   return inputs;
+}
+
+export function expandedInputs(
+  organism: Organism,
+  habitat: Habitat,
+  temperatureAt: (position: number) => number,
+  trace?: Perception,
+): NonNullable<Perception['senses']> {
+  const senses = organism.genome.senses!,
+    origins = positions(organism);
+  const inputs = [
+    0,
+    0,
+    0,
+    0,
+    clamp(organism.energy / (organism.genome.cells.length * 3 + 9), 0, 1),
+    organism.neuralBlocked ? 1 : 0,
+    0,
+    0,
+    0,
+    0,
+  ];
+  const eyeCount = organism.genome.cells.filter((cell) => cell.type === 8).length;
+  const available = [
+    eyeCount > 0,
+    eyeCount > 0,
+    eyeCount > 0,
+    eyeCount > 0,
+    true,
+    true,
+    senses.temperature,
+    senses.temperature,
+    senses.temperature,
+    senses.temperature,
+  ];
+  const offsets = senses.fov === 1 ? [0] : senses.fov === 3 ? [0, 3, 1] : [0, 3, 1, 2];
+  for (const [eye, cell] of organism.genome.cells.entries()) {
+    if (cell.type !== 8) continue;
+    const origin = origins[eye];
+    for (const offset of offsets) {
+      const heading = (organism.rotation + senses.orientation + offset) % 4;
+      const [dx, dy] = headings[heading];
+      const ray: PerceptionRay | undefined = trace
+        ? { eye, origin, heading, cells: [], stop: 'range', reaction: null }
+        : undefined;
+      if (ray) trace!.rays.push(ray);
+      for (let distance = 1; distance <= senses.range; distance++) {
+        const position = index(
+          (origin % WIDTH) + dx * distance,
+          Math.floor(origin / WIDTH) + dy * distance,
+        );
+        ray?.cells.push(position);
+        const occupant = habitat.occupied[position];
+        let channel: number;
+        if (habitat.walls[position]) channel = 1;
+        else if (occupant === organism.id) {
+          if (ray) ray.stop = 'self';
+          break;
+        } else if (occupant) {
+          const seen = habitat.organisms.get(occupant)!;
+          channel = seen.genome.cells[positions(seen).indexOf(position)].type === 6 ? 3 : 2;
+        } else if (habitat.food[position]) channel = 0;
+        else continue;
+        inputs[channel] = Math.max(inputs[channel], (senses.range + 1 - distance) / senses.range);
+        if (ray) ray.stop = (['food', 'wall', 'body', 'stinger'] as const)[channel];
+        break;
+      }
+    }
+  }
+  const temperatures: { position: number; value: number }[] = [];
+  if (senses.temperature) {
+    const origin = origins[0];
+    for (const [input, offset] of [null, 0, 3, 1].entries()) {
+      const [dx, dy] = offset === null ? [0, 0] : headings[(organism.rotation + offset) % 4];
+      const position = index((origin % WIDTH) + dx, Math.floor(origin / WIDTH) + dy);
+      const value = temperatureAt(position);
+      inputs[6 + input] = value;
+      temperatures.push({ position, value });
+    }
+  }
+  return {
+    inputs,
+    available,
+    temperatures,
+    eyeCost: eyeCount * offsets.length * senses.range * EYE_CELL_COST,
+    temperatureCost: temperatures.length * TEMPERATURE_SAMPLE_COST,
+    action: 'rest',
+  };
 }
 
 function scanSight(
