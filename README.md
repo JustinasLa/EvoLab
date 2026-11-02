@@ -17,6 +17,7 @@ lineages spread by surviving and producing descendants.
 - **Adaptation with a tradeoff** — broad temperature tolerance costs more energy, while specialists are cheaper in favorable habitats.
 - **Optional energy reserves and dormancy** — design inherited sleep/wake thresholds and bounded, 80%-efficient storage; sleepers pay transition and maintenance costs and age normally, trading feeding, movement and reproduction for reduced upkeep without immunity or extinction rescue.
 - **Plant-fed food chain** — leaves produce food in neighboring free cells; there is no random food seeding or rainfall.
+- **Finite nutrient cycle** — opt in on confirmed reseeding to conserved mineral, detritus, food and body nutrients, energy-funded producer food, corpse recycling, bounded energy and inspectable resource fields; disabled worlds retain legacy rules exactly.
 - **Shape the habitat** — manually paint food, build barriers, erase patches, and introduce heatwaves or cold snaps.
 - **Seeded terrain** — preview Open field, Porous ridges or Chambered refuges; confirm a one-founder reset or explicitly clear/regenerate walls while protecting life and disclosing food removal.
 - **Painted temperature refuges** — explicitly enable experimental warm/cool dabs that alter real climate upkeep and photosynthesis; keep inactive paint, erase temperature separately, and save bounded fields with manual provenance.
@@ -37,6 +38,10 @@ lineages spread by surviving and producing descendants.
 
 EvoLab uses an original cellular simulation and interface. It is artificial life,
 not a calibrated biological model.
+
+## Documentation
+
+- [Optional nutrient cycle: units, costs, bounds and compatibility](docs/nutrient-cycle.md)
 
 ## Tests and coverage
 

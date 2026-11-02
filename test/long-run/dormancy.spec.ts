@@ -4,6 +4,59 @@ import { Ecosystem } from '../../src/ecosystem';
 import { DEFAULT_DORMANCY } from '../../src/dormancy';
 import { DEFAULTS, LIMIT, founder } from '../../src/model';
 import { context, digest, invariants, receipt } from './support';
+import { NUTRIENT_TOTAL, nutrientSummary } from '../../src/nutrients';
+import { newController } from '../../src/neural';
+
+it('preserves finite nutrient matter and energy through joint neural dormancy continuation', () => {
+  const world = new Ecosystem({ ...DEFAULTS, seed: 42, mutation: 0, nutrients: 5 }, false, {
+    nutrientCycle: true,
+  });
+  const genome = {
+    ...founder(0),
+    tolerance: 0.12,
+    controller: newController(),
+    dormancy: { ...DEFAULT_DORMANCY },
+  };
+  for (let position = 0; position < 64; position++)
+    assert.ok(world.spawn(genome, (position % 16) * 12 + 4, Math.floor(position / 16) * 12 + 50));
+  world.shock('heat');
+  const initial = JSON.stringify(world.save());
+  let continuation = Ecosystem.load(initial);
+  let dormantOrganismTicks = 0;
+  const started = performance.now();
+  for (let tick = 1; tick <= 10_000; tick++) {
+    world.step();
+    continuation.step();
+    const budget = world.nutrientCycle!.budget!;
+    assert.ok(Math.abs(budget.before + budget.sunlight - budget.after - budget.dissipated) < 1e-7);
+    for (const organism of world.organisms.values()) {
+      if (organism.reserves!.dormant) dormantOrganismTicks++;
+      assert.ok(organism.energy + organism.reserves!.stored <= 1000);
+    }
+    if ([30, 900, 1200, 5401, 10_000].includes(tick)) {
+      invariants(world);
+      assert.equal(
+        nutrientSummary(world.nutrientCycle!, world.organisms.values(), world.food).total,
+        NUTRIENT_TOTAL,
+      );
+      assert.deepEqual(continuation.save(), world.save());
+      continuation = Ecosystem.load(JSON.stringify(world.save()));
+    }
+  }
+  assert.ok(dormantOrganismTicks > 0);
+  receipt('dormancy-nutrients', {
+    ...context(),
+    initialSHA256: digest(initial),
+    finalSHA256: digest(JSON.stringify(world.save())),
+    completedTicks: world.tick,
+    dormantOrganismTicks,
+    elapsedMs: performance.now() - started,
+    finalPopulation: world.organisms.size,
+    resources: nutrientSummary(world.nutrientCycle!, world.organisms.values(), world.food),
+    limitations:
+      'One finite seasonal heatwave fixture; no rescue, timing threshold or claim of universal advantage.',
+  });
+});
 
 it('records real dormant, active and migrating seasonal survival and bounded throughput', () => {
   const evidence = {

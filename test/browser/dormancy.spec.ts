@@ -93,60 +93,63 @@ test('native inherited dormancy controls and library preserve a paused world and
   expect(await saved(page)).toEqual(before);
 });
 
-test('real worker retains dormant state through inspection, exact step, rejected import and funded waking', async ({
-  page,
-}, info) => {
-  await start(page);
-  const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
-  const genome = { ...founder(0), tolerance: 0.12, dormancy: { ...DEFAULT_DORMANCY } };
-  const organism = world.spawn(genome, 60, 60)!;
-  organism.energy = 20;
-  organism.reserves!.stored = 12.3456789012345;
-  world.shock('heat');
-  world.eventUntil = 120;
-  world.step();
-  await load(page, world.save());
-  const loaded = await saved(page);
-  while (world.tick < loaded.tick) world.step();
-  expect(loaded).toEqual(world.save());
-  await inspect(page);
-  await expect(page.locator('#inspector')).toContainText('Dormancy: Dormant');
-  expect(await saved(page)).toEqual(world.save());
-  const design = parseBlueprint(
-    (await nativeDownload(page, '#export-organism-blueprint')).toString('utf8'),
-  );
-  expect(design.genome).toEqual(genome);
-  expect(design.genome).not.toHaveProperty('reserves');
-  const invalid = world.save();
-  invalid.organisms[0].reserves!.stored = 65;
-  await page.locator('#file').setInputFiles({
-    name: 'bad-reserve.json',
-    mimeType: 'application/json',
-    buffer: Buffer.from(JSON.stringify(invalid)),
+for (const nutrientCycle of [false, true])
+  test(`real worker retains dormant state through inspection, exact step, rejected import and funded waking with nutrientCycle=${nutrientCycle}`, async ({
+    page,
+  }, info) => {
+    await start(page);
+    const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false, {
+      nutrientCycle,
+    });
+    const genome = { ...founder(0), tolerance: 0.12, dormancy: { ...DEFAULT_DORMANCY } };
+    const organism = world.spawn(genome, 60, 60)!;
+    organism.energy = 20;
+    organism.reserves!.stored = 12.3456789012345;
+    world.shock('heat');
+    world.eventUntil = 120;
+    world.step();
+    await load(page, world.save());
+    const loaded = await saved(page);
+    while (world.tick < loaded.tick) world.step();
+    expect(loaded).toEqual(world.save());
+    await inspect(page);
+    await expect(page.locator('#inspector')).toContainText('Dormancy: Dormant');
+    expect(await saved(page)).toEqual(world.save());
+    const design = parseBlueprint(
+      (await nativeDownload(page, '#export-organism-blueprint')).toString('utf8'),
+    );
+    expect(design.genome).toEqual(genome);
+    expect(design.genome).not.toHaveProperty('reserves');
+    const invalid = world.save();
+    invalid.organisms[0].reserves!.stored = 65;
+    await page.locator('#file').setInputFiles({
+      name: 'bad-reserve.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify(invalid)),
+    });
+    await expect(page.locator('#notice')).toContainText('Invalid organism reserves');
+    expect(await saved(page)).toEqual(world.save());
+    await page.locator('#step').click();
+    world.step();
+    expect(await saved(page)).toEqual(world.save());
+    expect(organism.reserves!.dormant).toBe(true);
+    await load(page, world.save());
+    const restored = await saved(page);
+    while (world.tick < restored.tick) world.step();
+    expect(restored).toEqual(world.save());
+    expect(world.tick).toBeLessThan(119);
+    await page.locator('#target-tick').fill('119');
+    await page.locator('#run-to-tick').click();
+    await expect(page.locator('#tick')).toHaveText('TICK 119');
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    while (world.tick < 119) world.step();
+    expect(await saved(page)).toEqual(world.save());
+    await page.locator('#step').click();
+    world.step();
+    expect(await saved(page)).toEqual(world.save());
+    expect(organism.reserves!.dormant).toBe(false);
+    expect(world.telemetry.samples.at(-1)!.reserves!.exitSpent).toBe(1.5);
+    await inspect(page);
+    await expect(page.locator('#inspector')).toContainText('Dormancy: Active');
+    await attachWorld(info, 'dormancy-continuation.json', world.save());
   });
-  await expect(page.locator('#notice')).toContainText('Invalid organism reserves');
-  expect(await saved(page)).toEqual(world.save());
-  await page.locator('#step').click();
-  world.step();
-  expect(await saved(page)).toEqual(world.save());
-  expect(organism.reserves!.dormant).toBe(true);
-  await load(page, world.save());
-  const restored = await saved(page);
-  while (world.tick < restored.tick) world.step();
-  expect(restored).toEqual(world.save());
-  expect(world.tick).toBeLessThan(119);
-  await page.locator('#target-tick').fill('119');
-  await page.locator('#run-to-tick').click();
-  await expect(page.locator('#tick')).toHaveText('TICK 119');
-  await expect(page.locator('#run-state')).toHaveText('PAUSED');
-  while (world.tick < 119) world.step();
-  expect(await saved(page)).toEqual(world.save());
-  await page.locator('#step').click();
-  world.step();
-  expect(await saved(page)).toEqual(world.save());
-  expect(organism.reserves!.dormant).toBe(false);
-  expect(world.telemetry.samples.at(-1)!.reserves!.exitSpent).toBe(1.5);
-  await inspect(page);
-  await expect(page.locator('#inspector')).toContainText('Dormancy: Active');
-  await attachWorld(info, 'dormancy-continuation.json', world.save());
-});

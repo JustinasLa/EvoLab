@@ -278,7 +278,7 @@ describe('bounded inherited dormancy', () => {
     organism.age = 32;
     world.step();
     const born = world.save();
-    for (const version of [14, 15, 16]) {
+    for (const version of [14, 15, 16, 17]) {
       const invalid = structuredClone(born);
       for (const living of invalid.organisms) delete living.genome.dormancy;
       delete invalid.telemetry.pending.reserves;
@@ -371,10 +371,16 @@ describe('bounded inherited dormancy', () => {
     expect(Ecosystem.load(JSON.stringify(world.save())).save()).toEqual(world.save());
   });
 
-  it.each(Object.keys(EXPERIMENT_INTERVENTIONS) as ExperimentIntervention[])(
-    'preserves exact neural and reserve state through %s comparison and recipe replay',
-    (intervention) => {
-      const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
+  it.each(
+    (Object.keys(EXPERIMENT_INTERVENTIONS) as ExperimentIntervention[]).flatMap((intervention) =>
+      [false, true].map((nutrientCycle) => ({ intervention, nutrientCycle })),
+    ),
+  )(
+    'preserves exact neural and reserve state through $intervention comparison and recipe replay with nutrientCycle=$nutrientCycle',
+    ({ intervention, nutrientCycle }) => {
+      const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false, {
+        nutrientCycle,
+      });
       const design = genome(true, 4);
       design.controller = newController();
       const organism = world.spawn(design, 60, 60)!;
@@ -398,8 +404,8 @@ describe('bounded inherited dormancy', () => {
       expect(result.treatment.state).toBe(JSON.stringify(direct.save()));
       expect(JSON.parse(result.recipe).rules).toEqual({
         id: 'evolab-drift-cellular',
-        version: 9,
-        worldVersion: 17,
+        version: 10,
+        worldVersion: 18,
       });
       const replay = createRecipeComparison(result.recipe);
       while (replay.advance(() => 0).tick < 6) {}
@@ -409,47 +415,52 @@ describe('bounded inherited dormancy', () => {
     },
   );
 
-  it('replays complete journal checkpoints containing neural dormancy and reserve loss on age death', () => {
-    const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
-    const design = genome();
-    design.controller = newController();
-    const organism = world.spawn(design, 60, 60)!;
-    organism.energy = 20;
-    organism.age = 974;
-    organism.neuralBlocked = true;
-    organism.reserves = { stored: 12, dormant: true };
-    world.shock('heat');
-    const recorder = new EventRecorder(world);
-    for (let tick = 0; tick < 2; tick++) {
-      world.step();
-      recorder.observe(world);
-    }
-    const event = recorder.snapshot().events.at(-1)!;
-    expect(event.kind).toBe('lineage-extinction');
-    const evidence = recorder.replay(event.id);
-    expect(evidence.worldVersion).toBe(17);
-    expect(world.telemetry.pending.reserves!.discarded).toBeGreaterThan(0);
-    const tasks: (() => void)[] = [];
-    const messages: ReplayResponse[] = [];
-    const scope: ReplayScope = {
-      onmessage: null,
-      postMessage: (message) => messages.push(message),
-    };
-    startReplayWorker(
-      scope,
-      (callback) => tasks.push(callback),
-      () => {},
-      () => 0,
-    );
-    scope.onmessage!({ data: { type: 'start', evidence, tick: event.tick } } as MessageEvent);
-    while (tasks.length) tasks.shift()!();
-    expect(messages.at(-1)).toMatchObject({
-      type: 'complete',
-      verified: true,
-      population: 0,
-      tick: 2,
-    });
-  });
+  it.each([false, true])(
+    'replays neural dormancy and age-death reserve loss with nutrientCycle=%s',
+    (nutrientCycle) => {
+      const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false, {
+        nutrientCycle,
+      });
+      const design = genome();
+      design.controller = newController();
+      const organism = world.spawn(design, 60, 60)!;
+      organism.energy = 20;
+      organism.age = 974;
+      organism.neuralBlocked = true;
+      organism.reserves = { stored: 12, dormant: true };
+      world.shock('heat');
+      const recorder = new EventRecorder(world);
+      for (let tick = 0; tick < 2; tick++) {
+        world.step();
+        recorder.observe(world);
+      }
+      const event = recorder.snapshot().events.at(-1)!;
+      expect(event.kind).toBe('lineage-extinction');
+      const evidence = recorder.replay(event.id);
+      expect(evidence.worldVersion).toBe(18);
+      expect(world.telemetry.pending.reserves!.discarded).toBeGreaterThan(0);
+      const tasks: (() => void)[] = [];
+      const messages: ReplayResponse[] = [];
+      const scope: ReplayScope = {
+        onmessage: null,
+        postMessage: (message) => messages.push(message),
+      };
+      startReplayWorker(
+        scope,
+        (callback) => tasks.push(callback),
+        () => {},
+        () => 0,
+      );
+      scope.onmessage!({ data: { type: 'start', evidence, tick: event.tick } } as MessageEvent);
+      while (tasks.length) tasks.shift()!();
+      expect(messages.at(-1)).toMatchObject({
+        type: 'complete',
+        verified: true,
+        population: 0,
+        tick: 2,
+      });
+    },
+  );
 
   it('roundtrips exact living state and separate flows, rejects invalid whole candidates and legacy activation', () => {
     const { world, organism } = fixture();
