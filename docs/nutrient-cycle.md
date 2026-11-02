@@ -43,6 +43,12 @@ are deferred rather than represented by an uncosted energy source.
 
 ## Observation and persistence
 
+Native world format 17 extends neural world16 with a required `nutrientCycle`
+field (`null` means disabled). Native16 controllers and blocked-action state
+remain strict and retain exact continuation on migration. Blueprint format5 is
+unchanged: nutrient mode belongs to the world, not an organism blueprint.
+Experiment rules9 and measurement format10 identify this composed ruleset.
+
 Resource views expose both planes, pool totals in N, current stored energy in E,
 and the latest completed tick's energy balance (before + sunlight = after +
 dissipation). This balance excludes manual actions between ticks; the following

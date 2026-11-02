@@ -2900,7 +2900,7 @@ describe('telemetry persistence, migration and complete candidate validation', (
             shadeHabitats,
             ...actualEcology
           } = ecology(world.save());
-        expect(world.save().version).toBe(16);
+        expect(world.save().version).toBe(17);
         expect(thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
         expect(shadeHabitats).toEqual({ version: 1, enabled: false, cells: [] });
         expect(terrain).toEqual(DEFAULT_TERRAIN);

@@ -23,6 +23,7 @@ import {
 } from '../src/nutrients';
 import { nutrientDescription, nutrientMarkup } from '../src/nutrient-view';
 import { measurementEnvelope } from '../src/measurement-export';
+import { newController } from '../src/neural';
 
 const genome = (type: 3 | 4 | 5 | 6 = 4): Genome => ({
   cells: [{ x: 0, y: 0, type }],
@@ -46,6 +47,54 @@ function check(world: Ecosystem) {
 }
 
 describe('finite nutrient ecology', () => {
+  it('migrates native neural16 exactly and preserves funded controllers in nutrient17', () => {
+    const controller = newController();
+    controller.biases[5] = 1;
+    const body: Genome = { ...genome(5), controller };
+    const legacy = new Ecosystem({ ...DEFAULTS, nutrients: 0, mutation: 0 }, false);
+    legacy.spawn(body, 40, 40);
+    const { nutrientCycle: _absent, ...native16 } = legacy.save();
+    const migrated = Ecosystem.load(JSON.stringify({ ...native16, version: 16 }));
+    for (let tick = 0; tick < 40; tick++) {
+      legacy.step();
+      migrated.step();
+    }
+    expect(migrated.save()).toEqual(legacy.save());
+    expect(migrated.save().organisms[0].genome.controller).toEqual(controller);
+    const world = habitat();
+    world.spawn(body, 40, 40);
+    for (let tick = 0; tick < 40; tick++) world.step();
+    expect(world.save().telemetry.pending.energy.movementSpent).toBeGreaterThan(0);
+    expect(world.nutrientCycle!.budget!.dissipated).toBeGreaterThan(0);
+    check(world);
+    const invalid = world.save();
+    delete invalid.organisms[0].neuralBlocked;
+    expect(() => Ecosystem.load(JSON.stringify(invalid))).toThrow('organism');
+    invalid.organisms[0].neuralBlocked = false;
+    invalid.organisms[0].genome.controller!.weights[0] = 5;
+    expect(() => Ecosystem.load(JSON.stringify(invalid))).toThrow('organism');
+  });
+  it('keeps integer matter exact at subnormal energy and cost boundaries', () => {
+    for (const energy of [
+      Number.MIN_VALUE,
+      0,
+      2.25 - Number.EPSILON,
+      2.25,
+      999.9999999999999,
+      1000,
+    ]) {
+      const world = habitat(),
+        organism = world.spawn(genome(), 40, 40)!;
+      organism.energy = energy;
+      world.random.state = 7;
+      world.step();
+      check(world);
+      const budget = world.nutrientCycle!.budget!;
+      expect(
+        Math.abs(budget.before + budget.sunlight - budget.after - budget.dissipated),
+      ).toBeLessThan(1e-7);
+    }
+  });
   it('keeps ecological-role observation passive under the enabled resource costs', () => {
     const world = habitat(true),
       reference = Ecosystem.load(JSON.stringify(world.save()));

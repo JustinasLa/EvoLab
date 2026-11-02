@@ -8,7 +8,7 @@ export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 16;
+export const WORLD_VERSION = 17;
 export const LINEAGE_SUMMARY_CAPACITY = 256;
 export const LINEAGE_EVENT_CAPACITY = 512;
 export const INTERVENTION_CAPACITY = 128;
@@ -684,7 +684,10 @@ export interface WorldFile extends WorldEcology {
 export type HistoricalWorldEcology = Omit<WorldEcology, 'organisms'> & {
   organisms: HistoricalOrganism[];
 };
-export interface WorldFileV15 extends Omit<WorldFile, 'version' | 'nutrientCycle'> {
+export interface WorldFileV16 extends Omit<WorldFile, 'version' | 'nutrientCycle'> {
+  version: 16;
+}
+export interface WorldFileV15 extends Omit<WorldFileV16, 'version'> {
   version: 15;
 }
 export interface WorldFileV14 extends Omit<WorldFileV15, 'version'> {
