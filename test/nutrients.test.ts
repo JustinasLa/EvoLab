@@ -29,6 +29,7 @@ import { projectWorld9 } from './fixtures/shade';
 import { restoreHistoricalWorld } from './fixtures/sensory-legacy';
 import { restoreMain8 } from './fixtures/sensory-main8';
 import { legacyV9 } from './fixtures/telemetry';
+import { createComparison, createRecipeComparison } from '../src/experiments';
 
 const genome = (type: 3 | 4 | 5 | 6 = 4): Genome => ({
   cells: [{ x: 0, y: 0, type }],
@@ -52,6 +53,32 @@ function check(world: Ecosystem) {
 }
 
 describe('finite nutrient ecology', () => {
+  it('replays full nutrient checkpoints through composed batch-intervention provenance', () => {
+    const world = habitat(true),
+      initial = JSON.stringify(world.save());
+    const runner = createComparison(initial, {
+      intervention: 'shade',
+      treatmentTick: 0,
+      horizonTick: 32,
+    });
+    while (runner.advance(() => 0).tick < 32) {}
+    const result = runner.result();
+    runner.dispose();
+    for (const branch of [result.control, result.treatment]) check(Ecosystem.load(branch.state));
+    const treated = Ecosystem.load(result.treatment.state);
+    expect(treated.nutrientCycle!.budget!.sunlight).toBe(0);
+    expect(result.control.state).not.toEqual(result.treatment.state);
+    expect(JSON.parse(result.recipe).rules).toEqual({
+      id: 'evolab-drift-cellular',
+      version: 9,
+      worldVersion: WORLD_VERSION,
+    });
+    const replay = createRecipeComparison(result.recipe);
+    while (replay.advance(() => 0).tick < 32) {}
+    expect(replay.result()).toEqual({ ...result, reproduced: true });
+    replay.dispose();
+    expect(JSON.stringify(world.save())).toBe(initial);
+  });
   it('rejects enabled ecology in every historical comparison projection', () => {
     for (const project of [
       predecessor,
