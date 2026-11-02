@@ -122,7 +122,6 @@ export function createNeuralView(root: HTMLElement, subscriptionChanged: () => v
     dispose() {
       details.removeEventListener('toggle', toggle);
       specimen.removeEventListener('toggle', toggle);
-      details.remove();
     },
   };
 }
