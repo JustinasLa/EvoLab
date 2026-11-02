@@ -1,3 +1,4 @@
+import { nutrientDescription } from './nutrient-view';
 import { mountMutationControls } from './mutation-view';
 import { newController } from './neural';
 import { validMutationPolicy } from './mutation';
@@ -108,6 +109,7 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
       return { type: 'event-replay', eventId: data.eventId };
     case 'start':
       if (
+        (data.nutrientCycle !== undefined && typeof data.nutrientCycle !== 'boolean') ||
         !validSettings(data.settings) ||
         (data.terrain !== undefined && !validTerrain(data.terrain)) ||
         !data.display ||
@@ -120,6 +122,7 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
         throw new Error('Invalid initial settings or display.');
       return {
         type: 'start',
+        ...(data.nutrientCycle !== undefined ? { nutrientCycle: data.nutrientCycle } : {}),
         settings: observedSettings(data.settings),
         terrain: { ...(data.terrain === undefined ? DEFAULT_TERRAIN : data.terrain) },
         display: {
@@ -349,12 +352,14 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     terrainRevision = 0,
     settledTerrainId = 0;
   let resetPayload: {
+    nutrientCycle: boolean;
     settings: Settings;
     terrain: TerrainRecipe;
     run: number;
     revision: number;
     refugeReset: 'off-empty';
   } | null = null;
+  let nutrientLayer: 'minerals' | 'detritus' | null = null;
   let settings = { ...DEFAULTS },
     runId = 0,
     paused = false,
@@ -1907,6 +1912,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       return;
     }
     resetPayload = {
+      nutrientCycle: get<HTMLInputElement>('nutrient-next').checked,
       settings: structuredClone(next),
       terrain: { ...terrain },
       run: runId,
@@ -1915,14 +1921,14 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     };
     text(
       'reset-payload',
-      `World seed ${seed} · ${TERRAIN_LABELS[terrain.preset]} · terrain seed ${resolvedTerrainSeed(terrain, seed)} · generator ${terrain.version}. Resets temperature and shade to disabled/empty. This displayed payload is frozen; later draft edits require reopening.`,
+      `World seed ${seed} · ${TERRAIN_LABELS[terrain.preset]} · terrain seed ${resolvedTerrainSeed(terrain, seed)} · generator ${terrain.version}. Nutrient cycle: ${resetPayload.nutrientCycle ? 'enabled, finite 149760 N endowment' : 'disabled, legacy rules'}. Resets temperature and shade to disabled/empty. This displayed payload is frozen; later draft edits require reopening.`,
     );
     get<HTMLDialogElement>('reset-dialog').showModal();
     get('cancel-reset').focus();
   }
   function replaceWorld(
     operation: 'start',
-    data: { settings: Settings; terrain: TerrainRecipe },
+    data: { settings: Settings; terrain: TerrainRecipe; nutrientCycle?: boolean },
     revision = terrainRevision,
   ): void {
     cancelReset(false);
@@ -2228,6 +2234,25 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   get('cancel-target').addEventListener('click', () => {
     send({ type: 'cancel-target', targetId: targetTicket?.wireId ?? latestState?.target?.id ?? 1 });
   });
+  function renderNutrientCell(): void {
+    const column = Number(get<HTMLInputElement>('nutrient-x').value),
+      row = Number(get<HTMLInputElement>('nutrient-y').value);
+    text(
+      'nutrient-cell',
+      !integer(column, 0, WIDTH - 1) || !integer(row, 0, HEIGHT - 1)
+        ? 'Choose an in-bounds whole-number tile.'
+        : frame?.nutrientCycle
+          ? `Displayed tick ${frame.stats.tick} · (${column}, ${row}): ${frame.nutrientCycle.minerals[row * WIDTH + column]} mineral N, ${frame.nutrientCycle.detritus[row * WIDTH + column]} detritus N.`
+          : 'No enabled nutrient field in the displayed frame.',
+    );
+  }
+  for (const id of ['nutrient-x', 'nutrient-y'])
+    get(id).addEventListener('input', renderNutrientCell);
+  get('nutrient-layer').addEventListener('change', () => {
+    const value = get<HTMLSelectElement>('nutrient-layer').value;
+    nutrientLayer = value === 'minerals' || value === 'detritus' ? value : null;
+    dirty = true;
+  });
   get('light').addEventListener('click', () => {
     light = !light;
     if (light) thermal = false;
@@ -2337,7 +2362,11 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     cancelReset();
     replaceWorld(
       'start',
-      { settings: pending.settings, terrain: pending.terrain },
+      {
+        settings: pending.settings,
+        terrain: pending.terrain,
+        nutrientCycle: pending.nutrientCycle,
+      },
       pending.revision,
     );
   });
@@ -3015,6 +3044,10 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       latestState = observation;
       installRefuges(observation.world.thermalRefuges);
       installShade(observation.world.shadeHabitats);
+      text(
+        'nutrient-summary',
+        nutrientDescription(observation.world.nutrientCycle, observation.world.stats.tick),
+      );
       mutationControls.update(observation.world.mutationPolicy, observation.replacementId);
       const recipeRevision =
         replaceDraft && posted && ['start', 'load', 'regenerate-walls'].includes(posted.type)
@@ -3468,7 +3501,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
           selected?.id === displayedSelected
           ? organismView.perception()
           : null,
+        nutrientLayer,
       );
+      renderNutrientCell();
       dirty = false;
       freshness();
       if (consumed) {

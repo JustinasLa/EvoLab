@@ -37,7 +37,13 @@ export function restoreMain8(saved: WorldFile) {
         tempo: genome.tempo,
       } as typeof row.foundingGenome;
     }
-  const { mutationPolicy: _policy, shadeHabitats: _shadeHabitats, ...retained } = saved;
+  assert.ok(saved.nutrientCycle === null, 'Cannot project enabled nutrient ecology.');
+  const {
+    nutrientCycle: _nutrientCycle,
+    mutationPolicy: _policy,
+    shadeHabitats: _shadeHabitats,
+    ...retained
+  } = saved;
   return {
     ...retained,
     interventions: { ...saved.interventions, version: 3 },

@@ -52,6 +52,7 @@ import {
   nextSessionId,
   WIDTH,
   WORLD_MAX_BYTES,
+  WORLD_VERSION,
   STROKE_COMMAND_CAPACITY,
   founder,
   index,
@@ -68,6 +69,38 @@ const mouth: Genome = {
   tolerance: 0.3,
   tempo: 2,
 };
+it('nutrient reset opt-in retains exact step, transfer ownership, yields and corrupt-load recovery', () => {
+  const harness = workerHarness();
+  harness.send({ type: 'start', settings: DEFAULTS, nutrientCycle: true });
+  harness.send({ type: 'pause' });
+  const initial = harness.save();
+  expect(initial.nutrientCycle).not.toBeNull();
+  const reference = Ecosystem.load(JSON.stringify(initial));
+  const display = harness.frame();
+  expect(display.nutrientCycle!.minerals.length).toBe(WIDTH * 156);
+  display.nutrientCycle!.minerals.fill(0);
+  expect(harness.save()).toEqual(initial);
+  harness.send({ type: 'step' });
+  reference.step();
+  expect(harness.save()).toEqual(reference.save());
+  expect(harness.state().playback.paused).toBe(true);
+  expect(harness.state().world.nutrientCycle.total).toBe(149760);
+  const corrupted = harness.save();
+  corrupted.nutrientCycle!.minerals[0]++;
+  expect(harness.load(corrupted, 2).type).toBe('error');
+  expect(harness.save()).toEqual(reference.save());
+  harness.send({ type: 'step', runId: 1 });
+  expect(harness.save()).toEqual(reference.save());
+  expect(
+    harness.send({ type: 'start', settings: DEFAULTS, nutrientCycle: 'yes', runId: 3 }).type,
+  ).toBe('error');
+  expect(harness.save()).toEqual(reference.save());
+  harness.send({ type: 'resume' });
+  harness.advance();
+  expect(harness.save().tick).toBeGreaterThan(reference.tick);
+  expect(harness.tasks.length).toBeGreaterThan(0);
+  harness.dispose();
+});
 it('observes roles only after subscription and preserves exact pause, step, load recovery and yields', () => {
   const harness = workerHarness();
   const { world } = roleScene();
@@ -3203,7 +3236,7 @@ describe('integrated extinction and telemetry', () => {
     expect(harness.tasks).toHaveLength(0);
   });
 
-  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])(
+  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17])(
     'migrates/restores v%i then preserves terminal and pending history through an empty save continuation',
     (version) => {
       const harness = workerHarness();
@@ -3257,7 +3290,9 @@ describe('integrated extinction and telemetry', () => {
                                   ? { ...current, version: 14 as const }
                                   : version === 15
                                     ? { ...current, version: 15 as const }
-                                    : current;
+                                    : version === 16
+                                      ? { ...current, version: 16 as const }
+                                      : current;
       if (version >= 8 && version < 15 && 'lineageArchive' in file)
         file.lineageArchive = historicalArchive(file.lineageArchive);
       expect(file.version).toBe(version);
@@ -3290,7 +3325,8 @@ describe('integrated extinction and telemetry', () => {
           file.version >= 10
             ? {
                 ...file,
-                version: 16,
+                version: WORLD_VERSION,
+                nutrientCycle: null,
                 lineageArchive: {
                   ...file.lineageArchive,
                   version: 2,
@@ -3303,7 +3339,8 @@ describe('integrated extinction and telemetry', () => {
             : file.version >= 5
               ? {
                   ...file,
-                  version: 16,
+                  version: WORLD_VERSION,
+                  nutrientCycle: null,
                   mutationPolicy: { version: 1, mode: 'legacy' },
                   shadeHabitats: { version: 1, enabled: false, cells: [] },
                   organisms: imported.organisms,
@@ -3317,7 +3354,8 @@ describe('integrated extinction and telemetry', () => {
                 }
               : {
                   ...file,
-                  version: 16,
+                  version: WORLD_VERSION,
+                  nutrientCycle: null,
                   mutationPolicy: { version: 1, mode: 'legacy' },
                   shadeHabitats: { version: 1, enabled: false, cells: [] },
                   organisms: imported.organisms,
@@ -3342,7 +3380,7 @@ describe('integrated extinction and telemetry', () => {
       harness.advance();
       reference.step();
       const terminal = harness.save();
-      expect(terminal.version).toBe(16);
+      expect(terminal.version).toBe(17);
       expect(terminal.telemetry.version).toBe(2);
       expect(terminal.telemetry.samples.at(-1)).toMatchObject({
         fromTick: version === 2 ? 89 : 60,
