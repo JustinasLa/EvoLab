@@ -21,6 +21,10 @@ import { inheritedDifference } from '../src/mutation-evidence';
 import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
 import { organismHtml } from '../src/view';
 import { serializeMeasurements } from '../src/measurement-export';
+import { NEURAL_COST, newController } from '../src/neural';
+import { EventRecorder } from '../src/event-journal';
+import { startReplayWorker, type ReplayScope } from '../src/event-replay-worker';
+import type { ReplayResponse } from '../src/event-model';
 
 const advance = (world: Ecosystem, ticks: number) => {
   for (let tick = 0; tick < ticks; tick++) world.step();
@@ -62,7 +66,7 @@ describe('bounded inherited dormancy', () => {
       copy = cloneGenome(source);
     expect(copy).toEqual(source);
     expect(copy.dormancy).not.toBe(source.dormancy);
-    expect(validGenome(source, true, true, false)).toBe(false);
+    expect(validGenome(source, true, true, true, false)).toBe(false);
     expect(validGenome({ ...source, dormancy: undefined })).toBe(false);
     copy.dormancy = Object.fromEntries(
       Object.entries(copy.dormancy!).reverse(),
@@ -251,7 +255,7 @@ describe('bounded inherited dormancy', () => {
       stored: 'opaque legacy data',
       dormant: true,
     };
-    const restored = Ecosystem.load(JSON.stringify({ ...old, version: 15 }));
+    const restored = Ecosystem.load(JSON.stringify({ ...old, version: 16 }));
     expect(Ecosystem.load(JSON.stringify(restored.save())).save()).toEqual(restored.save());
     expect(observedOrganism(restored.organisms.values().next().value!)).not.toHaveProperty(
       'reserves',
@@ -269,7 +273,7 @@ describe('bounded inherited dormancy', () => {
     organism.age = 32;
     world.step();
     const born = world.save();
-    for (const version of [14, 15]) {
+    for (const version of [14, 15, 16]) {
       const invalid = structuredClone(born);
       for (const living of invalid.organisms) delete living.genome.dormancy;
       delete invalid.telemetry.pending.reserves;
@@ -280,6 +284,128 @@ describe('bounded inherited dormancy', () => {
     const archive = extinct.world.save();
     archive.lineageArchive.summaries[0].foundingGenome!.dormancy!.capacity = 65;
     expect(() => Ecosystem.load(JSON.stringify(archive))).toThrow('lineage');
+  });
+
+  it('preserves neural world16 and blueprint5 without activating dormancy', () => {
+    const world = new Ecosystem({ ...DEFAULTS, mutation: 0.4, nutrients: 0, climate: 0 }, false);
+    const design = genome(false, 5);
+    design.controller = newController();
+    design.controller.biases[5] = 1;
+    const organism = world.spawn(design, 60, 60)!;
+    organism.energy = 100;
+    organism.age = 32;
+    organism.neuralBlocked = true;
+    const saved = world.save();
+    const prior = { ...saved, version: 16 };
+    const migrated = Ecosystem.load(JSON.stringify(prior));
+    const current = Ecosystem.load(JSON.stringify(saved));
+    expect(migrated.save()).toEqual(saved);
+    advance(migrated, 60);
+    advance(current, 60);
+    expect(migrated.save()).toEqual(current.save());
+    expect(migrated.births).toBeGreaterThan(0);
+    expect(migrated.telemetry.pending.reserves).toBeUndefined();
+    for (const living of migrated.organisms.values()) {
+      expect(living.genome.dormancy).toBeUndefined();
+      expect(living.reserves).toBeUndefined();
+      expect(typeof living.neuralBlocked).toBe('boolean');
+    }
+    const invalid = structuredClone(prior);
+    delete invalid.organisms[0].neuralBlocked;
+    expect(() => Ecosystem.load(JSON.stringify(invalid))).toThrow('organism');
+    const blueprint = JSON.parse(
+      serializeBlueprint({ name: 'Neural', description: '', genome: design }),
+    );
+    expect(blueprint.version).toBe(6);
+    expect(parseBlueprint(JSON.stringify({ ...blueprint, version: 5 })).genome).toEqual(design);
+  });
+
+  it('suspends neural actions during dormancy and preserves paid waking and joint inheritance', () => {
+    const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
+    const design = genome(true, 5);
+    design.tempo = 2;
+    design.controller = newController();
+    design.controller.biases[5] = 1;
+    const organism = world.spawn(design, 60, 60)!;
+    organism.energy = 20;
+    organism.reserves!.stored = 12;
+    organism.neuralBlocked = true;
+    world.shock('heat');
+    world.eventUntil = 3;
+    const random = world.random.state;
+    advance(world, 2);
+    expect(organism.reserves!.dormant).toBe(true);
+    expect(organism.neuralBlocked).toBe(true);
+    expect([organism.x, organism.y]).toEqual([60, 60]);
+    expect(world.random.state).toBe(random);
+    expect(world.telemetry.pending.energy.movementSpent).toBe(0);
+    const restored = Ecosystem.load(JSON.stringify(world.save()));
+    world.step();
+    restored.step();
+    expect(restored.save()).toEqual(world.save());
+    expect(organism.reserves!.dormant).toBe(false);
+    expect(world.telemetry.pending.reserves!.exitSpent).toBe(0.3);
+    const upkeep = world.telemetry.pending.energy.upkeepSpent;
+    world.step();
+    restored.step();
+    expect(restored.save()).toEqual(world.save());
+    expect(organism.neuralBlocked).toBe(false);
+    expect([organism.x, organism.y]).not.toEqual([60, 60]);
+    expect(world.telemetry.pending.energy.upkeepSpent - upkeep).toBeCloseTo(0.012 + NEURAL_COST);
+    expect(world.telemetry.pending.energy.movementSpent).toBeCloseTo(0.03);
+    organism.energy = 100;
+    organism.age = 32;
+    world.step();
+    const child = [...world.organisms.values()].find((living) => living.generation === 1)!;
+    expect(child.genome.controller).toEqual(design.controller);
+    expect(child.genome.controller).not.toBe(organism.genome.controller);
+    expect(child.genome.dormancy).toEqual(design.dormancy);
+    expect(child.genome.dormancy).not.toBe(organism.genome.dormancy);
+    expect(child.neuralBlocked).toBe(false);
+    expect(child.reserves).toEqual({ stored: 0, dormant: false });
+    expect(Ecosystem.load(JSON.stringify(world.save())).save()).toEqual(world.save());
+  });
+
+  it('replays complete journal checkpoints containing neural dormancy and reserve loss on age death', () => {
+    const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
+    const design = genome();
+    design.controller = newController();
+    const organism = world.spawn(design, 60, 60)!;
+    organism.energy = 20;
+    organism.age = 974;
+    organism.neuralBlocked = true;
+    organism.reserves = { stored: 12, dormant: true };
+    world.shock('heat');
+    const recorder = new EventRecorder(world);
+    for (let tick = 0; tick < 2; tick++) {
+      world.step();
+      recorder.observe(world);
+    }
+    const event = recorder.snapshot().events.at(-1)!;
+    expect(event.kind).toBe('lineage-extinction');
+    const evidence = recorder.replay(event.id);
+    expect(evidence.worldVersion).toBe(17);
+    expect(world.telemetry.pending.reserves!.discarded).toBeGreaterThan(0);
+    const tasks: (() => void)[] = [];
+    const messages: ReplayResponse[] = [];
+    const scope: ReplayScope = {
+      onmessage: null,
+      postMessage: (message) => messages.push(message),
+    };
+    startReplayWorker(
+      scope,
+      (callback) => tasks.push(callback),
+      () => {},
+      () => 0,
+    );
+    scope.onmessage!({ data: { type: 'start', evidence, tick: event.tick } } as MessageEvent);
+    while (tasks.length) tasks.shift()!();
+    expect(messages.at(-1)).toMatchObject({
+      type: 'complete',
+      verified: true,
+      population: 0,
+      tick: 2,
+    });
   });
 
   it('roundtrips exact living state and separate flows, rejects invalid whole candidates and legacy activation', () => {
@@ -333,7 +459,7 @@ describe('bounded inherited dormancy', () => {
     const blueprint = serializeBlueprint({ name: 'Sleeper', description: '', genome: genome() });
     expect(parseBlueprint(blueprint).genome).toEqual(genome());
     expect(() =>
-      parseBlueprint(JSON.stringify({ ...JSON.parse(blueprint), version: 4 })),
+      parseBlueprint(JSON.stringify({ ...JSON.parse(blueprint), version: 5 })),
     ).toThrow();
   });
 

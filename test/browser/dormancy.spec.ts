@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { Ecosystem } from '../../src/ecosystem';
 import { DEFAULT_DORMANCY } from '../../src/dormancy';
+import { newController } from '../../src/neural';
 import { DEFAULTS, founder, type WorldFile } from '../../src/model';
 import { parseBlueprint } from '../../src/blueprint';
 import { attachWorld, nativeDownload, registerNativeEvidence } from './sensory-evidence';
@@ -48,6 +49,7 @@ test('native inherited dormancy controls and library preserve a paused world and
   await page.locator('#organism-tab').click();
   await expect(page.locator('#dormancy-enabled')).not.toBeChecked();
   await expect(page.locator('#dormancy-capacity')).toBeDisabled();
+  await page.locator('#neural-enabled').check();
   await page.locator('#dormancy-enabled').focus();
   await page.locator('#dormancy-enabled').press('Space');
   for (const [field, value] of [
@@ -70,6 +72,7 @@ test('native inherited dormancy controls and library preserve a paused world and
     wakeEnergy: 12,
   });
   expect(design.genome).not.toHaveProperty('reserves');
+  expect(design.genome.controller).toEqual(newController());
   await page.locator('#blueprint-name').fill('Stored-energy design');
   await page.locator('#local-library > summary').click();
   await expect(page.locator('#library-status')).toContainText('refreshed');
@@ -80,6 +83,7 @@ test('native inherited dormancy controls and library preserve a paused world and
   await page.locator('#library-load').click();
   await page.locator('#library-confirm').click();
   await expect(page.locator('#dormancy-capacity')).toHaveValue('32');
+  await expect(page.locator('#neural-enabled')).toBeChecked();
   for (const width of [320, 390, 800, 1280]) {
     await page.setViewportSize({ width, height: 850 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
