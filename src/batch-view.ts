@@ -214,7 +214,8 @@ export function mountBatches(
     dispose(): void {
       alive = false;
       clear();
-      root.remove();
+      for (const name of ['start', 'cancel', 'export', 'import']) get(name).onclick = null;
+      file.onchange = null;
     },
   };
 }

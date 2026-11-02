@@ -89,7 +89,7 @@ it('launches only validated independent plans, renders real results and bounds d
   expect(get('status').textContent).toContain('Invalid batch plan');
   expect(factory).toHaveBeenCalledTimes(1);
 });
-it('rejects stale callbacks and context changes, cancels active workers and removes disposed views', () => {
+it('rejects stale callbacks and context changes, cancels active workers and detaches disposed controls', () => {
   click('start');
   const callback = endpoint.onmessage!,
     error = endpoint.onerror!;
@@ -107,7 +107,12 @@ it('rejects stale callbacks and context changes, cancels active workers and remo
   expect(get('report').childElementCount).toBe(0);
   view.dispose();
   latest({ data: { type: 'error', message: 'late' } } as MessageEvent);
-  expect(document.querySelector('#experiment-batches')).toBeNull();
+  expect(document.querySelector('#experiment-batches')).not.toBeNull();
+  const count = factory.mock.calls.length;
+  click('start');
+  click('import');
+  expect(factory).toHaveBeenCalledTimes(count);
+  expect(get<HTMLInputElement>('file').onchange).toBeNull();
 });
 it('surfaces startup, transport, native worker and result failures without leaving a usable stale result', () => {
   factory.mockImplementationOnce(() => {
@@ -137,6 +142,7 @@ it('surfaces startup, transport, native worker and result failures without leavi
 });
 it('uses its native module worker factory and reports bounded export failures with retry available', () => {
   view.dispose();
+  document.getElementById('experiment-batches')!.remove();
   const Native = vi.fn(function () {
     return endpoint;
   });
