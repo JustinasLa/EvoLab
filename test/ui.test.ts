@@ -1,6 +1,8 @@
 import { emptyShade, shadeSummary, selectedLeafLight } from '../src/shade';
 import { newController } from '../src/neural';
 import { checkpointRecord } from '../src/checkpoints';
+import { classifyRecovery } from '../src/recovery';
+import { RECOVERY_PREFERENCE } from '../src/recovery-view';
 import { createComparison } from '../src/experiments';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, captureCommand } from '../src/main';
@@ -7401,6 +7403,63 @@ describe('complete local checkpoint worker integration', () => {
     await pending();
     expect(get('checkpoint-status').textContent).toContain('2.5 MB');
     expect(native.values.size).toBe(0);
+  });
+});
+
+describe('automatic recovery worker integration', () => {
+  const pending = async () => {
+    for (let i = 0; i < 60; i++) await Promise.resolve();
+  };
+  afterEach(() => localStorage.removeItem(RECOVERY_PREFERENCE));
+  it('stores complete real-worker Saves separately from checkpoints without downloads or world changes', async () => {
+    const native = libraryHarness();
+    vi.stubGlobal('indexedDB', native.factory);
+    localStorage.setItem(RECOVERY_PREFERENCE, 'on');
+    vi.useFakeTimers();
+    const harness = realWorker(true);
+    harness.deliver();
+    click('pause');
+    harness.deliver();
+    expect(get<HTMLInputElement>('recovery-enabled').checked).toBe(true);
+    const before = harness.save();
+    await vi.advanceTimersByTimeAsync(60_000);
+    harness.deliver();
+    await pending();
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    const stored = classifyRecovery(1, native.values.get(1));
+    expect(JSON.parse(stored.world!)).toEqual(before);
+    expect(stored).toMatchObject({ tick: before.tick, seed: before.settings.seed });
+    expect(get('recovery-status').textContent).toContain('Recovery snapshot saved');
+    expect(harness.save()).toEqual(before);
+    // Unchanged world: no further capture.
+    await vi.advanceTimersByTimeAsync(120_000);
+    harness.deliver();
+    await pending();
+    expect(worker.commands.mock.calls.filter(([data]) => data.type === 'save')).toHaveLength(1);
+    click('step');
+    harness.deliver();
+    const forward = worker.postMessage.getMockImplementation()!;
+    let refused = 0;
+    worker.postMessage.mockImplementation((data: any) => {
+      if (data.type === 'save' && !refused++)
+        throw new DOMException('failed clone', 'DataCloneError');
+      forward(data);
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(refused).toBe(1);
+    expect(get('recovery-status').textContent).toContain('skipped');
+    await vi.advanceTimersByTimeAsync(1000);
+    harness.deliver();
+    await pending();
+    expect(classifyRecovery(2, native.values.get(2)).tick).toBe(before.tick + 1);
+    click('step');
+    harness.deliver();
+    await vi.advanceTimersByTimeAsync(60_000);
+    click('reset');
+    harness.deliver();
+    await pending();
+    expect(get('recovery-status').textContent).toMatch(/discarded|failed/);
+    expect(native.values.size).toBe(3);
   });
 });
 

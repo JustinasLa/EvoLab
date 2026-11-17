@@ -445,7 +445,13 @@ export function createRecovery(options: { factory?: () => IDBFactory | undefined
       claim: RecoveryClaim,
       record: string,
     ): Promise<Omit<RecoveryInspection, 'count'> & { slot: number }> {
-      if (classifyRecovery(1, record).generation !== claim.generation)
+      const row = classifyRecovery(1, record);
+      if (
+        row.owner !== claim.owner ||
+        row.generation !== claim.generation ||
+        row.sequence !== claim.sequence ||
+        row.savedAt !== claim.savedAt
+      )
         return Promise.reject(new RecoveryError('invalid'));
       return exclusive('readwrite', (store, accept, fail) =>
         read(store, fail, (inspection) => {

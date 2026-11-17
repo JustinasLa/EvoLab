@@ -37,6 +37,7 @@ lineages spread by surviving and producing descendants.
 - **Explore at your pace** — pan, zoom, pause, single-step, and change simulation speed independently of rendering.
 - **Run deliberately** — choose an exact tick target, pause or cancel it, disable habitat rendering, and observe measured throughput and honest image freshness.
 - **Keep whole worlds** — save and restore terrain, every organism, counters, settings and random-generator state.
+- **Automatic recovery snapshots** — opt in to keep at most two complete local recovery worlds, captured after 60 s of foreground activity when the world changed, in a store separate from the five manual checkpoints; one tab captures at a time, nothing is written on unload, and nothing restores automatically.
 - **Compare checkpoint climates** — fork one complete world into isolated control and heatwave/cold-snap branches, apply treatment at an exact tick, compare tick-aligned population, births/deaths, traits and stress on shared axes, and export/replay bounded recipes without editing the sandbox.
 - **Compare independent seeds** — run bounded single-founder batches with explicit burn-in, paired climate/shade/mutation presets, per-seed outcomes and empirical paired differences; export complete plans and checkpoints, replay completed evidence, and disclose failures, cancellation and extinction without counting replays as new replicates.
 
@@ -50,6 +51,7 @@ not a calibrated biological model.
 - [Optional nutrient cycle: units, costs, bounds and compatibility](docs/nutrient-cycle.md)
 - [Optional biological shade: timing, tradeoffs and provenance](docs/biological-shade.md)
 - [Optional energy reserves and dormancy: traits, costs and persistence](docs/dormancy.md)
+- [Automatic local recovery snapshots: capture, bounds and multi-tab ownership](docs/recovery.md)
 
 ## Tests and coverage
 
