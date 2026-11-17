@@ -7270,6 +7270,69 @@ it('keeps roles subscription across views, resets evidence on replacement and re
   expect(get('roles-tables').querySelectorAll('tbody tr')).toHaveLength(0);
 });
 
+it('toggles session-only spatial capture without advancing time and never shows stale evidence', async () => {
+  const bridge = realWorker(true);
+  bridge.deliver();
+  click('pause');
+  bridge.deliver();
+  const before = bridge.save();
+  const toggle = get<HTMLInputElement>('spatial-capture');
+  expect(get('spatial-status').textContent).toContain('Capture off');
+  toggle.checked = true;
+  toggle.dispatchEvent(new Event('change'));
+  expect(get('spatial-status').textContent).toContain('Starting capture');
+  bridge.deliver();
+  expect(get('spatial-status').textContent).toContain(
+    `Capturing at tick ${before.tick}. Coverage began at tick ${before.tick} (capture enabled)`,
+  );
+  expect(get('spatial-status').textContent).toContain('15×10 bins of 16×16 tiles');
+  expect(get('spatial-windows').querySelectorAll('tbody tr')).toHaveLength(1);
+  expect(get('spatial-windows').textContent).toContain('Pending (0 ticks covered)');
+  expect(bridge.save()).toEqual(before);
+  click('step');
+  bridge.deliver();
+  expect(get('spatial-windows').textContent).toContain('Pending (1 ticks covered)');
+  get('spatial-windows').dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+  bridge.deliver();
+  expect(get('run-state').textContent).toBe('PAUSED');
+  toggle.checked = false;
+  toggle.dispatchEvent(new Event('change'));
+  expect(get('spatial-status').textContent).toContain('Stopping capture');
+  toggle.checked = true;
+  toggle.dispatchEvent(new Event('change'));
+  click('step');
+  bridge.deliver();
+  expect(get('spatial-status').textContent).toContain(
+    `Capturing at tick ${before.tick + 2}. Coverage began at tick ${before.tick + 1} (capture enabled)`,
+  );
+  await loadText('{}');
+  bridge.deliver();
+  expect(get('spatial-status').textContent).toContain(`Coverage began at tick ${before.tick + 1}`);
+  click('reset');
+  bridge.deliver();
+  expect(get('spatial-status').textContent).toContain(
+    'Coverage began at tick 0 (world reset or import cleared earlier evidence)',
+  );
+  toggle.checked = false;
+  toggle.dispatchEvent(new Event('change'));
+  bridge.deliver();
+  expect(get('spatial-status').textContent).toContain('Capture off');
+  expect(get('spatial-windows').childElementCount).toBe(0);
+});
+
+it('validates and retains the opt-in spatial capture display flag', () => {
+  const display = { epoch: 7, enabled: false, visible: true, spatial: true };
+  expect(captureCommand({ type: 'start', settings: DEFAULTS, display }, DEFAULTS)).toMatchObject({
+    display,
+  });
+  expect(() =>
+    captureCommand(
+      { type: 'start', settings: DEFAULTS, display: { ...display, spatial: false } },
+      DEFAULTS,
+    ),
+  ).toThrow('Invalid initial settings or display.');
+});
+
 it('validates and retains the opt-in ecological roles display flag', () => {
   const display = { epoch: 7, enabled: false, visible: true, roles: true };
   expect(captureCommand({ type: 'start', settings: DEFAULTS, display }, DEFAULTS)).toMatchObject({

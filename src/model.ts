@@ -422,6 +422,7 @@ export type WorldPresentation = Pick<Frame, 'stats' | 'climate' | 'offset' | 'te
   selectedBiologicalShade?: import('./biological-shade').BiologicalShadeExposure;
   nutrientCycle?: import('./nutrients').NutrientSummary;
   roles?: import('./roles').RoleSnapshot;
+  spatial?: import('./spatial').SpatialSummary;
   lifeHistory?: LifeHistoryLog;
   mutationPolicy: MutationPolicy;
   lineage?: LineagePresentation;
@@ -436,6 +437,7 @@ export type HabitatFrame = Omit<Frame, 'telemetry' | 'interventions'>;
 export interface DisplayView {
   neural?: true;
   roles?: true;
+  spatial?: true;
   lineage?: true;
   epoch: number;
   enabled: boolean;
