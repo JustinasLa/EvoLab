@@ -51,6 +51,7 @@ not a calibrated biological model.
 - [Optional nutrient cycle: units, costs, bounds and compatibility](docs/nutrient-cycle.md)
 - [Optional biological shade: timing, tradeoffs and provenance](docs/biological-shade.md)
 - [Optional energy reserves and dormancy: traits, costs and persistence](docs/dormancy.md)
+- [Neural ablation masks: mask types, ties, costs and target scope](docs/neural-ablation.md)
 - [Spatial event capture: bins, windows, event locations and bounds](docs/spatial-events.md)
 
 ## Tests and coverage
