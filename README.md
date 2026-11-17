@@ -53,6 +53,7 @@ not a calibrated biological model.
 - [Optional energy reserves and dormancy: traits, costs and persistence](docs/dormancy.md)
 - [Automatic local recovery snapshots: capture, bounds and multi-tab ownership](docs/recovery.md)
 - [Neural ablation masks: mask types, ties, costs and target scope](docs/neural-ablation.md)
+- [Single-blueprint assay fixtures: recipes, budgets and outcomes](docs/assay-fixtures.md)
 
 ## Tests and coverage
 
