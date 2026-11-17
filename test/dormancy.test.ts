@@ -325,6 +325,33 @@ describe('bounded inherited dormancy', () => {
     expect(parseBlueprint(JSON.stringify({ ...blueprint, version: 5 })).genome).toEqual(design);
   });
 
+  it('records no neural decisions while dormant and resumes observation after paid waking', () => {
+    const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
+    const design = genome(true, 5);
+    design.tempo = 2;
+    design.controller = newController();
+    design.controller.biases[5] = 1;
+    const organism = world.spawn(design, 60, 60)!;
+    organism.energy = 20;
+    organism.reserves!.stored = 12;
+    world.selectNeural(organism.id, true);
+    world.shock('heat');
+    world.eventUntil = 3;
+    advance(world, 2);
+    expect(organism.reserves!.dormant).toBe(true);
+    expect(world.neuralObservation()).toMatchObject({
+      status: 'awaiting-evaluation',
+      decisions: [],
+    });
+    world.step();
+    expect(organism.reserves!.dormant).toBe(false);
+    world.step();
+    const observed = world.neuralObservation()!;
+    expect(observed.status).toBe('observed');
+    expect(observed.decisions.map((decision) => decision.tick)).toEqual([world.tick]);
+    expect(observed.decisions[0].result).toBe('accepted');
+  });
+
   it('suspends neural actions during dormancy and preserves paid waking and joint inheritance', () => {
     const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
     const design = genome(true, 5);
