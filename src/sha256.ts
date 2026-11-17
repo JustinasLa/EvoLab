@@ -1,4 +1,5 @@
-// Synchronous SHA-256 (FIPS 180-4) for fixture provenance checks in workers and tests.
+// Synchronous FIPS 180-4 SHA-256, so provenance hashing works in workers and
+// non-secure browser contexts where `crypto.subtle` is unavailable.
 const K = new Uint32Array([
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
   0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -10,54 +11,61 @@ const K = new Uint32Array([
   0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ]);
 
+const rotate = (value: number, bits: number): number => (value >>> bits) | (value << (32 - bits));
+
+/** Lower-case hexadecimal SHA-256 digest of the UTF-8 encoding of `text`. */
 export function sha256(text: string): string {
-  const bytes = new TextEncoder().encode(text),
-    blocks = Math.ceil((bytes.length + 9) / 64),
-    data = new Uint8Array(blocks * 64),
-    view = new DataView(data.buffer),
-    words = new Uint32Array(64),
-    hash = new Uint32Array([
-      0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-      0x5be0cd19,
-    ]);
-  data.set(bytes);
-  data[bytes.length] = 0x80;
-  view.setUint32(data.length - 8, Math.floor(bytes.length / 0x20000000));
-  view.setUint32(data.length - 4, (bytes.length * 8) >>> 0);
-  const rotate = (value: number, bits: number) => (value >>> bits) | (value << (32 - bits));
-  for (let block = 0; block < data.length; block += 64) {
+  const bytes = new TextEncoder().encode(text);
+  const length = Math.ceil((bytes.length + 9) / 64) * 64;
+  const padded = new Uint8Array(length);
+  padded.set(bytes);
+  padded[bytes.length] = 0x80;
+  const view = new DataView(padded.buffer);
+  view.setUint32(length - 8, Math.floor(bytes.length / 0x20000000));
+  view.setUint32(length - 4, (bytes.length * 8) >>> 0);
+  const hash = new Uint32Array([
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+  ]);
+  const words = new Uint32Array(64);
+  for (let block = 0; block < length; block += 64) {
     for (let i = 0; i < 16; i++) words[i] = view.getUint32(block + i * 4);
     for (let i = 16; i < 64; i++) {
-      const a = words[i - 15],
-        b = words[i - 2];
+      const low = words[i - 15],
+        high = words[i - 2];
       words[i] =
         words[i - 16] +
-        (rotate(a, 7) ^ rotate(a, 18) ^ (a >>> 3)) +
+        (rotate(low, 7) ^ rotate(low, 18) ^ (low >>> 3)) +
         words[i - 7] +
-        (rotate(b, 17) ^ rotate(b, 19) ^ (b >>> 10));
+        (rotate(high, 17) ^ rotate(high, 19) ^ (high >>> 10));
     }
     let [a, b, c, d, e, f, g, h] = hash;
     for (let i = 0; i < 64; i++) {
       const first =
-          (h +
-            (rotate(e, 6) ^ rotate(e, 11) ^ rotate(e, 25)) +
-            ((e & f) ^ (~e & g)) +
-            K[i] +
-            words[i]) >>>
-          0,
-        second =
-          ((rotate(a, 2) ^ rotate(a, 13) ^ rotate(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) >>> 0;
+        (h +
+          (rotate(e, 6) ^ rotate(e, 11) ^ rotate(e, 25)) +
+          ((e & f) ^ (~e & g)) +
+          K[i] +
+          words[i]) |
+        0;
+      const second =
+        ((rotate(a, 2) ^ rotate(a, 13) ^ rotate(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
       h = g;
       g = f;
       f = e;
-      e = (d + first) >>> 0;
+      e = (d + first) | 0;
       d = c;
       c = b;
       b = a;
-      a = (first + second) >>> 0;
+      a = (first + second) | 0;
     }
-    const next = [a, b, c, d, e, f, g, h];
-    for (let i = 0; i < 8; i++) hash[i] += next[i];
+    hash[0] += a;
+    hash[1] += b;
+    hash[2] += c;
+    hash[3] += d;
+    hash[4] += e;
+    hash[5] += f;
+    hash[6] += g;
+    hash[7] += h;
   }
-  return [...hash].map((word) => word.toString(16).padStart(8, '0')).join('');
+  return Array.from(hash, (word) => word.toString(16).padStart(8, '0')).join('');
 }
