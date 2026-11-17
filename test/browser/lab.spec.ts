@@ -2888,7 +2888,10 @@ for (const version of [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 1
                                     : version === 17
                                       ? { ...current, version: 17 as const }
                                       : version === 18
-                                        ? { ...current, version: 18 as const }
+                                        ? (({ biologicalShade: _mode, ...v18 }) => ({
+                                            ...v18,
+                                            version: 18 as const,
+                                          }))(current)
                                         : current;
     if (version >= 8 && version < 15 && 'lineageArchive' in candidate)
       candidate.lineageArchive = historicalArchive(candidate.lineageArchive);
