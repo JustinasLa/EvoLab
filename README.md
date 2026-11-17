@@ -28,6 +28,7 @@ lineages spread by surviving and producing descendants.
 - **Inspect neural decisions** — open the selected organism’s Neural activity panel for actual inputs, hidden/output activations, action attempts and incurred costs, with an accessible network, exact tables and up to 12 observed decisions. Stale, unavailable and pruned evidence is explicit; subsequent meals are not causal explanations.
 - **Inspect inherited sight** — active reactions can mutate at birth; inspect the selected organism’s actual last rays, occlusions and chosen direction with its observation tick.
 - **Mutation controls** — retain legacy birth mutation by default or opt into relative weights for anatomy, climate traits, tempo and active reactions; apply drafts explicitly and save their manual history.
+- **Inherited life histories** — explicitly enable bounded maturity, offspring investment and maintenance traits; longer life costs upkeep and slower reproduction, and every birth remains parent-funded. Inspect actual payments, mutation pairs and retained maturity/death outcomes.
 - **Keep inherited designs** — standalone blueprints preserve complete anatomy, traits and reactions; existing passive designs and ordinary presets retain legacy steering.
 - **Inspect the survivors** — follow population, dominant lineages, anatomy, energy, offspring and recent lineage ancestry.
 - **Measure ecological roles** — open Measured ecological roles to observe actual photosynthesis, food intake and stinger transfers in fixed 300-tick windows, with mixed strategies, bounded lineage/interaction tables and explicit unknown food origins. Session-only evidence resets on world replacement and is not part of world saves or measurement exports.
@@ -42,6 +43,7 @@ not a calibrated biological model.
 
 ## Documentation
 
+- [Inherited life histories: tradeoffs, payments, evidence and compatibility](docs/life-history.md)
 - [Optional nutrient cycle: units, costs, bounds and compatibility](docs/nutrient-cycle.md)
 - [Optional energy reserves and dormancy: traits, costs and persistence](docs/dormancy.md)
 

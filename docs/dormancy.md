@@ -55,6 +55,11 @@ blocked-action observation. Sleepers still age, die of age or energy
 exhaustion, occupy their footprint and keep cell-local armor and
 vulnerability. Death discards stored reserves; corpses gain no extra food.
 
+With optional life history, sleepers keep its age limit and record maturity
+normally, and its inherited maintenance is paid in full while dormant (only the
+ordinary climate-inclusive upkeep is reduced). Reserves can fund that
+maintenance like any other upkeep.
+
 With the optional nutrient cycle enabled, the 1,000 E per-organism cap counts
 liquid energy plus reserves. Reserves hold energy only, not nutrient matter.
 See [nutrient-cycle.md](nutrient-cycle.md).
@@ -66,12 +71,12 @@ See [nutrient-cycle.md](nutrient-cycle.md).
 - Telemetry intervals and the pending interval carry an optional reserve ledger:
   deposited, withdrawn, conversion loss, maintenance, entry, exit and discarded
   stores. These are separate from environmental intake and ordinary upkeep.
-- Blueprint format 6 and the local library keep traits only. Native world
-  format 18 keeps exact living reserves and dormant state and validates them
-  completely before replacement. World 17 and earlier and blueprint 5 and
+- Blueprint format 7 and the local library keep traits only. Native world
+  format 19 keeps exact living reserves and dormant state and validates them
+  completely before replacement. World 18 and earlier and blueprint 6 and
   earlier remain accepted without enabling dormancy; unrecognized reserve-named
   fields on organisms without the opt-in stay inert. Measurement format 11 and
-  experiment rules 10 identify this composed ruleset.
+  experiment rules 11 identify this composed ruleset.
 
 ## Limitations
 

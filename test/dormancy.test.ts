@@ -71,7 +71,7 @@ describe('bounded inherited dormancy', () => {
       copy = cloneGenome(source);
     expect(copy).toEqual(source);
     expect(copy.dormancy).not.toBe(source.dormancy);
-    expect(validGenome(source, true, true, true, false)).toBe(false);
+    expect(validGenome(source, true, true, true, true, false)).toBe(false);
     expect(validGenome({ ...source, dormancy: undefined })).toBe(false);
     copy.dormancy = Object.fromEntries(
       Object.entries(copy.dormancy!).reverse(),
@@ -321,8 +321,38 @@ describe('bounded inherited dormancy', () => {
     const blueprint = JSON.parse(
       serializeBlueprint({ name: 'Neural', description: '', genome: design }),
     );
-    expect(blueprint.version).toBe(6);
+    expect(blueprint.version).toBe(7);
     expect(parseBlueprint(JSON.stringify({ ...blueprint, version: 5 })).genome).toEqual(design);
+  });
+
+  it('keeps life-history maturity, full maintenance and extended age limits while dormant', () => {
+    const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
+    const design: Genome = {
+      ...genome(),
+      lifeHistory: { version: 1, maturity: 0, investment: 0, maintenance: 2 },
+    };
+    const organism = world.spawn(design, 60, 60)!;
+    organism.energy = 4;
+    organism.reserves!.stored = 20;
+    organism.age = 15;
+    world.shock('heat');
+    world.step();
+    expect(organism.reserves!.dormant).toBe(true);
+    const log = world.save().lifeHistoryLog;
+    expect(log.events).toMatchObject([{ kind: 'mature', organismId: organism.id, age: 16 }]);
+    expect(log.maintenanceSpent).toBeCloseTo(0.008);
+    organism.energy = 0.01;
+    world.step();
+    expect(organism.energy).toBeCloseTo(1, 9);
+    organism.age = 1000;
+    world.step();
+    expect(world.organisms.has(organism.id)).toBe(true);
+    expect(organism.reserves!.dormant).toBe(true);
+    organism.age = 1575;
+    world.step();
+    expect(world.organisms.has(organism.id)).toBe(false);
+    expect(world.lastDeath).toMatchObject({ cause: 'age' });
+    expect(world.save().lifeHistoryLog.events.at(-1)).toMatchObject({ kind: 'age' });
   });
 
   it('records no neural decisions while dormant and resumes observation after paid waking', () => {
@@ -431,8 +461,8 @@ describe('bounded inherited dormancy', () => {
       expect(result.treatment.state).toBe(JSON.stringify(direct.save()));
       expect(JSON.parse(result.recipe).rules).toEqual({
         id: 'evolab-drift-cellular',
-        version: 10,
-        worldVersion: 18,
+        version: 11,
+        worldVersion: 19,
       });
       const replay = createRecipeComparison(result.recipe);
       while (replay.advance(() => 0).tick < 6) {}
@@ -464,7 +494,7 @@ describe('bounded inherited dormancy', () => {
       const event = recorder.snapshot().events.at(-1)!;
       expect(event.kind).toBe('lineage-extinction');
       const evidence = recorder.replay(event.id);
-      expect(evidence.worldVersion).toBe(18);
+      expect(evidence.worldVersion).toBe(19);
       expect(world.telemetry.pending.reserves!.discarded).toBeGreaterThan(0);
       const tasks: (() => void)[] = [];
       const messages: ReplayResponse[] = [];

@@ -136,27 +136,36 @@ describe('finite nutrient ecology', () => {
     expect(world.save()).toEqual(after);
     check(world);
   });
-  it('preserves native nutrient17 continuation while rejecting dormancy activation under that schema', () => {
-    const world = habitat(true);
-    for (let tick = 0; tick < 35; tick++) world.step();
-    const energy = summary(world).energy;
-    world.organisms.values().next().value!.reserves = { stored: 9999, dormant: true };
-    expect(summary(world).energy).toBe(energy);
-    const native17 = { ...world.save(), version: 17 };
-    const migrated = Ecosystem.load(JSON.stringify(native17));
-    expect(migrated.save()).toEqual(world.save());
-    for (let tick = 0; tick < 40; tick++) {
-      world.step();
-      migrated.step();
-    }
-    expect(migrated.save()).toEqual(world.save());
-    native17.organisms[0].genome.dormancy = { ...DEFAULT_DORMANCY };
-    native17.organisms[0].reserves = { stored: 0, dormant: false };
-    expect(() => Ecosystem.load(JSON.stringify(native17))).toThrow('organism');
-    const missing = { ...world.save(), version: 17 } as any;
-    delete missing.nutrientCycle;
-    expect(() => Ecosystem.load(JSON.stringify(missing))).toThrow('nutrient');
-  });
+  it.each([17, 18] as const)(
+    'preserves native nutrient%i continuation while rejecting dormancy activation under that schema',
+    (version) => {
+      const world = habitat(true);
+      for (let tick = 0; tick < 35; tick++) world.step();
+      const energy = summary(world).energy;
+      world.organisms.values().next().value!.reserves = { stored: 9999, dormant: true };
+      expect(summary(world).energy).toBe(energy);
+      const { lifeHistoryLog, ...rest } = world.save();
+      const prior: any =
+        version === 17 ? { ...rest, version } : { ...rest, lifeHistoryLog, version };
+      const project = (target: Ecosystem) => {
+        const { lifeHistoryLog: _log, ...ecology } = target.save();
+        return ecology;
+      };
+      const migrated = Ecosystem.load(JSON.stringify(prior));
+      expect(project(migrated)).toEqual(project(world));
+      for (let tick = 0; tick < 40; tick++) {
+        world.step();
+        migrated.step();
+      }
+      expect(project(migrated)).toEqual(project(world));
+      prior.organisms[0].genome.dormancy = { ...DEFAULT_DORMANCY };
+      prior.organisms[0].reserves = { stored: 0, dormant: false };
+      expect(() => Ecosystem.load(JSON.stringify(prior))).toThrow('organism');
+      const missing = { ...world.save(), version } as any;
+      delete missing.nutrientCycle;
+      expect(() => Ecosystem.load(JSON.stringify(missing))).toThrow('nutrient');
+    },
+  );
   it('replays full nutrient checkpoints through composed batch-intervention provenance', () => {
     const world = habitat(true),
       initial = JSON.stringify(world.save());
@@ -174,7 +183,7 @@ describe('finite nutrient ecology', () => {
     expect(result.control.state).not.toEqual(result.treatment.state);
     expect(JSON.parse(result.recipe).rules).toEqual({
       id: 'evolab-drift-cellular',
-      version: 10,
+      version: 11,
       worldVersion: WORLD_VERSION,
     });
     const replay = createRecipeComparison(result.recipe);

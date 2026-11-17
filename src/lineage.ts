@@ -1,3 +1,4 @@
+import { sameLifeHistory } from './life-history';
 import { birthObservation, validBirthEvent, type BirthEvent } from './mutation-evidence';
 import { sameController } from './neural';
 import {
@@ -75,6 +76,7 @@ function inherited(genome: Genome): Genome {
 }
 export function sameInherited(first: Genome, second: Genome): boolean {
   return (
+    sameLifeHistory(first.lifeHistory, second.lifeHistory) &&
     sameDormancy(first.dormancy, second.dormancy) &&
     Object.is(first.mutationPropensity, second.mutationPropensity) &&
     sameController(first.controller, second.controller) &&
@@ -243,6 +245,7 @@ export class LineageArchive {
     modern = true,
     nextId = 1e9,
     neural = true,
+    lifeHistory = true,
     dormancy = true,
   ): LineageArchive {
     const state = validateArchive(
@@ -256,6 +259,7 @@ export class LineageArchive {
       modern,
       nextId,
       neural,
+      lifeHistory,
       dormancy,
     );
     const archive = new LineageArchive(state.originKind, state.originTick);
@@ -292,6 +296,7 @@ function validateArchive(
   modern: boolean,
   nextId: number,
   neural: boolean,
+  lifeHistory: boolean,
   dormancy: boolean,
 ): LineageArchiveState {
   const version = (value as LineageArchiveState | null)?.version;
@@ -391,7 +396,7 @@ function validateArchive(
             ? exact(row.foundingGenome, ['cells', 'preference', 'tolerance', 'tempo']) &&
               validHistoricalGenome(row.foundingGenome) &&
               row.foundingGenome.cells.every((cell) => exact(cell, ['x', 'y', 'type']))
-            : validGenome(row.foundingGenome, active, propensity, neural, dormancy)),
+            : validGenome(row.foundingGenome, active, propensity, neural, lifeHistory, dormancy)),
       );
       const group = physical.get(row.id);
       if (historical)
@@ -419,7 +424,7 @@ function validateArchive(
     if (event?.kind === 'reproduction') {
       requireArchive(
         state.version === 2 &&
-          validBirthEvent(event, nextSpecies, nextId, neural, dormancy) &&
+          validBirthEvent(event, nextSpecies, nextId, neural, lifeHistory, dormancy) &&
           integer(event.tick, state.mutationOriginTick! + 1, tick) &&
           event.tick >= eventTick,
       );

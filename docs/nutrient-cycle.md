@@ -47,15 +47,16 @@ are deferred rather than represented by an uncosted energy source.
 
 ## Observation and persistence
 
-Native world format 18 extends nutrient world17 with optional inherited dormancy
-and exact living reserves. World17 introduced the required `nutrientCycle`
-field (`null` means disabled) and remains accepted without activating dormancy.
-Native16 controllers and blocked-action state remain strict and retain exact
-continuation on migration. Blueprint format6 admits dormancy traits, while nutrient
-mode still belongs to the world, not an organism blueprint. Experiment rules10 and
-measurement format11 identify this composed ruleset. Predecessor world17 budgets
-retain their original bounds and validation; reserve state is never interpreted
-under that schema.
+Native world format 17 extends neural world16 with a required `nutrientCycle`
+field (`null` means disabled). Native16 controllers and blocked-action state
+remain strict and retain exact continuation on migration. Nutrient mode belongs
+to the world rather than an organism blueprint; life history separately extends
+blueprint5 to blueprint6, and dormancy extends blueprint6 to blueprint7.
+World17 retains the original nutrient contract. World18 adds optional life history and
+its bounded outcome log without relaxing nutrient validation. World19 adds optional
+inherited dormancy and exact living reserves; world17 and world18 remain accepted
+without activating dormancy, and their budgets keep their original bounds and
+validation. Experiment rules11 and measurement format11 identify the composed ruleset.
 
 Resource views expose both planes, pool totals in N, current stored energy in E,
 and the latest completed tick's energy balance (before + sunlight = after +
