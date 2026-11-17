@@ -3541,7 +3541,7 @@ test('lineage v5 unknown history survives real extinction, native v6 reload and 
   organism.age = 975;
   const fixture = legacyV5(source.save()),
     input = Buffer.from(JSON.stringify(fixture));
-  expect(fixture.version).toBe(6);
+  expect(fixture.version).toBe(5);
   expect(fixture).not.toHaveProperty('lineageArchive');
   const reference = Ecosystem.load(input.toString());
   reference.step();

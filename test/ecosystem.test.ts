@@ -1,5 +1,5 @@
 import { assertLegacyLifeHistory } from './fixtures/life-history';
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -2745,13 +2745,21 @@ describe('measured thermal adaptation', () => {
     });
   });
 
-  it.each([30, 65, 5430])(
-    'strictly migrates every v3 scalar and pending flow at tick %i',
-    (tick) => {
-      const world = new Ecosystem();
-      advance(world, tick);
-      world.paint('erase', WIDTH / 2, HEIGHT / 2, 0, founder(0));
-      const legacy = oldTelemetry(world),
+  describe('v3 telemetry migration', () => {
+    const v3Ticks = [30, 65, 5430] as const,
+      v3Worlds = new Map<number, { world: Ecosystem; legacy: ReturnType<typeof oldTelemetry> }>();
+    // One shared erased world per tick keeps the long tick-5430 run out of each test body.
+    beforeAll(() => {
+      for (const tick of v3Ticks) {
+        const world = new Ecosystem();
+        advance(world, tick);
+        world.paint('erase', WIDTH / 2, HEIGHT / 2, 0, founder(0));
+        v3Worlds.set(tick, { world, legacy: oldTelemetry(world) });
+      }
+    });
+
+    it.each(v3Ticks)('strictly migrates every v3 scalar and pending flow at tick %i', (tick) => {
+      const { world, legacy } = v3Worlds.get(tick)!,
         restored = Ecosystem.load(JSON.stringify(legacy)),
         saved = restored.save();
       expect(saved.telemetry.adaptationOriginTick).toBe(tick);
@@ -2791,6 +2799,10 @@ describe('measured thermal adaptation', () => {
       advance(restored, 100);
       advance(roundtrip, 100);
       expect(roundtrip.save()).toEqual(restored.save());
+    });
+
+    it.each(v3Ticks)('rejects inconsistent v3 telemetry provenance at tick %i', (tick) => {
+      const { legacy } = v3Worlds.get(tick)!;
       for (const invalid of [
         { ...legacy, telemetry: { ...legacy.telemetry, version: 2 } },
         { ...legacy, telemetry: { ...legacy.telemetry, adaptationOriginTick: tick } },
@@ -2803,8 +2815,8 @@ describe('measured thermal adaptation', () => {
         },
       ])
         expect(() => Ecosystem.load(JSON.stringify(invalid))).toThrow('telemetry');
-    },
-  );
+    });
+  });
 
   it('rejects all malformed adaptation/provenance shapes including a corrupt last record', () => {
     const world = new Ecosystem();

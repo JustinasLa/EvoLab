@@ -47,6 +47,13 @@ function births(world: Ecosystem) {
     .events.filter((event): event is BirthEvent => event.kind === 'reproduction');
 }
 
+// All 27 explicit maturity/investment/maintenance strategies.
+const STRATEGIES = [0, 1, 2].flatMap((maturity) =>
+  [0, 1, 2].flatMap((investment) =>
+    [0, 1, 2].map((maintenance) => [maturity, investment, maintenance] as const),
+  ),
+);
+
 describe('life history with finite nutrient ecology', () => {
   it('continues frozen native nutrient17 saves without changing neural RNG, journals, roles or material', () => {
     for (const fixture of captured.outcomes) {
@@ -80,38 +87,34 @@ describe('life history with finite nutrient ecology', () => {
     }
   });
 
-  it('conserves finite material and pays grants and overhead once across all 27 strategies', () => {
-    for (const maturity of [0, 1, 2])
-      for (const investment of [0, 1, 2])
-        for (const maintenance of [0, 1, 2]) {
-          const { world, parent, rules } = scene({ version: 1, maturity, investment, maintenance });
-          const before = check(world);
-          world.step();
-          const after = check(world),
-            event = births(world)[0];
-          expect(world.births).toBe(1);
-          const child = world.organisms.get(event.childOrganismId!)!;
-          expect(child.energy).toBe(rules.grant(1));
-          expect(event.payment).toEqual({
-            parentAge: parent.age,
-            parentPaid: 100 - 0.012 - rules.maintenance - parent.energy,
-            offspringGranted: child.energy,
-            overhead: rules.overhead,
-          });
-          expect(event.payment!.parentPaid).toBeCloseTo(child.energy + rules.overhead, 12);
-          expect(after.biomass).toBe(before.biomass + 1);
-          expect(after.minerals).toBe(before.minerals - 1);
-          expect(after.detritus).toBe(0);
-          expect(after.budget!.sunlight).toBe(0);
-          expect(after.budget!.before).toBe(100);
-          expect(after.budget!.after).toBeCloseTo(parent.energy + child.energy, 12);
-          expect(after.budget!.dissipated).toBeCloseTo(
-            0.012 + rules.maintenance + rules.overhead,
-            12,
-          );
-          expect(world.save().lifeHistoryLog.maintenanceSpent).toBeCloseTo(rules.maintenance, 12);
-        }
-  });
+  it.each(STRATEGIES)(
+    'conserves finite material and pays grants and overhead once for maturity %i, investment %i, maintenance %i',
+    (maturity, investment, maintenance) => {
+      const { world, parent, rules } = scene({ version: 1, maturity, investment, maintenance });
+      const before = check(world);
+      world.step();
+      const after = check(world),
+        event = births(world)[0];
+      expect(world.births).toBe(1);
+      const child = world.organisms.get(event.childOrganismId!)!;
+      expect(child.energy).toBe(rules.grant(1));
+      expect(event.payment).toEqual({
+        parentAge: parent.age,
+        parentPaid: 100 - 0.012 - rules.maintenance - parent.energy,
+        offspringGranted: child.energy,
+        overhead: rules.overhead,
+      });
+      expect(event.payment!.parentPaid).toBeCloseTo(child.energy + rules.overhead, 12);
+      expect(after.biomass).toBe(before.biomass + 1);
+      expect(after.minerals).toBe(before.minerals - 1);
+      expect(after.detritus).toBe(0);
+      expect(after.budget!.sunlight).toBe(0);
+      expect(after.budget!.before).toBe(100);
+      expect(after.budget!.after).toBeCloseTo(parent.energy + child.energy, 12);
+      expect(after.budget!.dissipated).toBeCloseTo(0.012 + rules.maintenance + rules.overhead, 12);
+      expect(world.save().lifeHistoryLog.maintenanceSpent).toBeCloseTo(rules.maintenance, 12);
+    },
+  );
 
   it('keeps three mineral-starved placement attempts free of grants or partial mineral debits', () => {
     const { world, parent, rules } = scene();
