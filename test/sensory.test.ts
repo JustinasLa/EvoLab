@@ -430,7 +430,7 @@ describe('successor envelopes preserve permanent passive meaning', () => {
       const blueprint = parseBlueprint(
         serializeBlueprint({ name: 'Active', description: '', genome: source }),
       );
-      expect(blueprint.version).toBe(7);
+      expect(blueprint.version).toBe(8);
       expect(blueprint.genome).toEqual(source);
       const { world } = scene(body, behavior.reactions);
       expect(Ecosystem.load(JSON.stringify(world.save())).save()).toEqual(world.save());

@@ -30,6 +30,7 @@ import { restoreHistoricalWorld } from './fixtures/sensory-legacy';
 import { restoreMain8 } from './fixtures/sensory-main8';
 import { legacyV9 } from './fixtures/telemetry';
 import { createComparison, createRecipeComparison } from '../src/experiments';
+import { DEFAULT_DORMANCY } from '../src/dormancy';
 
 const genome = (type: 3 | 4 | 5 | 6 = 4): Genome => ({
   cells: [{ x: 0, y: 0, type }],
@@ -53,6 +54,118 @@ function check(world: Ecosystem) {
 }
 
 describe('finite nutrient ecology', () => {
+  it('accounts for reserve transfers and paid transitions without creating nutrient matter or energy', () => {
+    const world = habitat();
+    const organism = world.spawn(
+      { ...genome(3), tolerance: 0.12, dormancy: { ...DEFAULT_DORMANCY } },
+      40,
+      40,
+    )!;
+    organism.energy = 20;
+    organism.reserves!.stored = 8;
+    const initial = summary(world);
+    expect(initial.energy).toBe(28);
+    world.step();
+    const flow = world.telemetry.pending.reserves!;
+    expect(flow.deposited).toBeCloseTo(0.2);
+    expect(world.nutrientCycle!.budget!.before).toBe(28);
+    expect(world.nutrientCycle!.budget!.dissipated).toBeCloseTo(
+      flow.conversionSpent + flow.maintenanceSpent + world.telemetry.pending.energy.upkeepSpent,
+    );
+    world.shock('heat');
+    world.step();
+    expect(organism.reserves!.dormant).toBe(true);
+    world.eventUntil = world.tick;
+    world.step();
+    expect(organism.reserves!.dormant).toBe(false);
+    expect(flow.entrySpent).toBe(0.2);
+    expect(flow.exitSpent).toBe(0.3);
+    expect(summary(world).total).toBe(initial.total);
+    expect(summary(world).energy).toBeLessThan(initial.energy);
+    check(world);
+  });
+  it('bounds combined liquid and reserve energy without weakening nutrient import validation', () => {
+    const world = habitat();
+    const body = { ...genome(3), dormancy: { ...DEFAULT_DORMANCY, capacity: 64 } };
+    const organism = world.spawn(body, 40, 40)!;
+    organism.energy = 936;
+    organism.reserves!.stored = 64;
+    check(world);
+    const invalid = world.save();
+    invalid.organisms[0].energy = 937;
+    expect(() => Ecosystem.load(JSON.stringify(invalid))).toThrow('energy bound');
+    world.paint('food', 41, 40, 0, body);
+    world.step();
+    expect(organism.energy + organism.reserves!.stored).toBe(ORGANISM_ENERGY_LIMIT);
+    expect(summary(world).energy).toBe(ORGANISM_ENERGY_LIMIT);
+    expect(world.nutrientCycle!.budget!.dissipated).toBeCloseTo(2.2);
+    check(world);
+  });
+  it('funds joint-trait births and discards reserve energy without duplicating corpse matter', () => {
+    const world = habitat();
+    const body = {
+      ...genome(3),
+      controller: newController(),
+      dormancy: { ...DEFAULT_DORMANCY },
+    };
+    const parent = world.spawn(body, 40, 40)!;
+    parent.age = 32;
+    parent.energy = 100;
+    parent.reserves!.stored = 12;
+    world.step();
+    const child = [...world.organisms.values()].find((organism) => organism.id !== parent.id)!;
+    expect(child.reserves).toEqual({ stored: 0, dormant: false });
+    expect(child.neuralBlocked).toBe(false);
+    expect(child.genome).toEqual(body);
+    expect(summary(world).biomass).toBe(2);
+    expect(world.nutrientCycle!.budget!.sunlight).toBe(0);
+    expect(summary(world).energy).toBeLessThan(112);
+    check(world);
+    world.kill(child, 'manual');
+    parent.age = 975;
+    parent.reserves!.dormant = true;
+    world.shock('heat');
+    const before = summary(world).energy;
+    world.step();
+    expect(world.organisms.size).toBe(0);
+    expect(world.nutrientCycle!.budget!.dissipated).toBeCloseTo(before);
+    expect(summary(world)).toMatchObject({ energy: 0, detritus: 2, food: 0 });
+    expect(world.telemetry.pending.reserves!.discarded).toBeGreaterThan(0);
+    const after = world.save();
+    world.kill(parent, 'age');
+    expect(world.save()).toEqual(after);
+    check(world);
+  });
+  it.each([17, 18, 19, 20] as const)(
+    'preserves native nutrient%i continuation while rejecting dormancy activation under that schema',
+    (version) => {
+      const world = habitat(true);
+      for (let tick = 0; tick < 35; tick++) world.step();
+      const energy = summary(world).energy;
+      world.organisms.values().next().value!.reserves = { stored: 9999, dormant: true };
+      expect(summary(world).energy).toBe(energy);
+      const { lifeHistoryLog, ...rest } = world.save();
+      const prior: any =
+        version === 17 ? { ...rest, version } : { ...rest, lifeHistoryLog, version };
+      const project = (target: Ecosystem) => {
+        const { lifeHistoryLog: _log, ...ecology } = target.save();
+        return ecology;
+      };
+      const migrated = Ecosystem.load(JSON.stringify(prior));
+      expect(project(migrated)).toEqual(project(world));
+      for (let tick = 0; tick < 40; tick++) {
+        world.step();
+        migrated.step();
+      }
+      expect(project(migrated)).toEqual(project(world));
+      prior.organisms[0].genome.dormancy = { ...DEFAULT_DORMANCY };
+      prior.organisms[0].reserves = { stored: 0, dormant: false };
+      expect(() => Ecosystem.load(JSON.stringify(prior))).toThrow('organism');
+      const missing = { ...world.save(), version } as any;
+      delete missing.nutrientCycle;
+      expect(() => Ecosystem.load(JSON.stringify(missing))).toThrow('nutrient');
+    },
+  );
   it('replays full nutrient checkpoints through composed batch-intervention provenance', () => {
     const world = habitat(true),
       initial = JSON.stringify(world.save());
@@ -70,7 +183,7 @@ describe('finite nutrient ecology', () => {
     expect(result.control.state).not.toEqual(result.treatment.state);
     expect(JSON.parse(result.recipe).rules).toEqual({
       id: 'evolab-drift-cellular',
-      version: 12,
+      version: 13,
       worldVersion: WORLD_VERSION,
     });
     const replay = createRecipeComparison(result.recipe);

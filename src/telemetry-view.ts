@@ -584,6 +584,16 @@ export function createTelemetryView(root: HTMLElement) {
       );
       for (const [name, field] of flows)
         rows.push([`${name} over this interval`, String(selected.energy[field])]);
+      if (selected.reserves) {
+        for (const [field, amount] of Object.entries(selected.reserves))
+          rows.push([`Reserves: ${field} over this interval`, String(amount)]);
+        details.append(
+          element(
+            'p',
+            'Reserve deposits and withdrawals are internal transfers, not intake. Conversion, reserve maintenance, entry and exit are additional costs; reduced dormant upkeep remains in combined upkeep.',
+          ),
+        );
+      }
       rows.push([
         'Climate upkeep (already included in combined upkeep)',
         String(selected.energy.climateUpkeepSpent),

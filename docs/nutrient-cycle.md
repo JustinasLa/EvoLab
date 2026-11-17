@@ -36,7 +36,11 @@ are deferred rather than represented by an uncosted energy source.
   gradient of at least two N. The four successive phases are even/odd horizontal
   and even/odd vertical pairs. Edges wrap; walls block decay/transport and retain
   their matter until cleared. Occupancy does not insulate soil. No RNG is used.
-- Enabled organisms retain at most 1,000 E each; excess is dissipated. Stings
+- Enabled organisms retain at most 1,000 E each, counting liquid energy plus any
+  explicitly enabled dormancy reserves; excess liquid energy is dissipated. Reserves
+  hold energy only, not additional nutrient matter. Their conversion, maintenance,
+  entry/exit costs and death losses enter the complete tick energy balance; internal
+  deposits and withdrawals are not energy intake. Stings
   cannot withdraw more positive energy than a victim holds, and retain 26% of
   the withdrawal. The rest is lost. Total stored energy is bounded by
   `1,000 * population limit + 2.2 * grid size`; decomposition creates no energy.
@@ -47,12 +51,17 @@ Native world format 17 extends neural world16 with a required `nutrientCycle`
 field (`null` means disabled). Native16 controllers and blocked-action state
 remain strict and retain exact continuation on migration. Nutrient mode belongs
 to the world rather than an organism blueprint; life history separately extends
-blueprint5 to blueprint6.
+blueprint5 to blueprint6, and dormancy extends blueprint7 to blueprint8.
 World17 retains the original nutrient contract. World18 adds optional life history and
 its bounded outcome log without relaxing nutrient validation. Experiment rules10 and
 measurement format10 identify the composed ruleset. World19, blueprint7, rules11 and
 measurement format11 keep the same `nutrientCycle` field and validation and add
-inherited senses; see [Evolving senses](evolving-senses.md).
+inherited senses; see [Evolving senses](evolving-senses.md). World20, rules12 and
+measurement format12 add optional biological shade; see
+[Biological shade](biological-shade.md). World21, blueprint8, rules13 and measurement
+format13 add optional inherited dormancy and exact living reserves; worlds 17–20 remain
+accepted without activating dormancy, and their budgets keep their original bounds and
+validation; see [dormancy](dormancy.md).
 
 Resource views expose both planes, pool totals in N, current stored energy in E,
 and the latest completed tick's energy balance (before + sunlight = after +

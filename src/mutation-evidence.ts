@@ -3,6 +3,7 @@ import {
   integer,
   exactDataRecord,
   finite,
+  sameDormancy,
   observedGenome,
   validGenome,
   type Genome,
@@ -54,8 +55,9 @@ function projection(
   neural: boolean,
   lifeHistory: boolean,
   senses: boolean,
+  dormancy: boolean,
 ): value is Genome {
-  if (!validGenome(value, true, true, neural, lifeHistory, senses)) return false;
+  if (!validGenome(value, true, true, neural, lifeHistory, senses, dormancy)) return false;
   const genome = value as Genome;
   return (
     Object.keys(genome).length ===
@@ -63,13 +65,15 @@ function projection(
         (genome.mutationPropensity === undefined ? 0 : 1) +
         (genome.lifeHistory ? 1 : 0) +
         (genome.controller ? 1 : 0) +
-        (genome.senses ? 1 : 0) && genome.cells.every((cell) => Object.keys(cell).length === 3)
+        (genome.senses ? 1 : 0) +
+        (genome.dormancy ? 1 : 0) && genome.cells.every((cell) => Object.keys(cell).length === 3)
   );
 }
 /** Numeric observations treat signed zeros equally, as ordinary Save JSON does. */
 export function inheritedDifference(parent: Genome, child: Genome): boolean {
   return (
     !sameLifeHistory(parent.lifeHistory, child.lifeHistory) ||
+    !sameDormancy(parent.dormancy, child.dormancy) ||
     parent.preference !== child.preference ||
     !sameController(parent.controller, child.controller) ||
     !sameSenses(parent.senses, child.senses) ||
@@ -172,6 +176,7 @@ export function validBirthEvent(
   neural = true,
   lifeHistory = true,
   senses = true,
+  dormancy = true,
 ): boolean {
   if (!Array.isArray(event.channels)) return false;
   const attempted = event.gate || event.channels.includes('propensity');
@@ -182,7 +187,7 @@ export function validBirthEvent(
     event.kind === 'reproduction' &&
     integer(event.id, 1, nextSpecies - 1) &&
     integer(event.parentOrganismId, 1, nextId - 1) &&
-    projection(event.parentGenome, neural, lifeHistory, senses) &&
+    projection(event.parentGenome, neural, lifeHistory, senses, dormancy) &&
     (!event.parentGenome.lifeHistory ||
       (event.payment !== undefined && (!event.gate || event.channels.includes('lifeHistory')))) &&
     typeof event.gate === 'boolean' &&
@@ -215,7 +220,8 @@ export function validBirthEvent(
       ? event.childOrganismId === null &&
         event.childLineageId === null &&
         event.placementAttempts === 3
-      : projection(event.childGenome, neural, lifeHistory, senses) &&
+      : projection(event.childGenome, neural, lifeHistory, senses, dormancy) &&
+        sameDormancy(event.parentGenome.dormancy, event.childGenome.dormancy) &&
         possibleChanges(event, event.childGenome) &&
         integer(event.childOrganismId, event.parentOrganismId + 1, nextId - 1) &&
         integer(event.childLineageId, event.id, nextSpecies - 1) &&

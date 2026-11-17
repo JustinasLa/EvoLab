@@ -338,7 +338,7 @@ describe('life-history schema and inspection', () => {
     }
     expect(loaded.save()).toEqual(world.save());
     const blueprint = serializeBlueprint({ name: 'life', description: '', genome: parent.genome });
-    expect(JSON.parse(blueprint).version).toBe(7);
+    expect(JSON.parse(blueprint).version).toBe(8);
     expect(parseBlueprint(blueprint).genome).toEqual(parent.genome);
     expect(cloneGenome(parent.genome).lifeHistory).not.toBe(parent.genome.lifeHistory);
     expect(observedGenome(parent.genome).lifeHistory).toEqual(parent.genome.lifeHistory);

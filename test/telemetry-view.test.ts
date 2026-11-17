@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { weightedMutation } from '../src/mutation';
+import { DEFAULT_DORMANCY } from '../src/dormancy';
 import { Ecosystem } from '../src/ecosystem';
 import { DEFAULTS, founder, type Frame, type WorldFileV3 } from '../src/model';
 import { markup } from '../src/view';
@@ -484,6 +485,17 @@ describe('bounded model-dependent telemetry presentation', () => {
     }
     expect(root.querySelector('path[stroke-dasharray="9 4"]')).not.toBeNull();
     expect(root.querySelector('path[stroke-dasharray="4 3"]')).not.toBeNull();
+  });
+
+  it('shows reserve transfers separately from intake and additional costs', () => {
+    const world = new Ecosystem({ ...DEFAULTS, mutation: 0, climate: 0 }, false);
+    world.spawn({ ...founder(0), dormancy: { ...DEFAULT_DORMANCY } }, 60, 60)!.energy = 40;
+    advance(world, 30);
+    show(world.frame());
+    choose('telemetry-view', 'energy');
+    expect(get('telemetry-details').textContent).toContain('Reserves: deposited');
+    expect(get('telemetry-details').textContent).toContain('internal transfers, not intake');
+    expect(get('telemetry-details').textContent).toContain('conversionSpent');
   });
 
   it('retains fixed-order six anatomy series and measured energy without diet inference', () => {

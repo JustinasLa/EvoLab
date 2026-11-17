@@ -42,7 +42,10 @@ export const createNutrients = (): NutrientCycle => ({
 });
 export function storedEnergy(organisms: Iterable<Organism>, food: Uint8Array): number {
   let energy = 0;
-  for (const organism of organisms) energy += Math.max(0, organism.energy);
+  for (const organism of organisms) {
+    energy += Math.max(0, organism.energy);
+    if (organism.genome.dormancy) energy += organism.reserves!.stored;
+  }
   return energy + food.reduce((total, value) => total + value, 0) * 2.2;
 }
 export function nutrientSummary(
@@ -148,7 +151,12 @@ export function validateNutrients(
   const living = [...organisms];
   if (
     nutrientSummary(cycle, living, food).total !== NUTRIENT_TOTAL ||
-    living.some((organism) => !finite(organism.energy, 0, ORGANISM_ENERGY_LIMIT))
+    living.some(
+      (organism) =>
+        !finite(organism.energy, 0, ORGANISM_ENERGY_LIMIT) ||
+        (organism.genome.dormancy &&
+          organism.energy + organism.reserves!.stored > ORGANISM_ENERGY_LIMIT),
+    )
   )
     throw new Error('Nutrient conservation or energy bound violated.');
 }
