@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { assertLegacyLifeHistory } from './fixtures/life-history';
+import { beforeAll, describe, it, expect } from 'vitest';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -133,6 +134,7 @@ describe('approved seeded terrain, opaque extension and exact continuation contr
       for (const tick of [0, 30, 90, 330, 1600]) {
         while (world.tick < tick) world.step();
         const {
+          lifeHistoryLog: _lifeHistoryLog,
           nutrientCycle,
           mutationPolicy,
           terrain,
@@ -141,6 +143,7 @@ describe('approved seeded terrain, opaque extension and exact continuation contr
           lineageArchive: _lineageArchive,
           ...snapshot
         } = world.save();
+        assertLegacyLifeHistory(world.save());
         snapshot.organisms = restoreHistoricalWorld(world.save()).organisms as any;
         expect(nutrientCycle).toBeNull();
         expect(mutationPolicy).toEqual({ version: 1, mode: 'legacy' });
@@ -538,7 +541,7 @@ describe('passive inherited sensory data and reversible compatibility', () => {
     const parsed = parseBlueprint(
       serializeBlueprint({ name: 'Stored only', description: '', genome }),
     );
-    expect(parsed.version).toBe(5);
+    expect(parsed.version).toBe(6);
     expect(parsed.genome).toEqual(genome);
     expect(Ecosystem.load(JSON.stringify(before)).save()).toEqual(before);
     expect(world.save()).toEqual(before);
@@ -849,7 +852,7 @@ describe('passive inherited sensory data and reversible compatibility', () => {
           parsed = parseBlueprint(baselineFixtures['blueprint1.json']);
         expect(parsed).toEqual({
           ...old,
-          version: 5,
+          version: 6,
           genome: { ...old.genome, behavior: { version: 1, mode: 'legacy' } },
         });
         for (const name of [
@@ -2742,13 +2745,21 @@ describe('measured thermal adaptation', () => {
     });
   });
 
-  it.each([30, 65, 5430])(
-    'strictly migrates every v3 scalar and pending flow at tick %i',
-    (tick) => {
-      const world = new Ecosystem();
-      advance(world, tick);
-      world.paint('erase', WIDTH / 2, HEIGHT / 2, 0, founder(0));
-      const legacy = oldTelemetry(world),
+  describe('v3 telemetry migration', () => {
+    const v3Ticks = [30, 65, 5430] as const,
+      v3Worlds = new Map<number, { world: Ecosystem; legacy: ReturnType<typeof oldTelemetry> }>();
+    // One shared erased world per tick keeps the long tick-5430 run out of each test body.
+    beforeAll(() => {
+      for (const tick of v3Ticks) {
+        const world = new Ecosystem();
+        advance(world, tick);
+        world.paint('erase', WIDTH / 2, HEIGHT / 2, 0, founder(0));
+        v3Worlds.set(tick, { world, legacy: oldTelemetry(world) });
+      }
+    });
+
+    it.each(v3Ticks)('strictly migrates every v3 scalar and pending flow at tick %i', (tick) => {
+      const { world, legacy } = v3Worlds.get(tick)!,
         restored = Ecosystem.load(JSON.stringify(legacy)),
         saved = restored.save();
       expect(saved.telemetry.adaptationOriginTick).toBe(tick);
@@ -2763,6 +2774,13 @@ describe('measured thermal adaptation', () => {
       expect(ecology(saved)).toEqual({
         ...ecology(world.save()),
         lineageArchive: saved.lineageArchive,
+        lifeHistoryLog: {
+          version: 1,
+          originTick: tick,
+          maintenanceSpent: 0,
+          eventsPruned: false,
+          events: [],
+        },
         interventions: {
           version: 5,
           originTick: tick,
@@ -2781,6 +2799,10 @@ describe('measured thermal adaptation', () => {
       advance(restored, 100);
       advance(roundtrip, 100);
       expect(roundtrip.save()).toEqual(restored.save());
+    });
+
+    it.each(v3Ticks)('rejects inconsistent v3 telemetry provenance at tick %i', (tick) => {
+      const { legacy } = v3Worlds.get(tick)!;
       for (const invalid of [
         { ...legacy, telemetry: { ...legacy.telemetry, version: 2 } },
         { ...legacy, telemetry: { ...legacy.telemetry, adaptationOriginTick: tick } },
@@ -2793,8 +2815,8 @@ describe('measured thermal adaptation', () => {
         },
       ])
         expect(() => Ecosystem.load(JSON.stringify(invalid))).toThrow('telemetry');
-    },
-  );
+    });
+  });
 
   it('rejects all malformed adaptation/provenance shapes including a corrupt last record', () => {
     const world = new Ecosystem();
@@ -2901,9 +2923,17 @@ describe('telemetry persistence, migration and complete candidate validation', (
             terrain,
             thermalRefuges,
             shadeHabitats,
+            lifeHistoryLog,
             ...actualEcology
           } = ecology(world.save());
-        expect(world.save().version).toBe(17);
+        expect(world.save().version).toBe(18);
+        expect(lifeHistoryLog).toEqual({
+          version: 1,
+          originTick: tick,
+          maintenanceSpent: 0,
+          eventsPruned: false,
+          events: [],
+        });
         expect(nutrientCycle).toBeNull();
         expect(thermalRefuges).toEqual({ version: 1, enabled: false, cells: [] });
         expect(shadeHabitats).toEqual({ version: 1, enabled: false, cells: [] });

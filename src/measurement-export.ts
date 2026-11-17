@@ -58,7 +58,7 @@ export function measurementEnvelope(source: MeasurementSource) {
   const envelope = {
     format: 'evolab-drift-measurements',
     version: 10,
-    rules: { id: 'evolab-drift-cellular', version: 9 },
+    rules: { id: 'evolab-drift-cellular', version: 10 },
     snapshot: {
       ...(source.snapshot.nutrientCycle
         ? { nutrientCycle: structuredClone(source.snapshot.nutrientCycle) }

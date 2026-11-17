@@ -1,5 +1,8 @@
+import { lifeRules, sameLifeHistory, LIFE_TRAITS } from './life-history';
 import {
   integer,
+  exactDataRecord,
+  finite,
   observedGenome,
   validGenome,
   type Genome,
@@ -8,9 +11,12 @@ import {
 import { MUTATION_CHANNELS, type MutationChannel } from './mutation';
 import { NEURAL_CHANNELS, sameController } from './neural';
 
-export type AttemptChannel = MutationChannel | 'propensity' | (typeof NEURAL_CHANNELS)[number];
+export type AttemptChannel =
+  MutationChannel | 'propensity' | 'lifeHistory' | (typeof NEURAL_CHANNELS)[number];
 export interface BirthEvent {
   kind: 'reproduction';
+  /** Absent in pre-life-history observations; never reconstruct historic payments. */
+  payment?: { parentAge: number; parentPaid: number; offspringGranted: number; overhead: number };
   /** Reproductive parent's lineage, not a newly allocated lineage. */
   id: number;
   tick: number;
@@ -38,18 +44,21 @@ export const birthKeys = [
   'childGenome',
   'outcome',
 ];
-function projection(value: unknown, neural = true): value is Genome {
-  if (!validGenome(value, true, true, neural)) return false;
+function projection(value: unknown, neural: boolean, lifeHistory: boolean): value is Genome {
+  if (!validGenome(value, true, true, neural, lifeHistory)) return false;
   const genome = value as Genome;
   return (
     Object.keys(genome).length ===
-      (genome.mutationPropensity === undefined ? 5 : 6) + (genome.controller ? 1 : 0) &&
-    genome.cells.every((cell) => Object.keys(cell).length === 3)
+      5 +
+        (genome.mutationPropensity === undefined ? 0 : 1) +
+        (genome.lifeHistory ? 1 : 0) +
+        (genome.controller ? 1 : 0) && genome.cells.every((cell) => Object.keys(cell).length === 3)
   );
 }
 /** Numeric observations treat signed zeros equally, as ordinary Save JSON does. */
 export function inheritedDifference(parent: Genome, child: Genome): boolean {
   return (
+    !sameLifeHistory(parent.lifeHistory, child.lifeHistory) ||
     parent.preference !== child.preference ||
     !sameController(parent.controller, child.controller) ||
     !Object.is(parent.tolerance, child.tolerance) ||
@@ -89,6 +98,14 @@ function possibleChanges(event: BirthEvent, child: Genome): boolean {
   const parent = event.parentGenome,
     channels = event.channels;
   return (
+    (parent.lifeHistory === undefined) === (child.lifeHistory === undefined) &&
+    (sameLifeHistory(parent.lifeHistory, child.lifeHistory) ||
+      (channels.includes('lifeHistory') &&
+        LIFE_TRAITS.filter((key) => parent.lifeHistory![key] !== child.lifeHistory![key]).length ===
+          1 &&
+        LIFE_TRAITS.every(
+          (key) => Math.abs(parent.lifeHistory![key] - child.lifeHistory![key]) <= 1,
+        ))) &&
     parent.behavior.version === child.behavior.version &&
     parent.behavior.mode === child.behavior.mode &&
     !!parent.controller === !!child.controller &&
@@ -133,38 +150,46 @@ export function validBirthEvent(
   nextSpecies: number,
   nextId: number,
   neural = true,
+  lifeHistory = true,
 ): boolean {
   if (!Array.isArray(event.channels)) return false;
   const attempted = event.gate || event.channels.includes('propensity');
   return (
-    Object.keys(event).length === birthKeys.length &&
+    Object.keys(event).length === birthKeys.length + (Object.hasOwn(event, 'payment') ? 1 : 0) &&
+    (!Object.hasOwn(event, 'payment') || (lifeHistory && validBirthPayment(event))) &&
     birthKeys.every((key) => Object.hasOwn(event, key)) &&
     event.kind === 'reproduction' &&
     integer(event.id, 1, nextSpecies - 1) &&
     integer(event.parentOrganismId, 1, nextId - 1) &&
-    projection(event.parentGenome, neural) &&
+    projection(event.parentGenome, neural, lifeHistory) &&
+    (!event.parentGenome.lifeHistory ||
+      (event.payment !== undefined && (!event.gate || event.channels.includes('lifeHistory')))) &&
     typeof event.gate === 'boolean' &&
     Array.isArray(event.channels) &&
-    event.channels.length <= (event.parentGenome.controller ? 7 : 6) &&
+    event.channels.length <=
+      6 + (event.parentGenome.controller ? 1 : 0) + (event.parentGenome.lifeHistory ? 1 : 0) &&
     new Set(event.channels).size === event.channels.length &&
     event.channels.every((channel) =>
       [
         ...MUTATION_CHANNELS,
         'propensity',
         ...(neural && event.parentGenome.controller ? NEURAL_CHANNELS : []),
+        ...(lifeHistory ? ['lifeHistory'] : []),
       ].includes(channel),
     ) &&
     !(event.channels.includes('neural-weight') && event.channels.includes('neural-bias')) &&
     (event.gate || event.channels.every((channel) => channel === 'propensity')) &&
     (!event.channels.includes('propensity') ||
       event.parentGenome.mutationPropensity !== undefined) &&
+    (!event.channels.includes('lifeHistory') ||
+      (event.gate && event.parentGenome.lifeHistory !== undefined)) &&
     (!event.channels.includes('reactions') || event.parentGenome.behavior.version === 2) &&
     integer(event.placementAttempts, 1, 3) &&
     (event.childGenome === null
       ? event.childOrganismId === null &&
         event.childLineageId === null &&
         event.placementAttempts === 3
-      : projection(event.childGenome, neural) &&
+      : projection(event.childGenome, neural, lifeHistory) &&
         possibleChanges(event, event.childGenome) &&
         integer(event.childOrganismId, event.parentOrganismId + 1, nextId - 1) &&
         integer(event.childLineageId, event.id, nextSpecies - 1) &&
@@ -184,6 +209,7 @@ export function birthObservation(event: Omit<BirthEvent, 'kind' | 'outcome'>): B
     parentGenome,
     childGenome,
     channels: [...event.channels],
+    ...(event.payment ? { payment: { ...event.payment } } : {}),
     outcome: birthOutcome(
       parentGenome,
       childGenome,
@@ -212,4 +238,28 @@ export function retainedBirthExport(archive: LineageArchiveState, tick: number) 
     },
     events: structuredClone(events),
   };
+}
+
+/** Successful placement is the only point at which energy changes hands. */
+function validBirthPayment(event: BirthEvent): boolean {
+  const p = event.payment;
+  if (
+    !exactDataRecord(p, ['parentAge', 'parentPaid', 'offspringGranted', 'overhead']) ||
+    !validGenome(event.parentGenome)
+  )
+    return false;
+  const rules = lifeRules(event.parentGenome);
+  return (
+    integer(p.parentAge, rules.maturity + 1, rules.ageLimit) &&
+    Number(p.parentAge) % rules.cadence === 0 &&
+    finite(p.parentPaid, 0, 100) &&
+    finite(p.offspringGranted, 0, 100) &&
+    finite(p.overhead, 0, 4) &&
+    (event.childGenome === null
+      ? p.parentPaid === 0 && p.offspringGranted === 0 && p.overhead === 0
+      : validGenome(event.childGenome) &&
+        p.offspringGranted === rules.grant(event.childGenome.cells.length) &&
+        p.overhead === rules.overhead &&
+        Math.abs(Number(p.parentPaid) - Number(p.offspringGranted) - Number(p.overhead)) <= 1e-6)
+  );
 }
