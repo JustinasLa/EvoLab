@@ -143,6 +143,7 @@ export function startWorker(
     if (!cachedPresentation || cachedRevision !== revision || cachedSelection !== selected) {
       cachedPresentation = world!.presentation(selected, view.lineage === true);
       if (view.roles) cachedPresentation.roles = world!.roleSnapshot();
+      if (view.spatial) cachedPresentation.spatial = world!.spatialSummary();
       cachedRevision = revision;
       cachedSelection = selected;
     }
@@ -357,6 +358,7 @@ export function startWorker(
       typeof value.visible === 'boolean' &&
       (value.lineage === undefined || value.lineage === true) &&
       (value.roles === undefined || value.roles === true) &&
+      (value.spatial === undefined || value.spatial === true) &&
       (value.neural === undefined || value.neural === true)
     );
   }
@@ -457,9 +459,11 @@ export function startWorker(
           visible: data.display.visible,
           ...(data.display.lineage ? { lineage: true as const } : {}),
           ...(data.display.roles ? { roles: true as const } : {}),
+          ...(data.display.spatial ? { spatial: true as const } : {}),
           ...(data.display.neural ? { neural: true as const } : {}),
         };
         if (view.roles) world.observeRoles();
+        world.observeSpatial(view.spatial === true, 'world-replaced');
         paused = failed = false;
         selected = 0;
         world.selectNeural(selected, view.neural === true);
@@ -501,6 +505,7 @@ export function startWorker(
         }
         world = restored;
         if (view.roles) world.observeRoles();
+        world.observeSpatial(view.spatial === true, 'world-replaced');
         replacementId = commandId;
         failed = paused = false;
         selected = 0;
@@ -629,10 +634,13 @@ export function startWorker(
               visible: data.view.visible,
               ...(data.view.lineage ? { lineage: true as const } : {}),
               ...(data.view.roles ? { roles: true as const } : {}),
+              ...(data.view.spatial ? { spatial: true as const } : {}),
               ...(data.view.neural ? { neural: true as const } : {}),
             };
             world.selectNeural(selected, view.neural === true);
             if (view.roles) world.observeRoles();
+            world.observeSpatial(view.spatial === true);
+            cachedPresentation = undefined;
             if (!view.visible) interactive = false;
             resetRate();
             settled = true;

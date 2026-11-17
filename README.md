@@ -34,6 +34,7 @@ lineages spread by surviving and producing descendants.
 - **Keep inherited designs** — standalone blueprints preserve complete anatomy, traits and reactions; existing passive designs and ordinary presets retain legacy steering.
 - **Inspect the survivors** — follow population, dominant lineages, anatomy, energy, offspring and recent lineage ancestry.
 - **Measure ecological roles** — open Measured ecological roles to observe actual photosynthesis, food intake and stinger transfers in fixed 300-tick windows, with mixed strategies, bounded lineage/interaction tables and explicit unknown food origins. Session-only evidence resets on world replacement and is not part of world saves or measurement exports.
+- **Spatial event capture** — opt in to session-only, worker-recorded births, deaths (manual erasure kept separate), feeding and stinger transfers in fixed 16×16-tile bins and 300-tick windows; six completed windows are retained with explicit coverage and eviction, and capture never changes outcomes.
 - **Explore at your pace** — pan, zoom, pause, single-step, and change simulation speed independently of rendering.
 - **Run deliberately** — choose an exact tick target, pause or cancel it, disable habitat rendering, and observe measured throughput and honest image freshness.
 - **Keep whole worlds** — save and restore terrain, every organism, counters, settings and random-generator state.
@@ -53,6 +54,7 @@ not a calibrated biological model.
 - [Neural ablation masks: mask types, ties, costs and target scope](docs/neural-ablation.md)
 - [Single-blueprint assay fixtures: recipes, budgets and outcomes](docs/assay-fixtures.md)
 - [Guided-discovery recipes: questions, fixtures, bounds and outcomes](docs/guided-discoveries.md)
+- [Spatial event capture: bins, windows, event locations and bounds](docs/spatial-events.md)
 
 ## Tests and coverage
 
