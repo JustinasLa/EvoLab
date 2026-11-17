@@ -7460,6 +7460,16 @@ describe('automatic recovery worker integration', () => {
     await pending();
     expect(get('recovery-status').textContent).toMatch(/discarded|failed/);
     expect(native.values.size).toBe(3);
+    // A user Save in flight owns the worker: capture is skipped, not queued.
+    click('pause');
+    harness.deliver();
+    const saves = worker.commands.mock.calls.filter(([data]) => data.type === 'save').length;
+    click('save');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(get('recovery-status').textContent).toContain('skipped');
+    expect(worker.commands.mock.calls.filter(([data]) => data.type === 'save')).toHaveLength(
+      saves + 1,
+    );
   });
 });
 

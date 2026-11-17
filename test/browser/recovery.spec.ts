@@ -150,3 +150,22 @@ test('a second tab skips capture while another tab owns the recovery lease', asy
   await expect(other.locator('#run-state')).toHaveText('PAUSED');
   expect(await entries(other, 'evolab-world-recovery')).toEqual(before);
 });
+
+test('a running world keeps running while snapshots are captured', async ({ page }) => {
+  await page.clock.install();
+  await page.goto('/');
+  await expect(page.locator('#population')).not.toHaveText('—');
+  await expect(page.locator('#run-state')).toHaveText('LIVE');
+  await page.locator('#local-recovery > summary').click();
+  await page.locator('#recovery-enabled').check();
+  await capture(page);
+  const first = record((await entries(page, 'evolab-world-recovery'))['1']);
+  await expect(page.locator('#run-state')).toHaveText('LIVE');
+  await expect
+    .poll(async () => Number((await page.locator('#tick').textContent())!.replace(/\D/g, '')))
+    .toBeGreaterThan(first.tick);
+  await capture(page);
+  const second = record((await entries(page, 'evolab-world-recovery'))['2']);
+  expect(second.tick).toBeGreaterThan(first.tick);
+  expect(second.generation).toBe(first.generation);
+});
