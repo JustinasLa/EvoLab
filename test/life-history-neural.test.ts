@@ -47,7 +47,7 @@ describe('life-history composition with canonical neural controllers', () => {
     const genome = founder(1);
     genome.controller = newController();
     const current = JSON.parse(serializeBlueprint({ name: 'Combined', description: '', genome }));
-    expect(current.version).toBe(6);
+    expect(current.version).toBe(7);
     expect(parseBlueprint(JSON.stringify({ ...current, version: 5 })).genome).toEqual(genome);
     current.genome.lifeHistory = defaultLifeHistory();
     expect(parseBlueprint(JSON.stringify(current)).genome).toEqual(current.genome);

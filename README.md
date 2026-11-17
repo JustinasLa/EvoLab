@@ -24,6 +24,7 @@ lineages spread by surviving and producing descendants.
 - **Design your own life** — draw connected organisms, choose their preferred temperature, and place them directly in the ecosystem.
 - **Directional eye reactions** — start a new active design with inherited chase, flee or ignore responses to food, walls and organisms; forward sight respects body rotation, occlusion and real movement costs.
 - **Optional neural controllers** — explicitly enable a small inherited network in the designer; real forward sight, energy and blocked-action feedback drive resting, movement or turning, with evaluation and action energy costs. Existing organisms retain their steering rules.
+- **Evolving local senses** — opt-in second-generation neural designs inherit bounded eye orientation, range and cardinal field of view, with separately declared paid local temperature sampling; historical controllers retain their exact sensing rules.
 - **Inspect neural decisions** — open the selected organism’s Neural activity panel for actual inputs, hidden/output activations, action attempts and incurred costs, with an accessible network, exact tables and up to 12 observed decisions. Stale, unavailable and pruned evidence is explicit; subsequent meals are not causal explanations.
 - **Inspect inherited sight** — active reactions can mutate at birth; inspect the selected organism’s actual last rays, occlusions and chosen direction with its observation tick.
 - **Mutation controls** — retain legacy birth mutation by default or opt into relative weights for anatomy, climate traits, tempo and active reactions; apply drafts explicitly and save their manual history.
@@ -42,6 +43,7 @@ not a calibrated biological model.
 
 ## Documentation
 
+- [Evolving local senses](docs/evolving-senses.md) — inherited geometry, paid thermal samples, bounds and compatibility.
 - [Inherited life histories: tradeoffs, payments, evidence and compatibility](docs/life-history.md)
 - [Optional nutrient cycle: units, costs, bounds and compatibility](docs/nutrient-cycle.md)
 

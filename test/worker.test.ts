@@ -3236,7 +3236,7 @@ describe('integrated extinction and telemetry', () => {
     expect(harness.tasks).toHaveLength(0);
   });
 
-  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18])(
+  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19])(
     'migrates/restores v%i then preserves terminal and pending history through an empty save continuation',
     (version) => {
       const harness = workerHarness();
@@ -3294,7 +3294,9 @@ describe('integrated extinction and telemetry', () => {
                                       ? { ...current, version: 16 as const }
                                       : version === 17
                                         ? { ...current, version: 17 as const }
-                                        : current;
+                                        : version === 18
+                                          ? { ...current, version: 18 as const }
+                                          : current;
       if (version >= 8 && version < 15 && 'lineageArchive' in file)
         file.lineageArchive = historicalArchive(file.lineageArchive);
       expect(file.version).toBe(version);
@@ -3331,7 +3333,7 @@ describe('integrated extinction and telemetry', () => {
                 nutrientCycle: null,
                 lifeHistoryLog: {
                   version: 1,
-                  originTick: version === WORLD_VERSION ? 0 : file.tick,
+                  originTick: version >= 18 ? 0 : file.tick,
                   maintenanceSpent: 0,
                   eventsPruned: false,
                   events: [],
@@ -3352,7 +3354,7 @@ describe('integrated extinction and telemetry', () => {
                   nutrientCycle: null,
                   lifeHistoryLog: {
                     version: 1,
-                    originTick: version === WORLD_VERSION ? 0 : file.tick,
+                    originTick: version >= 18 ? 0 : file.tick,
                     maintenanceSpent: 0,
                     eventsPruned: false,
                     events: [],
@@ -3374,7 +3376,7 @@ describe('integrated extinction and telemetry', () => {
                   nutrientCycle: null,
                   lifeHistoryLog: {
                     version: 1,
-                    originTick: version === WORLD_VERSION ? 0 : file.tick,
+                    originTick: version >= 18 ? 0 : file.tick,
                     maintenanceSpent: 0,
                     eventsPruned: false,
                     events: [],
@@ -3403,7 +3405,7 @@ describe('integrated extinction and telemetry', () => {
       harness.advance();
       reference.step();
       const terminal = harness.save();
-      expect(terminal.version).toBe(18);
+      expect(terminal.version).toBe(19);
       expect(terminal.telemetry.version).toBe(2);
       expect(terminal.telemetry.samples.at(-1)).toMatchObject({
         fromTick: version === 2 ? 89 : 60,

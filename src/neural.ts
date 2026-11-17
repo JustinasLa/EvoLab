@@ -1,7 +1,8 @@
 import { clamp, denseArray, exactDataRecord, finite, type Genome, type Random } from './model';
+import { SENSE_INPUTS, SENSE_WEIGHTS } from './senses';
 
 export interface NeuralController {
-  version: 1;
+  version: 1 | 2;
   weights: number[];
   biases: number[];
 }
@@ -20,20 +21,20 @@ export interface NeuralActivity {
   outputs: number[];
 }
 
-export function newController(): NeuralController {
+export function newController(version: 1 | 2 = 1): NeuralController {
   return {
-    version: 1,
-    weights: Array(NEURAL_WEIGHTS).fill(0),
+    version,
+    weights: Array(version === 1 ? NEURAL_WEIGHTS : SENSE_WEIGHTS).fill(0),
     biases: Array(NEURAL_BIASES).fill(0),
   };
 }
 
-export function validController(value: unknown): value is NeuralController {
+export function validController(value: unknown, senses = true): value is NeuralController {
   return (
     exactDataRecord(value, ['version', 'weights', 'biases']) &&
-    value.version === 1 &&
+    (value.version === 1 || (senses && value.version === 2)) &&
     denseArray(value.weights) &&
-    value.weights.length === NEURAL_WEIGHTS &&
+    value.weights.length === (value.version === 1 ? NEURAL_WEIGHTS : SENSE_WEIGHTS) &&
     value.weights.every((weight) => finite(weight, -4, 4)) &&
     denseArray(value.biases) &&
     value.biases.length === NEURAL_BIASES &&
@@ -44,6 +45,7 @@ export function validController(value: unknown): value is NeuralController {
 export function sameController(first?: NeuralController, second?: NeuralController): boolean {
   if (!first || !second) return first === second;
   return (
+    first.version === second.version &&
     first.weights.every((weight, offset) => Object.is(weight, second.weights[offset])) &&
     first.biases.every((bias, offset) => Object.is(bias, second.biases[offset]))
   );
@@ -55,10 +57,11 @@ export function neuralAction(
   activity?: NeuralActivity,
 ): NeuralAction {
   const hidden = Array<number>(NEURAL_HIDDEN).fill(0);
+  const inputCount = controller.version === 1 ? NEURAL_INPUTS : SENSE_INPUTS;
   for (let neuron = 0; neuron < NEURAL_HIDDEN; neuron++) {
     let activation = controller.biases[neuron];
-    for (let input = 0; input < NEURAL_INPUTS; input++)
-      activation += inputs[input] * controller.weights[neuron * NEURAL_INPUTS + input];
+    for (let input = 0; input < inputCount; input++)
+      activation += inputs[input] * controller.weights[neuron * inputCount + input];
     hidden[neuron] = clamp(activation, -1, 1);
   }
   if (activity) activity.hidden = hidden;
@@ -67,7 +70,9 @@ export function neuralAction(
   for (let output = 0; output < NEURAL_OUTPUTS; output++) {
     let activation = controller.biases[NEURAL_HIDDEN + output];
     for (let neuron = 0; neuron < NEURAL_HIDDEN; neuron++)
-      activation += hidden[neuron] * controller.weights[24 + output * NEURAL_HIDDEN + neuron];
+      activation +=
+        hidden[neuron] *
+        controller.weights[inputCount * NEURAL_HIDDEN + output * NEURAL_HIDDEN + neuron];
     const score = clamp(activation, -1, 1);
     activity?.outputs.push(score);
     if (score > best) {

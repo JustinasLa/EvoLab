@@ -50,7 +50,9 @@ to the world rather than an organism blueprint; life history separately extends
 blueprint5 to blueprint6.
 World17 retains the original nutrient contract. World18 adds optional life history and
 its bounded outcome log without relaxing nutrient validation. Experiment rules10 and
-measurement format10 identify the composed ruleset.
+measurement format10 identify the composed ruleset. World19, blueprint7, rules11 and
+measurement format11 keep the same `nutrientCycle` field and validation and add
+inherited senses; see [Evolving senses](evolving-senses.md).
 
 Resource views expose both planes, pool totals in N, current stored energy in E,
 and the latest completed tick's energy balance (before + sunlight = after +
