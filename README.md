@@ -42,6 +42,7 @@ not a calibrated biological model.
 ## Documentation
 
 - [Optional nutrient cycle: units, costs, bounds and compatibility](docs/nutrient-cycle.md)
+- [Optional energy reserves and dormancy: traits, costs and persistence](docs/dormancy.md)
 
 ## Tests and coverage
 
