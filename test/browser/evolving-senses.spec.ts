@@ -107,6 +107,8 @@ test('native selected v2 observation records only actual paid local samples and 
   await page.mouse.click(point.x, point.y);
   await expect(page.locator('#inspector')).toContainText(`Organism ${organism.id}`);
   await expect(page.locator('#inspector')).toContainText('Neural controller v2');
+  await page.locator('#neural-inspector > summary').click();
+  await expect(page.locator('#neural-data')).toContainText('no evaluation captured yet');
   for (let tick = 0; tick < 2; tick++) {
     await page.locator('#step').click();
     reference.step();
@@ -116,6 +118,13 @@ test('native selected v2 observation records only actual paid local samples and 
   );
   await expect(page.locator('#perception-observation')).toContainText('temperature 0.032');
   await expect(page.locator('#perception-observation')).toContainText('(60,60) = 0.7');
+  await expect(page.locator('#neural-data')).toContainText(
+    'Controller v2; actual captured topology 10–4–4; 56 weights / 8 biases.',
+  );
+  await expect(page.locator('#neural-data')).toContainText('Front temperature');
+  await expect(page.locator('#neural-data')).toContainText(
+    'Evaluation cost includes paid eye and temperature sensing.',
+  );
   const before = await saved(page);
   expect(before).toEqual(reference.save());
   await page.locator('#perception-enabled').check();
