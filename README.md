@@ -54,6 +54,7 @@ not a calibrated biological model.
 - [Automatic local recovery snapshots: capture, bounds and multi-tab ownership](docs/recovery.md)
 - [Neural ablation masks: mask types, ties, costs and target scope](docs/neural-ablation.md)
 - [Single-blueprint assay fixtures: recipes, budgets and outcomes](docs/assay-fixtures.md)
+- [Guided-discovery recipes: questions, fixtures, bounds and outcomes](docs/guided-discoveries.md)
 
 ## Tests and coverage
 
@@ -117,6 +118,12 @@ Checkpoint comparison checks cover same-runtime control/control identity, exact
 treatment boundaries, equal bounded horizons, extinction, cancellation and
 delayed-import ownership. Recipe checks cover complete checkpoint retention, strict bounds and invalid/incomplete input, observed-result verification on replay, and phone-readable measurement tables. They verify orchestration against the same ecosystem
 engine, not an independent ecological implementation or a statistical claim.
+
+Guided-discovery recipe checks rebuild all three catalog starting states with the
+real engine against their recorded SHA-256 hashes, replay every branch to its
+fixed-seed endpoint, compare shared-start branches with the checkpoint comparison
+path, and reject malformed, oversized, unsupported-rule or tampered recipes. They
+also confirm the sandbox world and random state are untouched.
 
 The separate long-run job runs on every PR and main push, alongside the unchanged
 mandatory checks above:
