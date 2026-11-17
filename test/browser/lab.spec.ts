@@ -1,3 +1,4 @@
+import { assertLegacyLifeHistory } from '../fixtures/life-history';
 import { test, expect } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import {
@@ -1495,7 +1496,7 @@ test('literal v3 telemetry migrates through the file input and real worker befor
   const migratedBytes = await downloadPausedWorld(page),
     migrated = JSON.parse(migratedBytes.toString()) as WorldFile;
   expect(migrated).toEqual(expected());
-  expect(migrated.version).toBe(18);
+  expect(migrated.version).toBe(19);
   expect(migrated.telemetry.version).toBe(2);
   expect(migrated.telemetry.originTick).toBe(fixture.telemetry.originTick);
   expect(migrated.telemetry.adaptationOriginTick).toBe(65);
@@ -2818,7 +2819,7 @@ test('D9-A10 native file reads stay single-owner through cancellation, reset and
     contentType: 'application/json',
   });
 });
-for (const version of [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18] as const) {
+for (const version of [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19] as const) {
   test(`measurement bytes preserve synthetic historical/current world${version} migration,180 samples and truthful manual windows`, async ({
     page,
   }) => {
@@ -2886,7 +2887,9 @@ for (const version of [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 1
                                     ? { ...current, version: 16 as const }
                                     : version === 17
                                       ? { ...current, version: 17 as const }
-                                      : current;
+                                      : version === 18
+                                        ? { ...current, version: 18 as const }
+                                        : current;
     if (version >= 8 && version < 15 && 'lineageArchive' in candidate)
       candidate.lineageArchive = historicalArchive(candidate.lineageArchive);
     expect(candidate.version).toBe(version);
@@ -2926,7 +2929,7 @@ for (const version of [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 1
     });
     expect(json.windows.settings.unknownEvictedPrefix).toBe(version >= 5);
     expect(json.version).toBe(11);
-    expect(json.rules.version).toBe(10);
+    expect(json.rules.version).toBe(11);
     expect(json.snapshot.thermalRefuges).toEqual(refugeSummary(reference.thermalRefuges));
     expect(json.snapshot.terrain).toEqual(DEFAULT_TERRAIN);
     for (const view of ['population', 'food', 'adaptation'])
@@ -3663,7 +3666,7 @@ test('standalone inspector and designer downloads round-trip full traits before 
   ]);
   expect(inspector.file).toMatchObject({
     format: 'evolab-organism-blueprint',
-    version: 6,
+    version: 7,
     description: '',
   });
   await page.locator('#blueprint-file').setInputFiles({
@@ -3870,7 +3873,7 @@ test.describe('blueprint file rejection and cancellation', () => {
     await expect(page.locator('#world')).toHaveAttribute('data-tool', 'plant');
     expect((await downloadBlueprint(page)).file).toEqual({
       format: 'evolab-organism-blueprint',
-      version: 6,
+      version: 7,
       ...payload,
     });
     await expect(page.locator('#run-state')).toHaveText('PAUSED');
@@ -4822,7 +4825,7 @@ test('restores real worker telemetry, renders its population projection and down
   expect(frame.telemetry).toEqual(before);
   const downloaded = JSON.parse((await downloadWorld(page)).toString());
   expect(downloaded.telemetry).toEqual(before);
-  expect(downloaded.version).toBe(18);
+  expect(downloaded.version).toBe(19);
   expect(downloaded.telemetry.version).toBe(2);
   expect(downloaded.telemetry.intervalTicks).toBe(30);
   const restored = Ecosystem.load(JSON.stringify(downloaded));
@@ -5054,7 +5057,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   await expect(page.locator('[data-shock="bloom"]')).toHaveCount(0);
   const saved = await downloadWorld(page),
     world = JSON.parse(saved.toString());
-  expect(world.version).toBe(18);
+  expect(world.version).toBe(19);
   expect(world.organisms.length).toBeGreaterThan(1);
   const o = world.organisms[0],
     c = o.genome.cells[0];
@@ -5382,7 +5385,9 @@ test('B23-1 opt-in empty field retains the complete original climate trajectory 
       cells: [],
     });
     expect(saved.mutationPolicy).toEqual({ version: 1, mode: 'legacy' });
+    assertLegacyLifeHistory(saved);
     const {
+      lifeHistoryLog: _lifeHistoryLog,
       nutrientCycle,
       mutationPolicy: _policy,
       thermalRefuges: _field,

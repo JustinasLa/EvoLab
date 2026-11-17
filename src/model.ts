@@ -1,3 +1,4 @@
+import { validLifeHistory, type LifeHistory, type LifeHistoryLog } from './life-history';
 import type { BirthEvent } from './mutation-evidence';
 import type { MutationPolicy } from './mutation';
 import type { EventJournal, EventReplay } from './event-model';
@@ -10,7 +11,7 @@ export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 18;
+export const WORLD_VERSION = 19;
 export const LINEAGE_SUMMARY_CAPACITY = 256;
 export const LINEAGE_EVENT_CAPACITY = 512;
 export const INTERVENTION_CAPACITY = 128;
@@ -106,6 +107,7 @@ export interface Genome {
   behavior: Behavior;
   /** Absent: global gate; present: inherited multiplier of the global upper bound. */
   mutationPropensity?: number;
+  lifeHistory?: LifeHistory;
   legacyExtensions?: LegacyExtensions;
 }
 export interface HistoricalCell {
@@ -384,6 +386,7 @@ export interface LineagePresentation {
 export type WorldPresentation = Pick<Frame, 'stats' | 'climate' | 'offset' | 'terrain'> & {
   nutrientCycle?: import('./nutrients').NutrientSummary;
   roles?: import('./roles').RoleSnapshot;
+  lifeHistory?: LifeHistoryLog;
   mutationPolicy: MutationPolicy;
   lineage?: LineagePresentation;
   selectedBaseline?: OrganismBaseline;
@@ -638,6 +641,7 @@ export function observedGenome(genome: Genome): Genome {
     tolerance: genome.tolerance,
     tempo: genome.tempo,
     behavior: structuredClone(genome.behavior),
+    ...(genome.lifeHistory ? { lifeHistory: { ...genome.lifeHistory } } : {}),
     ...(genome.controller ? { controller: structuredClone(genome.controller) } : {}),
     ...(genome.senses ? { senses: { ...genome.senses } } : {}),
     ...(genome.mutationPropensity === undefined
@@ -685,6 +689,7 @@ export interface WorldEcology {
   organisms: Organism[];
 }
 export interface WorldFile extends WorldEcology {
+  lifeHistoryLog: LifeHistoryLog;
   nutrientCycle: import('./nutrients').NutrientFile | null;
   mutationPolicy: MutationPolicy;
   version: typeof WORLD_VERSION;
@@ -698,7 +703,10 @@ export interface WorldFile extends WorldEcology {
 export type HistoricalWorldEcology = Omit<WorldEcology, 'organisms'> & {
   organisms: HistoricalOrganism[];
 };
-export interface WorldFileV17 extends Omit<WorldFile, 'version'> {
+export interface WorldFileV18 extends Omit<WorldFile, 'version'> {
+  version: 18;
+}
+export interface WorldFileV17 extends Omit<WorldFileV18, 'version' | 'lifeHistoryLog'> {
   version: 17;
 }
 export interface WorldFileV16 extends Omit<WorldFileV17, 'version' | 'nutrientCycle'> {
@@ -1138,6 +1146,7 @@ export function validGenome(
   active = true,
   propensity = true,
   neural = true,
+  lifeHistory = true,
   senses = true,
 ): value is Genome {
   if (
@@ -1148,10 +1157,12 @@ export function validGenome(
         'legacyExtensions',
         ...(propensity ? ['mutationPropensity'] : []),
         ...(neural ? ['controller'] : []),
+        ...(lifeHistory ? ['lifeHistory'] : []),
         ...(senses ? ['senses'] : []),
       ],
     ) ||
     !validBehavior(value.behavior, active) ||
+    (Object.hasOwn(value, 'lifeHistory') && !validLifeHistory(value.lifeHistory)) ||
     (Object.hasOwn(value, 'controller') && !validController(value.controller, senses)) ||
     (Object.hasOwn(value, 'senses') && !validSenses(value.senses)) ||
     ((value.controller as NeuralController | undefined)?.version === 2) !==
@@ -1190,6 +1201,7 @@ export function cloneGenome(genome: Genome): Genome {
     tolerance: copied.tolerance,
     tempo: copied.tempo,
     behavior: copied.behavior,
+    ...(copied.lifeHistory ? { lifeHistory: copied.lifeHistory } : {}),
     ...(copied.controller ? { controller: copied.controller } : {}),
     ...(copied.senses ? { senses: copied.senses } : {}),
     ...(copied.mutationPropensity === undefined

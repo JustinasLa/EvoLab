@@ -1,0 +1,36 @@
+{
+  "source": "06cf4278270d26615eed1e13420b22ac72d34115",
+  "method": "Pre-change Ecosystem.step source, original import dependencies with absent new traits; 120 ticks, sorted test scenario order. Hash excludes world version and lineage archive because birth payment observations extend those, includes every other pre-existing saved field, including full ecology, telemetry and interventions.",
+  "outcomes": [
+    {
+      "seed": 7,
+      "weighted": false,
+      "hash": "e0a8e0ee8baa6c9d2078c5b4d40161b8eb91b95dfea4abcc02d50668ee416dab"
+    },
+    {
+      "seed": 7,
+      "weighted": true,
+      "hash": "e1ffdffe56cdff6d17def6932978a9c0475f56b3d4a17b8cce472f5dbf15ccc2"
+    },
+    {
+      "seed": 42,
+      "weighted": false,
+      "hash": "b75ec80616d67dd493546301f271808a0ea528bd5861e33e0d2948579e3b5d58"
+    },
+    {
+      "seed": 42,
+      "weighted": true,
+      "hash": "073452d96853975509741523032ce772bf599daf739516d49705d228601dd0d2"
+    },
+    {
+      "seed": 100,
+      "weighted": false,
+      "hash": "a71b23933b88d91fc17b4bfe06746841017b0aac36407a130243eb94d1b58d08"
+    },
+    {
+      "seed": 100,
+      "weighted": true,
+      "hash": "fee4e8f26c7eb50edebf23d2630eebc49eeb106bb93e20bae23c4d5049956375"
+    }
+  ]
+}

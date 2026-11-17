@@ -51,11 +51,14 @@ Complete inherited records are detached. No mutation activates/deactivates the
 controller version or removes sensing capability records. Bounds are validated,
 not repaired during import. Mutation evidence includes its sensor channel.
 
-World18 and blueprint6 own the expanded-senses contract; measurement11 and
-experiment rules10 identify the composed ecology. Native nutrient world17 remains
-importable with its required nutrient field, bounded energy, conserved matter and
-literal controller1 behavior. Worlds16 and17 reject expanded sensing in living,
-extinct founding and retained birth genomes rather than activating unknown fields.
+World19 and blueprint7 own the expanded-senses contract; measurement11 and
+experiment rules11 identify the composed ecology. Expanded senses compose with
+optional life history: mutation gates still perturb senses before propensity and
+life-history traits. Native nutrient world17 and life-history world18 remain
+importable with their required fields, bounded energy, conserved matter and
+literal controller1 behavior. Worlds16, 17 and 18 (and blueprints before 7) reject
+expanded sensing in living, extinct founding and retained birth genomes rather
+than activating unknown fields.
 Earlier formats retain their historical validation and encoded opaque extensions.
 All native worlds require the complete nutrient field (null means disabled).
 Blueprints store organism traits, not the world nutrient mode. Local libraries,

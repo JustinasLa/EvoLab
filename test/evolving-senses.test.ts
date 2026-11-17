@@ -104,7 +104,7 @@ describe('explicit inherited expanded senses', () => {
     expect(Ecosystem.load(JSON.stringify(paid.world.save())).save()).toEqual(paid.world.save());
   });
 
-  it.each([16, 17])(
+  it.each([16, 17, 18])(
     'keeps literal world%i neural state strict without silently activating expanded senses',
     (version) => {
       const source = design();
@@ -113,7 +113,7 @@ describe('explicit inherited expanded senses', () => {
       const original = new Ecosystem(
         { ...DEFAULTS, nutrients: 0, mutation: 0, climate: 0 },
         false,
-        { nutrientCycle: version === 17 },
+        { nutrientCycle: version >= 17 },
       );
       const organism = original.spawn(source, 60, 60)!;
       organism.neuralBlocked = true;
@@ -140,7 +140,7 @@ describe('explicit inherited expanded senses', () => {
       expect(() => Ecosystem.load(JSON.stringify(missingBlocked))).toThrow();
       const missingFields = structuredClone(file) as Record<string, unknown>;
       delete missingFields.nutrientCycle;
-      if (version === 17) expect(() => Ecosystem.load(JSON.stringify(missingFields))).toThrow();
+      if (version >= 17) expect(() => Ecosystem.load(JSON.stringify(missingFields))).toThrow();
       else expect(Ecosystem.load(JSON.stringify(missingFields)).nutrientCycle).toBeNull();
       const extinct = scene();
       extinct.world.paint(
@@ -272,10 +272,53 @@ describe('explicit inherited expanded senses', () => {
     }
     expect(witnessed).toBe(true);
   });
+  it('composes inherited senses with life history through real gated births and their evidence', () => {
+    const lifeHistory = { version: 1 as const, maturity: 0, investment: 1, maintenance: 0 };
+    const source: Genome = { ...design(), lifeHistory };
+    expect(validGenome(source)).toBe(true);
+    expect(validGenome(source, true, true, true, false, true)).toBe(false);
+    expect(validGenome(source, true, true, true, true, false)).toBe(false);
+    const blueprint = serializeBlueprint({
+      name: 'Senses and life',
+      description: '',
+      genome: source,
+    });
+    expect(parseBlueprint(blueprint).genome).toEqual(source);
+    expect(() =>
+      parseBlueprint(JSON.stringify({ ...JSON.parse(blueprint), version: 6 })),
+    ).toThrow();
+    let witnessed = false;
+    for (let seed = 1; seed <= 32 && !witnessed; seed++) {
+      const { world, organism } = scene(structuredClone(source));
+      world.changeSettings({ mutation: 0.4 });
+      world.random = new Random(seed);
+      organism.age = 32;
+      organism.energy = 100;
+      world.step();
+      const file = world.save();
+      expect(Ecosystem.load(JSON.stringify(file)).save()).toEqual(file);
+      expect(() => Ecosystem.load(JSON.stringify({ ...file, version: 18 }))).toThrow();
+      const birth = file.lineageArchive.events.find(
+        (event) => event.kind === 'reproduction' && event.gate,
+      );
+      if (!birth || birth.kind !== 'reproduction' || !birth.childGenome) continue;
+      witnessed = true;
+      expect(birth.channels).toContain('lifeHistory');
+      expect(
+        birth.channels.filter((channel) => SENSE_CHANNELS.includes(channel as never)),
+      ).toHaveLength(1);
+      const child = world.organisms.get(birth.childOrganismId!)!;
+      expect(child.genome.senses).toBeDefined();
+      expect(child.genome.lifeHistory).toBeDefined();
+      expect(validGenome(child.genome)).toBe(true);
+    }
+    expect(witnessed).toBe(true);
+  });
+
   it('validates the exact paired opt-in and rejects malformed or predecessor declarations', () => {
     const source = design();
     expect(validGenome(source)).toBe(true);
-    expect(validGenome(source, true, true, true, false)).toBe(false);
+    expect(validGenome(source, true, true, true, true, false)).toBe(false);
     expect(validController(source.controller, false)).toBe(false);
     for (const invalid of [
       undefined,
@@ -562,9 +605,10 @@ describe('explicit inherited expanded senses', () => {
     expect(parseBlueprint(blueprint).genome).toEqual(child);
     const { world } = scene(child);
     expect(Ecosystem.load(JSON.stringify(world.save())).save()).toEqual(world.save());
-    for (const version of [5, 4, 3, 2])
+    for (const version of [6, 5, 4, 3, 2])
       expect(() => parseBlueprint(JSON.stringify({ ...JSON.parse(blueprint), version }))).toThrow();
-    expect(() => Ecosystem.load(JSON.stringify({ ...world.save(), version: 16 }))).toThrow();
+    for (const version of [16, 17, 18])
+      expect(() => Ecosystem.load(JSON.stringify({ ...world.save(), version }))).toThrow();
     const changed = cloneGenome(source);
     changed.senses!.temperature = true;
     const event = birthObservation({
@@ -582,7 +626,7 @@ describe('explicit inherited expanded senses', () => {
       outcome: 'born-changed',
     });
     expect(validBirthEvent(event, 3, 3)).toBe(true);
-    expect(validBirthEvent(event, 3, 3, true, false)).toBe(false);
+    expect(validBirthEvent(event, 3, 3, true, true, false)).toBe(false);
     expect(validBirthEvent({ ...event, channels: [] }, 3, 3)).toBe(false);
     expect(validBirthEvent({ ...event, channels: ['temperature-sensor', 'eye-range'] }, 3, 3)).toBe(
       false,
