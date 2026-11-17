@@ -3798,7 +3798,7 @@ test.describe('blueprint file rejection and cancellation', () => {
     {
       name: 'unsupported version',
       text: JSON.stringify({ ...parsed, version: 99 }),
-      notice: 'Unsupported blueprint version. Expected version 1, 2, 3, 4, 5 or 6.',
+      notice: 'Unsupported blueprint version. Expected version 1, 2, 3, 4, 5, 6 or 7.',
     },
     {
       name: 'disconnected cells',
@@ -4589,7 +4589,7 @@ test.describe('pause on total extinction', () => {
       '(() => { window.recoveryDelivery.release(); return document.getElementById("notice").textContent; })()',
     );
     expect(recoveryNotice).toContain(
-      'version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17 or 18',
+      'version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 or 19',
     );
     expect(await pendingSave).toEqual(expected);
     await expect(page.locator('#notice')).toContainText('World saved');
@@ -4710,7 +4710,7 @@ for (const terminalTick of [90, 91]) {
       await expectPopulationChart(page, populations);
       await importWorld(page, { ...terminal, version: 99 } as unknown as WorldFile);
       await expect(page.locator('#notice')).toContainText(
-        'version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17 or 18',
+        'version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 or 19',
       );
       expect(await readWorld(page)).toEqual(terminal);
       await expectPopulationChart(page, populations);

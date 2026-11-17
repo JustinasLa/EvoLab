@@ -1671,7 +1671,7 @@ test('native overlapping two-page cap, full-string CAS and repair eligibility ra
     revision: 0,
     blueprint: serializeBlueprint(candidate().blueprint),
   });
-  const futureBlueprint = JSON.stringify({ ...candidate().blueprint, version: 7, extra: true });
+  const futureBlueprint = JSON.stringify({ ...candidate().blueprint, version: 8, extra: true });
   const replacements = [
     JSON.stringify({ recordVersion: 2, extra: true }),
     JSON.stringify({ recordVersion: 1, revision: 1, blueprint: futureBlueprint }),
