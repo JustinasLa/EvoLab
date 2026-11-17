@@ -51,7 +51,8 @@ same way.
 Dormant upkeep is 20% of the ordinary climate-inclusive upkeep. Sleepers cannot
 eat, photosynthesize, produce food, move, perceive, sting or reproduce, and
 neural controllers skip inference and actions without clearing their
-blocked-action observation. Sleepers still age, die of age or energy
+blocked-action observation. Inherited senses are not sampled while dormant, so
+sleepers pay no eye or temperature-sensing cost. Sleepers still age, die of age or energy
 exhaustion, occupy their footprint and keep cell-local armor and
 vulnerability. Death discards stored reserves; corpses gain no extra food.
 
@@ -71,12 +72,12 @@ See [nutrient-cycle.md](nutrient-cycle.md).
 - Telemetry intervals and the pending interval carry an optional reserve ledger:
   deposited, withdrawn, conversion loss, maintenance, entry, exit and discarded
   stores. These are separate from environmental intake and ordinary upkeep.
-- Blueprint format 7 and the local library keep traits only. Native world
-  format 19 keeps exact living reserves and dormant state and validates them
-  completely before replacement. World 18 and earlier and blueprint 6 and
+- Blueprint format 8 and the local library keep traits only. Native world
+  format 20 keeps exact living reserves and dormant state and validates them
+  completely before replacement. World 19 and earlier and blueprint 7 and
   earlier remain accepted without enabling dormancy; unrecognized reserve-named
-  fields on organisms without the opt-in stay inert. Measurement format 11 and
-  experiment rules 11 identify this composed ruleset.
+  fields on organisms without the opt-in stay inert. Measurement format 12 and
+  experiment rules 12 identify this composed ruleset.
 
 ## Limitations
 
