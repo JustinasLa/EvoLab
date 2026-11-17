@@ -52,6 +52,7 @@ not a calibrated biological model.
 - [Optional biological shade: timing, tradeoffs and provenance](docs/biological-shade.md)
 - [Optional energy reserves and dormancy: traits, costs and persistence](docs/dormancy.md)
 - [Automatic local recovery snapshots: capture, bounds and multi-tab ownership](docs/recovery.md)
+- [Neural ablation masks: mask types, ties, costs and target scope](docs/neural-ablation.md)
 
 ## Tests and coverage
 
