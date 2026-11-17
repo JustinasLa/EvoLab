@@ -150,7 +150,8 @@ function maskedController(controller: NeuralController, mask: NeuralMask): Neura
  * Isolated inference for one controller. It reuses `neuralAction` unchanged,
  * including its clamping and first-maximum output tie-break (rest, forward,
  * left, right), and never draws random numbers. Inputs must be the six real
- * controller-v1 observations in [0, 1].
+ * controller-v1 observations in [0, 1]. An input mask is applied to the
+ * inputs, not to `controller`, so callers must evaluate through `evaluate`.
  */
 export class NeuralAblationAdapter {
   readonly controller: NeuralController;
