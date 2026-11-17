@@ -732,7 +732,7 @@ test('terrain whole-world actions preserve wrapped life, food, selection, pins a
   );
   const csv = decodeDownloadedCsv(await downloadMeasurements(page, 'csv'));
   expect(csv).toEqual(json);
-  expect(json.version).toBe(11);
+  expect(json.version).toBe(12);
   expect(json.snapshot.terrain).toEqual(reference.terrain);
   expect(json.interventions).toEqual(reference.save().interventions);
 });
@@ -1496,7 +1496,7 @@ test('literal v3 telemetry migrates through the file input and real worker befor
   const migratedBytes = await downloadPausedWorld(page),
     migrated = JSON.parse(migratedBytes.toString()) as WorldFile;
   expect(migrated).toEqual(expected());
-  expect(migrated.version).toBe(19);
+  expect(migrated.version).toBe(20);
   expect(migrated.telemetry.version).toBe(2);
   expect(migrated.telemetry.originTick).toBe(fixture.telemetry.originTick);
   expect(migrated.telemetry.adaptationOriginTick).toBe(65);
@@ -2819,7 +2819,9 @@ test('D9-A10 native file reads stay single-owner through cancellation, reset and
     contentType: 'application/json',
   });
 });
-for (const version of [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19] as const) {
+for (const version of [
+  2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+] as const) {
   test(`measurement bytes preserve synthetic historical/current world${version} migration,180 samples and truthful manual windows`, async ({
     page,
   }) => {
@@ -2887,10 +2889,10 @@ for (const version of [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 1
                                     ? { ...current, version: 16 as const }
                                     : version === 17
                                       ? { ...current, version: 17 as const }
-                                      : version === 18
-                                        ? (({ biologicalShade: _mode, ...v18 }) => ({
-                                            ...v18,
-                                            version: 18 as const,
+                                      : version === 18 || version === 19
+                                        ? (({ biologicalShade: _mode, ...predecessor }) => ({
+                                            ...predecessor,
+                                            version,
                                           }))(current)
                                         : current;
     if (version >= 8 && version < 15 && 'lineageArchive' in candidate)
@@ -2931,8 +2933,8 @@ for (const version of [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 1
       coverage: 'applied-portions-only',
     });
     expect(json.windows.settings.unknownEvictedPrefix).toBe(version >= 5);
-    expect(json.version).toBe(11);
-    expect(json.rules.version).toBe(11);
+    expect(json.version).toBe(12);
+    expect(json.rules.version).toBe(12);
     expect(json.snapshot.thermalRefuges).toEqual(refugeSummary(reference.thermalRefuges));
     expect(json.snapshot.terrain).toEqual(DEFAULT_TERRAIN);
     for (const view of ['population', 'food', 'adaptation'])
@@ -4592,7 +4594,7 @@ test.describe('pause on total extinction', () => {
       '(() => { window.recoveryDelivery.release(); return document.getElementById("notice").textContent; })()',
     );
     expect(recoveryNotice).toContain(
-      'version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 or 19',
+      'version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 or 20',
     );
     expect(await pendingSave).toEqual(expected);
     await expect(page.locator('#notice')).toContainText('World saved');
@@ -4713,7 +4715,7 @@ for (const terminalTick of [90, 91]) {
       await expectPopulationChart(page, populations);
       await importWorld(page, { ...terminal, version: 99 } as unknown as WorldFile);
       await expect(page.locator('#notice')).toContainText(
-        'version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 or 19',
+        'version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 or 20',
       );
       expect(await readWorld(page)).toEqual(terminal);
       await expectPopulationChart(page, populations);
@@ -4828,7 +4830,7 @@ test('restores real worker telemetry, renders its population projection and down
   expect(frame.telemetry).toEqual(before);
   const downloaded = JSON.parse((await downloadWorld(page)).toString());
   expect(downloaded.telemetry).toEqual(before);
-  expect(downloaded.version).toBe(19);
+  expect(downloaded.version).toBe(20);
   expect(downloaded.telemetry.version).toBe(2);
   expect(downloaded.telemetry.intervalTicks).toBe(30);
   const restored = Ecosystem.load(JSON.stringify(downloaded));
@@ -5060,7 +5062,7 @@ test('a live ecosystem evolves, pauses, paints, inspects and restores a whole wo
   await expect(page.locator('[data-shock="bloom"]')).toHaveCount(0);
   const saved = await downloadWorld(page),
     world = JSON.parse(saved.toString());
-  expect(world.version).toBe(19);
+  expect(world.version).toBe(20);
   expect(world.organisms.length).toBeGreaterThan(1);
   const o = world.organisms[0],
     c = o.genome.cells[0];

@@ -966,7 +966,7 @@ test('native exact targets, suspended cancellation and render-off editing preser
     buffer: Buffer.from(JSON.stringify({ ...stepped, version: 99 })),
   });
   await expect(page.locator('#notice')).toContainText(
-    'version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 or 19',
+    'version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 or 20',
   );
   expect(await settle(page)).toEqual(stepped);
   await capture('retained-world-failed-import');

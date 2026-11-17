@@ -57,8 +57,8 @@ export function measurementEnvelope(source: MeasurementSource) {
     evicted = manual.totalEntries - manual.entries.length;
   const envelope = {
     format: 'evolab-drift-measurements',
-    version: 11,
-    rules: { id: 'evolab-drift-cellular', version: 11 },
+    version: 12,
+    rules: { id: 'evolab-drift-cellular', version: 12 },
     snapshot: {
       ...(source.snapshot.biologicalShade
         ? { biologicalShade: { ...source.snapshot.biologicalShade } }

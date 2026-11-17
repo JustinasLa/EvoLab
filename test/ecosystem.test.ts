@@ -2929,7 +2929,7 @@ describe('telemetry persistence, migration and complete candidate validation', (
             lifeHistoryLog,
             ...actualEcology
           } = ecology(world.save());
-        expect(world.save().version).toBe(19);
+        expect(world.save().version).toBe(20);
         expect(lifeHistoryLog).toEqual({
           version: 1,
           originTick: tick,

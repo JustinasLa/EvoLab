@@ -87,6 +87,7 @@ import {
   observedGenome,
   type RefugeBrush,
   type ShadeBrush,
+  type WorldFileV19,
   type WorldFileV18,
   type WorldFileV17,
   type WorldFileV16,
@@ -359,6 +360,7 @@ function validInterventions(
   value: unknown,
   file:
     | WorldFile
+    | WorldFileV19
     | WorldFileV18
     | WorldFileV17
     | WorldFileV16
@@ -395,6 +397,7 @@ function validInterventions(
       file.version === 16 ||
       file.version === 17 ||
       file.version === 18 ||
+      file.version === 19 ||
       file.version === WORLD_VERSION
         ? 5
         : file.version === 10 || file.version === 11 || file.version === 12
@@ -462,6 +465,7 @@ function validInterventions(
           file.version === 16 ||
           file.version === 17 ||
           file.version === 18 ||
+          file.version === 19 ||
           file.version === WORLD_VERSION)) ||
       (row.kind === 'shade-paint' &&
         (file.version === 10 ||
@@ -473,6 +477,7 @@ function validInterventions(
           file.version === 16 ||
           file.version === 17 ||
           file.version === 18 ||
+          file.version === 19 ||
           file.version === WORLD_VERSION))
     ) {
       if (
@@ -540,6 +545,7 @@ function validInterventions(
             file.version === 16 ||
             file.version === 17 ||
             file.version === 18 ||
+            file.version === 19 ||
             file.version === WORLD_VERSION)) ||
         (row.kind === 'shade-mode' &&
           (file.version === 10 ||
@@ -551,6 +557,7 @@ function validInterventions(
             file.version === 16 ||
             file.version === 17 ||
             file.version === 18 ||
+            file.version === 19 ||
             file.version === WORLD_VERSION))
       ) {
         if (
@@ -575,6 +582,7 @@ function validInterventions(
             file.version === 16 ||
             file.version === 17 ||
             file.version === 18 ||
+            file.version === 19 ||
             file.version === WORLD_VERSION)) ||
         (row.kind === 'shade-clear' &&
           (file.version === 10 ||
@@ -586,6 +594,7 @@ function validInterventions(
             file.version === 16 ||
             file.version === 17 ||
             file.version === 18 ||
+            file.version === 19 ||
             file.version === WORLD_VERSION))
       ) {
         if (
@@ -624,6 +633,7 @@ function validInterventions(
           file.version === 16 ||
           file.version === 17 ||
           file.version === 18 ||
+          file.version === 19 ||
           file.version === WORLD_VERSION)
       ) {
         if (
@@ -673,6 +683,7 @@ function validInterventions(
           file.version === 16 ||
           file.version === 17 ||
           file.version === 18 ||
+          file.version === 19 ||
           file.version === WORLD_VERSION)
       ) {
         if (
@@ -742,6 +753,7 @@ function validInterventions(
     file.version === 16 ||
     file.version === 17 ||
     file.version === 18 ||
+    file.version === 19 ||
     file.version === WORLD_VERSION
   ) {
     let enabled = file.thermalRefuges.enabled;
@@ -763,6 +775,7 @@ function validInterventions(
     file.version === 16 ||
     file.version === 17 ||
     file.version === 18 ||
+    file.version === 19 ||
     file.version === WORLD_VERSION
   ) {
     let enabled = file.shadeHabitats.enabled;
@@ -781,6 +794,7 @@ function validInterventions(
     file.version === 16 ||
     file.version === 17 ||
     file.version === 18 ||
+    file.version === 19 ||
     file.version === WORLD_VERSION
   ) {
     let policy = file.mutationPolicy;
@@ -806,6 +820,7 @@ function validInterventions(
         file.version === 16 ||
         file.version === 17 ||
         file.version === 18 ||
+        file.version === 19 ||
         file.version === WORLD_VERSION) &&
         sameTerrain(previousTerrain, file.terrain))) &&
     (!previousShock ||
@@ -2014,6 +2029,7 @@ export class Ecosystem {
     const parsed: unknown = JSON.parse(text);
     const f = parsed as
       | WorldFile
+      | WorldFileV19
       | WorldFileV18
       | WorldFileV17
       | WorldFileV16
@@ -2051,6 +2067,7 @@ export class Ecosystem {
         f.version !== 16 &&
         f.version !== 17 &&
         f.version !== 18 &&
+        f.version !== 19 &&
         f.version !== WORLD_VERSION) ||
       !validSettings(f.settings) ||
       !integer(f.random, -2147483648, 4294967295) ||
@@ -2065,7 +2082,7 @@ export class Ecosystem {
       f.organisms.length > LIMIT
     )
       throw new Error(
-        'Not a valid EvoLab ecosystem (version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 or 19).',
+        'Not a valid EvoLab ecosystem (version 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 or 20).',
       );
     if (
       (f.version === 6 ||
@@ -2081,6 +2098,7 @@ export class Ecosystem {
         f.version === 16 ||
         f.version === 17 ||
         f.version === 18 ||
+        f.version === 19 ||
         f.version === WORLD_VERSION) &&
       !validTerrain(f.terrain)
     )
@@ -2098,6 +2116,7 @@ export class Ecosystem {
       f.version === 16 ||
       f.version === 17 ||
       f.version === 18 ||
+      f.version === 19 ||
       f.version === WORLD_VERSION
         ? parseRefuges(f.thermalRefuges)
         : emptyRefuges();
@@ -2111,6 +2130,7 @@ export class Ecosystem {
       f.version === 16 ||
       f.version === 17 ||
       f.version === 18 ||
+      f.version === 19 ||
       f.version === WORLD_VERSION
         ? parseShade(f.shadeHabitats)
         : emptyShade();
@@ -2126,6 +2146,7 @@ export class Ecosystem {
         f.version === 16 ||
         f.version === 17 ||
         f.version === 18 ||
+        f.version === 19 ||
         f.version === WORLD_VERSION) &&
       !validMutationPolicy(f.mutationPolicy)
     )
@@ -2145,6 +2166,7 @@ export class Ecosystem {
         f.version === 16 ||
         f.version === 17 ||
         f.version === 18 ||
+        f.version === 19 ||
         f.version === WORLD_VERSION) &&
       !validInterventions(f.interventions, f)
     )
@@ -2164,6 +2186,7 @@ export class Ecosystem {
         f.version === 16 ||
         f.version === 17 ||
         f.version === 18 ||
+        f.version === 19 ||
         f.version === WORLD_VERSION
           ? f.terrain
           : DEFAULT_TERRAIN,
@@ -2181,6 +2204,7 @@ export class Ecosystem {
       f.version === 16 ||
       f.version === 17 ||
       f.version === 18 ||
+      f.version === 19 ||
       f.version === WORLD_VERSION
         ? structuredClone(f.mutationPolicy)
         : legacyMutation();
@@ -2206,6 +2230,7 @@ export class Ecosystem {
           f.version === 16 ||
           f.version === 17 ||
           f.version === 18 ||
+          f.version === 19 ||
           f.version === WORLD_VERSION) &&
           new Set(values).size !== values.length)
       )
@@ -2227,6 +2252,7 @@ export class Ecosystem {
         ((f.version === 16 ||
           f.version === 17 ||
           f.version === 18 ||
+          f.version === 19 ||
           f.version === WORLD_VERSION) &&
           (o.genome as Genome)?.controller &&
           typeof o.neuralBlocked !== 'boolean') ||
@@ -2245,6 +2271,7 @@ export class Ecosystem {
         f.version === 16 ||
         f.version === 17 ||
         f.version === 18 ||
+        f.version === 19 ||
         f.version === WORLD_VERSION
           ? validGenome(
               o.genome,
@@ -2256,15 +2283,17 @@ export class Ecosystem {
                 f.version === 16 ||
                 f.version === 17 ||
                 f.version === 18 ||
+                f.version === 19 ||
                 f.version === WORLD_VERSION,
               f.version === 14 ||
                 f.version === 15 ||
                 f.version === 16 ||
                 f.version === 17 ||
                 f.version === 18 ||
+                f.version === 19 ||
                 f.version === WORLD_VERSION,
               f.version >= 16,
-              f.version === 18 || f.version === WORLD_VERSION,
+              f.version === 18 || f.version === 19 || f.version === WORLD_VERSION,
               f.version >= 19,
             )
           : validHistoricalGenome(o.genome))
@@ -2283,6 +2312,7 @@ export class Ecosystem {
           f.version === 16 ||
           f.version === 17 ||
           f.version === 18 ||
+          f.version === 19 ||
           f.version === WORLD_VERSION
             ? cloneGenome(o.genome as Genome)
             : migrateHistoricalGenome(o.genome as HistoricalGenome),
@@ -2292,7 +2322,10 @@ export class Ecosystem {
       for (const p of positions(organism)) {
         world.occupied[p] = o.id;
         if (
-          (f.version === 17 || f.version === 18 || f.version === WORLD_VERSION) &&
+          (f.version === 17 ||
+            f.version === 18 ||
+            f.version === 19 ||
+            f.version === WORLD_VERSION) &&
           f.nutrientCycle !== null &&
           world.food[p]
         )
@@ -2303,7 +2336,10 @@ export class Ecosystem {
     for (let i = 0; i < world.food.length; i++)
       if (world.walls[i]) {
         if (
-          (f.version === 17 || f.version === 18 || f.version === WORLD_VERSION) &&
+          (f.version === 17 ||
+            f.version === 18 ||
+            f.version === 19 ||
+            f.version === WORLD_VERSION) &&
           f.nutrientCycle !== null &&
           world.food[i]
         )
@@ -2335,6 +2371,7 @@ export class Ecosystem {
       f.version === 16 ||
       f.version === 17 ||
       f.version === 18 ||
+      f.version === 19 ||
       f.version === WORLD_VERSION
         ? { ...structuredClone(f.interventions), version: 5 }
         : emptyInterventions(f.settings, f.tick, true);
@@ -2363,6 +2400,7 @@ export class Ecosystem {
       f.version === 16 ||
       f.version === 17 ||
       f.version === 18 ||
+      f.version === 19 ||
       f.version === WORLD_VERSION ||
       f.version === 8
         ? LineageArchive.load(
@@ -2379,26 +2417,29 @@ export class Ecosystem {
               f.version === 16 ||
               f.version === 17 ||
               f.version === 18 ||
+              f.version === 19 ||
               f.version === WORLD_VERSION,
             f.version === 14 ||
               f.version === 15 ||
               f.version === 16 ||
               f.version === 17 ||
               f.version === 18 ||
+              f.version === 19 ||
               f.version === WORLD_VERSION,
             f.version === 15 ||
               f.version === 16 ||
               f.version === 17 ||
               f.version === 18 ||
+              f.version === 19 ||
               f.version === WORLD_VERSION,
             f.nextId,
             f.version >= 16,
-            f.version === 18 || f.version === WORLD_VERSION,
+            f.version === 18 || f.version === 19 || f.version === WORLD_VERSION,
             f.version >= 19,
           )
         : LineageArchive.legacy(world.organisms.values(), f.tick);
     world.lifeHistoryLog =
-      f.version === 18 || f.version === WORLD_VERSION
+      f.version === 18 || f.version === 19 || f.version === WORLD_VERSION
         ? validateLifeHistoryLog(
             f.lifeHistoryLog,
             f.tick,
@@ -2408,7 +2449,7 @@ export class Ecosystem {
           )
         : emptyLifeHistoryLog(f.tick);
     world.nutrientCycle =
-      f.version === 17 || f.version === 18 || f.version === WORLD_VERSION
+      f.version === 17 || f.version === 18 || f.version === 19 || f.version === WORLD_VERSION
         ? parseNutrients(f.nutrientCycle, f.tick)
         : null;
     if (world.nutrientCycle)

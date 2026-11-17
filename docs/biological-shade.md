@@ -40,8 +40,8 @@ rule, not calibrated radiation or a promise of cooperation.
 
 ## Persistence and presentation
 
-Native world format 19, cellular rules 11 and measurement export 11 add this
-opt-in to the world18 life-history baseline. No genome or blueprint version change is
+Native world format 20, cellular rules 12 and measurement export 12 add this
+opt-in to the world19 evolving-senses baseline. No genome or blueprint version change is
 needed. Experiment comparisons inherit the mode from their checkpoint; seeded
 experiment batches start with it disabled. Native saves
 must contain exactly `{version: 1, enabled: boolean}` for biological shade; reject

@@ -237,8 +237,8 @@ describe('life history with finite nutrient ecology', () => {
     for (const branch of [result.control, result.treatment]) check(Ecosystem.load(branch.state));
     expect(JSON.parse(result.recipe).rules).toEqual({
       id: 'evolab-drift-cellular',
-      version: 11,
-      worldVersion: 19,
+      version: 12,
+      worldVersion: 20,
     });
     const replay = createRecipeComparison(result.recipe);
     while (replay.advance(() => 0).tick < 33) {}
