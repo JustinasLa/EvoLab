@@ -40,10 +40,10 @@ rule, not calibrated radiation or a promise of cooperation.
 
 ## Persistence and presentation
 
-World18, cellular rules10 and measurement11 add this opt-in to the world17 nutrient
-baseline. Reconcile these envelopes against current main at serial integration;
-concurrent reserved-energy, life-history and sensory paths must remain intact.
-No genome or blueprint version change is needed. Native saves
+Native world format 18, cellular rules 10 and measurement export 11 add this
+opt-in to the world17 nutrient baseline. No genome or blueprint version change is
+needed. Experiment comparisons inherit the mode from their checkpoint; seeded
+experiment batches start with it disabled. Native saves
 must contain exactly `{version: 1, enabled: boolean}` for biological shade; reject
 unknown/missing fields and future versions before replacement. Older saves ignore
 previously unowned root extensions of that name and receive disabled mode.
@@ -59,6 +59,8 @@ historical biological field. Existing telemetry records actual energy changes.
 `test/biological-shade.test.ts` covers hot/cold self and neighbor consequences, light and food
 costs, maintenance, finite-material conservation, overlap/saturation, rotations,
 wrapping, movement/death/birth timing, disabled identity and strict migrations.
-Worker/UI fixtures and `test/browser/biological-shade.spec.ts` cover opt-in/reset cancellation, source inspection, exact
-pause/step, save/reload, failed import and detached frame ownership. Standard full
-checks and `test/long-run/biological-shade.spec.ts` soak/throughput verification require the coordinator's grants. A focused pass is not full acceptance.
+Worker/UI fixtures and `test/browser/biological-shade.spec.ts` cover opt-in/reset
+cancellation, source inspection, exact pause/step and load continuation against an
+independent engine, save/reload, failed import and detached frame ownership.
+`test/long-run/biological-shade.spec.ts` adds a bounded enabled soak and throughput
+receipt.

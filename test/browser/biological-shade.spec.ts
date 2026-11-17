@@ -32,7 +32,7 @@ test('biological shade reset, source-separated inspection, exact step and reject
     enabled: true,
   });
 
-  const reference = new Ecosystem({ ...DEFAULTS, mutation: 0, climate: 0, nutrients: 0 }, false, {
+  let reference = new Ecosystem({ ...DEFAULTS, mutation: 0, climate: 0, nutrients: 0 }, false, {
     biologicalShade: true,
     nutrientCycle: true,
   });
@@ -60,8 +60,20 @@ test('biological shade reset, source-separated inspection, exact step and reject
       mimeType: 'application/json',
       buffer: Buffer.from(JSON.stringify(file)),
     });
-  await load(reference.save());
-  await expect(page.locator('#notice')).toContainText('World restored');
+  // A successful load resumes playback, so pause and compare the native world
+  // with an independent engine continued for exactly the ticks that elapsed.
+  const loadAndPause = async (file: unknown): Promise<Ecosystem> => {
+    await load(file);
+    await expect(page.locator('#notice')).toContainText('World restored');
+    await page.locator('#pause').click();
+    await expect(page.locator('#run-state')).toHaveText('PAUSED');
+    const native = JSON.parse((await nativeDownload(page)).toString()),
+      continued = Ecosystem.load(JSON.stringify(file));
+    while (continued.tick < native.tick) continued.step();
+    expect(native).toEqual(continued.save());
+    return continued;
+  };
+  reference = await loadAndPause(reference.save());
   await expect(page.locator('#biological-shade-summary')).toContainText('1 living armor cells');
   await page.locator('#biological-shade-x').fill('120');
   await page.locator('#biological-shade-y').fill('78');
@@ -94,15 +106,17 @@ test('biological shade reset, source-separated inspection, exact step and reject
   await expect(page.locator('#run-state')).toHaveText('PAUSED');
   expect(JSON.parse((await nativeDownload(page)).toString())).toEqual(reference.save());
   expect(reference.save().version).toBe(WORLD_VERSION);
-  await load(reference.save());
-  await expect(page.locator('#notice')).toContainText('World restored');
+  reference = await loadAndPause(reference.save());
   await page.locator('#step').click();
   reference.step();
   expect(JSON.parse((await nativeDownload(page)).toString())).toEqual(reference.save());
   const disabled = new Ecosystem(DEFAULTS, true, { nutrientCycle: true }).save();
-  await load({ ...disabled, version: 17, biologicalShade: { previouslyUnowned: true } });
-  await expect(page.locator('#notice')).toContainText('World restored');
+  const predecessor = await loadAndPause({
+    ...disabled,
+    version: 17,
+    biologicalShade: { previouslyUnowned: true },
+  });
+  expect(predecessor.save().biologicalShade).toEqual({ version: 1, enabled: false });
   await page.locator('#ecosystem-tab').click();
   await expect(page.locator('#biological-shade-summary')).toContainText('Disabled');
-  expect(JSON.parse((await nativeDownload(page)).toString())).toEqual(disabled);
 });

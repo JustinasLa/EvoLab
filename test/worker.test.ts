@@ -3361,6 +3361,7 @@ describe('integrated extinction and telemetry', () => {
             ? {
                 ...file,
                 version: WORLD_VERSION,
+                biologicalShade: { version: 1, enabled: false },
                 nutrientCycle: null,
                 lifeHistoryLog: {
                   version: 1,
@@ -3382,6 +3383,7 @@ describe('integrated extinction and telemetry', () => {
               ? {
                   ...file,
                   version: WORLD_VERSION,
+                  biologicalShade: { version: 1, enabled: false },
                   nutrientCycle: null,
                   lifeHistoryLog: {
                     version: 1,
@@ -3404,6 +3406,7 @@ describe('integrated extinction and telemetry', () => {
               : {
                   ...file,
                   version: WORLD_VERSION,
+                  biologicalShade: { version: 1, enabled: false },
                   nutrientCycle: null,
                   lifeHistoryLog: {
                     version: 1,

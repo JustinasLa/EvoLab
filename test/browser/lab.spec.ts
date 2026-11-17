@@ -5388,6 +5388,7 @@ test('B23-1 opt-in empty field retains the complete original climate trajectory 
     assertLegacyLifeHistory(saved);
     const {
       lifeHistoryLog: _lifeHistoryLog,
+      biologicalShade,
       nutrientCycle,
       mutationPolicy: _policy,
       thermalRefuges: _field,
@@ -5395,6 +5396,7 @@ test('B23-1 opt-in empty field retains the complete original climate trajectory 
       shadeHabitats: _shade,
       ...retained
     } = saved;
+    expect(biologicalShade).toEqual({ version: 1, enabled: false });
     expect(nutrientCycle).toBeNull();
     expect({
       ...retained,
