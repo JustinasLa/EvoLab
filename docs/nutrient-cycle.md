@@ -48,6 +48,9 @@ field (`null` means disabled). Native16 controllers and blocked-action state
 remain strict and retain exact continuation on migration. Blueprint format5 is
 unchanged: nutrient mode belongs to the world, not an organism blueprint.
 Experiment rules9 and measurement format10 identify this composed ruleset.
+Their successors (world18, blueprint6, rules10, measurement11) keep the same
+`nutrientCycle` field and validation and add inherited senses; see
+[Evolving senses](evolving-senses.md).
 
 Resource views expose both planes, pool totals in N, current stored energy in E,
 and the latest completed tick's energy balance (before + sunlight = after +
