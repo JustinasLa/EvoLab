@@ -3,6 +3,9 @@ import { Ecosystem } from '../src/ecosystem';
 import { DEFAULTS, founder, index, type Genome } from '../src/model';
 import * as neural from '../src/neural';
 import { NEURAL_HISTORY_LIMIT } from '../src/neural-observation';
+import { neuralHtml } from '../src/neural-view';
+import { EYE_CELL_COST, TEMPERATURE_SAMPLE_COST, newSenses } from '../src/senses';
+import { SENSE_LABELS } from '../src/senses-view';
 
 function scene(action = 1, motor = true, nutrientCycle = false) {
   const controller = neural.newController();
@@ -212,4 +215,52 @@ describe('session neural observation', () => {
     world.step();
     expect(latest(world).outcome.throughTick).toBe(1);
   });
+});
+
+it('records expanded-senses evaluations with their actual inputs, rays and paid sensing', () => {
+  const controller = neural.newController(2);
+  controller.biases[5] = 1;
+  const genome: Genome = {
+    ...founder(0),
+    cells: [
+      { x: 0, y: 0, type: 8 },
+      { x: 0, y: 1, type: 3 },
+      { x: 1, y: 1, type: 5 },
+    ],
+    tempo: 2,
+    controller,
+    senses: { ...newSenses(), range: 2, temperature: true },
+  };
+  const world = new Ecosystem({ ...DEFAULTS, climate: 0, mutation: 0, nutrients: 0 }, false);
+  const organism = world.spawn(genome, 60, 60, undefined, undefined, 0)!;
+  organism.age = 1;
+  organism.energy = 30;
+  world.food[index(60, 58)] = 1;
+  world.selectNeural(organism.id, true);
+  world.selectPerception(organism.id);
+  const evaluate = vi.spyOn(neural, 'neuralAction');
+  world.step();
+  expect(evaluate).toHaveBeenCalledTimes(1);
+  evaluate.mockRestore();
+  const decision = latest(world);
+  const perception = world.perception()!;
+  expect(decision.inputs).toHaveLength(10);
+  expect(decision.inputs).toEqual(perception.senses!.inputs);
+  expect(decision.inputs[0]).toBe(0.5);
+  expect(decision.rays).toEqual(perception.rays);
+  expect(decision.rays[0]).toMatchObject({ cells: [index(60, 59), index(60, 58)], stop: 'food' });
+  expect(decision).toMatchObject({ action: 'forward', result: 'accepted' });
+  expect(decision.evaluationCost).toBeCloseTo(
+    neural.NEURAL_COST + 2 * EYE_CELL_COST + 4 * TEMPERATURE_SAMPLE_COST,
+    14,
+  );
+  expect(decision.before.energy - decision.evaluationCost - decision.actionCost).toBeCloseTo(
+    decision.after.energy,
+    12,
+  );
+  const html = neuralHtml(world.neuralObservation(), world.tick);
+  expect(html).toContain('Controller v2; actual captured topology 10–4–4; 56 weights / 8 biases.');
+  expect(html).toContain('viewBox="0 0 370 458"');
+  expect(html).toContain(`I10 · ${SENSE_LABELS[9]}`);
+  expect(html).toContain('Evaluation cost includes paid eye and temperature sensing.');
 });

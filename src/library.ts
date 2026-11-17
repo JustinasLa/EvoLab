@@ -167,7 +167,8 @@ export function classifyRecord(key: unknown, value: unknown): LibraryRow {
     declaration.version !== 4 &&
     declaration.version !== 5 &&
     declaration.version !== 6 &&
-    declaration.version !== 7
+    declaration.version !== 7 &&
+    declaration.version !== 8
   )
     return problem('unsupported', 'Unsupported blueprint version; preserved read-only.');
   let reason = 'Invalid supported record envelope.';

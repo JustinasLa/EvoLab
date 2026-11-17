@@ -541,7 +541,7 @@ describe('passive inherited sensory data and reversible compatibility', () => {
     const parsed = parseBlueprint(
       serializeBlueprint({ name: 'Stored only', description: '', genome }),
     );
-    expect(parsed.version).toBe(7);
+    expect(parsed.version).toBe(8);
     expect(parsed.genome).toEqual(genome);
     expect(Ecosystem.load(JSON.stringify(before)).save()).toEqual(before);
     expect(world.save()).toEqual(before);
@@ -852,7 +852,7 @@ describe('passive inherited sensory data and reversible compatibility', () => {
           parsed = parseBlueprint(baselineFixtures['blueprint1.json']);
         expect(parsed).toEqual({
           ...old,
-          version: 7,
+          version: 8,
           genome: { ...old.genome, behavior: { version: 1, mode: 'legacy' } },
         });
         for (const name of [
@@ -2926,7 +2926,7 @@ describe('telemetry persistence, migration and complete candidate validation', (
             lifeHistoryLog,
             ...actualEcology
           } = ecology(world.save());
-        expect(world.save().version).toBe(19);
+        expect(world.save().version).toBe(20);
         expect(lifeHistoryLog).toEqual({
           version: 1,
           originTick: tick,

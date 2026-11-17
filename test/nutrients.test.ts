@@ -136,7 +136,7 @@ describe('finite nutrient ecology', () => {
     expect(world.save()).toEqual(after);
     check(world);
   });
-  it.each([17, 18] as const)(
+  it.each([17, 18, 19] as const)(
     'preserves native nutrient%i continuation while rejecting dormancy activation under that schema',
     (version) => {
       const world = habitat(true);
@@ -183,7 +183,7 @@ describe('finite nutrient ecology', () => {
     expect(result.control.state).not.toEqual(result.treatment.state);
     expect(JSON.parse(result.recipe).rules).toEqual({
       id: 'evolab-drift-cellular',
-      version: 11,
+      version: 12,
       worldVersion: WORLD_VERSION,
     });
     const replay = createRecipeComparison(result.recipe);

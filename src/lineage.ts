@@ -1,6 +1,7 @@
 import { sameLifeHistory } from './life-history';
 import { birthObservation, validBirthEvent, type BirthEvent } from './mutation-evidence';
 import { sameController } from './neural';
+import { sameSenses } from './senses';
 import {
   LIMIT,
   LINEAGE_SUMMARY_CAPACITY,
@@ -80,6 +81,7 @@ export function sameInherited(first: Genome, second: Genome): boolean {
     sameDormancy(first.dormancy, second.dormancy) &&
     Object.is(first.mutationPropensity, second.mutationPropensity) &&
     sameController(first.controller, second.controller) &&
+    sameSenses(first.senses, second.senses) &&
     first.behavior.version === second.behavior.version &&
     first.behavior.mode === second.behavior.mode &&
     (first.behavior.mode !== 'evolved' ||
@@ -246,6 +248,7 @@ export class LineageArchive {
     nextId = 1e9,
     neural = true,
     lifeHistory = true,
+    senses = true,
     dormancy = true,
   ): LineageArchive {
     const state = validateArchive(
@@ -260,6 +263,7 @@ export class LineageArchive {
       nextId,
       neural,
       lifeHistory,
+      senses,
       dormancy,
     );
     const archive = new LineageArchive(state.originKind, state.originTick);
@@ -297,6 +301,7 @@ function validateArchive(
   nextId: number,
   neural: boolean,
   lifeHistory: boolean,
+  senses: boolean,
   dormancy: boolean,
 ): LineageArchiveState {
   const version = (value as LineageArchiveState | null)?.version;
@@ -396,7 +401,15 @@ function validateArchive(
             ? exact(row.foundingGenome, ['cells', 'preference', 'tolerance', 'tempo']) &&
               validHistoricalGenome(row.foundingGenome) &&
               row.foundingGenome.cells.every((cell) => exact(cell, ['x', 'y', 'type']))
-            : validGenome(row.foundingGenome, active, propensity, neural, lifeHistory, dormancy)),
+            : validGenome(
+                row.foundingGenome,
+                active,
+                propensity,
+                neural,
+                lifeHistory,
+                senses,
+                dormancy,
+              )),
       );
       const group = physical.get(row.id);
       if (historical)
@@ -424,7 +437,7 @@ function validateArchive(
     if (event?.kind === 'reproduction') {
       requireArchive(
         state.version === 2 &&
-          validBirthEvent(event, nextSpecies, nextId, neural, lifeHistory, dormancy) &&
+          validBirthEvent(event, nextSpecies, nextId, neural, lifeHistory, senses, dormancy) &&
           integer(event.tick, state.mutationOriginTick! + 1, tick) &&
           event.tick >= eventTick,
       );

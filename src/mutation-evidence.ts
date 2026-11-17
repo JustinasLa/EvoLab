@@ -11,9 +11,14 @@ import {
 } from './model';
 import { MUTATION_CHANNELS, type MutationChannel } from './mutation';
 import { NEURAL_CHANNELS, sameController } from './neural';
+import { SENSE_CHANNELS, sameSenses } from './senses';
 
 export type AttemptChannel =
-  MutationChannel | 'propensity' | 'lifeHistory' | (typeof NEURAL_CHANNELS)[number];
+  | MutationChannel
+  | 'propensity'
+  | 'lifeHistory'
+  | (typeof NEURAL_CHANNELS)[number]
+  | (typeof SENSE_CHANNELS)[number];
 export interface BirthEvent {
   kind: 'reproduction';
   /** Absent in pre-life-history observations; never reconstruct historic payments. */
@@ -49,9 +54,10 @@ function projection(
   value: unknown,
   neural: boolean,
   lifeHistory: boolean,
+  senses: boolean,
   dormancy: boolean,
 ): value is Genome {
-  if (!validGenome(value, true, true, neural, lifeHistory, dormancy)) return false;
+  if (!validGenome(value, true, true, neural, lifeHistory, senses, dormancy)) return false;
   const genome = value as Genome;
   return (
     Object.keys(genome).length ===
@@ -59,6 +65,7 @@ function projection(
         (genome.mutationPropensity === undefined ? 0 : 1) +
         (genome.lifeHistory ? 1 : 0) +
         (genome.controller ? 1 : 0) +
+        (genome.senses ? 1 : 0) +
         (genome.dormancy ? 1 : 0) && genome.cells.every((cell) => Object.keys(cell).length === 3)
   );
 }
@@ -69,6 +76,7 @@ export function inheritedDifference(parent: Genome, child: Genome): boolean {
     !sameDormancy(parent.dormancy, child.dormancy) ||
     parent.preference !== child.preference ||
     !sameController(parent.controller, child.controller) ||
+    !sameSenses(parent.senses, child.senses) ||
     !Object.is(parent.tolerance, child.tolerance) ||
     !Object.is(parent.tempo, child.tempo) ||
     parent.mutationPropensity !== child.mutationPropensity ||
@@ -117,6 +125,14 @@ function possibleChanges(event: BirthEvent, child: Genome): boolean {
     parent.behavior.version === child.behavior.version &&
     parent.behavior.mode === child.behavior.mode &&
     !!parent.controller === !!child.controller &&
+    parent.controller?.version === child.controller?.version &&
+    !!parent.senses === !!child.senses &&
+    (!parent.senses ||
+      !child.senses ||
+      (['orientation', 'range', 'fov', 'temperature'] as const).every(
+        (key, offset) =>
+          parent.senses![key] === child.senses![key] || channels.includes(SENSE_CHANNELS[offset]),
+      )) &&
     (!parent.controller ||
       !child.controller ||
       ((channels.includes('neural-weight') ||
@@ -159,6 +175,7 @@ export function validBirthEvent(
   nextId: number,
   neural = true,
   lifeHistory = true,
+  senses = true,
   dormancy = true,
 ): boolean {
   if (!Array.isArray(event.channels)) return false;
@@ -170,13 +187,16 @@ export function validBirthEvent(
     event.kind === 'reproduction' &&
     integer(event.id, 1, nextSpecies - 1) &&
     integer(event.parentOrganismId, 1, nextId - 1) &&
-    projection(event.parentGenome, neural, lifeHistory, dormancy) &&
+    projection(event.parentGenome, neural, lifeHistory, senses, dormancy) &&
     (!event.parentGenome.lifeHistory ||
       (event.payment !== undefined && (!event.gate || event.channels.includes('lifeHistory')))) &&
     typeof event.gate === 'boolean' &&
     Array.isArray(event.channels) &&
     event.channels.length <=
-      6 + (event.parentGenome.controller ? 1 : 0) + (event.parentGenome.lifeHistory ? 1 : 0) &&
+      6 +
+        (event.parentGenome.controller ? 1 : 0) +
+        (event.parentGenome.lifeHistory ? 1 : 0) +
+        (event.parentGenome.senses ? 1 : 0) &&
     new Set(event.channels).size === event.channels.length &&
     event.channels.every((channel) =>
       [
@@ -184,9 +204,11 @@ export function validBirthEvent(
         'propensity',
         ...(neural && event.parentGenome.controller ? NEURAL_CHANNELS : []),
         ...(lifeHistory ? ['lifeHistory'] : []),
+        ...(senses && event.parentGenome.senses ? SENSE_CHANNELS : []),
       ].includes(channel),
     ) &&
     !(event.channels.includes('neural-weight') && event.channels.includes('neural-bias')) &&
+    SENSE_CHANNELS.filter((channel) => event.channels.includes(channel)).length <= 1 &&
     (event.gate || event.channels.every((channel) => channel === 'propensity')) &&
     (!event.channels.includes('propensity') ||
       event.parentGenome.mutationPropensity !== undefined) &&
@@ -198,7 +220,7 @@ export function validBirthEvent(
       ? event.childOrganismId === null &&
         event.childLineageId === null &&
         event.placementAttempts === 3
-      : projection(event.childGenome, neural, lifeHistory, dormancy) &&
+      : projection(event.childGenome, neural, lifeHistory, senses, dormancy) &&
         sameDormancy(event.parentGenome.dormancy, event.childGenome.dormancy) &&
         possibleChanges(event, event.childGenome) &&
         integer(event.childOrganismId, event.parentOrganismId + 1, nextId - 1) &&

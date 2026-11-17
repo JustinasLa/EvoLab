@@ -22,6 +22,7 @@ import { parseBlueprint, serializeBlueprint } from '../src/blueprint';
 import { organismHtml } from '../src/view';
 import { serializeMeasurements } from '../src/measurement-export';
 import { NEURAL_COST, newController } from '../src/neural';
+import { newSenses } from '../src/senses';
 import { EventRecorder } from '../src/event-journal';
 import { startReplayWorker, type ReplayScope } from '../src/event-replay-worker';
 import type { ReplayResponse } from '../src/event-model';
@@ -71,7 +72,7 @@ describe('bounded inherited dormancy', () => {
       copy = cloneGenome(source);
     expect(copy).toEqual(source);
     expect(copy.dormancy).not.toBe(source.dormancy);
-    expect(validGenome(source, true, true, true, true, false)).toBe(false);
+    expect(validGenome(source, true, true, true, true, true, false)).toBe(false);
     expect(validGenome({ ...source, dormancy: undefined })).toBe(false);
     copy.dormancy = Object.fromEntries(
       Object.entries(copy.dormancy!).reverse(),
@@ -321,7 +322,7 @@ describe('bounded inherited dormancy', () => {
     const blueprint = JSON.parse(
       serializeBlueprint({ name: 'Neural', description: '', genome: design }),
     );
-    expect(blueprint.version).toBe(7);
+    expect(blueprint.version).toBe(8);
     expect(parseBlueprint(JSON.stringify({ ...blueprint, version: 5 })).genome).toEqual(design);
   });
 
@@ -355,32 +356,40 @@ describe('bounded inherited dormancy', () => {
     expect(world.save().lifeHistoryLog.events.at(-1)).toMatchObject({ kind: 'age' });
   });
 
-  it('records no neural decisions while dormant and resumes observation after paid waking', () => {
-    const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
-    const design = genome(true, 5);
-    design.tempo = 2;
-    design.controller = newController();
-    design.controller.biases[5] = 1;
-    const organism = world.spawn(design, 60, 60)!;
-    organism.energy = 20;
-    organism.reserves!.stored = 12;
-    world.selectNeural(organism.id, true);
-    world.shock('heat');
-    world.eventUntil = 3;
-    advance(world, 2);
-    expect(organism.reserves!.dormant).toBe(true);
-    expect(world.neuralObservation()).toMatchObject({
-      status: 'awaiting-evaluation',
-      decisions: [],
-    });
-    world.step();
-    expect(organism.reserves!.dormant).toBe(false);
-    world.step();
-    const observed = world.neuralObservation()!;
-    expect(observed.status).toBe('observed');
-    expect(observed.decisions.map((decision) => decision.tick)).toEqual([world.tick]);
-    expect(observed.decisions[0].result).toBe('accepted');
-  });
+  it.each([false, true])(
+    'records no neural decisions or sensing while dormant and resumes after paid waking (senses=%s)',
+    (sensing) => {
+      const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
+      const design = genome(true, 5);
+      design.tempo = 2;
+      design.controller = newController(sensing ? 2 : 1);
+      design.controller.biases[5] = 1;
+      if (sensing) design.senses = { ...newSenses(), temperature: true };
+      const organism = world.spawn(design, 60, 60)!;
+      organism.energy = 20;
+      organism.reserves!.stored = 12;
+      world.selectNeural(organism.id, true);
+      world.selectPerception(organism.id);
+      world.shock('heat');
+      world.eventUntil = 3;
+      advance(world, 2);
+      expect(organism.reserves!.dormant).toBe(true);
+      expect(world.neuralObservation()).toMatchObject({
+        status: 'awaiting-evaluation',
+        decisions: [],
+      });
+      expect(world.perception()).toBeNull();
+      world.step();
+      expect(organism.reserves!.dormant).toBe(false);
+      world.step();
+      const observed = world.neuralObservation()!;
+      expect(observed.status).toBe('observed');
+      expect(observed.decisions.map((decision) => decision.tick)).toEqual([world.tick]);
+      expect(observed.decisions[0].result).toBe('accepted');
+      if (sensing) expect(observed.decisions[0].inputs).toHaveLength(10);
+      if (sensing) expect(world.perception()).not.toBeNull();
+    },
+  );
 
   it('suspends neural actions during dormancy and preserves paid waking and joint inheritance', () => {
     const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
@@ -461,8 +470,8 @@ describe('bounded inherited dormancy', () => {
       expect(result.treatment.state).toBe(JSON.stringify(direct.save()));
       expect(JSON.parse(result.recipe).rules).toEqual({
         id: 'evolab-drift-cellular',
-        version: 11,
-        worldVersion: 19,
+        version: 12,
+        worldVersion: 20,
       });
       const replay = createRecipeComparison(result.recipe);
       while (replay.advance(() => 0).tick < 6) {}
@@ -494,7 +503,7 @@ describe('bounded inherited dormancy', () => {
       const event = recorder.snapshot().events.at(-1)!;
       expect(event.kind).toBe('lineage-extinction');
       const evidence = recorder.replay(event.id);
-      expect(evidence.worldVersion).toBe(19);
+      expect(evidence.worldVersion).toBe(20);
       expect(world.telemetry.pending.reserves!.discarded).toBeGreaterThan(0);
       const tasks: (() => void)[] = [];
       const messages: ReplayResponse[] = [];

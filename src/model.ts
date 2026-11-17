@@ -4,13 +4,14 @@ import type { MutationPolicy } from './mutation';
 import type { EventJournal, EventReplay } from './event-model';
 import type { NeuralObservation } from './neural-observation';
 import { validController, type NeuralController } from './neural';
+import { validSenses, type Senses } from './senses';
 export const WIDTH = 240;
 export const HEIGHT = 156;
 export const LIMIT = 1600;
 export const TELEMETRY_INTERVAL_TICKS = 30;
 export const TELEMETRY_CAPACITY = 180;
 export const WORLD_MAX_BYTES = 2_500_000;
-export const WORLD_VERSION = 19;
+export const WORLD_VERSION = 20;
 export const LINEAGE_SUMMARY_CAPACITY = 256;
 export const LINEAGE_EVENT_CAPACITY = 512;
 export const INTERVENTION_CAPACITY = 128;
@@ -53,10 +54,18 @@ export interface PerceptionRay {
   origin: number;
   heading: number;
   cells: number[];
-  stop: PerceptionCategory | 'self' | 'range';
+  stop: PerceptionCategory | 'body' | 'stinger' | 'self' | 'range';
   reaction: Reaction | null;
 }
 export interface Perception {
+  senses?: {
+    inputs: number[];
+    available: boolean[];
+    temperatures: { position: number; value: number }[];
+    eyeCost: number;
+    temperatureCost: number;
+    action: string;
+  };
   id: number;
   tick: number;
   rays: PerceptionRay[];
@@ -89,6 +98,7 @@ export interface Cell {
   legacyExtensions?: LegacyExtensions;
 }
 export interface Genome {
+  senses?: Senses;
   controller?: NeuralController;
   cells: Cell[];
   preference: number;
@@ -666,6 +676,7 @@ export function observedGenome(genome: Genome): Genome {
     behavior: structuredClone(genome.behavior),
     ...(genome.lifeHistory ? { lifeHistory: { ...genome.lifeHistory } } : {}),
     ...(genome.controller ? { controller: structuredClone(genome.controller) } : {}),
+    ...(genome.senses ? { senses: { ...genome.senses } } : {}),
     ...(genome.dormancy ? { dormancy: structuredClone(genome.dormancy) } : {}),
     ...(genome.mutationPropensity === undefined
       ? {}
@@ -727,7 +738,10 @@ export interface WorldFile extends WorldEcology {
 export type HistoricalWorldEcology = Omit<WorldEcology, 'organisms'> & {
   organisms: HistoricalOrganism[];
 };
-export interface WorldFileV18 extends Omit<WorldFile, 'version'> {
+export interface WorldFileV19 extends Omit<WorldFile, 'version'> {
+  version: 19;
+}
+export interface WorldFileV18 extends Omit<WorldFileV19, 'version'> {
   version: 18;
 }
 export interface WorldFileV17 extends Omit<WorldFileV18, 'version' | 'lifeHistoryLog'> {
@@ -1190,6 +1204,7 @@ export function validGenome(
   propensity = true,
   neural = true,
   lifeHistory = true,
+  senses = true,
   dormancy = true,
 ): value is Genome {
   if (
@@ -1201,12 +1216,16 @@ export function validGenome(
         ...(propensity ? ['mutationPropensity'] : []),
         ...(neural ? ['controller'] : []),
         ...(lifeHistory ? ['lifeHistory'] : []),
+        ...(senses ? ['senses'] : []),
         ...(dormancy ? ['dormancy'] : []),
       ],
     ) ||
     !validBehavior(value.behavior, active) ||
     (Object.hasOwn(value, 'lifeHistory') && !validLifeHistory(value.lifeHistory)) ||
-    (Object.hasOwn(value, 'controller') && !validController(value.controller)) ||
+    (Object.hasOwn(value, 'controller') && !validController(value.controller, senses)) ||
+    (Object.hasOwn(value, 'senses') && !validSenses(value.senses)) ||
+    ((value.controller as NeuralController | undefined)?.version === 2) !==
+      Object.hasOwn(value, 'senses') ||
     (Object.hasOwn(value, 'mutationPropensity') && !finite(value.mutationPropensity, 0, 1)) ||
     (Object.hasOwn(value, 'dormancy') && !validDormancy(value.dormancy)) ||
     !denseArray(value.cells)
@@ -1244,6 +1263,7 @@ export function cloneGenome(genome: Genome): Genome {
     behavior: copied.behavior,
     ...(copied.lifeHistory ? { lifeHistory: copied.lifeHistory } : {}),
     ...(copied.controller ? { controller: copied.controller } : {}),
+    ...(copied.senses ? { senses: copied.senses } : {}),
     ...(copied.dormancy ? { dormancy: copied.dormancy } : {}),
     ...(copied.mutationPropensity === undefined
       ? {}
