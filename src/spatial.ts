@@ -166,7 +166,7 @@ export class SpatialObserver {
     this.add(position, 'attackDrained', drained);
     this.add(position, 'attackGained', gained);
   }
-  private window(slot: Slot, complete: boolean): SpatialWindow {
+  private header(slot: Slot, complete: boolean): Omit<SpatialWindow, 'values'> {
     const throughTick = complete ? slot.toTick : this.tick;
     return {
       fromTick: slot.fromTick,
@@ -174,13 +174,15 @@ export class SpatialObserver {
       throughTick,
       complete,
       partial: throughTick - slot.fromTick < SPATIAL_WINDOW_TICKS,
-      values: slot.values.slice(),
       totals: Object.fromEntries(
         SPATIAL_CHANNELS.map((name, at) => [name, slot.totals[at]]),
       ) as SpatialTotals,
     };
   }
-  snapshot(): SpatialSnapshot {
+  private slots(): [Slot, boolean][] {
+    return [...this.completed.map((slot): [Slot, boolean] => [slot, true]), [this.pending, false]];
+  }
+  private meta(): Omit<SpatialSnapshot, 'windows'> {
     return {
       version: SPATIAL_VERSION,
       width: this.width,
@@ -195,26 +197,32 @@ export class SpatialObserver {
       tick: this.tick,
       evictedWindows: this.evictedWindows,
       evictedThroughTick: this.evictedThroughTick,
-      windows: [
-        ...this.completed.map((slot) => this.window(slot, true)),
-        this.window(this.pending, false),
-      ],
+    };
+  }
+  /** Detached copy of every retained window, including bin arrays. */
+  snapshot(): SpatialSnapshot {
+    return {
+      ...this.meta(),
+      windows: this.slots().map(([slot, complete]) => ({
+        ...this.header(slot, complete),
+        values: slot.values.slice(),
+      })),
     };
   }
   /** Bin-free summary for the page; bins stay in the worker in this slice. */
   summary(): SpatialSummary {
-    const { windows, ...rest } = this.snapshot();
+    const bins = this.budget.bins;
     return {
-      ...rest,
-      windows: windows.map(({ values, ...window }) => {
+      ...this.meta(),
+      windows: this.slots().map(([slot, complete]) => {
         let activeBins = 0;
-        for (let bin = 0; bin < this.budget.bins; bin++)
+        for (let bin = 0; bin < bins; bin++)
           for (let channel = 0; channel < SPATIAL_CHANNELS.length; channel++)
-            if (values[channel * this.budget.bins + bin] !== 0) {
+            if (slot.values[channel * bins + bin] !== 0) {
               activeBins++;
               break;
             }
-        return { ...window, activeBins };
+        return { ...this.header(slot, complete), activeBins };
       }),
     };
   }
