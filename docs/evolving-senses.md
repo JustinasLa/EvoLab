@@ -33,6 +33,11 @@ Charge 0.001 energy per provisioned eye ray/range cell, irrespective of occlusio
 plus 0.008 per thermal sample when enabled (0.032 total). These real payments join
 upkeepSpent, in addition to existing 0.02 network evaluation and 0.03 motor-action
 costs. Nonmotor controllers still evaluate/pay; rest still pays sensing/evaluation.
+
+The selected organism's last-perception overlay draws its actual rays and thermal
+samples on the map. The Neural activity panel records the same evaluation's ten
+inputs, eye rays, activations and action; its evaluation cost includes the paid
+sensing. Neither view re-evaluates the network or draws extra random numbers.
 No new random draws occur on evaluation. Selection retains only the actual latest
 evaluation's bounded rays, temperatures, availability and paid costs, not a second
 evaluation. Inspection/drawing consumes no ticks, energy or random draws.
