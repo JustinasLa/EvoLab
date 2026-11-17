@@ -26,16 +26,19 @@ it('measures bounded expanded sensing with real energy, extinction and complete 
           controller: newController(2),
           senses: { ...newSenses(), range: 8, fov: 4, temperature },
         };
+        let species: number | undefined;
         for (let organism = 0; organism < population; organism++) {
           const spawned = world.spawn(
             genome,
             (organism % 60) * 4 + 1,
             Math.floor(organism / 60) * 4 + 1,
-            organism ? 1 : undefined,
+            species,
           )!;
           assert.ok(spawned);
+          species = spawned.species;
           spawned.energy = 56;
         }
+        assert.equal(world.organisms.size, population);
         const initial = JSON.stringify(world.save());
         let endpoint = '';
         for (let repetition = 0; repetition < 2; repetition++) {
