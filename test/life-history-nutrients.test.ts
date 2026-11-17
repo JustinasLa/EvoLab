@@ -70,8 +70,9 @@ describe('life history with finite nutrient ecology', () => {
       let origin = 0;
       for (const endpoint of fixture.endpoints) {
         while (world.tick < endpoint.tick) world.step();
-        const { lifeHistoryLog, ...native } = world.save();
+        const { lifeHistoryLog, biologicalShade, ...native } = world.save();
         expect(lifeHistoryLog).toEqual(emptyLifeHistoryLog(origin));
+        expect(biologicalShade).toEqual({ version: 1, enabled: false });
         const projected = { ...native, version: 17 };
         for (const event of projected.lineageArchive.events)
           if (event.kind === 'reproduction') delete event.payment;

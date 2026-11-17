@@ -24,8 +24,9 @@ describe('life-history composition with canonical neural controllers', () => {
     for (const fixture of captured.outcomes) {
       const world = Ecosystem.load(JSON.stringify(fixture.initial));
       const project = () => {
-        const { lifeHistoryLog: log, nutrientCycle, ...old } = world.save();
+        const { lifeHistoryLog: log, biologicalShade, nutrientCycle, ...old } = world.save();
         expect(log).toEqual(emptyLifeHistoryLog(fixture.initial.tick));
+        expect(biologicalShade).toEqual({ version: 1, enabled: false });
         expect(nutrientCycle).toBeNull();
         const projected = { ...old, version: 16 };
         for (const event of projected.lineageArchive.events)

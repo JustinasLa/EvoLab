@@ -3326,7 +3326,10 @@ describe('integrated extinction and telemetry', () => {
                                       : version === 17
                                         ? { ...current, version: 17 as const }
                                         : version === 18
-                                          ? { ...current, version: 18 as const }
+                                          ? (({ biologicalShade: _mode, ...v18 }) => ({
+                                              ...v18,
+                                              version: 18 as const,
+                                            }))(current)
                                           : current;
       if (version >= 8 && version < 15 && 'lineageArchive' in file)
         file.lineageArchive = historicalArchive(file.lineageArchive);

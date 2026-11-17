@@ -503,9 +503,11 @@ describe('legacy life-history continuation oracle', () => {
         version: _version,
         lineageArchive: _archive,
         lifeHistoryLog: log,
+        biologicalShade,
         nutrientCycle,
         ...ecology
       } = world.save();
+      expect(biologicalShade).toEqual({ version: 1, enabled: false });
       expect(nutrientCycle).toBeNull();
       expect(createHash('sha256').update(JSON.stringify(ecology)).digest('hex')).toBe(hash);
       expect(log).toEqual(emptyLifeHistoryLog(0));
