@@ -30,7 +30,11 @@ export function sensoryDirection(organism: Organism, habitat: Habitat, trace?: P
   return scanSight(organism, habitat, trace);
 }
 
-export function neuralInputs(organism: Organism, habitat: Habitat): number[] {
+export function neuralInputs(
+  organism: Organism,
+  habitat: Habitat,
+  rays?: PerceptionRay[],
+): number[] {
   const inputs = [
     0,
     0,
@@ -39,7 +43,7 @@ export function neuralInputs(organism: Organism, habitat: Habitat): number[] {
     clamp(organism.energy / (organism.genome.cells.length * 3 + 9), 0, 1),
     organism.neuralBlocked ? 1 : 0,
   ];
-  scanSight(organism, habitat, undefined, inputs);
+  scanSight(organism, habitat, undefined, inputs, rays);
   return inputs;
 }
 
@@ -48,7 +52,9 @@ function scanSight(
   habitat: Habitat,
   trace?: Perception,
   inputs?: number[],
+  rays?: PerceptionRay[],
 ): number {
+  const observedRays = trace?.rays ?? rays;
   const behavior = organism.genome.behavior;
   const origins = positions(organism),
     heading = organism.rotation,
@@ -63,10 +69,10 @@ function scanSight(
   for (const [eye, cell] of organism.genome.cells.entries()) {
     if (cell.type !== 8) continue;
     const origin = origins[eye],
-      ray: PerceptionRay | undefined = trace
+      ray: PerceptionRay | undefined = observedRays
         ? { eye, origin, heading, cells: [], stop: 'range', reaction: null }
         : undefined;
-    if (ray) trace!.rays.push(ray);
+    if (ray) observedRays!.push(ray);
     for (let distance = 1; distance <= 5; distance++) {
       const p = index((origin % WIDTH) + dx * distance, Math.floor(origin / WIDTH) + dy * distance),
         occupant = habitat.occupied[p];
