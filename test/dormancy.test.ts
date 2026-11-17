@@ -23,6 +23,7 @@ import { organismHtml } from '../src/view';
 import { serializeMeasurements } from '../src/measurement-export';
 import { NEURAL_COST, newController } from '../src/neural';
 import { newSenses } from '../src/senses';
+import { ARMOR_SHADE_UPKEEP } from '../src/biological-shade';
 import { EventRecorder } from '../src/event-journal';
 import { startReplayWorker, type ReplayScope } from '../src/event-replay-worker';
 import type { ReplayResponse } from '../src/event-model';
@@ -326,6 +327,29 @@ describe('bounded inherited dormancy', () => {
     expect(parseBlueprint(JSON.stringify({ ...blueprint, version: 5 })).genome).toEqual(design);
   });
 
+  it('keeps casting armor shade and pays its full upkeep from reserves while dormant', () => {
+    const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false, {
+      biologicalShade: true,
+    });
+    const organism = world.spawn(genome(), 60, 60)!;
+    organism.energy = 4;
+    organism.reserves!.stored = 20;
+    world.shock('heat');
+    world.step();
+    expect(organism.reserves!.dormant).toBe(true);
+    expect(world.save().biologicalShade).toEqual({ version: 1, enabled: true });
+    organism.energy = 0.01;
+    const upkeep = world.telemetry.pending.energy.upkeepSpent;
+    world.step();
+    expect(organism.reserves!.dormant).toBe(true);
+    expect(organism.energy).toBeCloseTo(1, 9);
+    expect(world.telemetry.pending.energy.upkeepSpent - upkeep).toBeGreaterThan(ARMOR_SHADE_UPKEEP);
+    const restored = Ecosystem.load(JSON.stringify(world.save()));
+    world.step();
+    restored.step();
+    expect(restored.save()).toEqual(world.save());
+  });
+
   it('keeps life-history maturity, full maintenance and extended age limits while dormant', () => {
     const world = new Ecosystem({ ...DEFAULTS, mutation: 0, nutrients: 0, climate: 0 }, false);
     const design: Genome = {
@@ -470,8 +494,8 @@ describe('bounded inherited dormancy', () => {
       expect(result.treatment.state).toBe(JSON.stringify(direct.save()));
       expect(JSON.parse(result.recipe).rules).toEqual({
         id: 'evolab-drift-cellular',
-        version: 12,
-        worldVersion: 20,
+        version: 13,
+        worldVersion: 21,
       });
       const replay = createRecipeComparison(result.recipe);
       while (replay.advance(() => 0).tick < 6) {}
@@ -503,7 +527,7 @@ describe('bounded inherited dormancy', () => {
       const event = recorder.snapshot().events.at(-1)!;
       expect(event.kind).toBe('lineage-extinction');
       const evidence = recorder.replay(event.id);
-      expect(evidence.worldVersion).toBe(20);
+      expect(evidence.worldVersion).toBe(21);
       expect(world.telemetry.pending.reserves!.discarded).toBeGreaterThan(0);
       const tasks: (() => void)[] = [];
       const messages: ReplayResponse[] = [];

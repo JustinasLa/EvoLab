@@ -39,9 +39,11 @@ export function restoreMain8(saved: WorldFile) {
         tempo: genome.tempo,
       } as typeof row.foundingGenome;
     }
+  assert.equal(saved.biologicalShade.enabled, false, 'Cannot project enabled biological shade.');
   assert.ok(saved.nutrientCycle === null, 'Cannot project enabled nutrient ecology.');
   const {
     lifeHistoryLog: _lifeHistoryLog,
+    biologicalShade: _biologicalShade,
     nutrientCycle: _nutrientCycle,
     mutationPolicy: _policy,
     shadeHabitats: _shadeHabitats,

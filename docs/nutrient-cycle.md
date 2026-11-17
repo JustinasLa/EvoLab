@@ -56,10 +56,12 @@ World17 retains the original nutrient contract. World18 adds optional life histo
 its bounded outcome log without relaxing nutrient validation. Experiment rules10 and
 measurement format10 identify the composed ruleset. World19, blueprint7, rules11 and
 measurement format11 keep the same `nutrientCycle` field and validation and add
-inherited senses; see [Evolving senses](evolving-senses.md). World20, blueprint8,
-rules12 and measurement format12 add optional inherited dormancy and exact living
-reserves; worlds 17–19 remain accepted without activating dormancy, and their budgets
-keep their original bounds and validation; see [dormancy](dormancy.md).
+inherited senses; see [Evolving senses](evolving-senses.md). World20, rules12 and
+measurement format12 add optional biological shade; see
+[Biological shade](biological-shade.md). World21, blueprint8, rules13 and measurement
+format13 add optional inherited dormancy and exact living reserves; worlds 17–20 remain
+accepted without activating dormancy, and their budgets keep their original bounds and
+validation; see [dormancy](dormancy.md).
 
 Resource views expose both planes, pool totals in N, current stored energy in E,
 and the latest completed tick's energy balance (before + sunlight = after +

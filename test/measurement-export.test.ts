@@ -186,10 +186,10 @@ describe('bounded retained measurement codec', () => {
       const json = restore(JSON.parse(serializeMeasurements(source, 'json').text));
       expect(decode(serializeMeasurements(source, 'csv').text)).toEqual(json);
       expect(json).toMatchObject({
-        version: 12,
-        rules: { version: 12 },
+        version: 13,
+        rules: { version: 13 },
         snapshot: {
-          worldVersion: 20,
+          worldVersion: 21,
           shadeHabitats: {
             version: 1,
             enabled,
@@ -235,10 +235,10 @@ describe('bounded retained measurement codec', () => {
         envelope = measurementEnvelope(source);
       const serialized = serializeMeasurements(source, format);
       expect(serialized.byteLength).toBe(new TextEncoder().encode(serialized.text).length);
-      expect(envelope.snapshot.worldVersion).toBe(20);
+      expect(envelope.snapshot.worldVersion).toBe(21);
       expect(envelope).toMatchObject({
-        version: 12,
-        rules: { version: 12 },
+        version: 13,
+        rules: { version: 13 },
         telemetry: { version: 2 },
         interventions: { version: 5 },
       });
@@ -254,7 +254,7 @@ describe('bounded retained measurement codec', () => {
     const envelope = measurementEnvelope(source);
     expect(source.snapshot.worldVersion).toBe(WORLD_VERSION);
     expect(world.save().version).toBe(WORLD_VERSION);
-    expect(envelope.version).toBe(12);
+    expect(envelope.version).toBe(13);
     expect(envelope.telemetry).toEqual(world.save().telemetry);
     expect(envelope.interventions).toEqual(world.save().interventions);
     expect(envelope).not.toHaveProperty('lineageArchive');
@@ -283,10 +283,10 @@ describe('bounded retained measurement codec', () => {
         decoded = decode(serializeMeasurements(source, 'csv').text);
       expect(decoded).toEqual(json);
       expect(json).toMatchObject({
-        version: 12,
-        rules: { version: 12 },
+        version: 13,
+        rules: { version: 13 },
         snapshot: {
-          worldVersion: 20,
+          worldVersion: 21,
           thermalRefuges: {
             version: 1,
             enabled,
@@ -332,9 +332,9 @@ describe('bounded retained measurement codec', () => {
     world.changeTerrain('regenerate', { version: 1, preset: 'open-field', seed: -0 });
     const source = world.measurements(),
       envelope = measurementEnvelope(source);
-    expect(envelope.version).toBe(12);
-    expect(envelope.rules.version).toBe(12);
-    expect(envelope.snapshot.worldVersion).toBe(20);
+    expect(envelope.version).toBe(13);
+    expect(envelope.rules.version).toBe(13);
+    expect(envelope.snapshot.worldVersion).toBe(21);
     expect(envelope.snapshot.terrain).toEqual(world.terrain);
     expect(envelope.snapshot.settings).toEqual(DEFAULTS);
     expect(envelope.negativeZeroPaths).toContain('/snapshot/terrain/seed');

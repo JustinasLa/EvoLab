@@ -213,7 +213,7 @@ describe('measured paired recipes', () => {
       sourceTick: 2,
       seed: 2019,
       plan,
-      rules: { version: 12, worldVersion: 20 },
+      rules: { version: 13, worldVersion: 21 },
       runtime: comparisonRuntime(),
     });
     const replay = finishRunner(createRecipeComparison(result.recipe));

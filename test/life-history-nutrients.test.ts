@@ -70,8 +70,9 @@ describe('life history with finite nutrient ecology', () => {
       let origin = 0;
       for (const endpoint of fixture.endpoints) {
         while (world.tick < endpoint.tick) world.step();
-        const { lifeHistoryLog, ...native } = world.save();
+        const { lifeHistoryLog, biologicalShade, ...native } = world.save();
         expect(lifeHistoryLog).toEqual(emptyLifeHistoryLog(origin));
+        expect(biologicalShade).toEqual({ version: 1, enabled: false });
         const projected = { ...native, version: 17 };
         for (const event of projected.lineageArchive.events)
           if (event.kind === 'reproduction') delete event.payment;
@@ -236,8 +237,8 @@ describe('life history with finite nutrient ecology', () => {
     for (const branch of [result.control, result.treatment]) check(Ecosystem.load(branch.state));
     expect(JSON.parse(result.recipe).rules).toEqual({
       id: 'evolab-drift-cellular',
-      version: 12,
-      worldVersion: 20,
+      version: 13,
+      worldVersion: 21,
     });
     const replay = createRecipeComparison(result.recipe);
     while (replay.advance(() => 0).tick < 33) {}
