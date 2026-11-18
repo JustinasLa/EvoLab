@@ -5,6 +5,7 @@ import {
   validateLifeHistoryLog,
 } from './life-history';
 import { RoleObserver } from './roles';
+import { SpatialObserver, type SpatialStartReason } from './spatial';
 import {
   armorCells,
   ARMOR_SHADE_UPKEEP,
@@ -888,6 +889,7 @@ export class Ecosystem {
   private perceptionId = 0;
   private lastPerception: Perception | null = null;
   private roles?: RoleObserver;
+  private spatial?: SpatialObserver;
   private neural?: NeuralObserver;
   selectNeural(id: number, enabled: boolean): void {
     if (!enabled) this.neural = undefined;
@@ -902,6 +904,17 @@ export class Ecosystem {
   }
   roleSnapshot() {
     return this.roles?.snapshot(this.organisms.values());
+  }
+  /** Session-only; enabling starts fresh at the current tick, disabling discards evidence. */
+  observeSpatial(enabled: boolean, reason: SpatialStartReason = 'enabled'): void {
+    if (!enabled) this.spatial = undefined;
+    else this.spatial ??= new SpatialObserver(this.tick, reason);
+  }
+  spatialSnapshot() {
+    return this.spatial?.snapshot();
+  }
+  spatialSummary() {
+    return this.spatial?.summary();
   }
   selectPerception(id: number): void {
     const next = this.organisms.has(id) ? id : 0;
@@ -1417,6 +1430,7 @@ export class Ecosystem {
     recordLifeEvent(this.lifeHistoryLog, o, this.tick, cause);
     this.lastDeath = { tick: this.tick, cause };
     if (this.recording) this.telemetry.pending.deaths[cause]++;
+    this.spatial?.death(index(o.x, o.y), cause);
     if (removed && this.lineageRecording) this.lineage.death(o, this.tick);
   }
   move(o: Organism, dx: number, dy: number, rotation = o.rotation): boolean {
@@ -1552,6 +1566,7 @@ export class Ecosystem {
               this.recordEnergy('mouthsGained', o.energy - before);
               this.neural?.meal(o.id, this.tick, o.energy - before);
               this.roles?.energy(o.species, 'mouthsGained', o.energy - before);
+              this.spatial?.feeding(p, o.energy - before);
             }
             const victim = this.organisms.get(this.occupied[n]);
             if (type === 6 && victim && victim.id !== o.id && o.age % 4 === 0) {
@@ -1570,6 +1585,8 @@ export class Ecosystem {
                   victimBefore - victim.energy,
                   o.energy - before,
                 );
+                if (victimBefore - victim.energy > 0)
+                  this.spatial?.attack(n, victimBefore - victim.energy, o.energy - before);
               }
             }
           }
@@ -1782,6 +1799,7 @@ export class Ecosystem {
             o.children++;
             this.births++;
             if (this.recording) this.telemetry.pending.births++;
+            this.spatial?.birth(index(child.x, child.y));
             break;
           }
         }
@@ -1812,6 +1830,7 @@ export class Ecosystem {
       budget.dissipated = Math.max(0, budget.before + budget.sunlight - budget.after);
     }
     if (this.neural) this.neural.finish(this.organisms.get(this.neural.id), this.tick);
+    this.spatial?.endTick(this.tick);
     this.observe();
   }
   paint(tool: Tool, x: number, y: number, radius: number, genome: Genome): PaintOutcome {

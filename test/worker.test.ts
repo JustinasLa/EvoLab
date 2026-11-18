@@ -1,4 +1,5 @@
 import { roleScene } from './fixtures/roles';
+import { wrappedScene } from './fixtures/spatial';
 import { historicalArchive } from './fixtures/telemetry';
 import { newController } from '../src/neural';
 import { weightedMutation } from '../src/mutation';
@@ -174,6 +175,59 @@ it('observes roles only after subscription and preserves exact pause, step, load
   harness.send({ type: 'pause', value: true });
   harness.send({ type: 'start', runId: 4, settings: DEFAULTS, display: { ...view, epoch: 3 } });
   expect(harness.state().world.roles).toMatchObject({ originTick: 0, tick: 0, lineages: [] });
+  harness.dispose();
+});
+
+it('captures spatial events only while requested and discards them on toggle-off or replacement', () => {
+  const harness = workerHarness();
+  const { world } = wrappedScene();
+  harness.load(world.save());
+  harness.send({ type: 'pause', value: true });
+  expect(harness.state().world.spatial).toBeUndefined();
+  const initial = harness.save();
+  const view = { epoch: 1, enabled: false, visible: true, spatial: true };
+  harness.send({ type: 'display-view', view });
+  expect(harness.state().world.spatial).toMatchObject({
+    coverageStartTick: 0,
+    startReason: 'enabled',
+    tick: 0,
+    windows: [{ fromTick: 0, toTick: 300, throughTick: 0, activeBins: 0 }],
+  });
+  expect(harness.state().world.spatial.windows[0]).not.toHaveProperty('values');
+  expect(harness.save()).toEqual(initial);
+  harness.send({ type: 'step' });
+  world.step();
+  expect(harness.save()).toEqual(world.save());
+  const captured = harness.state().world.spatial;
+  expect(captured.windows[0].totals).toMatchObject({ births: 1, feedings: 1, attacks: 1 });
+  harness.send({ type: 'display-view', view: { ...view, epoch: 2, enabled: true } });
+  harness.send({ type: 'display-view', view: { ...view, epoch: 3, visible: false } });
+  expect(harness.state().world.spatial).toEqual(captured);
+  harness.send({ type: 'load', runId: 2, text: '{}' });
+  expect(harness.state().world.spatial).toEqual(captured);
+  harness.send({
+    type: 'display-view',
+    view: { epoch: 4, enabled: false, visible: true },
+  });
+  expect(harness.state().world.spatial).toBeUndefined();
+  harness.send({ type: 'step' });
+  world.step();
+  harness.send({ type: 'display-view', view: { ...view, epoch: 5 } });
+  expect(harness.state().world.spatial).toMatchObject({ coverageStartTick: 2, tick: 2 });
+  expect(harness.state().world.spatial.windows[0].totals.births).toBe(0);
+  expect(harness.save()).toEqual(world.save());
+  harness.load(world.save(), 3);
+  expect(harness.state().world.spatial).toMatchObject({
+    coverageStartTick: 2,
+    startReason: 'world-replaced',
+  });
+  harness.send({ type: 'start', runId: 4, settings: DEFAULTS, display: { ...view, epoch: 6 } });
+  expect(harness.state().world.spatial).toMatchObject({
+    coverageStartTick: 0,
+    startReason: 'world-replaced',
+  });
+  harness.send({ type: 'display-view', view: { ...view, epoch: 7, spatial: false } });
+  expect(harness.last('error').message).toContain('Invalid or obsolete display view');
   harness.dispose();
 });
 

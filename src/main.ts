@@ -82,6 +82,7 @@ import {
 import { createTelemetryView } from './telemetry-view';
 import { createLineageView } from './lineage-view';
 import { createRolesView } from './roles-view';
+import { createSpatialView } from './spatial-view';
 import { emptyRefuges, refugeTool, refugeSummary, validRefugeBrush } from './refuges';
 import {
   createLibrary,
@@ -125,7 +126,8 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
         typeof data.display.enabled !== 'boolean' ||
         typeof data.display.visible !== 'boolean' ||
         (data.display.lineage !== undefined && data.display.lineage !== true) ||
-        (data.display.roles !== undefined && data.display.roles !== true)
+        (data.display.roles !== undefined && data.display.roles !== true) ||
+        (data.display.spatial !== undefined && data.display.spatial !== true)
       )
         throw new Error('Invalid initial settings or display.');
       return {
@@ -140,6 +142,7 @@ export function captureCommand(data: any, settings: Settings): CommandPayload {
           visible: data.display.visible,
           ...(data.display.lineage ? { lineage: true as const } : {}),
           ...(data.display.roles ? { roles: true as const } : {}),
+          ...(data.display.spatial ? { spatial: true as const } : {}),
         },
       };
     case 'load':
@@ -1576,6 +1579,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     lineage = desiredView.lineage === true,
     roles = desiredView.roles === true,
     neural = neuralView.wanted(),
+    spatial = desiredView.spatial === true,
   ): void {
     if (
       !alive ||
@@ -1583,7 +1587,8 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         visible === desiredView.visible &&
         lineage === (desiredView.lineage === true) &&
         roles === (desiredView.roles === true) &&
-        neural === (desiredView.neural === true))
+        neural === (desiredView.neural === true) &&
+        spatial === (desiredView.spatial === true))
     )
       return;
     desiredView = {
@@ -1592,6 +1597,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       visible,
       ...(lineage ? { lineage: true as const } : {}),
       ...(roles ? { roles: true as const } : {}),
+      ...(spatial ? { spatial: true as const } : {}),
       ...(neural ? { neural: true as const } : {}),
     };
     neuralView.update(latestState, desiredView.epoch);
@@ -3008,7 +3014,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     if (
       (event.target instanceof HTMLElement &&
         event.target.closest(
-          'input,select,textarea,button,summary,[contenteditable="true"],dialog,#roles-tables,#neural-data',
+          'input,select,textarea,button,summary,[contenteditable="true"],dialog,#roles-tables,#spatial-windows,#neural-data',
         )) ||
       event.ctrlKey ||
       event.metaKey ||
@@ -3144,6 +3150,17 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   const rolesView = createRolesView(root, () => {
     changeView(desiredView.enabled, desiredView.visible, desiredView.lineage === true, true);
   });
+  const spatialView = createSpatialView(root, (enabled) => {
+    changeView(
+      desiredView.enabled,
+      desiredView.visible,
+      desiredView.lineage === true,
+      desiredView.roles === true,
+      neuralView.wanted(),
+      enabled,
+    );
+    return desiredView.epoch;
+  });
   let displayedLineage: WorldPresentation['lineage'];
   let displayedLineageReplacement = 0;
   let displayedObservation: ControlState | undefined;
@@ -3175,6 +3192,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         );
       events.update(observation.journal);
       rolesView.update(observation.world.roles);
+      spatialView.update(observation.world.spatial, observation.display.epoch);
       get('life-history-outcomes').innerHTML = lifeLogHtml(observation.world.lifeHistory);
       neuralView.update(observation, desiredView.epoch);
       organismView.update(
@@ -3751,6 +3769,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     telemetry.dispose();
     lineageView.dispose();
     rolesView.dispose();
+    spatialView.dispose();
     organismView.dispose();
     neuralView.dispose();
     mutationControls.dispose();
