@@ -11,6 +11,7 @@ import { emptyShade, shadeTool, shadeSummary, validShadeBrush } from './shade';
 import { createOrganismView } from './organism-view';
 import { createNeuralView } from './neural-view';
 import { mountCheckpoints } from './checkpoint-view';
+import { mountRecovery } from './recovery-view';
 import { mountComparisons } from './experiment-view';
 import { mountEvents } from './event-view';
 import './style.css';
@@ -1091,7 +1092,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     echo?: Record<string, unknown>;
     targetTicket?: TargetTicket;
     cancelTicket?: TargetTicket;
-    checkpoint?: boolean | 'comparison';
+    checkpoint?: boolean | 'comparison' | 'recovery';
   };
   type Posted = Omit<Entry, 'payload'> & {
     type: CommandPayload['type'];
@@ -1478,7 +1479,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   function send(
     data: any,
     capturedTerrainRevision = terrainRevision,
-    checkpoint: boolean | 'comparison' = false,
+    checkpoint: boolean | 'comparison' | 'recovery' = false,
   ): boolean {
     if (
       !alive ||
@@ -2887,8 +2888,9 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
   });
   get('help').addEventListener('click', () => get<HTMLDialogElement>('help-dialog').showModal());
   get('close-help').addEventListener('click', () => get<HTMLDialogElement>('help-dialog').close());
-  function captureFailed(target: boolean | 'comparison', message: string): void {
+  function captureFailed(target: boolean | 'comparison' | 'recovery', message: string): void {
     if (target === 'comparison') comparisons.failed(message);
+    else if (target === 'recovery') recovery.failed(message);
     else checkpoints.failed(message);
   }
   const comparisons = mountComparisons(root, {
@@ -2919,6 +2921,19 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
       invalidateCandidate();
       endStroke();
       return send({ type: 'load', text: content });
+    },
+  });
+  // Automatic recovery reuses the complete native Save at a worker command boundary.
+  const recovery = mountRecovery(root, {
+    context: () => `${generation}:${runId}:${worldRequest}`,
+    revision: () =>
+      latestState && establishedRun === runId && !stopped
+        ? `${latestState.replacementId}:${latestState.revision}:${latestState.world.stats.tick}`
+        : null,
+    capture: () => {
+      if (lifecycleBusy() || hasOwner('save') || downloads.save || posted || pending.length)
+        return false;
+      return send({ type: 'save' }, terrainRevision, 'recovery');
     },
   });
   get('save').addEventListener('click', () => send({ type: 'save' }));
@@ -3550,6 +3565,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
         if (data.type === 'saved' && current) {
           if (completion.checkpoint === 'comparison')
             comparisons.saved(data.text, data.completedTick);
+          else if (completion.checkpoint === 'recovery') recovery.saved(data.text);
           else checkpoints.saved(data.text);
         } else
           captureFailed(
@@ -3743,6 +3759,7 @@ export function mount(root: HTMLElement, worker: Worker, renderHabitat = true): 
     blueprintReader?.abort();
     library.dispose();
     checkpoints.dispose();
+    recovery.dispose();
     comparisons.dispose();
     events.dispose();
     for (const cleanup of cleanups) cleanup();
